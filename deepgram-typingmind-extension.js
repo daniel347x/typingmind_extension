@@ -1,6 +1,5 @@
 /**
  * Deepgram Live Transcription Extension for TypingMind
- * Version: 1.4 - RESIZABLE WIDGET
  * 
  * This extension adds a floating transcription widget to TypingMind
  * Features:
@@ -30,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.5',
+    VERSION: '1.6',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -113,8 +112,9 @@
         min-width: 500px; /* Prevent shrinking too small */
         display: flex;
         flex-direction: column;
-        overflow: hidden;
+        overflow-y: auto;
         flex-shrink: 0;
+        height: 100%;
       }
       
       /* Resize Handle */
@@ -196,8 +196,8 @@
       .deepgram-content {
         padding: 20px;
         overflow-y: auto;
-        flex: 1;
-        min-height: 0;
+        flex: none;
+        height: auto;
       }
       
       .deepgram-section {
@@ -316,9 +316,9 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 450px;
-        height: 8000px;
-        max-height: 8000px;
+        min-height: 8000px !important;
+        height: 8000px !important;
+        max-height: none !important;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -329,6 +329,7 @@
         box-sizing: border-box;
         color: #1a202c;
         background-color: #ffffff;
+        flex-shrink: 0;
       }
       
       .deepgram-transcript:focus {
