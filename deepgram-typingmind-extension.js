@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.7',
+    VERSION: '1.8',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -334,8 +334,8 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 3000px !important;
-        height: 3000px !important;
+        min-height: 840px !important;
+        height: 840px !important;
         max-height: none !important;
         padding: 12px;
         border: 2px solid #e2e8f0;
@@ -622,17 +622,17 @@
     const transcript = document.getElementById('deepgram-transcript');
     const btn = document.getElementById('deepgram-collapse-btn');
     
-    const currentHeight = parseInt(transcript.style.height) || 3000;
+    const currentHeight = parseInt(transcript.style.height) || 840;
     
-    if (currentHeight === 3000) {
+    if (currentHeight === 840) {
       // Collapse to 300px
       transcript.style.height = '300px';
       transcript.style.minHeight = '300px';
       btn.textContent = 'Expand';
     } else {
-      // Expand back to 3000px
-      transcript.style.height = '3000px';
-      transcript.style.minHeight = '3000px';
+      // Expand back to 840px
+      transcript.style.height = '840px';
+      transcript.style.minHeight = '840px';
       btn.textContent = 'Collapse';
     }
   }
