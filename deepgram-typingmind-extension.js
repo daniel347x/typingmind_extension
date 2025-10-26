@@ -29,7 +29,8 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.10',
+    VERSION: '2.1',
+    DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -519,7 +520,10 @@
         <div class="deepgram-section">
           <label>
             <span>Transcript</span>
-            <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
+            <div style="display: flex; gap: 8px;">
+              <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
+              <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
+            </div>
           </label>
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
         </div>
@@ -548,7 +552,7 @@
         <div class="deepgram-info">
           <strong>Keyboard Shortcuts:</strong>
           Space: Toggle recording (when not typing)<br>
-          Ctrl+Enter: Copy & Clear
+          Ctrl+Shift+Enter: Insert to Chat
         </div>
         </div>
       </div>
@@ -603,6 +607,7 @@
     
     // Make toggle function global
     window.toggleTranscriptHeight = toggleTranscriptHeight;
+    window.resetPanelWidth = resetPanelWidth;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -1034,6 +1039,23 @@
     }
   }
   
+  // ==================== PANEL WIDTH RESET ====================
+  function resetPanelWidth() {
+    const contentContainer = document.getElementById('deepgram-content-container');
+    contentContainer.style.width = CONFIG.DEFAULT_CONTENT_WIDTH + 'px';
+    localStorage.setItem('deepgram_content_width', CONFIG.DEFAULT_CONTENT_WIDTH);
+    console.log('✓ Panel width reset to default:', CONFIG.DEFAULT_CONTENT_WIDTH + 'px');
+    
+    // Visual feedback
+    const btn = document.getElementById('deepgram-reset-width-btn');
+    const originalText = btn.innerHTML;
+    btn.innerHTML = '✓ Reset';
+    
+    setTimeout(() => {
+      btn.innerHTML = originalText;
+    }, 1500);
+  }
+  
   // ==================== RESIZE FUNCTIONALITY ====================
   function initializeResize() {
     const resizeHandle = document.getElementById('deepgram-resize-handle');
@@ -1065,7 +1087,7 @@
       
       // Enforce min/max constraints
       const minWidth = 500;
-      const maxWidth = 900;
+      const maxWidth = 1155; // Full panel width (can expand all the way to the right)
       newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
       
       contentContainer.style.width = newWidth + 'px';
@@ -1107,17 +1129,21 @@
         }
       }
       
-      // Ctrl+Enter: Copy & Clear
-      if (e.ctrlKey && e.key === 'Enter') {
+      // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
+      if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
         const transcriptEl = document.getElementById('deepgram-transcript');
-        if (transcriptEl && document.contains(transcriptEl)) {
+        const text = transcriptEl ? transcriptEl.value.trim() : '';
+        if (text) {
           e.preventDefault();
-          copyTranscript().then(() => clearTranscript());
+          insertToChat();
+          console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
         }
       }
     });
     
     console.log('✓ Keyboard shortcuts initialized');
+    console.log('  - Space: Toggle recording (when not typing)');
+    console.log('  - Ctrl+Shift+Enter: Insert to Chat (global)');
   }
   
   // ==================== CLEANUP ====================
