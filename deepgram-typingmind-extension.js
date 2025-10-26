@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.1',
+    VERSION: '2.2',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -109,7 +109,7 @@
       /* Content Container (left side - original width) */
       #deepgram-content-container {
         width: 700px; /* Original panel width */
-        max-width: 700px;
+        max-width: 1155px; /* Allow expansion to full panel width */
         min-width: 500px; /* Prevent shrinking too small */
         display: flex;
         flex-direction: column;
