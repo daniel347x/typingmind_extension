@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.2',
+    VERSION: '2.3',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -596,6 +596,9 @@
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
+    // Enable/disable Insert to Chat button based on transcript content
+    document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
+    
     // Initialize resize functionality
     initializeResize();
     
@@ -673,7 +676,17 @@
     document.getElementById('deepgram-api-saved').style.display = 'block';
     document.getElementById('deepgram-keyterms-section').style.display = 'block';
     document.getElementById('deepgram-record-btn').disabled = false;
-    document.getElementById('deepgram-copy-btn').disabled = false;
+    updateInsertButtonState(); // Check if there's text to enable insert button
+  }
+  
+  function updateInsertButtonState() {
+    const transcript = document.getElementById('deepgram-transcript').value.trim();
+    const insertBtn = document.getElementById('deepgram-insert-btn');
+    const copyBtn = document.getElementById('deepgram-copy-btn');
+    
+    // Enable if there's any text, disable if empty
+    insertBtn.disabled = !transcript;
+    copyBtn.disabled = !transcript;
   }
   
   function editApiKey() {
