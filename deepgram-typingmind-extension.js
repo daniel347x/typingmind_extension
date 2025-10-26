@@ -309,7 +309,8 @@
       .deepgram-transcript {
         width: 100%;
         min-height: 450px;
-        max-height: 750px;
+        height: 2000px;
+        max-height: 2000px;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
