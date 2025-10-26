@@ -234,16 +234,16 @@
       }
       
       .deepgram-status.disconnected {
-        background: #f8d7da;
-        color: #721c24;
-        border: 1px solid #f5c6cb;
+        background: #e2e8f0;
+        color: #4a5568;
+        border: 1px solid #cbd5e0;
       }
       
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 300px;
-        max-height: 500px;
+        min-height: 450px;
+        max-height: 750px;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -395,7 +395,7 @@
         </div>
         
         <!-- Status -->
-        <div id="deepgram-status" class="deepgram-status disconnected">Not Connected</div>
+        <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
         <!-- Transcript -->
         <div class="deepgram-section">
@@ -614,7 +614,7 @@
         
         deepgramSocket.onclose = () => {
           console.log('WebSocket closed');
-          updateStatus('Disconnected', 'disconnected');
+          updateStatus('Ready to Record', 'disconnected');
         };
         
         deepgramSocket.onerror = (error) => {
@@ -640,7 +640,7 @@
       deepgramSocket.close();
     }
     
-    updateStatus('Recording Stopped', 'disconnected');
+    updateStatus('Ready to Record', 'disconnected');
     isRecording = false;
     updateRecordButton(false);
     
@@ -787,27 +787,44 @@
           const currentValue = chatInput.value;
           const newValue = currentValue ? currentValue + '\n\n' + text : text;
           
-          // Set value
-          chatInput.value = newValue;
+          // METHOD 1: React-compatible way (use native property setter)
+          const nativeValueSetter = Object.getOwnPropertyDescriptor(
+            chatInput.tagName === 'TEXTAREA' 
+              ? window.HTMLTextAreaElement.prototype 
+              : window.HTMLInputElement.prototype,
+            'value'
+          ).set;
           
-          // Trigger multiple events for React/Vue/Angular detection
-          chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-          chatInput.dispatchEvent(new Event('change', { bubbles: true }));
-          chatInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
-          chatInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+          nativeValueSetter.call(chatInput, newValue);
           
-          // Try setting via React's internal properties if available
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
-          nativeInputValueSetter.call(chatInput, newValue);
-          chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+          // Trigger input event (React listens to this)
+          const inputEvent = new Event('input', { bubbles: true });
+          chatInput.dispatchEvent(inputEvent);
+          
+          // Also try change event for non-React frameworks
+          const changeEvent = new Event('change', { bubbles: true });
+          chatInput.dispatchEvent(changeEvent);
+          
+          console.log('✓ Value set via native property setter');
+          console.log('✓ Events dispatched: input, change');
           
         } else if (chatInput.contentEditable === 'true') {
           const currentText = chatInput.textContent || chatInput.innerText || '';
           const newText = currentText ? currentText + '\n\n' + text : text;
           
+          // For contenteditable divs
           chatInput.textContent = newText;
+          
+          // Trigger events
           chatInput.dispatchEvent(new Event('input', { bubbles: true }));
           chatInput.dispatchEvent(new Event('change', { bubbles: true }));
+          
+          // Also try execCommand as alternative
+          chatInput.focus();
+          document.execCommand('selectAll', false, null);
+          document.execCommand('insertText', false, newText);
+          
+          console.log('✓ ContentEditable div updated');
         }
         
         // Focus and move cursor to end
