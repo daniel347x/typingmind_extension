@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.8',
+    VERSION: '1.9',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -252,8 +252,8 @@
       
       .deepgram-section textarea {
         resize: vertical;
-        min-height: 42px;
-        max-height: 200px;
+        min-height: 60px;
+        max-height: 100px;
         line-height: 1.5;
       }
       
@@ -334,9 +334,9 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 840px !important;
-        height: 840px !important;
-        max-height: none !important;
+        min-height: 200px;
+        height: 600px;
+        max-height: none;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -347,7 +347,6 @@
         box-sizing: border-box;
         color: #1a202c;
         background-color: #ffffff;
-        flex-shrink: 0;
       }
       
       .deepgram-transcript:focus {
@@ -622,17 +621,16 @@
     const transcript = document.getElementById('deepgram-transcript');
     const btn = document.getElementById('deepgram-collapse-btn');
     
-    const currentHeight = parseInt(transcript.style.height) || 840;
+    // Get current height from actual computed style or inline style
+    const currentHeight = transcript.style.height ? parseInt(transcript.style.height) : 600;
     
-    if (currentHeight === 840) {
-      // Collapse to 300px
-      transcript.style.height = '300px';
-      transcript.style.minHeight = '300px';
+    if (currentHeight > 150) {
+      // Collapse to 150px
+      transcript.style.height = '150px';
       btn.textContent = 'Expand';
     } else {
-      // Expand back to 840px
-      transcript.style.height = '840px';
-      transcript.style.minHeight = '840px';
+      // Expand back to 600px
+      transcript.style.height = '600px';
       btn.textContent = 'Collapse';
     }
   }
