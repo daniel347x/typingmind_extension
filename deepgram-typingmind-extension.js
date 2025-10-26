@@ -30,6 +30,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
+    VERSION: '1.5',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -164,6 +165,12 @@
         margin: 0;
         font-size: 18px;
         font-weight: 600;
+      }
+      
+      .deepgram-version {
+        font-size: 10px;
+        opacity: 0.7;
+        font-weight: 400;
       }
       
       .deepgram-close {
@@ -463,7 +470,7 @@
     panel.innerHTML = `
       <div id="deepgram-content-container">
         <div class="deepgram-header">
-          <h2>🎙️ Deepgram Transcription</h2>
+          <h2>🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
           <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
         </div>
         
@@ -569,10 +576,14 @@
     // Initialize resize functionality
     initializeResize();
     
+    // Display version number
+    document.getElementById('deepgram-version').textContent = `v${CONFIG.VERSION}`;
+    
     // Make edit function global
     window.deepgramEditApiKey = editApiKey;
     
     console.log('✓ Widget initialized');
+    console.log('📌 Version:', CONFIG.VERSION);
   }
   
   // ==================== UTILITY FUNCTIONS ====================
