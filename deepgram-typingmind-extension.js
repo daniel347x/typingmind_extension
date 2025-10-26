@@ -90,7 +90,7 @@
         bottom: 90px;
         right: 20px;
         width: 1155px; /* 700px * 1.65 = 1155px */
-        max-height: 85vh;
+        max-height: 95vh;
         background: white;
         border-radius: 16px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
@@ -190,6 +190,7 @@
         padding: 20px;
         overflow-y: auto;
         flex: 1;
+        min-height: 0;
       }
       
       .deepgram-section {
