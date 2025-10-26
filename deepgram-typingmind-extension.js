@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.6',
+    VERSION: '1.7',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -205,11 +205,29 @@
       }
       
       .deepgram-section label {
-        display: block;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
         font-weight: 600;
         margin-bottom: 8px;
         color: #333;
         font-size: 14px;
+      }
+      
+      .deepgram-collapse-btn {
+        background: #e2e8f0;
+        border: none;
+        color: #667eea;
+        padding: 2px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 10px;
+        font-weight: 600;
+        transition: all 0.2s;
+      }
+      
+      .deepgram-collapse-btn:hover {
+        background: #cbd5e0;
       }
       
       .deepgram-section input,
@@ -316,8 +334,8 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 8000px !important;
-        height: 8000px !important;
+        min-height: 3000px !important;
+        height: 3000px !important;
         max-height: none !important;
         padding: 12px;
         border: 2px solid #e2e8f0;
@@ -502,7 +520,10 @@
         
         <!-- Transcript -->
         <div class="deepgram-section">
-          <label>Transcript</label>
+          <label>
+            <span>Transcript</span>
+            <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
+          </label>
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
         </div>
         
@@ -583,6 +604,9 @@
     // Make edit function global
     window.deepgramEditApiKey = editApiKey;
     
+    // Make toggle function global
+    window.toggleTranscriptHeight = toggleTranscriptHeight;
+    
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
   }
@@ -592,6 +616,25 @@
     const panel = document.getElementById('deepgram-panel');
     panel.classList.toggle('open');
     isPanelOpen = panel.classList.contains('open');
+  }
+  
+  function toggleTranscriptHeight() {
+    const transcript = document.getElementById('deepgram-transcript');
+    const btn = document.getElementById('deepgram-collapse-btn');
+    
+    const currentHeight = parseInt(transcript.style.height) || 3000;
+    
+    if (currentHeight === 3000) {
+      // Collapse to 300px
+      transcript.style.height = '300px';
+      transcript.style.minHeight = '300px';
+      btn.textContent = 'Expand';
+    } else {
+      // Expand back to 3000px
+      transcript.style.height = '3000px';
+      transcript.style.minHeight = '3000px';
+      btn.textContent = 'Collapse';
+    }
   }
   
   function debounce(func, wait) {
