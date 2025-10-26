@@ -77,8 +77,8 @@
         position: fixed;
         bottom: 90px;
         right: 20px;
-        width: 500px;
-        max-height: 80vh;
+        width: 700px;
+        max-height: 85vh;
         background: white;
         border-radius: 16px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
@@ -156,6 +156,8 @@
         font-family: inherit;
         transition: border-color 0.2s;
         box-sizing: border-box;
+        color: #1a202c;
+        background-color: #ffffff;
       }
       
       .deepgram-section input:focus {
@@ -240,8 +242,8 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 200px;
-        max-height: 300px;
+        min-height: 300px;
+        max-height: 500px;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -250,6 +252,8 @@
         resize: vertical;
         font-family: inherit;
         box-sizing: border-box;
+        color: #1a202c;
+        background-color: #ffffff;
       }
       
       .deepgram-transcript:focus {
@@ -720,57 +724,127 @@
       return;
     }
     
-    // Try to find TypingMind's chat input
-    // This selector might need adjustment based on TypingMind's actual DOM structure
+    console.log('🔍 Searching for TypingMind chat input...');
+    
+    // Extended list of selectors to try
     const selectors = [
+      // Common textarea selectors
       'textarea[placeholder*="Message"]',
       'textarea[placeholder*="Type"]',
-      '[contenteditable="true"]',
+      'textarea[placeholder*="message"]',
+      'textarea[placeholder*="type"]',
+      'textarea[id*="chat"]',
+      'textarea[id*="message"]',
+      'textarea[id*="input"]',
       'textarea.chat-input',
+      'textarea[class*="chat"]',
+      'textarea[class*="message"]',
+      'textarea[class*="input"]',
       '#chat-input',
+      '#message-input',
+      
+      // Contenteditable divs
+      'div[contenteditable="true"]',
+      '[contenteditable="true"]',
+      'div[role="textbox"]',
+      
+      // Any textarea as fallback
       'textarea'
     ];
     
     let chatInput = null;
+    let foundSelector = null;
+    
     for (const selector of selectors) {
-      chatInput = document.querySelector(selector);
-      if (chatInput && chatInput.offsetParent !== null) { // visible element
-        break;
+      const elements = document.querySelectorAll(selector);
+      console.log(`Trying selector: ${selector}, found ${elements.length} elements`);
+      
+      for (const element of elements) {
+        // Check if visible and not part of our extension
+        if (element.offsetParent !== null && 
+            !element.closest('#deepgram-panel') &&
+            !element.id.includes('deepgram')) {
+          chatInput = element;
+          foundSelector = selector;
+          console.log(`✓ Found visible input with selector: ${selector}`);
+          break;
+        }
       }
+      
+      if (chatInput) break;
     }
     
     if (chatInput) {
-      // Insert text
-      if (chatInput.tagName === 'TEXTAREA' || chatInput.tagName === 'INPUT') {
-        const currentValue = chatInput.value;
-        chatInput.value = currentValue ? currentValue + '\n\n' + text : text;
+      console.log('✓ Found chat input:', chatInput);
+      console.log('  Tag:', chatInput.tagName);
+      console.log('  Type:', chatInput.type);
+      console.log('  ContentEditable:', chatInput.contentEditable);
+      console.log('  Placeholder:', chatInput.placeholder);
+      
+      try {
+        // Insert text based on element type
+        if (chatInput.tagName === 'TEXTAREA' || chatInput.tagName === 'INPUT') {
+          const currentValue = chatInput.value;
+          const newValue = currentValue ? currentValue + '\n\n' + text : text;
+          
+          // Set value
+          chatInput.value = newValue;
+          
+          // Trigger multiple events for React/Vue/Angular detection
+          chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+          chatInput.dispatchEvent(new Event('change', { bubbles: true }));
+          chatInput.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true }));
+          chatInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+          
+          // Try setting via React's internal properties if available
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set;
+          nativeInputValueSetter.call(chatInput, newValue);
+          chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+          
+        } else if (chatInput.contentEditable === 'true') {
+          const currentText = chatInput.textContent || chatInput.innerText || '';
+          const newText = currentText ? currentText + '\n\n' + text : text;
+          
+          chatInput.textContent = newText;
+          chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+          chatInput.dispatchEvent(new Event('change', { bubbles: true }));
+        }
         
-        // Trigger input event for React/Vue detection
-        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
-        chatInput.dispatchEvent(new Event('change', { bubbles: true }));
-      } else if (chatInput.contentEditable === 'true') {
-        chatInput.textContent = chatInput.textContent ? chatInput.textContent + '\n\n' + text : text;
-        chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+        // Focus and move cursor to end
+        chatInput.focus();
+        
+        if (chatInput.setSelectionRange) {
+          const length = chatInput.value.length;
+          chatInput.setSelectionRange(length, length);
+        }
+        
+        // Clear transcript after successful insert
+        clearTranscript();
+        
+        // Visual feedback
+        const btn = document.getElementById('deepgram-insert-btn');
+        const originalText = btn.textContent;
+        btn.textContent = '✓ Inserted!';
+        
+        setTimeout(() => {
+          btn.textContent = originalText;
+        }, 2000);
+        
+        console.log('✅ Text inserted successfully!');
+        
+      } catch (error) {
+        console.error('❌ Error inserting text:', error);
+        alert('Error inserting text. Please copy and paste manually.');
       }
       
-      chatInput.focus();
-      
-      // Clear transcript after successful insert
-      clearTranscript();
-      
-      // Visual feedback
-      const btn = document.getElementById('deepgram-insert-btn');
-      const originalText = btn.textContent;
-      btn.textContent = '✓ Inserted!';
-      
-      setTimeout(() => {
-        btn.textContent = originalText;
-      }, 2000);
-      
-      console.log('✓ Text inserted to chat');
     } else {
-      console.error('Could not find chat input element');
-      alert('Could not find chat input. Please copy and paste manually.');
+      console.error('❌ Could not find chat input element');
+      console.log('💡 Available textareas:', document.querySelectorAll('textarea'));
+      console.log('💡 Available contenteditable:', document.querySelectorAll('[contenteditable="true"]'));
+      alert('Could not find chat input. Opening browser console for debugging.\n\nPlease use the Copy button and paste manually.');
+      
+      // Auto-copy as fallback
+      copyTranscript();
     }
   }
   
