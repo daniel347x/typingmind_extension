@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '1.9',
+    VERSION: '1.10',
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
@@ -253,7 +253,6 @@
       .deepgram-section textarea {
         resize: vertical;
         min-height: 60px;
-        max-height: 100px;
         line-height: 1.5;
       }
       
@@ -334,9 +333,8 @@
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
-        min-height: 200px;
+        min-height: 150px;
         height: 600px;
-        max-height: none;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -619,18 +617,21 @@
   
   function toggleTranscriptHeight() {
     const transcript = document.getElementById('deepgram-transcript');
+    const keyterms = document.getElementById('deepgram-keyterms-input');
     const btn = document.getElementById('deepgram-collapse-btn');
     
-    // Get current height from actual computed style or inline style
-    const currentHeight = transcript.style.height ? parseInt(transcript.style.height) : 600;
+    // Get current height from computed style
+    const computedStyle = window.getComputedStyle(transcript);
+    const currentHeight = parseInt(computedStyle.height);
     
     if (currentHeight > 150) {
       // Collapse to 150px
       transcript.style.height = '150px';
       btn.textContent = 'Expand';
     } else {
-      // Expand back to 600px
+      // Expand back to 600px default AND reset keyterms to 60px
       transcript.style.height = '600px';
+      keyterms.style.height = '60px';
       btn.textContent = 'Collapse';
     }
   }
