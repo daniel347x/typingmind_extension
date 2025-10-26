@@ -1,6 +1,6 @@
 /**
  * Deepgram Live Transcription Extension for TypingMind
- * Version: 1.0
+ * Version: 1.3 - FIXED CHAT INSERTION
  * 
  * This extension adds a floating transcription widget to TypingMind
  * Features:
@@ -9,6 +9,11 @@
  * - Insert transcribed text into TypingMind chat
  * - Persistent API key and keyterms
  * - Optimized for deliberate speech with long pauses
+ * 
+ * v1.3 Changes:
+ * - Fixed chat input detection using TypingMind's specific selectors
+ * - Added #chat-input-textbox and [data-element-id="chat-input-textbox"] as priority selectors
+ * - Improved React event dispatching for better compatibility
  */
 
 (function() {
@@ -726,9 +731,15 @@
     
     console.log('🔍 Searching for TypingMind chat input...');
     
-    // Extended list of selectors to try
+    // Extended list of selectors to try (in priority order)
     const selectors = [
-      // Common textarea selectors
+      // PRIORITY 1: TypingMind-specific selectors (verified working)
+      '#chat-input-textbox',
+      '[data-element-id="chat-input-textbox"]',
+      'textarea[placeholder*="Press"]',
+      'textarea.main-chat-input',
+      
+      // PRIORITY 2: Common textarea selectors
       'textarea[placeholder*="Message"]',
       'textarea[placeholder*="Type"]',
       'textarea[placeholder*="message"]',
@@ -743,12 +754,12 @@
       '#chat-input',
       '#message-input',
       
-      // Contenteditable divs
+      // PRIORITY 3: Contenteditable divs
       'div[contenteditable="true"]',
       '[contenteditable="true"]',
       'div[role="textbox"]',
       
-      // Any textarea as fallback
+      // PRIORITY 4: Any textarea as last resort
       'textarea'
     ];
     
