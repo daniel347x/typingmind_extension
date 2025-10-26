@@ -1,6 +1,6 @@
 /**
  * Deepgram Live Transcription Extension for TypingMind
- * Version: 1.3 - FIXED CHAT INSERTION
+ * Version: 1.4 - RESIZABLE WIDGET
  * 
  * This extension adds a floating transcription widget to TypingMind
  * Features:
@@ -9,6 +9,13 @@
  * - Insert transcribed text into TypingMind chat
  * - Persistent API key and keyterms
  * - Optimized for deliberate speech with long pauses
+ * - Resizable widget with draggable divider
+ * 
+ * v1.4 Changes:
+ * - Made panel 65% wider (700px → 1155px) for better positioning
+ * - Added draggable resize handle to adjust content width (500-900px)
+ * - Content stays at optimal size with white filler on the right
+ * - Width preference saved to localStorage
  * 
  * v1.3 Changes:
  * - Fixed chat input detection using TypingMind's specific selectors
@@ -82,20 +89,64 @@
         position: fixed;
         bottom: 90px;
         right: 20px;
-        width: 700px;
+        width: 1155px; /* 700px * 1.65 = 1155px */
         max-height: 85vh;
         background: white;
         border-radius: 16px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
         z-index: 999998;
         display: none;
-        flex-direction: column;
+        flex-direction: row; /* Changed from column to row for side-by-side layout */
         overflow: hidden;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       }
       
       #deepgram-panel.open {
         display: flex;
+      }
+      
+      /* Content Container (left side - original width) */
+      #deepgram-content-container {
+        width: 700px; /* Original panel width */
+        max-width: 700px;
+        min-width: 500px; /* Prevent shrinking too small */
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+      
+      /* Resize Handle */
+      #deepgram-resize-handle {
+        width: 5px;
+        background: #e2e8f0;
+        cursor: col-resize;
+        position: relative;
+        flex-shrink: 0;
+        transition: background 0.2s;
+      }
+      
+      #deepgram-resize-handle:hover {
+        background: #667eea;
+      }
+      
+      #deepgram-resize-handle::after {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 20px;
+        height: 60px;
+        border-radius: 4px;
+        background: transparent;
+      }
+      
+      /* Filler Area (right side - empty white space) */
+      #deepgram-filler {
+        flex: 1;
+        background: white;
+        min-width: 0;
       }
       
       /* Panel Header */
@@ -106,6 +157,7 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        flex-shrink: 0;
       }
       
       .deepgram-header h2 {
@@ -152,7 +204,8 @@
         font-size: 14px;
       }
       
-      .deepgram-section input {
+      .deepgram-section input,
+      .deepgram-section textarea {
         width: 100%;
         padding: 10px 12px;
         border: 2px solid #e2e8f0;
@@ -165,9 +218,17 @@
         background-color: #ffffff;
       }
       
-      .deepgram-section input:focus {
+      .deepgram-section input:focus,
+      .deepgram-section textarea:focus {
         outline: none;
         border-color: #667eea;
+      }
+      
+      .deepgram-section textarea {
+        resize: vertical;
+        min-height: 42px;
+        max-height: 200px;
+        line-height: 1.5;
       }
       
       .deepgram-section input.monospace {
@@ -347,11 +408,37 @@
       }
       
       /* Responsive adjustments */
+      @media (max-width: 1200px) {
+        #deepgram-panel {
+          width: calc(100vw - 40px);
+          max-width: 1155px;
+        }
+        
+        #deepgram-content-container {
+          width: 100%;
+          max-width: 700px;
+        }
+      }
+      
       @media (max-width: 600px) {
         #deepgram-panel {
           width: calc(100vw - 40px);
           right: 20px;
           left: 20px;
+          flex-direction: column;
+        }
+        
+        #deepgram-content-container {
+          width: 100%;
+          min-width: auto;
+        }
+        
+        #deepgram-resize-handle {
+          display: none;
+        }
+        
+        #deepgram-filler {
+          display: none;
         }
       }
     `;
@@ -372,12 +459,13 @@
     const panel = document.createElement('div');
     panel.id = 'deepgram-panel';
     panel.innerHTML = `
-      <div class="deepgram-header">
-        <h2>🎙️ Deepgram Transcription</h2>
-        <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
-      </div>
-      
-      <div class="deepgram-content">
+      <div id="deepgram-content-container">
+        <div class="deepgram-header">
+          <h2>🎙️ Deepgram Transcription</h2>
+          <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
+        </div>
+        
+        <div class="deepgram-content">
         <!-- API Key Section -->
         <div class="deepgram-section" id="deepgram-api-section">
           <label>Deepgram API Key</label>
@@ -395,8 +483,8 @@
         <!-- Keyterms Section -->
         <div class="deepgram-section" id="deepgram-keyterms-section" style="display: none;">
           <label>Keyterms (Optional)</label>
-          <input type="text" id="deepgram-keyterms-input" placeholder="LlamaIndex, TypingMind, Obsidian">
-          <small>Add technical terms to improve accuracy</small>
+          <textarea id="deepgram-keyterms-input" rows="2" placeholder="LlamaIndex, TypingMind, Obsidian"></textarea>
+          <small>Add technical terms to improve accuracy (comma-separated)</small>
         </div>
         
         <!-- Status -->
@@ -434,7 +522,12 @@
           Space: Toggle recording (when not typing)<br>
           Ctrl+Enter: Copy & Clear
         </div>
+        </div>
       </div>
+      
+      <div id="deepgram-resize-handle"></div>
+      
+      <div id="deepgram-filler"></div>
     `;
     
     document.body.appendChild(toggleBtn);
@@ -457,6 +550,12 @@
       document.getElementById('deepgram-keyterms-input').value = savedKeyterms;
     }
     
+    // Load saved content width
+    const savedWidth = localStorage.getItem('deepgram_content_width');
+    if (savedWidth) {
+      document.getElementById('deepgram-content-container').style.width = savedWidth + 'px';
+    }
+    
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
@@ -464,6 +563,9 @@
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
+    
+    // Initialize resize functionality
+    initializeResize();
     
     // Make edit function global
     window.deepgramEditApiKey = editApiKey;
@@ -874,6 +976,60 @@
       // Auto-copy as fallback
       copyTranscript();
     }
+  }
+  
+  // ==================== RESIZE FUNCTIONALITY ====================
+  function initializeResize() {
+    const resizeHandle = document.getElementById('deepgram-resize-handle');
+    const contentContainer = document.getElementById('deepgram-content-container');
+    const panel = document.getElementById('deepgram-panel');
+    
+    let isResizing = false;
+    let startX = 0;
+    let startWidth = 0;
+    
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      startX = e.clientX;
+      startWidth = contentContainer.offsetWidth;
+      
+      // Add visual feedback
+      resizeHandle.style.background = '#667eea';
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      
+      const deltaX = e.clientX - startX;
+      let newWidth = startWidth + deltaX;
+      
+      // Enforce min/max constraints
+      const minWidth = 500;
+      const maxWidth = 900;
+      newWidth = Math.max(minWidth, Math.min(maxWidth, newWidth));
+      
+      contentContainer.style.width = newWidth + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      if (isResizing) {
+        isResizing = false;
+        resizeHandle.style.background = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        
+        // Save width to localStorage
+        const currentWidth = contentContainer.offsetWidth;
+        localStorage.setItem('deepgram_content_width', currentWidth);
+        console.log('✓ Content width saved:', currentWidth + 'px');
+      }
+    });
+    
+    console.log('✓ Resize functionality initialized');
   }
   
   // ==================== KEYBOARD SHORTCUTS ====================
