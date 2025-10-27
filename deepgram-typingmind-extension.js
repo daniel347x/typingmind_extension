@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.13 Changes:
+ * - Fixed exessive whitespace when pasting emails from Gmail
+ * - Added new "Paste from Gmail" button
+ * - Consolidated buttons onto single row
+ * 
  * v2.12 Changes:
  * - Fixed code block backtick stripping (removes TypingMind's embedded backticks)
  * - Added blank line after code blocks
@@ -52,7 +57,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.12',
+    VERSION: '2.13',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -278,6 +283,90 @@
   }
   
   // ==================== CLIPBOARD OPERATIONS ====================
+  
+  /**
+   * Paste email content from clipboard and normalize paragraph spacing
+   * Handles Gmail copy-paste which often has excessive newlines
+   */
+  async function pasteEmail() {
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      
+      for (const item of clipboardItems) {
+        let textContent = '';
+        
+        // Try HTML first, then fallback to plain text
+        if (item.types.includes('text/html')) {
+          const htmlBlob = await item.getType('text/html');
+          const html = await htmlBlob.text();
+          
+          // Convert HTML to plain text (strip all tags)
+          const div = document.createElement('div');
+          div.innerHTML = html;
+          textContent = div.textContent || div.innerText || '';
+          
+          console.log('📧 Clipboard HTML converted to text:', textContent);
+        } else if (item.types.includes('text/plain')) {
+          const textBlob = await item.getType('text/plain');
+          textContent = await textBlob.text();
+          
+          console.log('📧 Clipboard plain text:', textContent);
+        }
+        
+        if (textContent) {
+          // Normalize whitespace between paragraphs
+          // Step 1: Replace all variations of line breaks (CRLF, LF, CR) with \n
+          textContent = textContent.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+          
+          // Step 2: Replace 3+ consecutive newlines with exactly 2 newlines (= 1 empty line)
+          textContent = textContent.replace(/\n{3,}/g, '\n\n');
+          
+          // Step 3: Ensure paragraphs have at least one empty line between them
+          // Split by double newline (paragraph breaks), filter empty, rejoin with double newline
+          const paragraphs = textContent.split(/\n\n+/).filter(p => p.trim());
+          textContent = paragraphs.join('\n\n');
+          
+          // Step 4: Trim leading/trailing whitespace
+          textContent = textContent.trim();
+          
+          console.log('✓ Normalized email text:', textContent);
+          
+          // Insert into textarea at cursor position
+          const transcriptEl = document.getElementById('deepgram-transcript');
+          const currentText = transcriptEl.value;
+          const cursorPos = transcriptEl.selectionStart;
+          
+          const beforeCursor = currentText.substring(0, cursorPos);
+          const afterCursor = currentText.substring(cursorPos);
+          
+          transcriptEl.value = beforeCursor + textContent + afterCursor;
+          
+          const newCursorPos = cursorPos + textContent.length;
+          transcriptEl.setSelectionRange(newCursorPos, newCursorPos);
+          transcriptEl.focus();
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-paste-email-btn');
+          const originalText = btn.textContent;
+          btn.textContent = '✓ Pasted!';
+          
+          setTimeout(() => {
+            btn.textContent = originalText;
+          }, 2000);
+          
+          console.log('✅ Email pasted and normalized');
+          return;
+        }
+      }
+      
+      console.warn('⚠️ No suitable clipboard data found');
+      alert('No text found in clipboard');
+      
+    } catch (err) {
+      console.error('❌ Paste email failed:', err);
+      alert('Failed to paste from clipboard. Make sure you have text copied.');
+    }
+  }
   
   /**
    * Paste rich text from clipboard and convert to markdown-style plain text
@@ -1026,16 +1115,16 @@
         
         <div class="deepgram-buttons">
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
-            💬 Insert to Chat
+            💬 Insert
           </button>
-          <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
-            📋 Paste Markdown
-          </button>
-        </div>
-        
-        <div class="deepgram-buttons">
           <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled>
             📋 Copy
+          </button>
+          <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
+            📄 Paste MD
+          </button>
+          <button id="deepgram-paste-email-btn" class="deepgram-btn deepgram-btn-info">
+            📧 Paste Email
           </button>
           <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
             🗑️ Clear
@@ -1048,8 +1137,9 @@
           Space: Toggle recording (when not typing)<br>
           Ctrl+Shift+Enter: Insert to Chat<br>
           <br>
-          <strong>Paste Markdown Support:</strong>
-          Copy formatted text (bullets, bold, italic) from TypingMind → Click "Paste Markdown" → Edit with ASCII formatting (-, **, *) → Copy and paste back to chat
+          <strong>Paste Support:</strong>
+          <em>Paste MD:</em> Copy formatted text (bullets, bold, italic) from TypingMind → converts to plain text with ASCII formatting (-, **, *)<br>
+          <em>Paste Email:</em> Copy email content from Gmail → normalizes excessive paragraph spacing
         </div>
         </div>
       </div>
@@ -1119,6 +1209,7 @@
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
+    document.getElementById('deepgram-paste-email-btn').addEventListener('click', pasteEmail);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
     // Enable/disable buttons based on transcript content
