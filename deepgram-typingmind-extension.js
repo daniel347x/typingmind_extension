@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.11 Changes:
+ * - Fixed double backtick bug in code blocks
+ * - Fixed paragraph spacing (now adds blank lines between paragraphs)
+ * - Added inline code support (single backticks)
+ * 
  * v2.10 Changes:
  * - Added code block support (converts to triple backtick syntax)
  * - Added blank line after bullet lists (better paragraph separation)
@@ -43,7 +48,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.10',
+    VERSION: '2.11',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -135,30 +140,35 @@
             for (const child of node.childNodes) {
               text += processNode(child, indentLevel);
             }
-            return `${text}\n`;
+            // Add double newline for paragraph spacing
+            return `${text}\n\n`;
             
           case 'br':
             return '\n';
             
           case 'pre':
-          case 'code':
             // Code block - preserve contents with triple backticks
             let codeContent = '';
             for (const child of node.childNodes) {
               if (child.nodeType === Node.TEXT_NODE) {
                 codeContent += child.textContent;
               } else if (child.tagName && child.tagName.toLowerCase() === 'code') {
-                // <pre><code>...</code></pre> pattern
+                // <pre><code>...</code></pre> pattern - extract text directly
                 codeContent += child.textContent;
               } else {
                 codeContent += processNode(child, indentLevel);
               }
             }
-            // Don't double-wrap if we're already in a code tag inside pre
-            if (tag === 'code' && node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase() === 'pre') {
-              return codeContent;
-            }
             return '\n```\n' + codeContent.trim() + '\n```\n';
+            
+          case 'code':
+            // Inline code or code inside pre
+            if (node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase() === 'pre') {
+              // Inside <pre> - don't wrap, parent handles it
+              return node.textContent;
+            }
+            // Inline code - wrap with backticks
+            return '`' + node.textContent + '`';
             
           default:
             // Process children for unknown tags
