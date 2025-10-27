@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.5',
+    VERSION: '2.6',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -434,6 +434,108 @@
         margin-bottom: 5px;
       }
       
+      /* Dark Mode Styles */
+      [data-theme="dark"] #deepgram-panel {
+        background: #1a1d2e;
+        color: #e4e4e7;
+      }
+      
+      [data-theme="dark"] #deepgram-content-container {
+        background: #1a1d2e;
+      }
+      
+      [data-theme="dark"] #deepgram-filler {
+        background: #1a1d2e;
+      }
+      
+      [data-theme="dark"] .deepgram-content {
+        background: #1a1d2e;
+      }
+      
+      [data-theme="dark"] .deepgram-section label {
+        color: #e4e4e7;
+      }
+      
+      [data-theme="dark"] .deepgram-section input,
+      [data-theme="dark"] .deepgram-section textarea,
+      [data-theme="dark"] .deepgram-transcript {
+        background-color: #2d3548;
+        color: #f3f4f6;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .deepgram-section input:focus,
+      [data-theme="dark"] .deepgram-section textarea:focus,
+      [data-theme="dark"] .deepgram-transcript:focus {
+        border-color: #667eea;
+      }
+      
+      [data-theme="dark"] .deepgram-section small {
+        color: #9ca3af;
+      }
+      
+      [data-theme="dark"] .deepgram-api-status {
+        background: #1e3a2e;
+        border-color: #2d5a43;
+        color: #86efac;
+      }
+      
+      [data-theme="dark"] .deepgram-api-status.error {
+        background: #3a1e1e;
+        border-color: #5a2d2d;
+        color: #fca5a5;
+      }
+      
+      [data-theme="dark"] .deepgram-status.connected {
+        background: #1e3a2e;
+        color: #86efac;
+        border-color: #2d5a43;
+      }
+      
+      [data-theme="dark"] .deepgram-status.connecting {
+        background: #1e3440;
+        color: #7dd3fc;
+        border-color: #2d4a5a;
+      }
+      
+      [data-theme="dark"] .deepgram-status.disconnected {
+        background: #2d3548;
+        color: #9ca3af;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .deepgram-info {
+        background: #1e3440;
+        border-color: #2d4a5a;
+        color: #7dd3fc;
+      }
+      
+      [data-theme="dark"] .deepgram-collapse-btn {
+        background: #374151;
+        color: #a78bfa;
+      }
+      
+      [data-theme="dark"] .deepgram-collapse-btn:hover {
+        background: #4b5563;
+      }
+      
+      [data-theme="dark"] #deepgram-resize-handle {
+        background: #374151;
+      }
+      
+      [data-theme="dark"] #deepgram-resize-handle:hover {
+        background: #667eea;
+      }
+      
+      [data-theme="dark"] .deepgram-btn-secondary {
+        background: #4b5563;
+        color: #e4e4e7;
+      }
+      
+      [data-theme="dark"] .deepgram-btn-secondary:hover {
+        background: #6b7280;
+      }
+      
       /* Responsive adjustments */
       @media (max-width: 1200px) {
         #deepgram-panel {
@@ -522,6 +624,7 @@
           <label>
             <span>Transcript</span>
             <div style="display: flex; gap: 8px;">
+              <button class="deepgram-collapse-btn" id="deepgram-darkmode-btn" onclick="window.toggleDarkMode()" title="Toggle dark mode">🌙 Dark</button>
               <button class="deepgram-collapse-btn" id="deepgram-autoscroll-btn" onclick="window.toggleAutoScroll()" title="Toggle auto-scroll when transcribing">Auto-Scroll: ON</button>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -597,6 +700,16 @@
       updateAutoScrollButton();
     }
     
+    // Load saved dark mode preference
+    const savedTheme = localStorage.getItem('deepgram_theme');
+    const panel = document.getElementById('deepgram-panel');
+    if (savedTheme) {
+      panel.setAttribute('data-theme', savedTheme);
+    } else {
+      panel.setAttribute('data-theme', 'light');
+    }
+    updateDarkModeButton();
+    
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
@@ -621,6 +734,7 @@
     window.toggleTranscriptHeight = toggleTranscriptHeight;
     window.resetPanelWidth = resetPanelWidth;
     window.toggleAutoScroll = toggleAutoScroll;
+    window.toggleDarkMode = toggleDarkMode;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -947,6 +1061,27 @@
     if (btn) {
       btn.textContent = autoScrollEnabled ? 'Auto-Scroll: ON' : 'Auto-Scroll: OFF';
       btn.style.opacity = autoScrollEnabled ? '1' : '0.6';
+    }
+  }
+  
+  function toggleDarkMode() {
+    const panel = document.getElementById('deepgram-panel');
+    const currentTheme = panel.getAttribute('data-theme');
+    const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+    
+    panel.setAttribute('data-theme', newTheme);
+    localStorage.setItem('deepgram_theme', newTheme);
+    updateDarkModeButton();
+    console.log('✓ Dark mode:', newTheme === 'dark' ? 'enabled' : 'disabled');
+  }
+  
+  function updateDarkModeButton() {
+    const panel = document.getElementById('deepgram-panel');
+    const btn = document.getElementById('deepgram-darkmode-btn');
+    if (btn && panel) {
+      const isDark = panel.getAttribute('data-theme') === 'dark';
+      btn.innerHTML = isDark ? '☀️ Light' : '🌙 Dark';
+      btn.style.opacity = '1';
     }
   }
   
