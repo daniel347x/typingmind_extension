@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.3',
+    VERSION: '2.4',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -43,6 +43,7 @@
   let isRecording = false;
   let isPanelOpen = false;
   let savedCursorPosition = null;
+  let autoScrollEnabled = true;
   
   // ==================== STYLES ====================
   function injectStyles() {
@@ -521,6 +522,7 @@
           <label>
             <span>Transcript</span>
             <div style="display: flex; gap: 8px;">
+              <button class="deepgram-collapse-btn" id="deepgram-autoscroll-btn" onclick="window.toggleAutoScroll()" title="Toggle auto-scroll when transcribing">Auto-Scroll: ON</button>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
             </div>
@@ -588,6 +590,13 @@
       document.getElementById('deepgram-content-container').style.width = savedWidth + 'px';
     }
     
+    // Load saved auto-scroll preference
+    const savedAutoScroll = localStorage.getItem('deepgram_autoscroll_enabled');
+    if (savedAutoScroll !== null) {
+      autoScrollEnabled = savedAutoScroll === 'true';
+      updateAutoScrollButton();
+    }
+    
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
@@ -611,6 +620,7 @@
     // Make toggle function global
     window.toggleTranscriptHeight = toggleTranscriptHeight;
     window.resetPanelWidth = resetPanelWidth;
+    window.toggleAutoScroll = toggleAutoScroll;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -867,6 +877,56 @@
     
     savedCursorPosition = insertPosition + newText.length;
     transcriptEl.setSelectionRange(savedCursorPosition, savedCursorPosition);
+    
+    // Auto-scroll logic
+    if (autoScrollEnabled) {
+      if (insertPosition === currentText.length) {
+        // Appending at end - scroll to bottom
+        transcriptEl.scrollTop = transcriptEl.scrollHeight;
+      } else {
+        // Inserting in middle - scroll to cursor position with padding
+        scrollToCursorPosition(transcriptEl, savedCursorPosition);
+      }
+    }
+  }
+  
+  function scrollToCursorPosition(element, cursorPos) {
+    // Calculate approximate line height
+    const style = window.getComputedStyle(element);
+    const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
+    
+    // Get text up to cursor
+    const textUpToCursor = element.value.substring(0, cursorPos);
+    const linesBeforeCursor = textUpToCursor.split('\n').length;
+    
+    // Calculate approximate scroll position
+    const cursorPixelPosition = linesBeforeCursor * lineHeight;
+    const elementHeight = element.clientHeight;
+    
+    // Add 2 lines of padding (as requested)
+    const padding = lineHeight * 2;
+    
+    // Scroll so cursor is visible with padding below
+    const targetScroll = cursorPixelPosition - elementHeight + padding + lineHeight;
+    
+    if (targetScroll > 0) {
+      element.scrollTop = targetScroll;
+    }
+  }
+  
+  function toggleAutoScroll() {
+    autoScrollEnabled = !autoScrollEnabled;
+    localStorage.setItem('deepgram_autoscroll_enabled', autoScrollEnabled);
+    updateAutoScrollButton();
+    console.log('✓ Auto-scroll:', autoScrollEnabled ? 'enabled' : 'disabled');
+  }
+  
+  function updateAutoScrollButton() {
+    const btn = document.getElementById('deepgram-autoscroll-btn');
+    if (btn) {
+      btn.textContent = autoScrollEnabled ? 'Auto-Scroll: ON' : 'Auto-Scroll: OFF';
+      btn.style.opacity = autoScrollEnabled ? '1' : '0.6';
+    }
   }
   
   function clearTranscript() {
