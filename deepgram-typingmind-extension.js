@@ -9,6 +9,13 @@
  * - Persistent API key and keyterms
  * - Optimized for deliberate speech with long pauses
  * - Resizable widget with draggable divider
+ * - Rich text clipboard support (paste markdown, copy as HTML)
+ * 
+ * v2.8 Changes:
+ * - Added "Paste Markdown" button - reads clipboard HTML and converts to plain text with formatting
+ * - Added "Copy Rich" button - copies with HTML formatting for pasting into TypingMind
+ * - Supports bullets, bold, italic round-trip editing
+ * - All existing functionality preserved (resize, auto-scroll, collapse, etc.)
  * 
  * v1.4 Changes:
  * - Made panel 65% wider (700px → 1155px) for better positioning
@@ -29,7 +36,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.7',
+    VERSION: '2.8',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -48,6 +55,271 @@
   let autoClipboardTimer = null;
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
+  
+  // ==================== RICH TEXT CONVERSION ====================
+  
+  /**
+   * Convert HTML from clipboard to plain text with markdown-style formatting
+   * Handles: bullets, bold, italic, paragraphs, line breaks, emojis
+   */
+  function htmlToMarkdownText(html) {
+    const div = document.createElement('div');
+    div.innerHTML = html;
+    
+    let result = '';
+    
+    function processNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return node.textContent;
+      }
+      
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tag = node.tagName.toLowerCase();
+        let text = '';
+        
+        // Process children first
+        for (const child of node.childNodes) {
+          text += processNode(child);
+        }
+        
+        // Apply formatting based on tag
+        switch (tag) {
+          case 'strong':
+          case 'b':
+            return `**${text}**`;
+          case 'em':
+          case 'i':
+            return `*${text}*`;
+          case 'li':
+            return `- ${text}\n`;
+          case 'ul':
+          case 'ol':
+            return `${text}`;
+          case 'p':
+          case 'div':
+            return `${text}\n`;
+          case 'br':
+            return '\n';
+          default:
+            return text;
+        }
+      }
+      
+      return '';
+    }
+    
+    result = processNode(div);
+    
+    // Clean up extra newlines (max 2 consecutive)
+    result = result.replace(/\n{3,}/g, '\n\n');
+    
+    // Trim whitespace from start/end of each line
+    result = result.split('\n').map(line => line.trim()).join('\n');
+    
+    // Final trim
+    result = result.trim();
+    
+    return result;
+  }
+  
+  /**
+   * Convert plain text with markdown-style formatting to HTML
+   * Handles: bullets, bold, italic, line breaks
+   */
+  function markdownTextToHtml(text) {
+    let html = '';
+    const lines = text.split('\n');
+    let inList = false;
+    
+    for (let i = 0; i < lines.length; i++) {
+      let line = lines[i].trim();
+      
+      if (!line) {
+        // Empty line - close list if needed, add <br>
+        if (inList) {
+          html += '</ul>';
+          inList = false;
+        }
+        html += '<br>';
+        continue;
+      }
+      
+      // Check if this is a bullet point
+      const bulletMatch = line.match(/^[-•]\s+(.+)$/);
+      
+      if (bulletMatch) {
+        // Bullet point
+        if (!inList) {
+          html += '<ul>';
+          inList = true;
+        }
+        
+        let bulletText = bulletMatch[1];
+        
+        // Process inline formatting (bold, italic)
+        bulletText = processInlineFormatting(bulletText);
+        
+        html += `<li>${bulletText}</li>`;
+      } else {
+        // Regular text line
+        if (inList) {
+          html += '</ul>';
+          inList = false;
+        }
+        
+        // Process inline formatting
+        line = processInlineFormatting(line);
+        
+        html += line + '<br>';
+      }
+    }
+    
+    // Close list if still open
+    if (inList) {
+      html += '</ul>';
+    }
+    
+    return html;
+  }
+  
+  /**
+   * Process inline formatting (bold, italic) in text
+   */
+  function processInlineFormatting(text) {
+    // Bold: **text** → <strong>text</strong>
+    text = text.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    
+    // Italic: *text* → <em>text</em> (but not if part of **)
+    text = text.replace(/(?<!\*)\*([^*]+?)\*(?!\*)/g, '<em>$1</em>');
+    
+    return text;
+  }
+  
+  // ==================== CLIPBOARD OPERATIONS ====================
+  
+  /**
+   * Paste rich text from clipboard and convert to markdown-style plain text
+   */
+  async function pasteMarkdown() {
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      
+      for (const item of clipboardItems) {
+        // Try to read HTML first (most formatted copy operations include this)
+        if (item.types.includes('text/html')) {
+          const htmlBlob = await item.getType('text/html');
+          const html = await htmlBlob.text();
+          
+          console.log('📋 Clipboard HTML:', html);
+          
+          const markdown = htmlToMarkdownText(html);
+          
+          console.log('✓ Converted to markdown:', markdown);
+          
+          // Insert into textarea at cursor position
+          const transcriptEl = document.getElementById('deepgram-transcript');
+          const currentText = transcriptEl.value;
+          const cursorPos = transcriptEl.selectionStart;
+          
+          const beforeCursor = currentText.substring(0, cursorPos);
+          const afterCursor = currentText.substring(cursorPos);
+          
+          transcriptEl.value = beforeCursor + markdown + afterCursor;
+          
+          const newCursorPos = cursorPos + markdown.length;
+          transcriptEl.setSelectionRange(newCursorPos, newCursorPos);
+          transcriptEl.focus();
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-paste-btn');
+          const originalText = btn.textContent;
+          btn.textContent = '✓ Pasted!';
+          
+          setTimeout(() => {
+            btn.textContent = originalText;
+          }, 2000);
+          
+          console.log('✅ Pasted and converted to markdown');
+          return;
+        }
+        
+        // Fallback to plain text if no HTML available
+        if (item.types.includes('text/plain')) {
+          const textBlob = await item.getType('text/plain');
+          const text = await textBlob.text();
+          
+          console.log('📋 Clipboard plain text:', text);
+          
+          // Insert plain text as-is
+          const transcriptEl = document.getElementById('deepgram-transcript');
+          const currentText = transcriptEl.value;
+          const cursorPos = transcriptEl.selectionStart;
+          
+          const beforeCursor = currentText.substring(0, cursorPos);
+          const afterCursor = currentText.substring(cursorPos);
+          
+          transcriptEl.value = beforeCursor + text + afterCursor;
+          
+          const newCursorPos = cursorPos + text.length;
+          transcriptEl.setSelectionRange(newCursorPos, newCursorPos);
+          transcriptEl.focus();
+          
+          console.log('✅ Pasted plain text');
+          return;
+        }
+      }
+      
+      console.warn('⚠️ No suitable clipboard data found');
+      alert('No text found in clipboard');
+      
+    } catch (err) {
+      console.error('❌ Paste failed:', err);
+      alert('Failed to paste from clipboard. Make sure you have text copied.');
+    }
+  }
+  
+  /**
+   * Copy transcript as rich text (HTML) to clipboard
+   */
+  async function copyRichText() {
+    const text = document.getElementById('deepgram-transcript').value.trim();
+    if (!text) {
+      alert('No transcript to copy!');
+      return;
+    }
+    
+    try {
+      const html = markdownTextToHtml(text);
+      
+      console.log('📋 Copying as HTML:', html);
+      
+      // Write both plain text and HTML to clipboard
+      const clipboardItem = new ClipboardItem({
+        'text/plain': new Blob([text], { type: 'text/plain' }),
+        'text/html': new Blob([html], { type: 'text/html' })
+      });
+      
+      await navigator.clipboard.write([clipboardItem]);
+      
+      // Visual feedback
+      const btn = document.getElementById('deepgram-copy-rich-btn');
+      const originalText = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      
+      setTimeout(() => {
+        btn.textContent = originalText;
+      }, 2000);
+      
+      console.log('✅ Copied as rich text (HTML + plain text)');
+      
+    } catch (err) {
+      console.error('❌ Copy as rich text failed:', err);
+      alert('Failed to copy rich text. Falling back to plain text copy.');
+      
+      // Fallback to plain text copy
+      await copyTranscript();
+    }
+  }
   
   // ==================== STYLES ====================
   function injectStyles() {
@@ -404,6 +676,16 @@
         transform: translateY(-1px);
       }
       
+      .deepgram-btn-info {
+        background: #17a2b8;
+        color: white;
+      }
+      
+      .deepgram-btn-info:hover {
+        background: #138496;
+        transform: translateY(-1px);
+      }
+      
       .deepgram-btn-secondary {
         background: #6c757d;
         color: white;
@@ -664,8 +946,17 @@
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
             💬 Insert to Chat
           </button>
+          <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
+            📋 Paste Markdown
+          </button>
+        </div>
+        
+        <div class="deepgram-buttons">
           <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled>
             📋 Copy
+          </button>
+          <button id="deepgram-copy-rich-btn" class="deepgram-btn deepgram-btn-success" disabled>
+            📋 Copy Rich
           </button>
           <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
             🗑️ Clear
@@ -676,7 +967,10 @@
         <div class="deepgram-info">
           <strong>Keyboard Shortcuts:</strong>
           Space: Toggle recording (when not typing)<br>
-          Ctrl+Shift+Enter: Insert to Chat
+          Ctrl+Shift+Enter: Insert to Chat<br>
+          <br>
+          <strong>Rich Text Support:</strong>
+          Copy formatted text from TypingMind → Paste Markdown → Edit → Copy Rich → Paste back to TypingMind with formatting preserved
         </div>
         </div>
       </div>
@@ -745,9 +1039,11 @@
     document.getElementById('deepgram-record-btn').addEventListener('click', toggleRecording);
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
+    document.getElementById('deepgram-copy-rich-btn').addEventListener('click', copyRichText);
+    document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
-    // Enable/disable Insert to Chat button based on transcript content
+    // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
     // Auto-clipboard timer input
@@ -759,10 +1055,8 @@
     // Display version number
     document.getElementById('deepgram-version').textContent = `v${CONFIG.VERSION}`;
     
-    // Make edit function global
+    // Make functions global
     window.deepgramEditApiKey = editApiKey;
-    
-    // Make toggle function global
     window.toggleTranscriptHeight = toggleTranscriptHeight;
     window.resetPanelWidth = resetPanelWidth;
     window.toggleAutoScroll = toggleAutoScroll;
@@ -833,17 +1127,19 @@
     document.getElementById('deepgram-api-saved').style.display = 'block';
     document.getElementById('deepgram-keyterms-section').style.display = 'block';
     document.getElementById('deepgram-record-btn').disabled = false;
-    updateInsertButtonState(); // Check if there's text to enable insert button
+    updateInsertButtonState(); // Check if there's text to enable buttons
   }
   
   function updateInsertButtonState() {
     const transcript = document.getElementById('deepgram-transcript').value.trim();
     const insertBtn = document.getElementById('deepgram-insert-btn');
     const copyBtn = document.getElementById('deepgram-copy-btn');
+    const copyRichBtn = document.getElementById('deepgram-copy-rich-btn');
     
     // Enable if there's any text, disable if empty
     insertBtn.disabled = !transcript;
     copyBtn.disabled = !transcript;
+    copyRichBtn.disabled = !transcript;
   }
   
   function editApiKey() {
@@ -1507,6 +1803,7 @@
       console.log('✅ Deepgram Extension: Successfully loaded!');
       console.log('💡 Press Space (when not typing) to toggle recording');
       console.log('💡 Click the 🎤 button in bottom-right to open the panel');
+      console.log('💡 Rich text support: Copy from TypingMind → Paste Markdown → Edit → Copy Rich → Paste back');
     } catch (error) {
       console.error('❌ Deepgram Extension: Failed to initialize', error);
     }
