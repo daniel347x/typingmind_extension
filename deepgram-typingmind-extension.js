@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.10 Changes:
+ * - Added code block support (converts to triple backtick syntax)
+ * - Added blank line after bullet lists (better paragraph separation)
+ * 
  * v2.9 Changes:
  * - Removed "Copy Rich" button (TypingMind doesn't support HTML paste)
  * - Fixed nested bullet handling (preserves 4-space indentation)
@@ -39,7 +43,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.9',
+    VERSION: '2.10',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -122,7 +126,8 @@
             for (const child of node.childNodes) {
               text += processNode(child, indentLevel);
             }
-            return text;
+            // Add blank line after list (only at top level)
+            return indentLevel === 0 ? text + '\n' : text;
             
           case 'p':
           case 'div':
@@ -134,6 +139,26 @@
             
           case 'br':
             return '\n';
+            
+          case 'pre':
+          case 'code':
+            // Code block - preserve contents with triple backticks
+            let codeContent = '';
+            for (const child of node.childNodes) {
+              if (child.nodeType === Node.TEXT_NODE) {
+                codeContent += child.textContent;
+              } else if (child.tagName && child.tagName.toLowerCase() === 'code') {
+                // <pre><code>...</code></pre> pattern
+                codeContent += child.textContent;
+              } else {
+                codeContent += processNode(child, indentLevel);
+              }
+            }
+            // Don't double-wrap if we're already in a code tag inside pre
+            if (tag === 'code' && node.parentNode && node.parentNode.tagName && node.parentNode.tagName.toLowerCase() === 'pre') {
+              return codeContent;
+            }
+            return '\n```\n' + codeContent.trim() + '\n```\n';
             
           default:
             // Process children for unknown tags
