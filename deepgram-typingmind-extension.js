@@ -29,10 +29,11 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.6',
+    VERSION: '2.7',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
+    AUTOCLIPBOARD_DELAY_STORAGE: 'deepgram_autoclipboard_delay',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
     WEBSOCKET_PARAMS: 'model=nova-3&punctuate=true&smart_format=true&endpointing=10000&interim_results=true&utterance_end_ms=5000'
   };
@@ -44,6 +45,9 @@
   let isPanelOpen = false;
   let savedCursorPosition = null;
   let autoScrollEnabled = true;
+  let autoClipboardTimer = null;
+  let lastCopiedText = '';
+  let autoClipboardDelay = 0;
   
   // ==================== STYLES ====================
   function injectStyles() {
@@ -519,6 +523,17 @@
         background: #4b5563;
       }
       
+      [data-theme="dark"] #deepgram-autoclipboard-input {
+        background: #2d3548;
+        color: #f3f4f6;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] label[for="deepgram-autoclipboard-input"],
+      [data-theme="dark"] label:has(#deepgram-autoclipboard-input) {
+        color: #9ca3af;
+      }
+      
       [data-theme="dark"] #deepgram-resize-handle {
         background: #374151;
       }
@@ -623,8 +638,12 @@
         <div class="deepgram-section">
           <label>
             <span>Transcript</span>
-            <div style="display: flex; gap: 8px;">
+            <div style="display: flex; gap: 8px; align-items: center;">
               <button class="deepgram-collapse-btn" id="deepgram-darkmode-btn" onclick="window.toggleDarkMode()" title="Toggle dark mode">🌙 Dark</button>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;">
+                <span>Copy timer (s):</span>
+                <input type="number" id="deepgram-autoclipboard-input" min="0" max="300" step="1" value="0" style="width: 50px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" title="Auto-copy to clipboard every N seconds (0 = disabled)" />
+              </label>
               <button class="deepgram-collapse-btn" id="deepgram-autoscroll-btn" onclick="window.toggleAutoScroll()" title="Toggle auto-scroll when transcribing">Auto-Scroll: ON</button>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -700,6 +719,16 @@
       updateAutoScrollButton();
     }
     
+    // Load saved auto-clipboard delay
+    const savedDelay = localStorage.getItem(CONFIG.AUTOCLIPBOARD_DELAY_STORAGE);
+    if (savedDelay !== null) {
+      autoClipboardDelay = parseInt(savedDelay, 10) || 0;
+      document.getElementById('deepgram-autoclipboard-input').value = autoClipboardDelay;
+      if (autoClipboardDelay > 0) {
+        startAutoClipboard();
+      }
+    }
+    
     // Load saved dark mode preference
     const savedTheme = localStorage.getItem('deepgram_theme');
     const panel = document.getElementById('deepgram-panel');
@@ -721,6 +750,9 @@
     // Enable/disable Insert to Chat button based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
+    // Auto-clipboard timer input
+    document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
+    
     // Initialize resize functionality
     initializeResize();
     
@@ -735,6 +767,7 @@
     window.resetPanelWidth = resetPanelWidth;
     window.toggleAutoScroll = toggleAutoScroll;
     window.toggleDarkMode = toggleDarkMode;
+    window.onAutoClipboardDelayChange = onAutoClipboardDelayChange;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -1054,6 +1087,75 @@
     localStorage.setItem('deepgram_autoscroll_enabled', autoScrollEnabled);
     updateAutoScrollButton();
     console.log('✓ Auto-scroll:', autoScrollEnabled ? 'enabled' : 'disabled');
+  }
+  
+  // ==================== AUTO-CLIPBOARD TIMER ====================
+  function onAutoClipboardDelayChange() {
+    const input = document.getElementById('deepgram-autoclipboard-input');
+    const value = parseInt(input.value, 10) || 0;
+    
+    // Enforce valid range
+    if (value < 0) {
+      input.value = 0;
+      autoClipboardDelay = 0;
+    } else if (value > 300) {
+      input.value = 300;
+      autoClipboardDelay = 300;
+    } else {
+      autoClipboardDelay = value;
+    }
+    
+    // Save to localStorage
+    localStorage.setItem(CONFIG.AUTOCLIPBOARD_DELAY_STORAGE, autoClipboardDelay);
+    
+    // Stop existing timer
+    stopAutoClipboard();
+    
+    // Start new timer if value > 0
+    if (autoClipboardDelay > 0) {
+      startAutoClipboard();
+      console.log('✓ Auto-clipboard enabled:', autoClipboardDelay, 'seconds');
+    } else {
+      console.log('✓ Auto-clipboard disabled');
+    }
+  }
+  
+  function startAutoClipboard() {
+    if (autoClipboardTimer) {
+      clearInterval(autoClipboardTimer);
+    }
+    
+    if (autoClipboardDelay > 0) {
+      autoClipboardTimer = setInterval(async () => {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (!transcriptEl) return;
+        
+        const currentText = transcriptEl.value.trim();
+        
+        // Only copy if:
+        // 1. There is text
+        // 2. Text is different from last copied text
+        if (currentText && currentText !== lastCopiedText) {
+          try {
+            await navigator.clipboard.writeText(currentText);
+            lastCopiedText = currentText;
+            console.log('🔄 Auto-copied to clipboard (' + currentText.length + ' chars)');
+          } catch (err) {
+            console.error('Auto-clipboard copy failed:', err);
+          }
+        }
+      }, autoClipboardDelay * 1000);
+      
+      console.log('✓ Auto-clipboard timer started:', autoClipboardDelay, 'seconds');
+    }
+  }
+  
+  function stopAutoClipboard() {
+    if (autoClipboardTimer) {
+      clearInterval(autoClipboardTimer);
+      autoClipboardTimer = null;
+      console.log('✓ Auto-clipboard timer stopped');
+    }
   }
   
   function updateAutoScrollButton() {
@@ -1383,6 +1485,7 @@
     if (deepgramSocket && deepgramSocket.readyState === 1) {
       deepgramSocket.close();
     }
+    stopAutoClipboard();
   }
   
   window.addEventListener('beforeunload', cleanup);
