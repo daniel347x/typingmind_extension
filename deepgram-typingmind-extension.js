@@ -11,10 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.9 Changes:
+ * - Removed "Copy Rich" button (TypingMind doesn't support HTML paste)
+ * - Fixed nested bullet handling (preserves 4-space indentation)
+ * 
  * v2.8 Changes:
  * - Added "Paste Markdown" button - reads clipboard HTML and converts to plain text with formatting
- * - Added "Copy Rich" button - copies with HTML formatting for pasting into TypingMind
- * - Supports bullets, bold, italic round-trip editing
+ * - Supports bullets, bold, italic conversion
  * - All existing functionality preserved (resize, auto-scroll, collapse, etc.)
  * 
  * v1.4 Changes:
@@ -36,7 +39,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.8',
+    VERSION: '2.9',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -60,7 +63,7 @@
   
   /**
    * Convert HTML from clipboard to plain text with markdown-style formatting
-   * Handles: bullets, bold, italic, paragraphs, line breaks, emojis
+   * Handles: bullets (including nested), bold, italic, paragraphs, line breaks, emojis
    */
   function htmlToMarkdownText(html) {
     const div = document.createElement('div');
@@ -68,7 +71,7 @@
     
     let result = '';
     
-    function processNode(node) {
+    function processNode(node, indentLevel = 0) {
       if (node.nodeType === Node.TEXT_NODE) {
         return node.textContent;
       }
@@ -77,30 +80,66 @@
         const tag = node.tagName.toLowerCase();
         let text = '';
         
-        // Process children first
-        for (const child of node.childNodes) {
-          text += processNode(child);
-        }
-        
         // Apply formatting based on tag
         switch (tag) {
           case 'strong':
           case 'b':
+            // Process children and wrap in bold
+            for (const child of node.childNodes) {
+              text += processNode(child, indentLevel);
+            }
             return `**${text}**`;
+            
           case 'em':
           case 'i':
+            // Process children and wrap in italic
+            for (const child of node.childNodes) {
+              text += processNode(child, indentLevel);
+            }
             return `*${text}*`;
+            
           case 'li':
-            return `- ${text}\n`;
+            // Process children first (might contain nested lists)
+            let liContent = '';
+            for (const child of node.childNodes) {
+              if (child.nodeType === Node.TEXT_NODE) {
+                liContent += child.textContent;
+              } else if (child.tagName && (child.tagName.toLowerCase() === 'ul' || child.tagName.toLowerCase() === 'ol')) {
+                // Nested list - process with increased indent
+                liContent += '\n' + processNode(child, indentLevel + 1);
+              } else {
+                liContent += processNode(child, indentLevel);
+              }
+            }
+            
+            // Add indentation (4 spaces per level)
+            const indent = '    '.repeat(indentLevel);
+            return `${indent}- ${liContent.trim()}\n`;
+            
           case 'ul':
           case 'ol':
-            return `${text}`;
+            // Process all list items
+            for (const child of node.childNodes) {
+              text += processNode(child, indentLevel);
+            }
+            return text;
+            
           case 'p':
           case 'div':
+            // Process children
+            for (const child of node.childNodes) {
+              text += processNode(child, indentLevel);
+            }
             return `${text}\n`;
+            
           case 'br':
             return '\n';
+            
           default:
+            // Process children for unknown tags
+            for (const child of node.childNodes) {
+              text += processNode(child, indentLevel);
+            }
             return text;
         }
       }
@@ -113,8 +152,8 @@
     // Clean up extra newlines (max 2 consecutive)
     result = result.replace(/\n{3,}/g, '\n\n');
     
-    // Trim whitespace from start/end of each line
-    result = result.split('\n').map(line => line.trim()).join('\n');
+    // Trim whitespace from end of each line (but preserve indentation at start)
+    result = result.split('\n').map(line => line.trimEnd()).join('\n');
     
     // Final trim
     result = result.trim();
@@ -955,9 +994,6 @@
           <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled>
             📋 Copy
           </button>
-          <button id="deepgram-copy-rich-btn" class="deepgram-btn deepgram-btn-success" disabled>
-            📋 Copy Rich
-          </button>
           <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
             🗑️ Clear
           </button>
@@ -969,8 +1005,8 @@
           Space: Toggle recording (when not typing)<br>
           Ctrl+Shift+Enter: Insert to Chat<br>
           <br>
-          <strong>Rich Text Support:</strong>
-          Copy formatted text from TypingMind → Paste Markdown → Edit → Copy Rich → Paste back to TypingMind with formatting preserved
+          <strong>Paste Markdown Support:</strong>
+          Copy formatted text (bullets, bold, italic) from TypingMind → Click "Paste Markdown" → Edit with ASCII formatting (-, **, *) → Copy and paste back to chat
         </div>
         </div>
       </div>
@@ -1039,7 +1075,6 @@
     document.getElementById('deepgram-record-btn').addEventListener('click', toggleRecording);
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
-    document.getElementById('deepgram-copy-rich-btn').addEventListener('click', copyRichText);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
@@ -1134,12 +1169,10 @@
     const transcript = document.getElementById('deepgram-transcript').value.trim();
     const insertBtn = document.getElementById('deepgram-insert-btn');
     const copyBtn = document.getElementById('deepgram-copy-btn');
-    const copyRichBtn = document.getElementById('deepgram-copy-rich-btn');
     
     // Enable if there's any text, disable if empty
     insertBtn.disabled = !transcript;
     copyBtn.disabled = !transcript;
-    copyRichBtn.disabled = !transcript;
   }
   
   function editApiKey() {
@@ -1803,7 +1836,7 @@
       console.log('✅ Deepgram Extension: Successfully loaded!');
       console.log('💡 Press Space (when not typing) to toggle recording');
       console.log('💡 Click the 🎤 button in bottom-right to open the panel');
-      console.log('💡 Rich text support: Copy from TypingMind → Paste Markdown → Edit → Copy Rich → Paste back');
+      console.log('💡 Paste Markdown: Copy formatted text from TypingMind → Paste Markdown button → Edit with bullets/bold preserved');
     } catch (error) {
       console.error('❌ Deepgram Extension: Failed to initialize', error);
     }
