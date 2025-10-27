@@ -29,7 +29,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.4',
+    VERSION: '2.5',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -891,27 +891,48 @@
   }
   
   function scrollToCursorPosition(element, cursorPos) {
-    // Calculate approximate line height
-    const style = window.getComputedStyle(element);
-    const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
+    // Use a more reliable method: Let the browser handle cursor visibility
+    // by temporarily blurring and refocusing, which triggers native scroll-to-cursor
     
-    // Get text up to cursor
-    const textUpToCursor = element.value.substring(0, cursorPos);
-    const linesBeforeCursor = textUpToCursor.split('\n').length;
+    // Store current focus state
+    const hadFocus = document.activeElement === element;
     
-    // Calculate approximate scroll position
-    const cursorPixelPosition = linesBeforeCursor * lineHeight;
-    const elementHeight = element.clientHeight;
-    
-    // Add 2 lines of padding (as requested)
-    const padding = lineHeight * 2;
-    
-    // Scroll so cursor is visible with padding below
-    const targetScroll = cursorPixelPosition - elementHeight + padding + lineHeight;
-    
-    if (targetScroll > 0) {
-      element.scrollTop = targetScroll;
-    }
+    // Force a small delay to ensure DOM has updated with new text
+    requestAnimationFrame(() => {
+      // Focus the element to make cursor visible
+      element.focus();
+      
+      // Set selection range - browser will auto-scroll to show cursor
+      element.setSelectionRange(cursorPos, cursorPos);
+      
+      // Additional manual scroll adjustment for better visibility
+      // This provides the 2-line padding below cursor as requested
+      const style = window.getComputedStyle(element);
+      const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
+      const padding = lineHeight * 2;
+      
+      // Get current scroll position after browser auto-scroll
+      const currentScroll = element.scrollTop;
+      const elementHeight = element.clientHeight;
+      
+      // Calculate where cursor likely is (approximate)
+      const textUpToCursor = element.value.substring(0, cursorPos);
+      const linesBeforeCursor = textUpToCursor.split('\n').length;
+      const approximateCursorY = linesBeforeCursor * lineHeight;
+      
+      // Check if cursor is near the bottom of visible area
+      const cursorDistanceFromBottom = (currentScroll + elementHeight) - approximateCursorY;
+      
+      // If cursor is too close to bottom (less than 2 lines of padding), scroll down a bit
+      if (cursorDistanceFromBottom < padding) {
+        element.scrollTop = currentScroll + (padding - cursorDistanceFromBottom);
+      }
+      
+      // If element didn't have focus before, blur it to restore previous state
+      if (!hadFocus) {
+        element.blur();
+      }
+    });
   }
   
   function toggleAutoScroll() {
