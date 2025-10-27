@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.12 Changes:
+ * - Fixed code block backtick stripping (removes TypingMind's embedded backticks)
+ * - Added blank line after code blocks
+ * 
  * v2.11 Changes:
  * - Fixed double backtick bug in code blocks
  * - Fixed paragraph spacing (now adds blank lines between paragraphs)
@@ -48,7 +52,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.11',
+    VERSION: '2.12',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -159,7 +163,11 @@
                 codeContent += processNode(child, indentLevel);
               }
             }
-            return '\n```\n' + codeContent.trim() + '\n```\n';
+            // Clean the code content
+            codeContent = codeContent.trim();
+            // Remove leading/trailing backticks if TypingMind included them
+            codeContent = codeContent.replace(/^```\n?/, '').replace(/\n?```$/, '');
+            return '\n```\n' + codeContent.trim() + '\n```\n\n';
             
           case 'code':
             // Inline code or code inside pre
