@@ -1432,21 +1432,34 @@
   }
   
   function stopRecording() {
+    // Stop microphone immediately (user gets instant feedback)
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
       mediaRecorder.stream.getTracks().forEach(track => track.stop());
     }
     
-    if (deepgramSocket && deepgramSocket.readyState === 1) {
-      deepgramSocket.close();
-    }
-    
-    updateStatus('Ready to Record', 'disconnected');
+    // Update UI immediately
+    updateStatus('Finishing transcription...', 'connecting');
     isRecording = false;
     updateRecordButton(false);
-    
-    // Update toggle button
     document.getElementById('deepgram-toggle').classList.remove('recording');
+    
+    // Keep WebSocket alive for 5 more seconds to receive final transcription
+    // (Deepgram has 5-second utterance end delay configured)
+    if (deepgramSocket && deepgramSocket.readyState === 1) {
+      console.log('⏳ Keeping WebSocket alive for 5 seconds to receive final transcription...');
+      
+      setTimeout(() => {
+        if (deepgramSocket && deepgramSocket.readyState === 1) {
+          deepgramSocket.close();
+          console.log('✅ WebSocket closed after 5-second delay');
+        }
+        updateStatus('Ready to Record', 'disconnected');
+      }, 5000);
+    } else {
+      // WebSocket already closed or not connected
+      updateStatus('Ready to Record', 'disconnected');
+    }
   }
   
   function updateRecordButton(recording) {
