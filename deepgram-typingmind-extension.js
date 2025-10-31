@@ -57,7 +57,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.14',
+    VERSION: '2.15',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -1432,32 +1432,41 @@
   }
   
   function stopRecording() {
-    // Stop microphone immediately (user gets instant feedback)
-    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      mediaRecorder.stop();
-      mediaRecorder.stream.getTracks().forEach(track => track.stop());
-    }
-    
     // Update UI immediately
     updateStatus('Finishing transcription...', 'connecting');
     isRecording = false;
     updateRecordButton(false);
     document.getElementById('deepgram-toggle').classList.remove('recording');
     
-    // Keep WebSocket alive for 5 more seconds to receive final transcription
-    // (Deepgram has 5-second utterance end delay configured)
+    // Send Finalize message to Deepgram to flush remaining audio
     if (deepgramSocket && deepgramSocket.readyState === 1) {
-      console.log('⏳ Keeping WebSocket alive for 5 seconds to receive final transcription...');
+      console.log('📤 Sending Finalize message to Deepgram...');
+      deepgramSocket.send(JSON.stringify({ type: 'Finalize' }));
       
+      // Keep WebSocket open briefly to receive final transcription
+      // Then stop microphone and close connection
       setTimeout(() => {
+        // Stop microphone
+        if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+          mediaRecorder.stop();
+          mediaRecorder.stream.getTracks().forEach(track => track.stop());
+          console.log('🎤 Microphone stopped');
+        }
+        
+        // Close WebSocket
         if (deepgramSocket && deepgramSocket.readyState === 1) {
           deepgramSocket.close();
-          console.log('✅ WebSocket closed after 5-second delay');
+          console.log('✅ WebSocket closed');
         }
+        
         updateStatus('Ready to Record', 'disconnected');
-      }, 5000);
+      }, 2000); // 2 seconds should be enough for Finalize response
     } else {
-      // WebSocket already closed or not connected
+      // WebSocket already closed - stop microphone immediately
+      if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
       updateStatus('Ready to Record', 'disconnected');
     }
   }
