@@ -1,72 +1,77 @@
-/**
- * TypingMind Prompt Caching Header Fix Extension
- * 
- * Purpose: Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
- * Author: Dan (danielabbott347x)
- * Date: 2025-11-01
- * Version: 1.0
- * 
- * Issue: TypingMind sends extended-cache-ttl but not base prompt-caching flag
- * Impact: Enables 80-90% cost savings via Anthropic prompt caching
- * 
- * This extension:
- * - Intercepts all fetch() calls to Anthropic API
- * - Checks if prompt-caching-2024-07-31 flag is present
- * - Appends it if missing (preserving any existing beta flags)
- * - Logs injection activity to console for verification
- * 
- * Installation:
- * 1. Add this extension URL to TypingMind Settings → Extensions
- * 2. Enable the extension
- * 3. Restart TypingMind
- * 4. Check DevTools console for confirmation messages
- * 5. Verify cache hits in Anthropic console after 2-3 conversation turns
- * 
- * Removal:
- * - Can be disabled once TypingMind officially fixes the bug
- * - No side effects - simply stops intercepting when disabled
- */
+// TypingMind Prompt Caching & Tool Result Fix Extension
+// Version: 3.0
+// Purpose: 
+//   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
+//   2. Strip non-standard "name" field from tool_result content blocks
+// Issues Fixed:
+//   - v1.0: TypingMind sends extended-cache-ttl but not base prompt-caching flag
+//   - v2.0: (planned) Strip non-standard ttl field from cache_control objects
+//   - v3.0: Strip "name" field from tool results (MCP adds "name":"STDOUT" but Anthropic rejects it)
+// Impact: Enables 80-90% cost savings via prompt caching + fixes run_command crashes
 
 (function() {
   'use strict';
   
-  console.log('🔧 Prompt Caching Header Fix v1.0 - Initializing...');
+  console.log('🔧 Prompt Caching & Tool Result Fix v3.0 - Initializing...');
   
   // Store original fetch function
   const originalFetch = window.fetch;
-  
-  // Counter for tracking injections
-  let injectionsCount = 0;
   
   // Override fetch to intercept Anthropic API calls
   window.fetch = function(...args) {
     const [url, options = {}] = args;
     
     // Check if this is an Anthropic API call
-    if (typeof url === 'string' && url.includes('api.anthropic.com')) {
-      // Ensure headers object exists
-      options.headers = options.headers || {};
-      
-      // Get current beta header value (if any)
-      const currentBeta = options.headers['anthropic-beta'] || options.headers['Anthropic-Beta'] || '';
-      
-      // Check if prompt-caching flag is missing
-      if (!currentBeta.includes('prompt-caching-2024-07-31')) {
-        // If there's already a beta header, append to it
-        if (currentBeta) {
-          options.headers['anthropic-beta'] = currentBeta + ',prompt-caching-2024-07-31';
-          injectionsCount++;
-          console.log(`✅ [${injectionsCount}] Appended prompt-caching-2024-07-31 to existing beta header: "${currentBeta}"`);
-        } else {
-          // Otherwise, set it fresh
-          options.headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
-          injectionsCount++;
-          console.log(`✅ [${injectionsCount}] Set prompt-caching-2024-07-31 beta header (was empty)`);
+    if (url.includes('api.anthropic.com')) {
+      try {
+        // Parse request body if it exists
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+          
+          // FIX 1: Inject missing prompt-caching header flag
+          options.headers = options.headers || {};
+          const currentBeta = options.headers['anthropic-beta'] || '';
+          
+          if (!currentBeta.includes('prompt-caching-2024-07-31')) {
+            if (currentBeta) {
+              options.headers['anthropic-beta'] = currentBeta + ',prompt-caching-2024-07-31';
+              console.log('✅ [v3.0] Appended prompt-caching-2024-07-31 to beta header:', currentBeta);
+            } else {
+              options.headers['anthropic-beta'] = 'prompt-caching-2024-07-31';
+              console.log('✅ [v3.0] Set prompt-caching-2024-07-31 beta header (was empty)');
+            }
+            console.log('📤 [v3.0] Final header:', options.headers['anthropic-beta']);
+            modified = true;
+          }
+          
+          // FIX 2: Strip "name" field from tool_result content blocks
+          if (body.messages) {
+            body.messages.forEach((msg, msgIdx) => {
+              if (msg.content && Array.isArray(msg.content)) {
+                msg.content.forEach((block, blockIdx) => {
+                  if (block.type === 'tool_result' && block.content && Array.isArray(block.content)) {
+                    block.content.forEach((resultContent, contentIdx) => {
+                      if (resultContent.type === 'text' && resultContent.name !== undefined) {
+                        console.log(`🔧 [v3.0] Removing "name":"${resultContent.name}" from tool_result (msg ${msgIdx}, block ${blockIdx}, content ${contentIdx})`);
+                        delete resultContent.name;
+                        modified = true;
+                      }
+                    });
+                  }
+                });
+              }
+            });
+          }
+          
+          // Re-serialize with fixes if any modifications made
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v3.0] Request body sanitized and ready');
+          }
         }
-        
-        console.log(`📤 [${injectionsCount}] Final header: "${options.headers['anthropic-beta']}"`);
-      } else {
-        console.log('ℹ️ Prompt caching header already present, no injection needed');
+      } catch (e) {
+        console.warn('⚠️ [v3.0] Failed to parse/modify request:', e);
       }
     }
     
@@ -74,8 +79,8 @@
     return originalFetch(...args);
   };
   
-  console.log('✅ Prompt Caching Header Fix v1.0 - Active and monitoring');
+  console.log('✅ Prompt Caching & Tool Result Fix v3.0 - Active and monitoring');
   console.log('📊 Will inject prompt-caching-2024-07-31 flag into all Anthropic API requests');
-  console.log('💡 Check console for injection confirmations during conversation');
-  console.log('💰 Expected result: 80-90% cost reduction via prompt caching');
+  console.log('🔧 Will strip "name" field from tool_result content blocks');
+  console.log('💰 Expected result: 80-90% cost reduction + run_command tool working again');
 })();
