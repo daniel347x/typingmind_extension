@@ -62,7 +62,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.22',
+    VERSION: '2.23',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -770,6 +770,17 @@
         background: #d4edda;
         color: #155724;
         border: 1px solid #c3e6cb;
+        transition: all 0.1s ease;
+      }
+      
+      /* Flash effect for status indicator */
+      .deepgram-status.connected.flash {
+        background: #ccff66 !important;
+        color: #ffffff !important;
+        border: 3px solid #a0ff00 !important;
+        box-shadow: 0 0 20px rgba(160, 255, 0, 0.9);
+        font-weight: 700;
+        text-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
       }
       
       .deepgram-status.connecting {
@@ -1429,6 +1440,9 @@
               if (transcript && received.is_final) {
                 console.log('Final transcript:', transcript);
                 appendTranscript(transcript);
+                
+                // Flash status indicator to show activity
+                flashStatusIndicator();
               }
             }
           } catch (error) {
@@ -1455,6 +1469,17 @@
   }
   
   function stopRecording() {
+    // Stop the flash immediately when recording stops
+    shouldFlash = false;
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    const statusEl = document.getElementById('deepgram-status');
+    if (statusEl) {
+      statusEl.classList.remove('flash');
+    }
+    
     // Update UI immediately
     updateStatus('Finishing transcription...', 'connecting');
     isRecording = false;
@@ -1588,6 +1613,61 @@
         element.blur();
       }
     });
+  }
+  
+  function flashStatusIndicator() {
+    const statusEl = document.getElementById('deepgram-status');
+    if (!statusEl) return;
+    
+    // Cancel any existing flash sequence
+    shouldFlash = false;
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    
+    // Remove any existing flash class to reset state
+    statusEl.classList.remove('flash');
+    
+    // Enable flashing
+    shouldFlash = true;
+    
+    // Start new 5-second continuous flash sequence
+    // Rhythm: 333ms on, 333ms off
+    const flashDuration = 333;
+    const pauseDuration = 333;
+    const totalDuration = 5000; // 5 seconds to match Deepgram timeout
+    
+    let elapsed = 0;
+    let isFlashing = false;
+    
+    function doFlash() {
+      // Check if we should stop (recording stopped or sequence complete)
+      if (!shouldFlash || elapsed >= totalDuration) {
+        // End of sequence - ensure flash is off
+        statusEl.classList.remove('flash');
+        flashTimer = null;
+        shouldFlash = false;
+        return;
+      }
+      
+      if (!isFlashing) {
+        // Turn flash ON
+        statusEl.classList.add('flash');
+        isFlashing = true;
+        elapsed += flashDuration;
+        flashTimer = setTimeout(doFlash, flashDuration);
+      } else {
+        // Turn flash OFF
+        statusEl.classList.remove('flash');
+        isFlashing = false;
+        elapsed += pauseDuration;
+        flashTimer = setTimeout(doFlash, pauseDuration);
+      }
+    }
+    
+    // Start the sequence
+    doFlash();
   }
   
   function toggleAutoScroll() {
