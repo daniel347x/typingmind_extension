@@ -86,7 +86,7 @@
     WHISPER_ENDPOINT_STORAGE: 'whisper_extension_endpoint',
     WHISPER_PROMPT_STORAGE: 'whisper_extension_prompt',
     DEFAULT_OPENAI_ENDPOINT: 'https://api.openai.com/v1/audio/transcriptions',
-    DEFAULT_LOCAL_ENDPOINT: 'http://localhost:8000/v1/audio/transcriptions',
+    DEFAULT_LOCAL_ENDPOINT: 'http://localhost:8001/v1/audio/transcriptions',
     DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon'
   };
   
