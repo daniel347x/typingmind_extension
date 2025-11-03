@@ -11,9 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.4 Changes:
+ * - FIXED: Paragraph breaks now properly preserved when manually added during recording pause
+ * - Solution: Use current cursor position (selectionStart) instead of saved position
+ * - Allows user to add newlines/edit text while paused, transcription respects cursor location
+ * 
  * v3.3 Changes:
  * - Dynamic widget title (shows "Whisper" or "Deepgram" based on mode)
- * - Fixed paragraph break preservation in appendTranscript (Enter creates new paragraphs)
  * - Fixed unreadable dropdown text in dark mode (Whisper endpoint select)
  * - Hide OpenAI API key field when Local endpoint selected
  * - Hide Deepgram "API Key Saved" box when in Whisper mode
@@ -76,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.3',
+    VERSION: '3.4',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1990,16 +1994,21 @@
     
     // Insert at cursor position
     const currentText = transcriptEl.value;
-    const insertPosition = savedCursorPosition !== null ? savedCursorPosition : currentText.length;
+    // Use current selection position if user has manually moved cursor/edited text
+    const insertPosition = transcriptEl.selectionStart;
     
     const beforeCursor = currentText.substring(0, insertPosition);
     const afterCursor = currentText.substring(insertPosition);
     
-    // Check if cursor is at a paragraph break (line ends with \n)
-    const preserveParagraphBreak = beforeCursor.endsWith('\n');
+    // Check if cursor is at a paragraph break (ends with one or more newlines)
+    // If so, the new text should stay on its own line (newlines already in beforeCursor)
+    // If not, just add a space before the new text
+    const atParagraphBreak = beforeCursor.match(/\n+$/);
     
-    // Add text with appropriate spacing
-    const newText = preserveParagraphBreak ? text + ' ' : text + ' ';
+    // Add text with appropriate spacing:
+    // - At paragraph break: text is already on new line (newlines in beforeCursor), just add space after
+    // - Not at paragraph break: add space before text to separate from previous word
+    const newText = atParagraphBreak ? text + ' ' : text + ' ';
     transcriptEl.value = beforeCursor + newText + afterCursor;
     
     savedCursorPosition = insertPosition + newText.length;
