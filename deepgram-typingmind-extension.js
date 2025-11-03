@@ -1446,6 +1446,7 @@
     document.getElementById('deepgram-api-section').style.display = 'none';
     document.getElementById('deepgram-api-saved').style.display = 'block';
     document.getElementById('deepgram-keyterms-section').style.display = 'block';
+    document.getElementById('deepgram-mode-section').style.display = 'block';  // Show mode toggle
     document.getElementById('deepgram-record-btn').disabled = false;
     updateInsertButtonState(); // Check if there's text to enable buttons
   }
