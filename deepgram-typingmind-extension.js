@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.21 Changes:
+ * - Fixed text jumping when flash changes border thickness
+ * - Added box-sizing: border-box to textarea
+ * 
  * v2.20 Changes:
  * - Fixed flash not stopping on recording stop (added shouldFlash flag)
  * - Flash sequence now properly terminates when stopRecording() is called
@@ -79,7 +83,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.20',
+    VERSION: '2.21',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -815,7 +819,7 @@
         line-height: 1.6;
         resize: vertical;
         font-family: inherit;
-        box-sizing: border-box;
+        box-sizing: border-box !important;
         color: #1a202c;
         background-color: #ffffff;
       }
