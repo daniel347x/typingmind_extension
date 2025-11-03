@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.3 Changes:
+ * - Dynamic widget title (shows "Whisper" or "Deepgram" based on mode)
+ * - Fixed paragraph break preservation in appendTranscript (Enter creates new paragraphs)
+ * - Fixed unreadable dropdown text in dark mode (Whisper endpoint select)
+ * - Hide OpenAI API key field when Local endpoint selected
+ * - Hide Deepgram "API Key Saved" box when in Whisper mode
+ * - Made Keyboard Shortcuts section collapsible (<details> element)
+ * 
  * v2.23 Changes:
  * - Added visual flash to status indicator ("Connected - Listening..." badge)
  * - Flashes bright lime green for 5 seconds on each Deepgram response
@@ -68,7 +76,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.2',
+    VERSION: '3.3',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -923,19 +931,72 @@
       }
       
       /* Info Section */
-      .deepgram-info {
+      .deepgram-info-details {
+        margin-top: 15px;
+      }
+      
+      .deepgram-info-summary {
         background: #e7f3ff;
         border: 1px solid #b8daff;
         border-radius: 8px;
+        padding: 10px 12px;
+        font-size: 13px;
+        color: #004085;
+        cursor: pointer;
+        font-weight: 600;
+        user-select: none;
+        list-style: none;
+      }
+      
+      .deepgram-info-summary::-webkit-details-marker {
+        display: none;
+      }
+      
+      .deepgram-info-summary::before {
+        content: '▶ ';
+        display: inline-block;
+        transition: transform 0.2s;
+      }
+      
+      details[open] .deepgram-info-summary::before {
+        transform: rotate(90deg);
+      }
+      
+      .deepgram-info-summary:hover {
+        background: #d6ebff;
+      }
+      
+      .deepgram-info {
+        background: #f8fcff;
+        border: 1px solid #b8daff;
+        border-top: none;
+        border-radius: 0 0 8px 8px;
         padding: 12px;
         font-size: 12px;
         color: #004085;
-        margin-top: 15px;
+        margin-top: 0;
       }
       
       .deepgram-info strong {
         display: block;
         margin-bottom: 5px;
+      }
+      
+      /* Whisper Endpoint Dropdown Dark Mode Fix */
+      .whisper-endpoint-dropdown {
+        background-color: #ffffff;
+        color: #1a202c;
+      }
+      
+      [data-theme="dark"] .whisper-endpoint-dropdown {
+        background-color: #2d3548;
+        color: #f3f4f6;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .whisper-endpoint-dropdown option {
+        background-color: #2d3548;
+        color: #f3f4f6;
       }
       
       /* Dark Mode Styles */
@@ -1008,8 +1069,18 @@
         border-color: #374151;
       }
       
-      [data-theme="dark"] .deepgram-info {
+      [data-theme="dark"] .deepgram-info-summary {
         background: #1e3440;
+        border-color: #2d4a5a;
+        color: #7dd3fc;
+      }
+      
+      [data-theme="dark"] .deepgram-info-summary:hover {
+        background: #2a4a5c;
+      }
+      
+      [data-theme="dark"] .deepgram-info {
+        background: #1a2f3e;
         border-color: #2d4a5a;
         color: #7dd3fc;
       }
@@ -1105,7 +1176,7 @@
     panel.innerHTML = `
       <div id="deepgram-content-container">
         <div class="deepgram-header">
-          <h2>🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
+          <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
           <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
         </div>
         
@@ -1145,7 +1216,7 @@
         <!-- Whisper Settings Section -->
         <div class="deepgram-section" id="whisper-settings-section" style="display: none;">
           <label>Whisper Endpoint</label>
-          <select id="whisper-endpoint-select" style="width: 100%; padding: 8px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; margin-bottom: 8px;">
+          <select id="whisper-endpoint-select" class="whisper-endpoint-dropdown" style="width: 100%; padding: 8px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; margin-bottom: 8px;">
             <option value="local">Local (faster-whisper-server)</option>
             <option value="openai">OpenAI API</option>
             <option value="custom">Custom...</option>
@@ -1232,15 +1303,18 @@
         </div>
         
         <!-- Info -->
-        <div class="deepgram-info">
-          <strong>Keyboard Shortcuts:</strong>
-          Space: Toggle recording (when not typing)<br>
-          Ctrl+Shift+Enter: Insert to Chat<br>
-          <br>
-          <strong>Paste Support:</strong>
-          <em>Paste MD:</em> Copy formatted text (bullets, bold, italic) from TypingMind → converts to plain text with ASCII formatting (-, **, *)<br>
-          <em>Paste Email:</em> Copy email content from Gmail → normalizes excessive paragraph spacing
-        </div>
+        <details class="deepgram-info-details">
+          <summary class="deepgram-info-summary">Keyboard Shortcuts & Features</summary>
+          <div class="deepgram-info">
+            <strong>Keyboard Shortcuts:</strong>
+            Space: Toggle recording (when not typing)<br>
+            Ctrl+Shift+Enter: Insert to Chat<br>
+            <br>
+            <strong>Paste Support:</strong>
+            <em>Paste MD:</em> Copy formatted text (bullets, bold, italic) from TypingMind → converts to plain text with ASCII formatting (-, **, *)<br>
+            <em>Paste Email:</em> Copy email content from Gmail → normalizes excessive paragraph spacing
+          </div>
+        </details>
         </div>
       </div>
       
@@ -1921,7 +1995,11 @@
     const beforeCursor = currentText.substring(0, insertPosition);
     const afterCursor = currentText.substring(insertPosition);
     
-    const newText = text + ' ';
+    // Check if cursor is at a paragraph break (line ends with \n)
+    const preserveParagraphBreak = beforeCursor.endsWith('\n');
+    
+    // Add text with appropriate spacing
+    const newText = preserveParagraphBreak ? text + ' ' : text + ' ';
     transcriptEl.value = beforeCursor + newText + afterCursor;
     
     savedCursorPosition = insertPosition + newText.length;
@@ -2416,22 +2494,34 @@
   function updateModeUI() {
     const modeLabel = document.getElementById('deepgram-mode-label');
     const modeDescription = document.getElementById('deepgram-mode-description');
+    const headerTitle = document.getElementById('deepgram-header-title');
     const whisperSettings = document.getElementById('whisper-settings-section');
     const whisperApi = document.getElementById('whisper-api-section');
     const whisperPrompt = document.getElementById('whisper-prompt-section');
     const deepgramKeyterms = document.getElementById('deepgram-keyterms-section');
+    const deepgramApiSaved = document.getElementById('deepgram-api-saved');
     const segmentBtnContainer = document.getElementById('deepgram-segment-btn-container');
+    const endpointSelect = document.getElementById('whisper-endpoint-select');
     
     if (transcriptionMode === 'whisper') {
       // Whisper mode
       modeLabel.textContent = 'Whisper';
       modeDescription.textContent = 'Using Whisper (chunked transcription with higher accuracy)';
       
-      // Show Whisper settings, hide Deepgram keyterms
+      // Update header title
+      if (headerTitle) {
+        const versionSpan = headerTitle.querySelector('.deepgram-version');
+        headerTitle.innerHTML = `🎙️ Whisper Transcription <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
+      }
+      
+      // Show Whisper settings, hide Deepgram keyterms and API saved box
       whisperSettings.style.display = 'block';
-      whisperApi.style.display = 'block';
       whisperPrompt.style.display = 'block';
       deepgramKeyterms.style.display = 'none';
+      deepgramApiSaved.style.display = 'none';
+      
+      // Show/hide OpenAI API key field based on endpoint
+      updateWhisperApiVisibility();
       
       console.log('🎙️ UI updated for Whisper mode');
       
@@ -2440,11 +2530,23 @@
       modeLabel.textContent = 'Deepgram';
       modeDescription.textContent = 'Using Deepgram (streaming real-time transcription)';
       
-      // Show Deepgram keyterms, hide Whisper settings
+      // Update header title
+      if (headerTitle) {
+        const versionSpan = headerTitle.querySelector('.deepgram-version');
+        headerTitle.innerHTML = `🎙️ Deepgram Transcription <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
+      }
+      
+      // Show Deepgram keyterms and API saved box, hide Whisper settings
       whisperSettings.style.display = 'none';
       whisperApi.style.display = 'none';
       whisperPrompt.style.display = 'none';
       deepgramKeyterms.style.display = 'block';
+      
+      // Show Deepgram API saved box if API key exists
+      const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
+      if (apiKey) {
+        deepgramApiSaved.style.display = 'block';
+      }
       
       // Hide segment button in Deepgram mode
       if (segmentBtnContainer) {
@@ -2452,6 +2554,20 @@
       }
       
       console.log('🎙️ UI updated for Deepgram mode');
+    }
+  }
+  
+  function updateWhisperApiVisibility() {
+    const endpointSelect = document.getElementById('whisper-endpoint-select');
+    const whisperApi = document.getElementById('whisper-api-section');
+    
+    if (endpointSelect && whisperApi) {
+      // Hide OpenAI API key field when Local endpoint is selected
+      if (endpointSelect.value === 'local') {
+        whisperApi.style.display = 'none';
+      } else {
+        whisperApi.style.display = 'block';
+      }
     }
   }
   
@@ -2490,6 +2606,10 @@
     }
     
     localStorage.setItem(CONFIG.WHISPER_ENDPOINT_STORAGE, endpoint);
+    
+    // Update API key field visibility
+    updateWhisperApiVisibility();
+    
     console.log('✓ Whisper endpoint saved:', endpoint);
   }
   
