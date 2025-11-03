@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.19 Changes:
+ * - Flash stops immediately when recording button is toggled off
+ * - Prevents flash from continuing after transcription stops
+ * 
  * v2.18 Changes:
  * - Continuous 5-second flash sequence (matches Deepgram timeout)
  * - Steady rhythm: 333ms on, 333ms off
@@ -71,7 +75,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.18',
+    VERSION: '2.19',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -1459,6 +1463,16 @@
     isRecording = false;
     updateRecordButton(false);
     document.getElementById('deepgram-toggle').classList.remove('recording');
+    
+    // Stop the flash immediately when recording stops
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    if (transcriptEl) {
+      transcriptEl.classList.remove('flash');
+    }
     
     // Send Finalize message to Deepgram to flush remaining audio
     if (deepgramSocket && deepgramSocket.readyState === 1) {
