@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.17 Changes:
+ * - Enhanced flash visibility: thicker border (4px), brighter color (cyan), double-flash effect
+ * - Flash sequence: flash-pause-flash for maximum attention
+ * 
  * v2.16 Changes:
  * - Added visual flash on transcript update (border flashes when new text arrives)
  * - Makes stuck transcription immediately noticeable
@@ -61,7 +65,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.16',
+    VERSION: '2.17',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -807,8 +811,9 @@
       
       /* Flash animation for transcript updates */
       .deepgram-transcript.flash {
-        border-color: #28a745 !important;
-        box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+        border: 4px solid #00d9ff !important;
+        box-shadow: 0 0 16px rgba(0, 217, 255, 0.9), inset 0 0 8px rgba(0, 217, 255, 0.3);
+        background: rgba(0, 217, 255, 0.05);
       }
       
       /* Buttons */
@@ -1584,13 +1589,24 @@
     const transcriptEl = document.getElementById('deepgram-transcript');
     if (!transcriptEl) return;
     
-    // Add flash class
+    // Double flash effect: flash-pause-flash
+    // First flash
     transcriptEl.classList.add('flash');
     
-    // Remove after 300ms
     setTimeout(() => {
+      // Remove for brief pause
       transcriptEl.classList.remove('flash');
-    }, 300);
+      
+      setTimeout(() => {
+        // Second flash
+        transcriptEl.classList.add('flash');
+        
+        setTimeout(() => {
+          // Final removal
+          transcriptEl.classList.remove('flash');
+        }, 150);
+      }, 100);
+    }, 150);
   }
   
   function toggleAutoScroll() {
