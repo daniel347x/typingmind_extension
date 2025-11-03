@@ -11,32 +11,6 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
- * v2.21 Changes:
- * - Fixed text jumping when flash changes border thickness
- * - Added box-sizing: border-box to textarea
- * 
- * v2.20 Changes:
- * - Fixed flash not stopping on recording stop (added shouldFlash flag)
- * - Flash sequence now properly terminates when stopRecording() is called
- * 
- * v2.19 Changes:
- * - Flash stops immediately when recording button is toggled off
- * - Prevents flash from continuing after transcription stops
- * 
- * v2.18 Changes:
- * - Continuous 5-second flash sequence (matches Deepgram timeout)
- * - Steady rhythm: 333ms on, 333ms off
- * - Cancels previous timer on new text arrival (avoids overlaps)
- * - Now impossible to miss if transcription stops
- * 
- * v2.17 Changes:
- * - Enhanced flash visibility: thicker border (4px), brighter color (cyan), double-flash effect
- * - Flash sequence: flash-pause-flash for maximum attention
- * 
- * v2.16 Changes:
- * - Added visual flash on transcript update (border flashes when new text arrives)
- * - Makes stuck transcription immediately noticeable
- * 
  * v2.13 Changes:
  * - Fixed exessive whitespace when pasting emails from Gmail
  * - Added new "Paste from Gmail" button
@@ -83,7 +57,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.21',
+    VERSION: '2.15',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -102,8 +76,6 @@
   let autoClipboardTimer = null;
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
-  let flashTimer = null;
-  let shouldFlash = false;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -819,7 +791,7 @@
         line-height: 1.6;
         resize: vertical;
         font-family: inherit;
-        box-sizing: border-box !important;
+        box-sizing: border-box;
         color: #1a202c;
         background-color: #ffffff;
       }
@@ -827,13 +799,6 @@
       .deepgram-transcript:focus {
         outline: none;
         border-color: #667eea;
-      }
-      
-      /* Flash animation for transcript updates */
-      .deepgram-transcript.flash {
-        border: 4px solid #00d9ff !important;
-        box-shadow: 0 0 16px rgba(0, 217, 255, 0.9), inset 0 0 8px rgba(0, 217, 255, 0.3);
-        background: rgba(0, 217, 255, 0.05);
       }
       
       /* Buttons */
@@ -1473,17 +1438,6 @@
     updateRecordButton(false);
     document.getElementById('deepgram-toggle').classList.remove('recording');
     
-    // Stop the flash immediately when recording stops
-    shouldFlash = false;
-    if (flashTimer) {
-      clearTimeout(flashTimer);
-      flashTimer = null;
-    }
-    const transcriptEl = document.getElementById('deepgram-transcript');
-    if (transcriptEl) {
-      transcriptEl.classList.remove('flash');
-    }
-    
     // Send Finalize message to Deepgram to flush remaining audio
     if (deepgramSocket && deepgramSocket.readyState === 1) {
       console.log('📤 Sending Finalize message to Deepgram...');
@@ -1536,9 +1490,6 @@
   // ==================== TRANSCRIPT MANAGEMENT ====================
   function appendTranscript(text) {
     const transcriptEl = document.getElementById('deepgram-transcript');
-    
-    // Flash the transcript border to show new text arrived
-    flashTranscript();
     
     // Clear placeholder
     if (transcriptEl.value === '' || transcriptEl.value === 'Your transcription will appear here...') {
@@ -1614,61 +1565,6 @@
         element.blur();
       }
     });
-  }
-  
-  function flashTranscript() {
-    const transcriptEl = document.getElementById('deepgram-transcript');
-    if (!transcriptEl) return;
-    
-    // Cancel any existing flash sequence
-    shouldFlash = false;
-    if (flashTimer) {
-      clearTimeout(flashTimer);
-      flashTimer = null;
-    }
-    
-    // Remove any existing flash class to reset state
-    transcriptEl.classList.remove('flash');
-    
-    // Enable flashing
-    shouldFlash = true;
-    
-    // Start new 5-second continuous flash sequence
-    // Rhythm: 333ms on, 333ms off
-    const flashDuration = 333;
-    const pauseDuration = 333;
-    const totalDuration = 5000; // 5 seconds to match Deepgram timeout
-    
-    let elapsed = 0;
-    let isFlashing = false;
-    
-    function doFlash() {
-      // Check if we should stop (recording stopped or sequence complete)
-      if (!shouldFlash || elapsed >= totalDuration) {
-        // End of sequence - ensure flash is off
-        transcriptEl.classList.remove('flash');
-        flashTimer = null;
-        shouldFlash = false;
-        return;
-      }
-      
-      if (!isFlashing) {
-        // Turn flash ON
-        transcriptEl.classList.add('flash');
-        isFlashing = true;
-        elapsed += flashDuration;
-        flashTimer = setTimeout(doFlash, flashDuration);
-      } else {
-        // Turn flash OFF
-        transcriptEl.classList.remove('flash');
-        isFlashing = false;
-        elapsed += pauseDuration;
-        flashTimer = setTimeout(doFlash, pauseDuration);
-      }
-    }
-    
-    // Start the sequence
-    doFlash();
   }
   
   function toggleAutoScroll() {
