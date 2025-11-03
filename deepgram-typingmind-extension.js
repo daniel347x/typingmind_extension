@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.16 Changes:
+ * - Added visual flash on transcript update (border flashes when new text arrives)
+ * - Makes stuck transcription immediately noticeable
+ * 
  * v2.13 Changes:
  * - Fixed exessive whitespace when pasting emails from Gmail
  * - Added new "Paste from Gmail" button
@@ -57,7 +61,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.15',
+    VERSION: '2.16',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -801,6 +805,12 @@
         border-color: #667eea;
       }
       
+      /* Flash animation for transcript updates */
+      .deepgram-transcript.flash {
+        border-color: #28a745 !important;
+        box-shadow: 0 0 8px rgba(40, 167, 69, 0.6);
+      }
+      
       /* Buttons */
       .deepgram-buttons {
         display: flex;
@@ -1491,6 +1501,9 @@
   function appendTranscript(text) {
     const transcriptEl = document.getElementById('deepgram-transcript');
     
+    // Flash the transcript border to show new text arrived
+    flashTranscript();
+    
     // Clear placeholder
     if (transcriptEl.value === '' || transcriptEl.value === 'Your transcription will appear here...') {
       transcriptEl.value = '';
@@ -1565,6 +1578,19 @@
         element.blur();
       }
     });
+  }
+  
+  function flashTranscript() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    if (!transcriptEl) return;
+    
+    // Add flash class
+    transcriptEl.classList.add('flash');
+    
+    // Remove after 300ms
+    setTimeout(() => {
+      transcriptEl.classList.remove('flash');
+    }, 300);
   }
   
   function toggleAutoScroll() {
