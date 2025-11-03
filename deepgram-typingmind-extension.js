@@ -68,7 +68,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.0',
+    VERSION: '3.1',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1834,8 +1834,17 @@
         throw new Error(`Whisper API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
       
-      const result = await response.json();
+      console.log('📥 Response status:', response.status);
+      console.log('📥 Response headers:', [...response.headers.entries()]);
+      
+      const responseText = await response.text();
+      console.log('📥 Raw response body:', responseText);
+      
+      const result = JSON.parse(responseText);
+      console.log('📥 Parsed JSON:', result);
+      
       const transcription = result.text;
+      console.log('📥 Extracted transcription:', transcription);
       
       console.log('✅ Transcription received:', transcription);
       
