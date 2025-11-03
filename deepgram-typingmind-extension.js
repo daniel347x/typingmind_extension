@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.22 Changes:
+ * - CRITICAL FIX: Event listener leak causing transcription to fail after multiple toggles
+ * - MediaRecorder now properly cleaned up between sessions
+ * - WebSocket cleanup improved
+ * 
  * v2.13 Changes:
  * - Fixed exessive whitespace when pasting emails from Gmail
  * - Added new "Paste from Gmail" button
@@ -57,7 +62,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.15',
+    VERSION: '2.22',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -1353,6 +1358,24 @@
     if (!apiKey) {
       alert('Please enter your Deepgram API key first');
       return;
+    }
+    
+    // Clean up any existing MediaRecorder or WebSocket from previous session
+    if (mediaRecorder) {
+      if (mediaRecorder.state !== 'inactive') {
+        mediaRecorder.stop();
+      }
+      if (mediaRecorder.stream) {
+        mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      }
+      mediaRecorder = null;
+    }
+    
+    if (deepgramSocket) {
+      if (deepgramSocket.readyState === 1 || deepgramSocket.readyState === 0) {
+        deepgramSocket.close();
+      }
+      deepgramSocket = null;
     }
     
     // Save cursor position
