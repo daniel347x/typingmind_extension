@@ -68,18 +68,34 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.23',
+    VERSION: '3.0',
     DEFAULT_CONTENT_WIDTH: 700,
+    
+    // Transcription mode
+    TRANSCRIPTION_MODE_STORAGE: 'transcription_mode',
+    
+    // Deepgram settings
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
     AUTOCLIPBOARD_DELAY_STORAGE: 'deepgram_autoclipboard_delay',
     WEBSOCKET_BASE: 'wss://api.deepgram.com/v1/listen',
-    WEBSOCKET_PARAMS: 'model=nova-3&punctuate=true&smart_format=true&endpointing=10000&interim_results=true&utterance_end_ms=5000'
+    WEBSOCKET_PARAMS: 'model=nova-3&punctuate=true&smart_format=true&endpointing=10000&interim_results=true&utterance_end_ms=5000',
+    
+    // Whisper settings
+    WHISPER_API_KEY_STORAGE: 'whisper_extension_api_key',
+    WHISPER_ENDPOINT_STORAGE: 'whisper_extension_endpoint',
+    WHISPER_PROMPT_STORAGE: 'whisper_extension_prompt',
+    DEFAULT_OPENAI_ENDPOINT: 'https://api.openai.com/v1/audio/transcriptions',
+    DEFAULT_LOCAL_ENDPOINT: 'http://localhost:8000/v1/audio/transcriptions',
+    DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon'
   };
   
   // ==================== STATE ====================
+  // Transcription mode
+  let transcriptionMode = 'deepgram';  // 'deepgram' or 'whisper'
+  
+  // Common state
   let mediaRecorder = null;
-  let deepgramSocket = null;
   let isRecording = false;
   let isPanelOpen = false;
   let savedCursorPosition = null;
@@ -87,8 +103,15 @@
   let autoClipboardTimer = null;
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
+  
+  // Deepgram-specific state
+  let deepgramSocket = null;
   let flashTimer = null;
   let shouldFlash = false;
+  
+  // Whisper-specific state
+  let audioChunks = [];
+  let pendingTranscriptions = 0;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -1108,6 +1131,59 @@
           <small>Add technical terms to improve accuracy (comma-separated)</small>
         </div>
         
+        <!-- Mode Toggle -->
+        <div class="deepgram-section" id="deepgram-mode-section" style="display: none;">
+          <label>
+            <span>Transcription Engine</span>
+            <button class="deepgram-collapse-btn" id="deepgram-mode-toggle-btn" onclick="window.toggleTranscriptionMode()">
+              <span id="deepgram-mode-label">Deepgram</span>
+            </button>
+          </label>
+          <small id="deepgram-mode-description">Using Deepgram (streaming real-time transcription)</small>
+        </div>
+        
+        <!-- Whisper Settings Section -->
+        <div class="deepgram-section" id="whisper-settings-section" style="display: none;">
+          <label>Whisper Endpoint</label>
+          <select id="whisper-endpoint-select" style="width: 100%; padding: 8px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; margin-bottom: 8px;">
+            <option value="local">Local (faster-whisper-server)</option>
+            <option value="openai">OpenAI API</option>
+            <option value="custom">Custom...</option>
+          </select>
+          <input type="text" id="whisper-custom-endpoint" class="monospace" placeholder="http://localhost:8000/v1/audio/transcriptions" style="display: none; margin-bottom: 8px;">
+          <small>Local: http://localhost:8000 | OpenAI: Requires API key below</small>
+        </div>
+        
+        <div class="deepgram-section" id="whisper-api-section" style="display: none;">
+          <label>OpenAI API Key (optional for local)</label>
+          <input type="password" id="whisper-api-input" class="monospace" placeholder="sk-...">
+          <small>Only required for OpenAI endpoint</small>
+        </div>
+        
+        <div class="deepgram-section" id="whisper-prompt-section" style="display: none;">
+          <label>Vocabulary Prompt (Optional)</label>
+          <textarea id="whisper-prompt-input" rows="3" placeholder="Technical terms: Databricks, LlamaIndex..."></textarea>
+          <small>Helps Whisper recognize technical vocabulary (up to 244 tokens)</small>
+        </div>
+        
+        <!-- Segment Button (Whisper mode only) -->
+        <div id="deepgram-segment-btn-container" style="display: none;">
+          <div class="deepgram-buttons">
+            <button id="deepgram-segment-btn" class="deepgram-btn deepgram-btn-primary">
+              <span>⏭️</span>
+              <span>End Segment & Continue (Space)</span>
+            </button>
+          </div>
+        </div>
+        
+        <!-- Status -->
+        <!-- Keyterms Section -->
+        <div class="deepgram-section" id="deepgram-keyterms-section" style="display: none;">
+          <label>Keyterms (Optional)</label>
+          <textarea id="deepgram-keyterms-input" rows="2" placeholder="LlamaIndex, TypingMind, Obsidian"></textarea>
+          <small>Add technical terms to improve accuracy (comma-separated)</small>
+        </div>
+        
         <!-- Status -->
         <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
@@ -1180,17 +1256,50 @@
   
   // ==================== INITIALIZATION ====================
   function initializeWidget() {
-    // Load saved API key
+    // Load saved transcription mode
+    const savedMode = localStorage.getItem(CONFIG.TRANSCRIPTION_MODE_STORAGE);
+    if (savedMode) {
+      transcriptionMode = savedMode;
+    }
+    
+    // Load saved API key (Deepgram)
     const savedApiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
     if (savedApiKey) {
       document.getElementById('deepgram-api-input').value = savedApiKey;
       showApiKeySaved();
     }
     
-    // Load saved keyterms
+    // Load saved keyterms (Deepgram)
     const savedKeyterms = localStorage.getItem(CONFIG.KEYTERMS_STORAGE);
     if (savedKeyterms) {
       document.getElementById('deepgram-keyterms-input').value = savedKeyterms;
+    }
+    
+    // Load Whisper settings
+    const whisperApiKey = localStorage.getItem(CONFIG.WHISPER_API_KEY_STORAGE);
+    if (whisperApiKey) {
+      document.getElementById('whisper-api-input').value = whisperApiKey;
+    }
+    
+    const whisperEndpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE);
+    const endpointSelect = document.getElementById('whisper-endpoint-select');
+    if (whisperEndpoint) {
+      if (whisperEndpoint === CONFIG.DEFAULT_LOCAL_ENDPOINT) {
+        endpointSelect.value = 'local';
+      } else if (whisperEndpoint === CONFIG.DEFAULT_OPENAI_ENDPOINT) {
+        endpointSelect.value = 'openai';
+      } else {
+        endpointSelect.value = 'custom';
+        document.getElementById('whisper-custom-endpoint').value = whisperEndpoint;
+        document.getElementById('whisper-custom-endpoint').style.display = 'block';
+      }
+    }
+    
+    const whisperPrompt = localStorage.getItem(CONFIG.WHISPER_PROMPT_STORAGE);
+    if (whisperPrompt) {
+      document.getElementById('whisper-prompt-input').value = whisperPrompt;
+    } else {
+      document.getElementById('whisper-prompt-input').value = CONFIG.DEFAULT_WHISPER_PROMPT;
     }
     
     // Load saved content width
@@ -1236,6 +1345,17 @@
     document.getElementById('deepgram-paste-email-btn').addEventListener('click', pasteEmail);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
+    // Whisper event listeners
+    const segmentBtn = document.getElementById('deepgram-segment-btn');
+    if (segmentBtn) {
+      segmentBtn.addEventListener('click', endSegmentAndContinue);
+    }
+    
+    document.getElementById('whisper-endpoint-select').addEventListener('change', onWhisperEndpointChange);
+    document.getElementById('whisper-api-input').addEventListener('change', saveWhisperSettings);
+    document.getElementById('whisper-prompt-input').addEventListener('change', saveWhisperSettings);
+    document.getElementById('whisper-custom-endpoint').addEventListener('change', saveWhisperSettings);
+    
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
@@ -1248,6 +1368,9 @@
     // Display version number
     document.getElementById('deepgram-version').textContent = `v${CONFIG.VERSION}`;
     
+    // Update UI based on current mode
+    updateModeUI();
+    
     // Make functions global
     window.deepgramEditApiKey = editApiKey;
     window.toggleTranscriptHeight = toggleTranscriptHeight;
@@ -1255,9 +1378,13 @@
     window.toggleAutoScroll = toggleAutoScroll;
     window.toggleDarkMode = toggleDarkMode;
     window.onAutoClipboardDelayChange = onAutoClipboardDelayChange;
+    window.toggleTranscriptionMode = toggleTranscriptionMode;
+    window.onWhisperEndpointChange = onWhisperEndpointChange;
+    window.saveWhisperSettings = saveWhisperSettings;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
+    console.log('📌 Mode:', transcriptionMode);
   }
   
   // ==================== UTILITY FUNCTIONS ====================
@@ -1366,13 +1493,23 @@
   // ==================== RECORDING CONTROLS ====================
   function toggleRecording() {
     if (isRecording) {
-      stopRecording();
+      // Stop based on current mode
+      if (transcriptionMode === 'whisper') {
+        stopWhisperRecording();
+      } else {
+        stopDeepgramRecording();
+      }
     } else {
-      startRecording();
+      // Start based on current mode
+      if (transcriptionMode === 'whisper') {
+        startWhisperRecording();
+      } else {
+        startDeepgramRecording();
+      }
     }
   }
   
-  function startRecording() {
+  function startDeepgramRecording() {
     const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
     if (!apiKey) {
       alert('Please enter your Deepgram API key first');
@@ -1476,7 +1613,7 @@
       });
   }
   
-  function stopRecording() {
+  function stopDeepgramRecording() {
     // Stop the flash immediately when recording stops
     shouldFlash = false;
     if (flashTimer) {
@@ -1526,7 +1663,221 @@
       updateStatus('Ready to Record', 'disconnected');
     }
   }
+
+  // ==================== WHISPER RECORDING FUNCTIONS ====================
   
+  async function startWhisperRecording() {
+    const endpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE) || CONFIG.DEFAULT_LOCAL_ENDPOINT;
+    const apiKey = localStorage.getItem(CONFIG.WHISPER_API_KEY_STORAGE);
+    
+    // For local server, API key is optional
+    if (!apiKey && endpoint.includes('api.openai.com')) {
+      updateStatus('Error: OpenAI API key required', 'disconnected');
+      alert('Please enter your OpenAI API key in settings');
+      return;
+    }
+    
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      
+      console.log('🎤 Microphone access granted (Whisper mode)');
+      
+      // Create MediaRecorder
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunks = [];
+      
+      // Collect audio chunks
+      mediaRecorder.addEventListener('dataavailable', event => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
+      });
+      
+      // When recording stops, send to Whisper
+      mediaRecorder.addEventListener('stop', async () => {
+        if (audioChunks.length > 0) {
+          const chunks = [...audioChunks];
+          audioChunks = [];
+          await sendToWhisper(chunks);
+        }
+      });
+      
+      // Start recording
+      mediaRecorder.start();
+      isRecording = true;
+      
+      updateStatus('🔴 Recording...', 'connected');
+      updateRecordButton(true);
+      document.getElementById('deepgram-toggle').classList.add('recording');
+      
+      // Show segment button in Whisper mode
+      const segmentBtn = document.getElementById('deepgram-segment-btn');
+      if (segmentBtn) {
+        segmentBtn.style.display = 'block';
+      }
+      
+      console.log('✅ Whisper recording started');
+      
+    } catch (error) {
+      console.error('❌ Microphone access error:', error);
+      updateStatus('Error: Microphone access denied', 'disconnected');
+      alert('Microphone access denied. Please allow microphone access and try again.');
+    }
+  }
+  
+  function stopWhisperRecording() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+      mediaRecorder.stream.getTracks().forEach(track => track.stop());
+      isRecording = false;
+      
+      updateStatus('⏸️ Processing final segment...', 'connecting');
+      updateRecordButton(false);
+      document.getElementById('deepgram-toggle').classList.remove('recording');
+      
+      // Hide segment button
+      const segmentBtn = document.getElementById('deepgram-segment-btn');
+      if (segmentBtn) {
+        segmentBtn.style.display = 'none';
+      }
+      
+      console.log('⏹️ Whisper recording stopped');
+    }
+  }
+  
+  async function endSegmentAndContinue() {
+    if (!isRecording) {
+      // If not recording, start recording
+      startWhisperRecording();
+      return;
+    }
+    
+    console.log('🔄 Ending segment and continuing...');
+    
+    // Stop current recording to trigger chunk submission
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+    
+    // Wait briefly for 'stop' event to fire and chunk to be queued
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Immediately start new recording
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      audioChunks = [];
+      
+      mediaRecorder.addEventListener('dataavailable', event => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
+      });
+      
+      mediaRecorder.addEventListener('stop', async () => {
+        if (audioChunks.length > 0) {
+          const chunks = [...audioChunks];
+          audioChunks = [];
+          await sendToWhisper(chunks);
+        }
+      });
+      
+      mediaRecorder.start();
+      
+      console.log('✅ New segment started');
+      
+    } catch (error) {
+      console.error('❌ Failed to restart recording:', error);
+      updateStatus('Error: Failed to continue recording', 'disconnected');
+    }
+  }
+  
+  async function sendToWhisper(chunks) {
+    const apiKey = localStorage.getItem(CONFIG.WHISPER_API_KEY_STORAGE);
+    const endpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE) || CONFIG.DEFAULT_LOCAL_ENDPOINT;
+    const prompt = localStorage.getItem(CONFIG.WHISPER_PROMPT_STORAGE) || CONFIG.DEFAULT_WHISPER_PROMPT;
+    
+    // Increment pending counter
+    pendingTranscriptions++;
+    updateQueueStatus();
+    
+    try {
+      // Create audio blob
+      const audioBlob = new Blob(chunks, { type: 'audio/webm' });
+      
+      console.log(`📤 Sending chunk to Whisper (${audioBlob.size} bytes, endpoint: ${endpoint})`);
+      
+      // Prepare form data
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'audio.webm');
+      formData.append('model', 'whisper-1');
+      
+      if (prompt) {
+        formData.append('prompt', prompt);
+      }
+      
+      // Send to Whisper
+      const headers = {};
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+      
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: headers,
+        body: formData
+      });
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Whisper API error: ${response.status} ${response.statusText} - ${errorText}`);
+      }
+      
+      const result = await response.json();
+      const transcription = result.text;
+      
+      console.log('✅ Transcription received:', transcription);
+      
+      // Append to transcript
+      appendTranscript(transcription);
+      
+    } catch (error) {
+      console.error('❌ Whisper API error:', error);
+      updateStatus(`Error: ${error.message}`, 'disconnected');
+      alert(`Whisper transcription failed: ${error.message}`);
+    } finally {
+      // Decrement pending counter
+      pendingTranscriptions--;
+      updateQueueStatus();
+      
+      // Update status if no more pending
+      if (pendingTranscriptions === 0 && !isRecording) {
+        updateStatus('Ready to Record', 'disconnected');
+      }
+    }
+  }
+  
+  function updateQueueStatus() {
+    // Create queue status element if it doesn't exist
+    let queueEl = document.getElementById('deepgram-queue-status');
+    if (!queueEl) {
+      const statusEl = document.getElementById('deepgram-status');
+      queueEl = document.createElement('div');
+      queueEl.id = 'deepgram-queue-status';
+      queueEl.style.cssText = 'font-size: 11px; color: #888; margin-top: 4px; text-align: center;';
+      statusEl.parentNode.insertBefore(queueEl, statusEl.nextSibling);
+    }
+    
+    if (pendingTranscriptions > 0) {
+      queueEl.textContent = `⏳ Processing ${pendingTranscriptions} chunk${pendingTranscriptions > 1 ? 's' : ''}...`;
+      queueEl.style.display = 'block';
+    } else {
+      queueEl.style.display = 'none';
+    }
+  }
+  
+  // ==================== END WHISPER FUNCTIONS ====================
+
   function updateRecordButton(recording) {
     const btn = document.getElementById('deepgram-record-btn');
     const icon = document.getElementById('deepgram-record-icon');
@@ -2035,6 +2386,101 @@
     });
     
     console.log('✓ Resize functionality initialized');
+  }
+  
+  // ==================== MODE SWITCHING ====================
+  
+  function toggleTranscriptionMode() {
+    // Toggle between modes
+    transcriptionMode = transcriptionMode === 'deepgram' ? 'whisper' : 'deepgram';
+    
+    // Save preference
+    localStorage.setItem(CONFIG.TRANSCRIPTION_MODE_STORAGE, transcriptionMode);
+    
+    // Update UI
+    updateModeUI();
+    
+    console.log('✓ Transcription mode switched to:', transcriptionMode);
+  }
+  
+  function updateModeUI() {
+    const modeLabel = document.getElementById('deepgram-mode-label');
+    const modeDescription = document.getElementById('deepgram-mode-description');
+    const whisperSettings = document.getElementById('whisper-settings-section');
+    const whisperApi = document.getElementById('whisper-api-section');
+    const whisperPrompt = document.getElementById('whisper-prompt-section');
+    const deepgramKeyterms = document.getElementById('deepgram-keyterms-section');
+    const segmentBtnContainer = document.getElementById('deepgram-segment-btn-container');
+    
+    if (transcriptionMode === 'whisper') {
+      // Whisper mode
+      modeLabel.textContent = 'Whisper';
+      modeDescription.textContent = 'Using Whisper (chunked transcription with higher accuracy)';
+      
+      // Show Whisper settings, hide Deepgram keyterms
+      whisperSettings.style.display = 'block';
+      whisperApi.style.display = 'block';
+      whisperPrompt.style.display = 'block';
+      deepgramKeyterms.style.display = 'none';
+      
+      console.log('🎙️ UI updated for Whisper mode');
+      
+    } else {
+      // Deepgram mode
+      modeLabel.textContent = 'Deepgram';
+      modeDescription.textContent = 'Using Deepgram (streaming real-time transcription)';
+      
+      // Show Deepgram keyterms, hide Whisper settings
+      whisperSettings.style.display = 'none';
+      whisperApi.style.display = 'none';
+      whisperPrompt.style.display = 'none';
+      deepgramKeyterms.style.display = 'block';
+      
+      // Hide segment button in Deepgram mode
+      if (segmentBtnContainer) {
+        segmentBtnContainer.style.display = 'none';
+      }
+      
+      console.log('🎙️ UI updated for Deepgram mode');
+    }
+  }
+  
+  function saveWhisperSettings() {
+    const apiKey = document.getElementById('whisper-api-input').value.trim();
+    const prompt = document.getElementById('whisper-prompt-input').value.trim();
+    
+    // Save API key
+    localStorage.setItem(CONFIG.WHISPER_API_KEY_STORAGE, apiKey);
+    
+    // Save prompt
+    localStorage.setItem(CONFIG.WHISPER_PROMPT_STORAGE, prompt || CONFIG.DEFAULT_WHISPER_PROMPT);
+    
+    // Save endpoint (handled by onWhisperEndpointChange)
+    onWhisperEndpointChange();
+    
+    console.log('✓ Whisper settings saved');
+  }
+  
+  function onWhisperEndpointChange() {
+    const select = document.getElementById('whisper-endpoint-select');
+    const customInput = document.getElementById('whisper-custom-endpoint');
+    
+    let endpoint;
+    
+    if (select.value === 'local') {
+      endpoint = CONFIG.DEFAULT_LOCAL_ENDPOINT;
+      customInput.style.display = 'none';
+    } else if (select.value === 'openai') {
+      endpoint = CONFIG.DEFAULT_OPENAI_ENDPOINT;
+      customInput.style.display = 'none';
+    } else {
+      // Custom endpoint
+      endpoint = customInput.value.trim() || CONFIG.DEFAULT_LOCAL_ENDPOINT;
+      customInput.style.display = 'block';
+    }
+    
+    localStorage.setItem(CONFIG.WHISPER_ENDPOINT_STORAGE, endpoint);
+    console.log('✓ Whisper endpoint saved:', endpoint);
   }
   
   // ==================== KEYBOARD SHORTCUTS ====================
