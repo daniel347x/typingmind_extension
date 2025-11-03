@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.23 Changes:
+ * - Added visual flash to status indicator ("Connected - Listening..." badge)
+ * - Flashes bright lime green for 5 seconds on each Deepgram response
+ * - Rhythm: 333ms on/off, stops when recording stops
+ * - No layout issues (status badge is centered, small, won't jump)
+ * 
  * v2.22 Changes:
  * - CRITICAL FIX: Event listener leak causing transcription to fail after multiple toggles
  * - MediaRecorder now properly cleaned up between sessions
@@ -81,6 +87,8 @@
   let autoClipboardTimer = null;
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
+  let flashTimer = null;
+  let shouldFlash = false;
   
   // ==================== RICH TEXT CONVERSION ====================
   
