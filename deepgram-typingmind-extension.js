@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.18 Changes:
+ * - Continuous 5-second flash sequence (matches Deepgram timeout)
+ * - Steady rhythm: 333ms on, 333ms off
+ * - Cancels previous timer on new text arrival (avoids overlaps)
+ * - Now impossible to miss if transcription stops
+ * 
  * v2.17 Changes:
  * - Enhanced flash visibility: thicker border (4px), brighter color (cyan), double-flash effect
  * - Flash sequence: flash-pause-flash for maximum attention
@@ -65,7 +71,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.17',
+    VERSION: '2.18',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -84,6 +90,7 @@
   let autoClipboardTimer = null;
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
+  let flashTimer = null;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -1589,24 +1596,49 @@
     const transcriptEl = document.getElementById('deepgram-transcript');
     if (!transcriptEl) return;
     
-    // Double flash effect: flash-pause-flash
-    // First flash
-    transcriptEl.classList.add('flash');
+    // Cancel any existing flash sequence
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
     
-    setTimeout(() => {
-      // Remove for brief pause
-      transcriptEl.classList.remove('flash');
+    // Remove any existing flash class to reset state
+    transcriptEl.classList.remove('flash');
+    
+    // Start new 5-second continuous flash sequence
+    // Rhythm: 333ms on, 333ms off
+    const flashDuration = 333;
+    const pauseDuration = 333;
+    const totalDuration = 5000; // 5 seconds to match Deepgram timeout
+    
+    let elapsed = 0;
+    let isFlashing = false;
+    
+    function doFlash() {
+      if (elapsed >= totalDuration) {
+        // End of sequence - ensure flash is off
+        transcriptEl.classList.remove('flash');
+        flashTimer = null;
+        return;
+      }
       
-      setTimeout(() => {
-        // Second flash
+      if (!isFlashing) {
+        // Turn flash ON
         transcriptEl.classList.add('flash');
-        
-        setTimeout(() => {
-          // Final removal
-          transcriptEl.classList.remove('flash');
-        }, 150);
-      }, 100);
-    }, 150);
+        isFlashing = true;
+        elapsed += flashDuration;
+        flashTimer = setTimeout(doFlash, flashDuration);
+      } else {
+        // Turn flash OFF
+        transcriptEl.classList.remove('flash');
+        isFlashing = false;
+        elapsed += pauseDuration;
+        flashTimer = setTimeout(doFlash, pauseDuration);
+      }
+    }
+    
+    // Start the sequence
+    doFlash();
   }
   
   function toggleAutoScroll() {
