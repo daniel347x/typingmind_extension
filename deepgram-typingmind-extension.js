@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v2.20 Changes:
+ * - Fixed flash not stopping on recording stop (added shouldFlash flag)
+ * - Flash sequence now properly terminates when stopRecording() is called
+ * 
  * v2.19 Changes:
  * - Flash stops immediately when recording button is toggled off
  * - Prevents flash from continuing after transcription stops
@@ -75,7 +79,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '2.19',
+    VERSION: '2.20',
     DEFAULT_CONTENT_WIDTH: 700,
     DEEPGRAM_API_KEY_STORAGE: 'deepgram_extension_api_key',
     KEYTERMS_STORAGE: 'deepgram_extension_keyterms',
@@ -95,6 +99,7 @@
   let lastCopiedText = '';
   let autoClipboardDelay = 0;
   let flashTimer = null;
+  let shouldFlash = false;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -1465,6 +1470,7 @@
     document.getElementById('deepgram-toggle').classList.remove('recording');
     
     // Stop the flash immediately when recording stops
+    shouldFlash = false;
     if (flashTimer) {
       clearTimeout(flashTimer);
       flashTimer = null;
@@ -1611,6 +1617,7 @@
     if (!transcriptEl) return;
     
     // Cancel any existing flash sequence
+    shouldFlash = false;
     if (flashTimer) {
       clearTimeout(flashTimer);
       flashTimer = null;
@@ -1618,6 +1625,9 @@
     
     // Remove any existing flash class to reset state
     transcriptEl.classList.remove('flash');
+    
+    // Enable flashing
+    shouldFlash = true;
     
     // Start new 5-second continuous flash sequence
     // Rhythm: 333ms on, 333ms off
@@ -1629,10 +1639,12 @@
     let isFlashing = false;
     
     function doFlash() {
-      if (elapsed >= totalDuration) {
+      // Check if we should stop (recording stopped or sequence complete)
+      if (!shouldFlash || elapsed >= totalDuration) {
         // End of sequence - ensure flash is off
         transcriptEl.classList.remove('flash');
         flashTimer = null;
+        shouldFlash = false;
         return;
       }
       
