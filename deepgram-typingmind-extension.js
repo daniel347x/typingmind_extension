@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.6',
+    VERSION: '3.7',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1999,6 +1999,9 @@
     // Get textarea metrics
     const style = window.getComputedStyle(textarea);
     const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
+    const fontSize = parseInt(style.fontSize);
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
     
     // Count lines in current text
     const text = textarea.value;
@@ -2010,13 +2013,34 @@
     // Get click position relative to content (scroll-aware)
     const clickY = event.offsetY;
     
+    // Get scroll position
+    const scrollTop = textarea.scrollTop;
+    
+    // Get textarea dimensions
+    const textareaHeight = textarea.clientHeight;
+    
+    // DEBUG LOGGING
+    console.group('🔍 Click-to-End Debug');
+    console.log('Font size:', fontSize + 'px');
+    console.log('Line height:', lineHeight + 'px');
+    console.log('Padding top:', paddingTop + 'px');
+    console.log('Padding bottom:', paddingBottom + 'px');
+    console.log('Number of lines:', lines);
+    console.log('Calculated content height:', contentHeight + 'px');
+    console.log('Click Y (offsetY):', clickY + 'px');
+    console.log('Scroll position:', scrollTop + 'px');
+    console.log('Textarea visible height:', textareaHeight + 'px');
+    console.log('Comparison: clickY (' + clickY + ') > contentHeight (' + contentHeight + ') ?', clickY > contentHeight);
+    console.groupEnd();
+    
     // If clicked below content, move cursor to end
     if (clickY > contentHeight) {
       const endPosition = textarea.value.length;
       textarea.setSelectionRange(endPosition, endPosition);
-      console.log('✓ Click-to-end: Moved cursor to end (clicked in empty space)');
+      console.log('✅ TRIGGERED: Moved cursor to end (clicked in empty space)');
+    } else {
+      console.log('❌ NOT TRIGGERED: Normal cursor placement (clicked on text)');
     }
-    // Otherwise, let browser handle normal cursor placement
   }
   
   function appendTranscript(text) {
