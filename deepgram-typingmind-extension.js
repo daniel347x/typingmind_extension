@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.7',
+    VERSION: '3.8',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1801,6 +1801,9 @@
         segmentBtn.style.display = 'block';
       }
       
+      // WHISPER FLASH: Start continuous flash while recording
+      startWhisperFlash();
+      
       console.log('✅ Whisper recording started');
       
     } catch (error) {
@@ -1825,6 +1828,9 @@
       if (segmentBtn) {
         segmentBtn.style.display = 'none';
       }
+      
+      // WHISPER FLASH: Stop continuous flash immediately
+      stopWhisperFlash();
       
       console.log('⏹️ Whisper recording stopped');
     }
@@ -1973,6 +1979,68 @@
     }
   }
   
+  // ==================== WHISPER FLASH CONTROL ====================
+  
+  function startWhisperFlash() {
+    const statusEl = document.getElementById('deepgram-status');
+    if (!statusEl) return;
+    
+    // Cancel any existing flash
+    shouldFlash = false;
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    
+    // Enable continuous flashing
+    shouldFlash = true;
+    
+    const flashDuration = 333;
+    const pauseDuration = 333;
+    let isFlashing = false;
+    
+    function doFlash() {
+      // Stop if recording ended
+      if (!shouldFlash || !isRecording) {
+        statusEl.classList.remove('flash');
+        flashTimer = null;
+        shouldFlash = false;
+        return;
+      }
+      
+      if (!isFlashing) {
+        // Turn flash ON
+        statusEl.classList.add('flash');
+        isFlashing = true;
+        flashTimer = setTimeout(doFlash, flashDuration);
+      } else {
+        // Turn flash OFF
+        statusEl.classList.remove('flash');
+        isFlashing = false;
+        flashTimer = setTimeout(doFlash, pauseDuration);
+      }
+    }
+    
+    // Start the continuous flash
+    doFlash();
+    console.log('✅ Whisper flash started (continuous while recording)');
+  }
+  
+  function stopWhisperFlash() {
+    const statusEl = document.getElementById('deepgram-status');
+    if (!statusEl) return;
+    
+    // Stop flashing immediately
+    shouldFlash = false;
+    if (flashTimer) {
+      clearTimeout(flashTimer);
+      flashTimer = null;
+    }
+    statusEl.classList.remove('flash');
+    
+    console.log('⏹️ Whisper flash stopped');
+  }
+  
   // ==================== END WHISPER FUNCTIONS ====================
 
   function updateRecordButton(recording) {
@@ -1998,17 +2066,12 @@
     
     // Get textarea metrics
     const style = window.getComputedStyle(textarea);
-    const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
     const fontSize = parseInt(style.fontSize);
     const paddingTop = parseInt(style.paddingTop) || 0;
     const paddingBottom = parseInt(style.paddingBottom) || 0;
     
-    // Count lines in current text
-    const text = textarea.value;
-    const lines = text.split('\n').length;
-    
-    // Calculate actual content height
-    const contentHeight = lines * lineHeight;
+    // Get actual rendered content height (accounts for wrapped lines!)
+    const contentHeight = textarea.scrollHeight - paddingTop - paddingBottom;
     
     // Get click position relative to content (scroll-aware)
     const clickY = event.offsetY;
@@ -2019,13 +2082,12 @@
     // Get textarea dimensions
     const textareaHeight = textarea.clientHeight;
     
-    // DEBUG LOGGING
+    // DEBUG LOGGING (optional - can be removed after confirming fix works)
     console.group('🔍 Click-to-End Debug');
     console.log('Font size:', fontSize + 'px');
-    console.log('Line height:', lineHeight + 'px');
     console.log('Padding top:', paddingTop + 'px');
     console.log('Padding bottom:', paddingBottom + 'px');
-    console.log('Number of lines:', lines);
+    console.log('ScrollHeight (rendered content):', textarea.scrollHeight + 'px');
     console.log('Calculated content height:', contentHeight + 'px');
     console.log('Click Y (offsetY):', clickY + 'px');
     console.log('Scroll position:', scrollTop + 'px');
@@ -2120,6 +2182,14 @@
     const statusEl = document.getElementById('deepgram-status');
     if (!statusEl) return;
     
+    // WHISPER MODE: Flash continuously while recording (ignore this function call)
+    if (transcriptionMode === 'whisper') {
+      // Whisper flashing is controlled by startWhisperRecording/stopWhisperRecording
+      // This function (triggered by transcription arrival) does nothing in Whisper mode
+      return;
+    }
+    
+    // DEEPGRAM MODE: Flash on transcription arrival (original behavior)
     // Cancel any existing flash sequence
     shouldFlash = false;
     if (flashTimer) {
