@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.13',
+    VERSION: '3.14',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1303,9 +1303,6 @@
             </div>
           </label>
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
-          <div id="deepgram-click-bar" onclick="window.clickBarAction()">
-            <span id="deepgram-click-bar-label">Click to add paragraph</span>
-          </div>
         </div>
         
         <!-- Buttons -->
@@ -1465,6 +1462,9 @@
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
+    // Click-to-end: clicking in empty space below text moves cursor to end
+    document.getElementById('deepgram-transcript').addEventListener('click', handleTranscriptClick);
+    
     // Auto-clipboard timer input
     document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
     
@@ -1486,9 +1486,7 @@
     window.onAutoClipboardDelayChange = onAutoClipboardDelayChange;
     window.toggleTranscriptionMode = toggleTranscriptionMode;
     window.onWhisperEndpointChange = onWhisperEndpointChange;
-    window.clickBarAction = clickBarAction;
     window.saveWhisperSettings = saveWhisperSettings;
-    window.clickBarAction = clickBarAction;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -2112,29 +2110,62 @@
   
   // ==================== TRANSCRIPT MANAGEMENT ====================
   
-  function clickBarAction() {
-    const transcriptEl = document.getElementById('deepgram-transcript');
+  function handleTranscriptClick(event) {
+    const textarea = event.target;
     
-    // Move cursor to end
-    const endPosition = transcriptEl.value.length;
-    transcriptEl.setSelectionRange(endPosition, endPosition);
+    // Get textarea metrics
+    const style = window.getComputedStyle(textarea);
+    const fontSize = parseInt(style.fontSize);
+    const paddingTop = parseInt(style.paddingTop) || 0;
+    const paddingBottom = parseInt(style.paddingBottom) || 0;
     
-    // Add two newlines (paragraph break)
-    transcriptEl.value += '
-
-';
+    // Get actual rendered text height using hidden measuring div
+    const measureDiv = document.createElement('div');
+    measureDiv.style.cssText = style.cssText;
+    measureDiv.style.height = 'auto';
+    measureDiv.style.position = 'absolute';
+    measureDiv.style.visibility = 'hidden';
+    measureDiv.style.whiteSpace = style.whiteSpace;
+    measureDiv.style.wordWrap = style.wordWrap;
+    measureDiv.style.overflowWrap = style.overflowWrap;
+    measureDiv.textContent = textarea.value;
+    document.body.appendChild(measureDiv);
     
-    // Update cursor position after newlines
-    const newPosition = transcriptEl.value.length;
-    transcriptEl.setSelectionRange(newPosition, newPosition);
+    const actualContentHeight = measureDiv.offsetHeight;
+    document.body.removeChild(measureDiv);
     
-    // Focus textarea
-    transcriptEl.focus();
+    const contentHeight = actualContentHeight;
     
-    // Scroll to bottom
-    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    // Get click position relative to content (scroll-aware)
+    const clickY = event.offsetY;
     
-    console.log('Click bar: Added paragraph break and focused');
+    // Get scroll position
+    const scrollTop = textarea.scrollTop;
+    
+    // Get textarea dimensions
+    const textareaHeight = textarea.clientHeight;
+    
+    // DEBUG LOGGING (optional - can be removed after confirming fix works)
+    console.group('🔍 Click-to-End Debug');
+    console.log('Font size:', fontSize + 'px');
+    console.log('Padding top:', paddingTop + 'px');
+    console.log('Padding bottom:', paddingBottom + 'px');
+    console.log('Textarea scrollHeight:', textarea.scrollHeight + 'px');
+    console.log('Measured actual content height:', contentHeight + 'px');
+    console.log('Click Y (offsetY):', clickY + 'px');
+    console.log('Scroll position:', scrollTop + 'px');
+    console.log('Textarea visible height:', textareaHeight + 'px');
+    console.log('Comparison: clickY (' + clickY + ') > contentHeight (' + contentHeight + ') ?', clickY > contentHeight);
+    console.groupEnd();
+    
+    // If clicked below content, move cursor to end
+    if (clickY > contentHeight) {
+      const endPosition = textarea.value.length;
+      textarea.setSelectionRange(endPosition, endPosition);
+      console.log('✅ TRIGGERED: Moved cursor to end (clicked in empty space)');
+    } else {
+      console.log('❌ NOT TRIGGERED: Normal cursor placement (clicked on text)');
+    }
   }
   
   function appendTranscript(text) {
