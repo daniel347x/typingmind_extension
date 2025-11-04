@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.23',
+    VERSION: '3.24',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -868,7 +868,7 @@
       /* Queue Status - Always Visible Above Record Button */
       #deepgram-queue-status {
         font-size: 12px;
-        margin-top: 3px;
+        margin-top: 0px;
         margin-bottom: 8px;
         padding: 6px 16px;
         border-radius: 6px;
@@ -2230,10 +2230,10 @@
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     
-    // Delay blur by 250ms to show visual feedback (cursor moved + newlines added)
+    // Delay blur by 1000ms to show visual feedback (cursor moved + newlines added)
     setTimeout(() => {
       transcriptEl.blur();
-    }, 250);
+    }, 1000);
     
     console.log('✅ Click bar: Added paragraph break and focused');
   }
