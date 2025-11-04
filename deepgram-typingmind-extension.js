@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.4',
+    VERSION: '3.5',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1654,25 +1654,28 @@
         };
         
         deepgramSocket.onmessage = (message) => {
-          try {
-            const received = JSON.parse(message.data);
-            
-            if (received.channel?.alternatives?.[0]) {
-              const transcript = received.channel.alternatives[0].transcript;
-              
-              // Only append final transcripts
-              if (transcript && received.is_final) {
-                console.log('Final transcript:', transcript);
-                appendTranscript(transcript);
-                
-                // Flash status indicator to show activity
-                flashStatusIndicator();
-              }
-            }
-          } catch (error) {
-            console.error('Error processing message:', error);
+        try {
+        const received = JSON.parse(message.data);
+        
+        if (received.channel?.alternatives?.[0]) {
+        const transcript = received.channel.alternatives[0].transcript;
+        
+        // Only append final transcripts
+        if (transcript && received.is_final) {
+        console.log('Final transcript:', transcript);
+        appendTranscript(transcript);
+        
+        // Flash status indicator to show activity
+        flashStatusIndicator();
+          
+            // Ensure buttons are enabled
+              updateInsertButtonState();
           }
-        };
+          }
+          } catch (error) {
+          console.error('Error processing message:', error);
+        }
+      };
         
         deepgramSocket.onclose = () => {
           console.log('WebSocket closed');
@@ -1929,6 +1932,9 @@
       // Append to transcript
       appendTranscript(transcription);
       
+      // Ensure buttons are enabled
+      updateInsertButtonState();
+      
     } catch (error) {
       console.error('❌ Whisper API error:', error);
       updateStatus(`Error: ${error.message}`, 'disconnected');
@@ -1989,41 +1995,26 @@
     // Clear placeholder
     if (transcriptEl.value === '' || transcriptEl.value === 'Your transcription will appear here...') {
       transcriptEl.value = '';
-      savedCursorPosition = 0;
     }
     
-    // Insert at cursor position
+    // SIMPLIFIED: Always append to the end
     const currentText = transcriptEl.value;
-    // Use current selection position if user has manually moved cursor/edited text
-    const insertPosition = transcriptEl.selectionStart;
     
-    const beforeCursor = currentText.substring(0, insertPosition);
-    const afterCursor = currentText.substring(insertPosition);
+    // Add space before text if there's existing content (to separate words)
+    const newText = currentText ? text + ' ' : text + ' ';
+    transcriptEl.value = currentText + newText;
     
-    // Check if cursor is at a paragraph break (ends with one or more newlines)
-    // If so, the new text should stay on its own line (newlines already in beforeCursor)
-    // If not, just add a space before the new text
-    const atParagraphBreak = beforeCursor.match(/\n+$/);
-    
-    // Add text with appropriate spacing:
-    // - At paragraph break: text is already on new line (newlines in beforeCursor), just add space after
-    // - Not at paragraph break: add space before text to separate from previous word
-    const newText = atParagraphBreak ? text + ' ' : text + ' ';
-    transcriptEl.value = beforeCursor + newText + afterCursor;
-    
-    savedCursorPosition = insertPosition + newText.length;
+    // Update saved cursor position to end
+    savedCursorPosition = transcriptEl.value.length;
     transcriptEl.setSelectionRange(savedCursorPosition, savedCursorPosition);
     
-    // Auto-scroll logic
+    // Auto-scroll to bottom (since we're always appending)
     if (autoScrollEnabled) {
-      if (insertPosition === currentText.length) {
-        // Appending at end - scroll to bottom
-        transcriptEl.scrollTop = transcriptEl.scrollHeight;
-      } else {
-        // Inserting in middle - scroll to cursor position with padding
-        scrollToCursorPosition(transcriptEl, savedCursorPosition);
-      }
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
+    
+    // Update button states (enable Insert/Copy if there's text)
+    updateInsertButtonState();
   }
   
   function scrollToCursorPosition(element, cursorPos) {
