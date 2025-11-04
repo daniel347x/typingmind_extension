@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.20',
+    VERSION: '3.21',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1371,6 +1371,9 @@
         <!-- Status -->
         <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
+        <!-- Queue Status (Always Visible) -->
+        <div id="deepgram-queue-status">—</div>
+        
         <!-- Transcript -->
         <div class="deepgram-section">
           <label>
@@ -1399,9 +1402,6 @@
             <span id="deepgram-record-text">Start Recording</span>
           </button>
         </div>
-        
-        <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">—</div>
         
         <div class="deepgram-buttons">
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
