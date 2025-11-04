@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.9',
+    VERSION: '3.10',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -831,6 +831,13 @@
         border: 4px solid #ff9800 !important;
         box-shadow: 0 0 20px rgba(255, 152, 0, 0.8);
         animation: deepgram-waiting-pulse 0.5s ease-in-out infinite;
+      }
+      
+      /* When BOTH recording (flash) and waiting: orange border wins, green background stays */
+      .deepgram-status.connected.flash.waiting {
+        border: 4px solid #ff9800 !important;
+        box-shadow: 0 0 30px rgba(255, 183, 77, 1) !important;
+        /* Keep green background from flash, but orange border overrides */
       }
       
       @keyframes deepgram-waiting-pulse {
