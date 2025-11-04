@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.17',
+    VERSION: '3.18',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -865,8 +865,20 @@
         border: 1px solid #cbd5e0;
       }
       
-      /* Queue Status Flashing Effect */
+      /* Queue Status - Always Visible Above Record Button */
       #deepgram-queue-status {
+        font-size: 11px;
+        margin-bottom: 12px;
+        padding: 10px 16px;
+        border-radius: 6px;
+        text-align: center;
+        background: rgba(200, 200, 200, 0.1);
+        color: #999;
+        font-weight: 500;
+        transition: all 0.3s ease;
+      }
+      
+      #deepgram-queue-status.active {
         animation: whisper-queue-pulse 0.5s ease-in-out infinite;
         color: #ff9800 !important;
         font-weight: 700 !important;
@@ -881,6 +893,11 @@
           opacity: 0.8;
           background: rgba(255, 152, 0, 0.35);
         }
+      }
+      
+      [data-theme="dark"] #deepgram-queue-status {
+        background: rgba(100, 100, 100, 0.1);
+        color: #666;
       }
       
       /* Clickable Bottom Bar */
@@ -907,8 +924,8 @@
       }
       
       #deepgram-click-bar-label {
-        font-size: 10px;
-        color: #d0d0d0;
+        font-size: 12px;
+        color: #e8e8e8;
         user-select: none;
       }
       
@@ -1374,6 +1391,9 @@
             <span id="deepgram-click-bar-label">Click to add paragraph</span>
           </div>
         </div>
+        
+        <!-- Queue Status (Always Visible) -->
+        <div id="deepgram-queue-status">Ready</div>
         
         <!-- Buttons -->
         <div class="deepgram-buttons">
@@ -2063,21 +2083,15 @@
   }
   
   function updateQueueStatus() {
-    // Create queue status element if it doesn't exist
-    let queueEl = document.getElementById('deepgram-queue-status');
-    if (!queueEl) {
-      const statusEl = document.getElementById('deepgram-status');
-      queueEl = document.createElement('div');
-      queueEl.id = 'deepgram-queue-status';
-      queueEl.style.cssText = 'font-size: 11px; margin-top: 8px; text-align: center; padding: 10px 16px; border-radius: 6px;';
-      statusEl.parentNode.insertBefore(queueEl, statusEl.nextSibling);
-    }
+    const queueEl = document.getElementById('deepgram-queue-status');
+    if (!queueEl) return;
     
     if (pendingTranscriptions > 0) {
       queueEl.textContent = `⏳ Processing ${pendingTranscriptions} chunk${pendingTranscriptions > 1 ? 's' : ''}...`;
-      queueEl.style.display = 'block';
+      queueEl.classList.add('active');
     } else {
-      queueEl.style.display = 'none';
+      queueEl.textContent = 'Ready';
+      queueEl.classList.remove('active');
     }
   }
   
