@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.8',
+    VERSION: '3.9',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -824,6 +824,24 @@
         box-shadow: 0 0 20px rgba(160, 255, 0, 0.9);
         font-weight: 700;
         text-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
+      }
+      
+      /* Waiting effect for status indicator (Whisper transcription pending) */
+      .deepgram-status.waiting {
+        border: 4px solid #ff9800 !important;
+        box-shadow: 0 0 20px rgba(255, 152, 0, 0.8);
+        animation: deepgram-waiting-pulse 0.5s ease-in-out infinite;
+      }
+      
+      @keyframes deepgram-waiting-pulse {
+        0%, 100% { 
+          border-color: #ff9800;
+          box-shadow: 0 0 20px rgba(255, 152, 0, 0.8);
+        }
+        50% { 
+          border-color: #ffb74d;
+          box-shadow: 0 0 30px rgba(255, 183, 77, 1);
+        }
       }
       
       .deepgram-status.connecting {
@@ -1892,6 +1910,9 @@
     pendingTranscriptions++;
     updateQueueStatus();
     
+    // Show "waiting" border
+    showWaitingBorder();
+    
     try {
       // Create audio blob
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
@@ -1952,6 +1973,11 @@
       // Decrement pending counter
       pendingTranscriptions--;
       updateQueueStatus();
+      
+      // Hide "waiting" border if no more pending
+      if (pendingTranscriptions === 0) {
+        hideWaitingBorder();
+      }
       
       // Update status if no more pending
       if (pendingTranscriptions === 0 && !isRecording) {
@@ -2041,6 +2067,22 @@
     console.log('⏹️ Whisper flash stopped');
   }
   
+  function showWaitingBorder() {
+    const statusEl = document.getElementById('deepgram-status');
+    if (!statusEl) return;
+    
+    statusEl.classList.add('waiting');
+    console.log('⏳ Waiting border shown (Whisper processing)');
+  }
+  
+  function hideWaitingBorder() {
+    const statusEl = document.getElementById('deepgram-status');
+    if (!statusEl) return;
+    
+    statusEl.classList.remove('waiting');
+    console.log('✅ Waiting border hidden (Whisper response received)');
+  }
+  
   // ==================== END WHISPER FUNCTIONS ====================
 
   function updateRecordButton(recording) {
@@ -2070,8 +2112,22 @@
     const paddingTop = parseInt(style.paddingTop) || 0;
     const paddingBottom = parseInt(style.paddingBottom) || 0;
     
-    // Get actual rendered content height (accounts for wrapped lines!)
-    const contentHeight = textarea.scrollHeight - paddingTop - paddingBottom;
+    // Get actual rendered text height using hidden measuring div
+    const measureDiv = document.createElement('div');
+    measureDiv.style.cssText = style.cssText;
+    measureDiv.style.height = 'auto';
+    measureDiv.style.position = 'absolute';
+    measureDiv.style.visibility = 'hidden';
+    measureDiv.style.whiteSpace = style.whiteSpace;
+    measureDiv.style.wordWrap = style.wordWrap;
+    measureDiv.style.overflowWrap = style.overflowWrap;
+    measureDiv.textContent = textarea.value;
+    document.body.appendChild(measureDiv);
+    
+    const actualContentHeight = measureDiv.offsetHeight;
+    document.body.removeChild(measureDiv);
+    
+    const contentHeight = actualContentHeight;
     
     // Get click position relative to content (scroll-aware)
     const clickY = event.offsetY;
@@ -2087,8 +2143,8 @@
     console.log('Font size:', fontSize + 'px');
     console.log('Padding top:', paddingTop + 'px');
     console.log('Padding bottom:', paddingBottom + 'px');
-    console.log('ScrollHeight (rendered content):', textarea.scrollHeight + 'px');
-    console.log('Calculated content height:', contentHeight + 'px');
+    console.log('Textarea scrollHeight:', textarea.scrollHeight + 'px');
+    console.log('Measured actual content height:', contentHeight + 'px');
     console.log('Click Y (offsetY):', clickY + 'px');
     console.log('Scroll position:', scrollTop + 'px');
     console.log('Textarea visible height:', textareaHeight + 'px');
