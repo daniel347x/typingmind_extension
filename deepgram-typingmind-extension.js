@@ -863,11 +863,70 @@
         border: 1px solid #cbd5e0;
       }
       
+      /* Queue Status Flashing Effect */
+      #deepgram-queue-status {
+        animation: whisper-queue-pulse 0.5s ease-in-out infinite;
+        color: #ff9800 !important;
+        font-weight: 700 !important;
+      }
+      
+      @keyframes whisper-queue-pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.6; }
+      }
+      
+      /* Clickable Bottom Bar */
+      #deepgram-click-bar {
+        height: 75px;
+        background: linear-gradient(to bottom, #f0f4ff 0%, #e8edff 100%);
+        border-top: 2px solid #c7d2fe;
+        border-bottom: 1px solid #e2e8f0;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        display: flex;
+        align-items: flex-start;
+        padding: 6px 12px;
+        flex-shrink: 0;
+      }
+      
+      #deepgram-click-bar:hover {
+        background: linear-gradient(to bottom, #e8edff 0%, #dde4ff 100%);
+        border-top-color: #a5b4fc;
+      }
+      
+      #deepgram-click-bar:active {
+        background: linear-gradient(to bottom, #dde4ff 0%, #d4dbff 100%);
+      }
+      
+      #deepgram-click-bar-label {
+        font-size: 8px;
+        color: #a0a0a0;
+        user-select: none;
+      }
+      
+      [data-theme="dark"] #deepgram-click-bar {
+        background: linear-gradient(to bottom, #3d4463 0%, #353a52 100%);
+        border-top-color: #4f5672;
+      }
+      
+      [data-theme="dark"] #deepgram-click-bar:hover {
+        background: linear-gradient(to bottom, #434968 0%, #3a405a 100%);
+        border-top-color: #5a6080;
+      }
+      
+      [data-theme="dark"] #deepgram-click-bar:active {
+        background: linear-gradient(to bottom, #383d58 0%, #30364a 100%);
+      }
+      
+      [data-theme="dark"] #deepgram-click-bar-label {
+        color: #6b7280;
+      }
+      
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
         min-height: 150px;
-        height: 600px;
+        height: 525px;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -1996,7 +2055,7 @@
       const statusEl = document.getElementById('deepgram-status');
       queueEl = document.createElement('div');
       queueEl.id = 'deepgram-queue-status';
-      queueEl.style.cssText = 'font-size: 11px; color: #888; margin-top: 4px; text-align: center;';
+      queueEl.style.cssText = 'font-size: 11px; margin-top: 4px; text-align: center;';
       statusEl.parentNode.insertBefore(queueEl, statusEl.nextSibling);
     }
     
