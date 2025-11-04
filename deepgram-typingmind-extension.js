@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.15',
+    VERSION: '3.17',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -124,6 +124,8 @@
   // Whisper-specific state
   let audioChunks = [];
   let pendingTranscriptions = 0;
+  let recordingStartTime = null;
+  let recordingDurationTimer = null;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -818,9 +820,9 @@
       
       /* Flash effect for status indicator */
       .deepgram-status.connected.flash {
-        background: #ccff66 !important;
+        background: var(--flash-color, #ccff66) !important;
         color: #ffffff !important;
-        border: 3px solid #a0ff00 !important;
+        border: 3px solid var(--flash-color, #a0ff00) !important;
         box-shadow: 0 0 20px rgba(160, 255, 0, 0.9);
         font-weight: 700;
         text-shadow: 0 0 4px rgba(255, 255, 255, 0.8);
@@ -871,8 +873,14 @@
       }
       
       @keyframes whisper-queue-pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.6; }
+        0%, 100% { 
+          opacity: 1;
+          background: rgba(255, 152, 0, 0.2);
+        }
+        50% { 
+          opacity: 0.8;
+          background: rgba(255, 152, 0, 0.35);
+        }
       }
       
       /* Clickable Bottom Bar */
@@ -899,8 +907,8 @@
       }
       
       #deepgram-click-bar-label {
-        font-size: 8px;
-        color: #a0a0a0;
+        font-size: 10px;
+        color: #d0d0d0;
         user-select: none;
       }
       
@@ -1892,6 +1900,9 @@
       // WHISPER FLASH: Start continuous flash while recording
       startWhisperFlash();
       
+      // Start recording duration timer (for red gradient warning)
+      startRecordingDurationWarning();
+      
       console.log('✅ Whisper recording started');
       
     } catch (error) {
@@ -1919,6 +1930,9 @@
       
       // WHISPER FLASH: Stop continuous flash immediately
       stopWhisperFlash();
+      
+      // Stop recording duration timer
+      stopRecordingDurationWarning();
       
       console.log('⏹️ Whisper recording stopped');
     }
@@ -2055,7 +2069,7 @@
       const statusEl = document.getElementById('deepgram-status');
       queueEl = document.createElement('div');
       queueEl.id = 'deepgram-queue-status';
-      queueEl.style.cssText = 'font-size: 11px; margin-top: 4px; text-align: center;';
+      queueEl.style.cssText = 'font-size: 11px; margin-top: 8px; text-align: center; padding: 10px 16px; border-radius: 6px;';
       statusEl.parentNode.insertBefore(queueEl, statusEl.nextSibling);
     }
     
@@ -2130,6 +2144,59 @@
   }
 
   
+  // ==================== RECORDING DURATION WARNING ====================
+  
+  function startRecordingDurationWarning() {
+    recordingStartTime = Date.now();
+    
+    // Update color every 500ms
+    recordingDurationTimer = setInterval(() => {
+      const elapsed = (Date.now() - recordingStartTime) / 1000; // seconds
+      const statusEl = document.getElementById('deepgram-status');
+      if (!statusEl || !isRecording) {
+        stopRecordingDurationWarning();
+        return;
+      }
+      
+      // Gradient from green to red over 30 seconds
+      // 0s: green (#ccff66)
+      // 30s: red (#ff0000)
+      const progress = Math.min(elapsed / 30, 1); // 0 to 1
+      
+      // Interpolate between green and red
+      const startR = 204, startG = 255, startB = 102; // #ccff66
+      const endR = 255, endG = 0, endB = 0; // #ff0000
+      
+      const r = Math.round(startR + (endR - startR) * progress);
+      const g = Math.round(startG + (endG - startG) * progress);
+      const b = Math.round(startB + (endB - startB) * progress);
+      
+      const color = `rgb(${r}, ${g}, ${b})`;
+      
+      // Update the flash background color dynamically
+      statusEl.style.setProperty('--flash-color', color);
+      
+    }, 500);
+    
+    console.log('⏱️ Recording duration warning started');
+  }
+  
+  function stopRecordingDurationWarning() {
+    if (recordingDurationTimer) {
+      clearInterval(recordingDurationTimer);
+      recordingDurationTimer = null;
+    }
+    recordingStartTime = null;
+    
+    // Reset flash color
+    const statusEl = document.getElementById('deepgram-status');
+    if (statusEl) {
+      statusEl.style.removeProperty('--flash-color');
+    }
+    
+    console.log('⏹️ Recording duration warning stopped');
+  }
+  
   // ==================== END WHISPER FUNCTIONS ====================
   
   // ==================== CLICK BAR ====================
@@ -2148,8 +2215,8 @@
     const newPosition = transcriptEl.value.length;
     transcriptEl.setSelectionRange(newPosition, newPosition);
     
-    // Focus textarea
-    transcriptEl.focus();
+    // Blur textarea (return focus to page so Spacebar works for recording)
+    transcriptEl.blur();
     
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
