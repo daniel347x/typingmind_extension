@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.21',
+    VERSION: '3.22',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1552,9 +1552,6 @@
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
-    // Click-to-end: clicking in empty space below text moves cursor to end
-    document.getElementById('deepgram-transcript').addEventListener('click', handleTranscriptClick);
-    
     // Auto-clipboard timer input
     document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
     
@@ -2255,64 +2252,6 @@
   }
   
   // ==================== TRANSCRIPT MANAGEMENT ====================
-  
-  function handleTranscriptClick(event) {
-    const textarea = event.target;
-    
-    // Get textarea metrics
-    const style = window.getComputedStyle(textarea);
-    const fontSize = parseInt(style.fontSize);
-    const paddingTop = parseInt(style.paddingTop) || 0;
-    const paddingBottom = parseInt(style.paddingBottom) || 0;
-    
-    // Get actual rendered text height using hidden measuring div
-    const measureDiv = document.createElement('div');
-    measureDiv.style.cssText = style.cssText;
-    measureDiv.style.height = 'auto';
-    measureDiv.style.position = 'absolute';
-    measureDiv.style.visibility = 'hidden';
-    measureDiv.style.whiteSpace = style.whiteSpace;
-    measureDiv.style.wordWrap = style.wordWrap;
-    measureDiv.style.overflowWrap = style.overflowWrap;
-    measureDiv.textContent = textarea.value;
-    document.body.appendChild(measureDiv);
-    
-    const actualContentHeight = measureDiv.offsetHeight;
-    document.body.removeChild(measureDiv);
-    
-    const contentHeight = actualContentHeight;
-    
-    // Get click position relative to content (scroll-aware)
-    const clickY = event.offsetY;
-    
-    // Get scroll position
-    const scrollTop = textarea.scrollTop;
-    
-    // Get textarea dimensions
-    const textareaHeight = textarea.clientHeight;
-    
-    // DEBUG LOGGING (optional - can be removed after confirming fix works)
-    console.group('🔍 Click-to-End Debug');
-    console.log('Font size:', fontSize + 'px');
-    console.log('Padding top:', paddingTop + 'px');
-    console.log('Padding bottom:', paddingBottom + 'px');
-    console.log('Textarea scrollHeight:', textarea.scrollHeight + 'px');
-    console.log('Measured actual content height:', contentHeight + 'px');
-    console.log('Click Y (offsetY):', clickY + 'px');
-    console.log('Scroll position:', scrollTop + 'px');
-    console.log('Textarea visible height:', textareaHeight + 'px');
-    console.log('Comparison: clickY (' + clickY + ') > contentHeight (' + contentHeight + ') ?', clickY > contentHeight);
-    console.groupEnd();
-    
-    // If clicked below content, move cursor to end
-    if (clickY > contentHeight) {
-      const endPosition = textarea.value.length;
-      textarea.setSelectionRange(endPosition, endPosition);
-      console.log('✅ TRIGGERED: Moved cursor to end (clicked in empty space)');
-    } else {
-      console.log('❌ NOT TRIGGERED: Normal cursor placement (clicked on text)');
-    }
-  }
   
   function appendTranscript(text) {
     const transcriptEl = document.getElementById('deepgram-transcript');
