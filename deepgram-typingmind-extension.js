@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.10',
+    VERSION: '3.11',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1816,7 +1816,14 @@
       mediaRecorder.start();
       isRecording = true;
       
+      // Update status but preserve 'waiting' class if present
+      const statusEl = document.getElementById('deepgram-status');
+      const isWaiting = statusEl.classList.contains('waiting');
       updateStatus('🔴 Recording...', 'connected');
+      if (isWaiting) {
+        statusEl.classList.add('waiting');  // Re-add if it was there
+      }
+      
       updateRecordButton(true);
       document.getElementById('deepgram-toggle').classList.add('recording');
       
@@ -2123,15 +2130,19 @@
     const measureDiv = document.createElement('div');
     measureDiv.style.cssText = style.cssText;
     measureDiv.style.height = 'auto';
+    measureDiv.style.width = textarea.clientWidth + 'px';  // Match textarea width!
     measureDiv.style.position = 'absolute';
     measureDiv.style.visibility = 'hidden';
     measureDiv.style.whiteSpace = style.whiteSpace;
     measureDiv.style.wordWrap = style.wordWrap;
     measureDiv.style.overflowWrap = style.overflowWrap;
+    measureDiv.style.padding = style.padding;
+    measureDiv.style.border = style.border;
+    measureDiv.style.boxSizing = style.boxSizing;
     measureDiv.textContent = textarea.value;
     document.body.appendChild(measureDiv);
     
-    const actualContentHeight = measureDiv.offsetHeight;
+    const actualContentHeight = measureDiv.offsetHeight - paddingTop - paddingBottom;
     document.body.removeChild(measureDiv);
     
     const contentHeight = actualContentHeight;
