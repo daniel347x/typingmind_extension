@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.22',
+    VERSION: '3.23',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -867,8 +867,9 @@
       
       /* Queue Status - Always Visible Above Record Button */
       #deepgram-queue-status {
-        font-size: 11px;
-        margin-bottom: 12px;
+        font-size: 12px;
+        margin-top: 3px;
+        margin-bottom: 8px;
         padding: 6px 16px;
         border-radius: 6px;
         text-align: center;
@@ -1372,10 +1373,10 @@
         <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
         <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">—</div>
+        <div id="deepgram-queue-status">Whisper Standing By</div>
         
         <!-- Transcript -->
-        <div class="deepgram-section">
+        <div class="deepgram-section" style="margin-bottom: 0;">
           <label>
             <span>Transcript</span>
             <div style="display: flex; gap: 8px; align-items: center;">
@@ -2087,7 +2088,7 @@
       queueEl.textContent = `⏳ Processing ${pendingTranscriptions} chunk${pendingTranscriptions > 1 ? 's' : ''}...`;
       queueEl.classList.add('active');
     } else {
-      queueEl.textContent = '—';
+      queueEl.textContent = 'Whisper Standing By';
       queueEl.classList.remove('active');
     }
   }
@@ -2226,11 +2227,13 @@
     const newPosition = transcriptEl.value.length;
     transcriptEl.setSelectionRange(newPosition, newPosition);
     
-    // Blur textarea (return focus to page so Spacebar works for recording)
-    transcriptEl.blur();
-    
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    
+    // Delay blur by 250ms to show visual feedback (cursor moved + newlines added)
+    setTimeout(() => {
+      transcriptEl.blur();
+    }, 250);
     
     console.log('✅ Click bar: Added paragraph break and focused');
   }
