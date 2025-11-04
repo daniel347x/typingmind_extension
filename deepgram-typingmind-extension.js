@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.19',
+    VERSION: '3.20',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -869,7 +869,7 @@
       #deepgram-queue-status {
         font-size: 11px;
         margin-bottom: 12px;
-        padding: 10px 16px;
+        padding: 6px 16px;
         border-radius: 6px;
         text-align: center;
         background: rgba(200, 200, 200, 0.1);
@@ -925,7 +925,7 @@
       
       #deepgram-click-bar-label {
         font-size: 12px;
-        color: #f5f5f5;
+        color: #ffffff;
         user-select: none;
       }
       
@@ -978,7 +978,7 @@
       
       .deepgram-btn {
         flex: 1;
-        padding: 10px 16px;
+        padding: 6px 16px;
         border: none;
         border-radius: 8px;
         font-size: 14px;
@@ -1368,9 +1368,6 @@
           <small>Add technical terms to improve accuracy (comma-separated)</small>
         </div>
         
-        <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">Ready</div>
-        
         <!-- Status -->
         <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
@@ -1402,6 +1399,9 @@
             <span id="deepgram-record-text">Start Recording</span>
           </button>
         </div>
+        
+        <!-- Queue Status (Always Visible) -->
+        <div id="deepgram-queue-status">—</div>
         
         <div class="deepgram-buttons">
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
@@ -2090,7 +2090,7 @@
       queueEl.textContent = `⏳ Processing ${pendingTranscriptions} chunk${pendingTranscriptions > 1 ? 's' : ''}...`;
       queueEl.classList.add('active');
     } else {
-      queueEl.textContent = 'Ready';
+      queueEl.textContent = '—';
       queueEl.classList.remove('active');
     }
   }
