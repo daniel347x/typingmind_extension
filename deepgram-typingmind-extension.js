@@ -851,62 +851,6 @@
         }
       }
       
-      /* Queue status flashing effect */
-      #deepgram-queue-status {
-        animation: whisper-queue-pulse 0.5s ease-in-out infinite;
-        color: #ff9800;
-        font-weight: 700;
-      }
-      
-      @keyframes whisper-queue-pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.6; }
-      }
-      
-      /* Clickable bottom bar for cursor positioning */
-      #deepgram-click-bar {
-        height: 50px;
-        background: #f5f5f5;
-        border-top: 1px solid #e2e8f0;
-        cursor: pointer;
-        transition: background 0.15s ease;
-        display: flex;
-        align-items: flex-start;
-        padding: 6px 12px;
-        flex-shrink: 0;
-      }
-      
-      #deepgram-click-bar:hover {
-        background: #ebebeb;
-      }
-      
-      #deepgram-click-bar:active {
-        background: #e0e0e0;
-      }
-      
-      #deepgram-click-bar-label {
-        font-size: 10px;
-        color: #999;
-        user-select: none;
-      }
-      
-      [data-theme="dark"] #deepgram-click-bar {
-        background: #2d3548;
-        border-top-color: #374151;
-      }
-      
-      [data-theme="dark"] #deepgram-click-bar:hover {
-        background: #374151;
-      }
-      
-      [data-theme="dark"] #deepgram-click-bar:active {
-        background: #414b5f;
-      }
-      
-      [data-theme="dark"] #deepgram-click-bar-label {
-        color: #6b7280;
-      }
-      
       .deepgram-status.connecting {
         background: #d1ecf1;
         color: #0c5460;
@@ -1359,6 +1303,9 @@
             </div>
           </label>
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
+          <div id="deepgram-click-bar" onclick="window.clickBarAction()">
+            <span id="deepgram-click-bar-label">Click to add paragraph</span>
+          </div>
         </div>
         
         <!-- Buttons -->
@@ -1539,8 +1486,8 @@
     window.onAutoClipboardDelayChange = onAutoClipboardDelayChange;
     window.toggleTranscriptionMode = toggleTranscriptionMode;
     window.onWhisperEndpointChange = onWhisperEndpointChange;
-    window.saveWhisperSettings = saveWhisperSettings;
     window.clickBarAction = clickBarAction;
+    window.saveWhisperSettings = saveWhisperSettings;
     window.clickBarAction = clickBarAction;
     
     console.log('✓ Widget initialized');
@@ -1871,14 +1818,7 @@
       mediaRecorder.start();
       isRecording = true;
       
-      // Update status but preserve 'waiting' class if present
-      const statusEl = document.getElementById('deepgram-status');
-      const isWaiting = statusEl.classList.contains('waiting');
       updateStatus('🔴 Recording...', 'connected');
-      if (isWaiting) {
-        statusEl.classList.add('waiting');  // Re-add if it was there
-      }
-      
       updateRecordButton(true);
       document.getElementById('deepgram-toggle').classList.add('recording');
       
@@ -2194,10 +2134,8 @@
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     
-    console.log('✅ Click bar: Added paragraph break and focused');
+    console.log('Click bar: Added paragraph break and focused');
   }
-  
-  
   
   function appendTranscript(text) {
     const transcriptEl = document.getElementById('deepgram-transcript');
