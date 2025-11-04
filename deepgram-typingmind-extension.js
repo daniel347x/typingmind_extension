@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.26',
+    VERSION: '3.27',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -868,7 +868,7 @@
       /* Queue Status - Always Visible Above Record Button */
       #deepgram-queue-status {
         font-size: 12px;
-        margin-top: -11px;
+        margin-top: -16px;
         margin-bottom: 8px;
         padding: 6px 16px;
         border-radius: 6px;
