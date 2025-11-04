@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.5',
+    VERSION: '3.6',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1437,6 +1437,9 @@
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
     
+    // Click-to-end: clicking in empty space below text moves cursor to end
+    document.getElementById('deepgram-transcript').addEventListener('click', handleTranscriptClick);
+    
     // Auto-clipboard timer input
     document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
     
@@ -1989,6 +1992,33 @@
   }
   
   // ==================== TRANSCRIPT MANAGEMENT ====================
+  
+  function handleTranscriptClick(event) {
+    const textarea = event.target;
+    
+    // Get textarea metrics
+    const style = window.getComputedStyle(textarea);
+    const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
+    
+    // Count lines in current text
+    const text = textarea.value;
+    const lines = text.split('\n').length;
+    
+    // Calculate actual content height
+    const contentHeight = lines * lineHeight;
+    
+    // Get click position relative to content (scroll-aware)
+    const clickY = event.offsetY;
+    
+    // If clicked below content, move cursor to end
+    if (clickY > contentHeight) {
+      const endPosition = textarea.value.length;
+      textarea.setSelectionRange(endPosition, endPosition);
+      console.log('✓ Click-to-end: Moved cursor to end (clicked in empty space)');
+    }
+    // Otherwise, let browser handle normal cursor placement
+  }
+  
   function appendTranscript(text) {
     const transcriptEl = document.getElementById('deepgram-transcript');
     
