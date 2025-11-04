@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.18',
+    VERSION: '3.19',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -925,7 +925,7 @@
       
       #deepgram-click-bar-label {
         font-size: 12px;
-        color: #e8e8e8;
+        color: #f5f5f5;
         user-select: none;
       }
       
@@ -1368,6 +1368,9 @@
           <small>Add technical terms to improve accuracy (comma-separated)</small>
         </div>
         
+        <!-- Queue Status (Always Visible) -->
+        <div id="deepgram-queue-status">Ready</div>
+        
         <!-- Status -->
         <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
         
@@ -1391,9 +1394,6 @@
             <span id="deepgram-click-bar-label">Click to add paragraph</span>
           </div>
         </div>
-        
-        <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">Ready</div>
         
         <!-- Buttons -->
         <div class="deepgram-buttons">
