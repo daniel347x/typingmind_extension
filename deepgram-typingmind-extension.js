@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.14',
+    VERSION: '3.15',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1303,6 +1303,9 @@
             </div>
           </label>
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
+          <div id="deepgram-click-bar" onclick="window.clickBarAction()">
+            <span id="deepgram-click-bar-label">Click to add paragraph</span>
+          </div>
         </div>
         
         <!-- Buttons -->
@@ -1487,6 +1490,7 @@
     window.toggleTranscriptionMode = toggleTranscriptionMode;
     window.onWhisperEndpointChange = onWhisperEndpointChange;
     window.saveWhisperSettings = saveWhisperSettings;
+    window.clickBarAction = clickBarAction;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
@@ -1917,9 +1921,6 @@
     pendingTranscriptions++;
     updateQueueStatus();
     
-    // Show "waiting" border
-    showWaitingBorder();
-    
     try {
       // Create audio blob
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
@@ -1980,11 +1981,6 @@
       // Decrement pending counter
       pendingTranscriptions--;
       updateQueueStatus();
-      
-      // Hide "waiting" border if no more pending
-      if (pendingTranscriptions === 0) {
-        hideWaitingBorder();
-      }
       
       // Update status if no more pending
       if (pendingTranscriptions === 0 && !isRecording) {
@@ -2073,24 +2069,34 @@
     
     console.log('⏹️ Whisper flash stopped');
   }
-  
-  function showWaitingBorder() {
-    const statusEl = document.getElementById('deepgram-status');
-    if (!statusEl) return;
-    
-    statusEl.classList.add('waiting');
-    console.log('⏳ Waiting border shown (Whisper processing)');
-  }
-  
-  function hideWaitingBorder() {
-    const statusEl = document.getElementById('deepgram-status');
-    if (!statusEl) return;
-    
-    statusEl.classList.remove('waiting');
-    console.log('✅ Waiting border hidden (Whisper response received)');
-  }
+
   
   // ==================== END WHISPER FUNCTIONS ====================
+  
+  // ==================== CLICK BAR ====================
+  
+  function clickBarAction() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    
+    // Move cursor to end
+    const endPosition = transcriptEl.value.length;
+    transcriptEl.setSelectionRange(endPosition, endPosition);
+    
+    // Add two newlines (paragraph break)
+    transcriptEl.value += '\n\n';
+    
+    // Update cursor position after newlines
+    const newPosition = transcriptEl.value.length;
+    transcriptEl.setSelectionRange(newPosition, newPosition);
+    
+    // Focus textarea
+    transcriptEl.focus();
+    
+    // Scroll to bottom
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    
+    console.log('✅ Click bar: Added paragraph break and focused');
+  }
 
   function updateRecordButton(recording) {
     const btn = document.getElementById('deepgram-record-btn');
