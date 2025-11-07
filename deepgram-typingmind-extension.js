@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.44',
+    VERSION: '3.45',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1688,8 +1688,9 @@
           <div class="deepgram-info">
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
-            Ctrl+Shift+Enter: Insert to Chat<br>
-            Ctrl+Alt+Shift+Enter: Insert to Chat & Submit<br>
+            Ctrl+Space: Stop recording + queue paragraph break<br>
+            Ctrl+Shift+Enter: ULTIMATE - Stop recording (if active) + Insert to Chat<br>
+            Ctrl+Alt+Shift+Enter: ULTIMATE ULTIMATE - Stop recording (if active) + Insert & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
             <br>
             <strong>Teams Message Annotation:</strong>
