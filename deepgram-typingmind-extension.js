@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.39',
+    VERSION: '3.40',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3100,6 +3100,14 @@
         
         // Clear transcript after successful insert
         clearTranscript();
+        
+        // Blur chat input so Space key returns focus for recording toggle
+        setTimeout(() => {
+          if (chatInput && document.activeElement === chatInput) {
+            chatInput.blur();
+            console.log('✓ Chat input blurred - Space key ready for recording toggle');
+          }
+        }, 100);
         
         // Visual feedback
         const btn = document.getElementById('deepgram-insert-btn');
