@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.27',
+    VERSION: '3.28',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -99,7 +99,14 @@
     WHISPER_PROMPT_STORAGE: 'whisper_extension_prompt',
     DEFAULT_OPENAI_ENDPOINT: 'https://api.openai.com/v1/audio/transcriptions',
     DEFAULT_LOCAL_ENDPOINT: 'http://localhost:8001/v1/audio/transcriptions',
-    DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon'
+    DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon',
+    
+    // Teams message break settings
+    TEAMS_SPEAKERS_STORAGE: 'teams_message_speakers',
+    TEAMS_ACTIVE_STORAGE: 'teams_message_active_speakers',
+    TEAMS_DATE_STORAGE: 'teams_message_date',
+    TEAMS_LAST_SPEAKER_STORAGE: 'teams_message_last_speaker_index',
+    TEAMS_KNOWN_SPEAKERS_STORAGE: 'teams_message_known_speakers'
   };
   
   // ==================== STATE ====================
@@ -126,6 +133,10 @@
   let pendingTranscriptions = 0;
   let recordingStartTime = null;
   let recordingDurationTimer = null;
+  
+  // Teams message break state
+  let teamsPopoverVisible = false;
+  let teamsSavedCursorPosition = null;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -1219,6 +1230,209 @@
         color: #9ca3af;
       }
       
+      /* Teams Message Popover */
+      #teams-message-popover {
+        position: fixed;
+        background: white;
+        border: 2px solid #667eea;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        padding: 20px;
+        z-index: 1000000;
+        display: none;
+        min-width: 500px;
+        max-width: 600px;
+      }
+      
+      #teams-message-popover.visible {
+        display: block;
+      }
+      
+      .teams-popover-header {
+        font-size: 16px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 15px;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 10px;
+      }
+      
+      .teams-popover-section {
+        margin-bottom: 15px;
+      }
+      
+      .teams-popover-section label {
+        display: block;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      
+      .teams-date-input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 2px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 14px;
+        box-sizing: border-box;
+      }
+      
+      .teams-date-input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+      
+      .teams-speakers-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+        margin-bottom: 15px;
+      }
+      
+      .teams-speaker-slot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      
+      .teams-speaker-checkbox {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+      }
+      
+      .teams-speaker-dropdown {
+        flex: 1;
+        padding: 6px 8px;
+        border: 2px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 13px;
+      }
+      
+      .teams-speaker-dropdown:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+      
+      .teams-speaker-dropdown:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+      
+      .teams-radio-section {
+        margin-top: 15px;
+        padding-top: 15px;
+        border-top: 2px solid #e2e8f0;
+      }
+      
+      .teams-radio-section label {
+        margin-bottom: 12px;
+      }
+      
+      .teams-radio-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 10px;
+      }
+      
+      .teams-radio-button {
+        padding: 15px 10px;
+        border: 3px solid #e2e8f0;
+        border-radius: 8px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-weight: 600;
+        color: #333;
+        background: #f8f9fa;
+      }
+      
+      .teams-radio-button:hover {
+        border-color: #667eea;
+        background: #f0f4ff;
+      }
+      
+      .teams-radio-button.selected {
+        border-color: #667eea;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+      }
+      
+      .teams-popover-buttons {
+        display: flex;
+        gap: 10px;
+        margin-top: 15px;
+      }
+      
+      .teams-popover-button {
+        flex: 1;
+        padding: 10px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      
+      .teams-popover-button.primary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+      }
+      
+      .teams-popover-button.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+      }
+      
+      .teams-popover-button.secondary {
+        background: #6c757d;
+        color: white;
+      }
+      
+      .teams-popover-button.secondary:hover {
+        background: #5a6268;
+      }
+      
+      /* Dark mode for Teams popover */
+      [data-theme="dark"] #teams-message-popover {
+        background: #1a1d2e;
+        border-color: #667eea;
+      }
+      
+      [data-theme="dark"] .teams-popover-header {
+        color: #e4e4e7;
+        border-bottom-color: #374151;
+      }
+      
+      [data-theme="dark"] .teams-popover-section label {
+        color: #e4e4e7;
+      }
+      
+      [data-theme="dark"] .teams-date-input,
+      [data-theme="dark"] .teams-speaker-dropdown {
+        background-color: #2d3548;
+        color: #f3f4f6;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .teams-radio-button {
+        background: #2d3548;
+        color: #e4e4e7;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .teams-radio-button:hover {
+        background: #3d4463;
+        border-color: #667eea;
+      }
+      
+      [data-theme="dark"] .teams-radio-button.selected {
+        border-color: #667eea;
+        color: white;
+      }
+      
       [data-theme="dark"] #deepgram-resize-handle {
         background: #374151;
       }
@@ -1234,6 +1448,17 @@
       
       [data-theme="dark"] .deepgram-btn-secondary:hover {
         background: #6b7280;
+      }
+      
+      .teams-auto-info {
+        font-size: 12px;
+        color: #666;
+        font-style: italic;
+        margin-top: 5px;
+      }
+      
+      [data-theme="dark"] .teams-auto-info {
+        color: #9ca3af;
       }
       
       /* Responsive adjustments */
@@ -1443,8 +1668,43 @@
       <div id="deepgram-filler"></div>
     `;
     
+    // Create Teams message popover
+    const teamsPopover = document.createElement('div');
+    teamsPopover.id = 'teams-message-popover';
+    teamsPopover.innerHTML = `
+      <div class="teams-popover-header">
+        Insert Teams Message Break
+        <div class="teams-auto-info" id="teams-auto-info"></div>
+      </div>
+      
+      <div class="teams-popover-section">
+        <label>Date:</label>
+        <input type="text" id="teams-date-input" class="teams-date-input" placeholder="e.g., Nov 7, 2025" />
+      </div>
+      
+      <div class="teams-popover-section">
+        <label>Active Speakers (check to enable):</label>
+        <div class="teams-speakers-grid" id="teams-speakers-grid">
+          <!-- Will be populated by JavaScript -->
+        </div>
+      </div>
+      
+      <div class="teams-radio-section">
+        <label>Select Speaker for This Message:</label>
+        <div class="teams-radio-grid" id="teams-radio-grid">
+          <!-- Will be populated by JavaScript based on active speakers -->
+        </div>
+      </div>
+      
+      <div class="teams-popover-buttons">
+        <button class="teams-popover-button primary" id="teams-insert-break-btn">Insert Break</button>
+        <button class="teams-popover-button secondary" id="teams-cancel-btn">Cancel</button>
+      </div>
+    `;
+    
     document.body.appendChild(toggleBtn);
     document.body.appendChild(panel);
+    document.body.appendChild(teamsPopover);
     console.log('✓ Widget created');
   }
   
@@ -1552,6 +1812,9 @@
     
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
+  
+  // Reset auto-clipboard timer on any edit (bounce effect)
+  document.getElementById('deepgram-transcript').addEventListener('input', resetAutoClipboardTimer);
     
     // Auto-clipboard timer input
     document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
@@ -1564,6 +1827,9 @@
     
     // Update UI based on current mode
     updateModeUI();
+    
+    // Initialize Teams message break feature
+    initializeTeamsMessageBreak();
     
     // Make functions global
     window.deepgramEditApiKey = editApiKey;
@@ -2471,6 +2737,17 @@
     }
   }
   
+  function resetAutoClipboardTimer() {
+    // Stop existing timer
+    stopAutoClipboard();
+    
+    // Restart with current delay setting (if enabled)
+    if (autoClipboardDelay > 0) {
+      startAutoClipboard();
+      console.log('🔄 Auto-clipboard timer reset (bounce effect)');
+    }
+  }
+  
   function updateAutoScrollButton() {
     const btn = document.getElementById('deepgram-autoscroll-btn');
     if (btn) {
@@ -2891,6 +3168,304 @@
     console.log('✓ Whisper endpoint saved:', endpoint);
   }
   
+  // ==================== TEAMS MESSAGE BREAK ====================
+  
+  function initializeTeamsMessageBreak() {
+    // Load saved settings from localStorage
+    const savedSpeakers = localStorage.getItem(CONFIG.TEAMS_SPEAKERS_STORAGE);
+    const savedActive = localStorage.getItem(CONFIG.TEAMS_ACTIVE_STORAGE);
+    const savedDate = localStorage.getItem(CONFIG.TEAMS_DATE_STORAGE);
+    
+    // Initialize speaker slots (10 slots)
+    const speakersGrid = document.getElementById('teams-speakers-grid');
+    for (let i = 0; i < 10; i++) {
+      const slot = document.createElement('div');
+      slot.className = 'teams-speaker-slot';
+      slot.innerHTML = `
+        <input type="checkbox" class="teams-speaker-checkbox" id="teams-speaker-check-${i}" data-index="${i}" />
+        <select class="teams-speaker-dropdown" id="teams-speaker-dropdown-${i}" data-index="${i}">
+          <option value="">-- Select or type --</option>
+        </select>
+      `;
+      speakersGrid.appendChild(slot);
+      
+      // Make dropdown editable (allows typing new names)
+      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
+      dropdown.setAttribute('contenteditable', 'false'); // Use standard select for now
+      
+      // Attach event listeners
+      document.getElementById(`teams-speaker-check-${i}`).addEventListener('change', onSpeakerCheckboxChange);
+      dropdown.addEventListener('change', onSpeakerDropdownChange);
+    }
+    
+    // Populate known speakers in dropdowns
+    updateKnownSpeakersList();
+    
+    // Restore saved speakers
+    if (savedSpeakers) {
+      const speakers = JSON.parse(savedSpeakers);
+      speakers.forEach((name, i) => {
+        if (name) {
+          document.getElementById(`teams-speaker-dropdown-${i}`).value = name;
+        }
+      });
+    }
+    
+    // Restore active checkboxes
+    if (savedActive) {
+      const active = JSON.parse(savedActive);
+      active.forEach((isActive, i) => {
+        document.getElementById(`teams-speaker-check-${i}`).checked = isActive;
+      });
+    }
+    
+    // Restore date
+    if (savedDate) {
+      document.getElementById('teams-date-input').value = savedDate;
+    } else {
+      // Default to today's date
+      const today = new Date();
+      const dateStr = `${today.toLocaleString('default', { month: 'short' })} ${today.getDate()}, ${today.getFullYear()}`;
+      document.getElementById('teams-date-input').value = dateStr;
+    }
+    
+    // Update radio buttons based on active speakers
+    updateTeamsRadioButtons();
+    
+    // Attach button event listeners
+    document.getElementById('teams-insert-break-btn').addEventListener('click', insertTeamsMessageBreak);
+    document.getElementById('teams-cancel-btn').addEventListener('click', hideTeamsPopover);
+    
+    // Attach keyboard listener for date input (save on change)
+    document.getElementById('teams-date-input').addEventListener('change', saveTeamsSettings);
+    
+    console.log('✓ Teams message break initialized');
+  }
+  
+  function updateKnownSpeakersList() {
+    const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+    
+    // Update all dropdowns
+    for (let i = 0; i < 10; i++) {
+      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
+      const currentValue = dropdown.value;
+      
+      // Clear and rebuild options
+      dropdown.innerHTML = '<option value="">-- Select or type --</option>';
+      
+      knownSpeakers.forEach(name => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        dropdown.appendChild(option);
+      });
+      
+      // Restore previous value if it exists
+      if (currentValue && knownSpeakers.includes(currentValue)) {
+        dropdown.value = currentValue;
+      }
+    }
+  }
+  
+  function onSpeakerCheckboxChange(e) {
+    saveTeamsSettings();
+    updateTeamsRadioButtons();
+  }
+  
+  function onSpeakerDropdownChange(e) {
+    const dropdown = e.target;
+    const newName = dropdown.value.trim();
+    
+    // Add new name to known speakers list
+    if (newName && newName !== '-- Select or type --') {
+      const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+      if (!knownSpeakers.includes(newName)) {
+        knownSpeakers.push(newName);
+        localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
+        updateKnownSpeakersList();
+      }
+    }
+    
+    saveTeamsSettings();
+    updateTeamsRadioButtons();
+  }
+  
+  function saveTeamsSettings() {
+    // Save speaker names
+    const speakers = [];
+    for (let i = 0; i < 10; i++) {
+      speakers.push(document.getElementById(`teams-speaker-dropdown-${i}`).value);
+    }
+    localStorage.setItem(CONFIG.TEAMS_SPEAKERS_STORAGE, JSON.stringify(speakers));
+    
+    // Save active checkboxes
+    const active = [];
+    for (let i = 0; i < 10; i++) {
+      active.push(document.getElementById(`teams-speaker-check-${i}`).checked);
+    }
+    localStorage.setItem(CONFIG.TEAMS_ACTIVE_STORAGE, JSON.stringify(active));
+    
+    // Save date
+    const date = document.getElementById('teams-date-input').value;
+    localStorage.setItem(CONFIG.TEAMS_DATE_STORAGE, date);
+    
+    console.log('✓ Teams settings saved');
+  }
+  
+  function updateTeamsRadioButtons() {
+    const radioGrid = document.getElementById('teams-radio-grid');
+    radioGrid.innerHTML = '';
+    
+    const activeSpeakers = [];
+    for (let i = 0; i < 10; i++) {
+      const checkbox = document.getElementById(`teams-speaker-check-${i}`);
+      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
+      if (checkbox.checked && dropdown.value) {
+        activeSpeakers.push({ index: i, name: dropdown.value });
+      }
+    }
+    
+    // Create radio buttons for active speakers
+    activeSpeakers.forEach(speaker => {
+      const radioBtn = document.createElement('div');
+      radioBtn.className = 'teams-radio-button';
+      radioBtn.textContent = speaker.name;
+      radioBtn.dataset.index = speaker.index;
+      radioBtn.addEventListener('click', selectTeamsSpeaker);
+      radioGrid.appendChild(radioBtn);
+    });
+    
+    // Auto-select based on toggle logic
+    autoSelectSpeaker(activeSpeakers);
+    
+    // Update auto-info text
+    updateAutoInfo(activeSpeakers);
+  }
+  
+  function autoSelectSpeaker(activeSpeakers) {
+    if (activeSpeakers.length === 0) return;
+    
+    let selectedIndex = 0;
+    
+    if (activeSpeakers.length === 2) {
+      // Two-person conversation: toggle between them
+      const lastSpeakerIndex = parseInt(localStorage.getItem(CONFIG.TEAMS_LAST_SPEAKER_STORAGE) || '-1');
+      const lastActiveIndex = activeSpeakers.findIndex(s => s.index === lastSpeakerIndex);
+      
+      if (lastActiveIndex !== -1) {
+        // Toggle to the other speaker
+        selectedIndex = (lastActiveIndex + 1) % 2;
+      }
+    } else if (activeSpeakers.length >= 3) {
+      // 3+ speakers: default to first active (or Dan if present)
+      const danIndex = activeSpeakers.findIndex(s => s.name.toLowerCase().includes('dan'));
+      selectedIndex = danIndex !== -1 ? danIndex : 0;
+    }
+    
+    // Select the radio button
+    const radioButtons = document.querySelectorAll('.teams-radio-button');
+    if (radioButtons[selectedIndex]) {
+      radioButtons[selectedIndex].classList.add('selected');
+    }
+  }
+  
+  function updateAutoInfo(activeSpeakers) {
+    const autoInfo = document.getElementById('teams-auto-info');
+    
+    if (activeSpeakers.length === 2) {
+      autoInfo.textContent = '(Auto-toggling between 2 speakers)';
+    } else if (activeSpeakers.length >= 3) {
+      const selected = document.querySelector('.teams-radio-button.selected');
+      if (selected) {
+        autoInfo.textContent = `(Auto-selected: ${selected.textContent})`;
+      }
+    } else {
+      autoInfo.textContent = '';
+    }
+  }
+  
+  function selectTeamsSpeaker(e) {
+    // Deselect all
+    document.querySelectorAll('.teams-radio-button').forEach(btn => btn.classList.remove('selected'));
+    
+    // Select clicked
+    e.target.classList.add('selected');
+  }
+  
+  function showTeamsPopover() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    teamsSavedCursorPosition = transcriptEl.selectionStart;
+    
+    // Position popover near cursor (center of screen for simplicity)
+    const popover = document.getElementById('teams-message-popover');
+    popover.style.left = '50%';
+    popover.style.top = '50%';
+    popover.style.transform = 'translate(-50%, -50%)';
+    popover.classList.add('visible');
+    
+    teamsPopoverVisible = true;
+    
+    // Focus first radio button or date field
+    const firstRadio = document.querySelector('.teams-radio-button');
+    if (firstRadio) {
+      firstRadio.focus();
+    } else {
+      document.getElementById('teams-date-input').focus();
+    }
+    
+    console.log('✓ Teams popover shown');
+  }
+  
+  function hideTeamsPopover() {
+    const popover = document.getElementById('teams-message-popover');
+    popover.classList.remove('visible');
+    teamsPopoverVisible = false;
+    
+    // Return focus to textarea
+    document.getElementById('deepgram-transcript').focus();
+    
+    console.log('✓ Teams popover hidden');
+  }
+  
+  function insertTeamsMessageBreak() {
+    // Get selected speaker
+    const selectedBtn = document.querySelector('.teams-radio-button.selected');
+    if (!selectedBtn) {
+      alert('Please select a speaker');
+      return;
+    }
+    
+    const speakerIndex = parseInt(selectedBtn.dataset.index);
+    const speakerName = selectedBtn.textContent;
+    const date = document.getElementById('teams-date-input').value.trim();
+    
+    // Save last speaker index for toggle logic
+    localStorage.setItem(CONFIG.TEAMS_LAST_SPEAKER_STORAGE, speakerIndex.toString());
+    
+    // Format delimiter
+    const delimiter = `\n===MESSAGE_BREAK===\nSpeaker: ${speakerName}\nDate: ${date}\n===END_BREAK===\n\n`;
+    
+    // Insert at saved cursor position
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    const text = transcriptEl.value;
+    const before = text.substring(0, teamsSavedCursorPosition);
+    const after = text.substring(teamsSavedCursorPosition);
+    
+    transcriptEl.value = before + delimiter + after;
+    
+    // Move cursor after delimiter
+    const newPos = teamsSavedCursorPosition + delimiter.length;
+    transcriptEl.setSelectionRange(newPos, newPos);
+    
+    // Hide popover
+    hideTeamsPopover();
+    
+    // Update radio buttons for next invocation (auto-toggle)
+    updateTeamsRadioButtons();
+    
+    console.log('✓ Teams message break inserted:', speakerName, date);
+  }
+  
   // ==================== KEYBOARD SHORTCUTS ====================
   function initializeKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
@@ -2918,6 +3493,41 @@
           e.preventDefault();
           insertToChat();
           console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+        }
+      }
+      
+      // Ctrl+M: Show Teams message break popover (when textarea focused)
+      if (e.ctrlKey && e.key === 'm') {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (document.activeElement === transcriptEl) {
+          e.preventDefault();
+          showTeamsPopover();
+          console.log('✓ Ctrl+M: Teams popover triggered');
+        }
+      }
+      
+      // Enter: Insert break and close popover (when popover visible)
+      if (e.key === 'Enter' && teamsPopoverVisible) {
+        e.preventDefault();
+        insertTeamsMessageBreak();
+      }
+      
+      // Escape: Cancel and close popover (when popover visible)
+      if (e.key === 'Escape' && teamsPopoverVisible) {
+        e.preventDefault();
+        hideTeamsPopover();
+      }
+      
+      // Number keys 1-9: Select corresponding radio button (when popover visible)
+      if (teamsPopoverVisible && e.key >= '1' && e.key <= '9') {
+        const radioButtons = document.querySelectorAll('.teams-radio-button');
+        const index = parseInt(e.key) - 1;
+        if (radioButtons[index]) {
+          e.preventDefault();
+          // Deselect all
+          radioButtons.forEach(btn => btn.classList.remove('selected'));
+          // Select target
+          radioButtons[index].classList.add('selected');
         }
       }
     });
