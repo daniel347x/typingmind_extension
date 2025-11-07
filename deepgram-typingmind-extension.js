@@ -1777,6 +1777,12 @@
       if (autoClipboardDelay > 0) {
         startAutoClipboard();
       }
+    } else {
+      // Default to 60 seconds if not set
+      autoClipboardDelay = 60;
+      document.getElementById('deepgram-autoclipboard-input').value = 60;
+      localStorage.setItem(CONFIG.AUTOCLIPBOARD_DELAY_STORAGE, '60');
+      startAutoClipboard();
     }
     
     // Load saved dark mode preference
