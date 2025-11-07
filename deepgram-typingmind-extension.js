@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.37',
+    VERSION: '3.38',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -136,6 +136,10 @@
   
   // Paragraph break queueing
   let pendingParagraphBreak = false;
+  
+  // Insert/Submit queueing
+  let pendingInsert = false;
+  let pendingInsertAndSubmit = false;
   
   // Teams message break state
   let teamsPopoverVisible = false;
@@ -2398,6 +2402,23 @@
       if (pendingTranscriptions === 0 && !isRecording) {
         updateStatus('Ready to Record', 'disconnected');
       }
+      
+      // Check if insert/submit was queued (execute when ALL chunks complete)
+      if (pendingTranscriptions === 0) {
+        if (pendingInsertAndSubmit) {
+          setTimeout(() => {
+            insertAndSubmit();
+            pendingInsertAndSubmit = false;
+            console.log('✅ Queued Insert+Submit executed (all chunks complete)');
+          }, 100); // Brief delay to ensure UI updates complete
+        } else if (pendingInsert) {
+          setTimeout(() => {
+            insertToChat();
+            pendingInsert = false;
+            console.log('✅ Queued Insert executed (all chunks complete)');
+          }, 100);
+        }
+      }
     }
   }
   
@@ -3682,8 +3703,26 @@
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         if (text) {
           e.preventDefault();
-          insertToChat();
-          console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+          
+          // If chunks pending, queue the insert
+          if (pendingTranscriptions > 0) {
+            pendingInsert = true;
+            console.log('⏳ Insert queued - waiting for all chunks...');
+            
+            // Visual feedback
+            const btn = document.getElementById('deepgram-insert-btn');
+            if (btn) {
+              const originalText = btn.textContent;
+              btn.textContent = '⏳ Queued...';
+              setTimeout(() => {
+                btn.textContent = originalText;
+              }, 1000);
+            }
+          } else {
+            // No pending chunks - execute immediately
+            insertToChat();
+            console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+          }
         }
       }
       
@@ -3693,8 +3732,26 @@
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         if (text) {
           e.preventDefault();
-          insertAndSubmit();
-          console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
+          
+          // If chunks pending, queue the insert+submit
+          if (pendingTranscriptions > 0) {
+            pendingInsertAndSubmit = true;
+            console.log('⏳ Insert+Submit queued - waiting for all chunks...');
+            
+            // Visual feedback
+            const btn = document.getElementById('deepgram-send-btn');
+            if (btn) {
+              const originalText = btn.textContent;
+              btn.textContent = '⏳ Queued...';
+              setTimeout(() => {
+                btn.textContent = originalText;
+              }, 1000);
+            }
+          } else {
+            // No pending chunks - execute immediately
+            insertAndSubmit();
+            console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
+          }
         }
       }
       
