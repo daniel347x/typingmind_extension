@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.30',
+    VERSION: '3.31',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -623,10 +623,11 @@
         min-width: 250px; /* Mobile-friendly minimum (was 500px) */
         display: flex;
         flex-direction: column;
-        overflow-y: auto; /* Enable scrolling for content overflow */
+        overflow-y: scroll; /* Always show scrollbar */
         overflow-x: hidden; /* Prevent horizontal scroll */
         flex-shrink: 0;
         height: 100%;
+        max-height: 100%; /* Constrain to panel height */
       }
       
       /* Resize Handle */
