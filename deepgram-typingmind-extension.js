@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.41',
+    VERSION: '3.42',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3760,13 +3760,21 @@
       }
       
       // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
+      // Special behavior: If recording active, stops recording first, then queues submit
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
+        e.preventDefault();
+        
+        // If recording active, stop it first
+        if (isRecording) {
+          toggleRecording(); // Stops recording, submits current chunk
+          console.log('⏸️ Ctrl+Alt+Shift+Enter: Recording stopped');
+        }
+        
+        // Now handle insert+submit
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text && !isRecording) {  // Only if NOT actively recording
-          e.preventDefault();
-          
-          // If chunks pending, queue the insert+submit
+        if (text) {
+          // If chunks pending (including the one we just stopped), queue the insert+submit
           if (pendingTranscriptions > 0) {
             pendingInsertAndSubmit = true;
             console.log('⏳ Insert+Submit queued - waiting for all chunks...');
