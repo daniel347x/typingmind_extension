@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.43',
+    VERSION: '3.44',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3735,35 +3735,45 @@
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
         e.preventDefault();
         
-        // If recording active, stop it first
-        if (isRecording) {
-          toggleRecording(); // Stops recording, submits current chunk
-          console.log('⏸️ Ctrl+Shift+Enter: Recording stopped');
-        }
-        
-        // Now handle insert
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text) {
-          // If chunks pending (including the one we just stopped), queue the insert
-          if (pendingTranscriptions > 0) {
-            pendingInsert = true;
-            console.log('⏳ Insert queued - waiting for all chunks...');
-            
-            // Visual feedback
-            const btn = document.getElementById('deepgram-insert-btn');
-            if (btn) {
-              const originalText = btn.textContent;
-              btn.textContent = '⏳ Queued...';
-              setTimeout(() => {
-                btn.textContent = originalText;
-              }, 1000);
-            }
-          } else {
-            // No pending chunks - execute immediately
-            insertToChat();
-            console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+        
+        if (!text) return; // No text to insert
+        
+        // If recording active, stop it first and FORCE queue
+        if (isRecording) {
+          toggleRecording(); // Stops recording, submits current chunk (async)
+          pendingInsert = true; // Force queue - chunk is coming
+          console.log('⏸️ Ctrl+Shift+Enter: Recording stopped + insert queued');
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-insert-btn');
+          if (btn) {
+            btn.textContent = '⏳ Queued...';
+            setTimeout(() => {
+              btn.textContent = '💬 Insert';
+            }, 1000);
           }
+          return; // Exit - let chunk completion handle execution
+        }
+        
+        // Recording already stopped - check for pending chunks
+        if (pendingTranscriptions > 0) {
+          pendingInsert = true;
+          console.log('⏳ Insert queued - waiting for all chunks...');
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-insert-btn');
+          if (btn) {
+            btn.textContent = '⏳ Queued...';
+            setTimeout(() => {
+              btn.textContent = '💬 Insert';
+            }, 1000);
+          }
+        } else {
+          // No pending chunks - execute immediately
+          insertToChat();
+          console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
         }
       }
       
@@ -3772,35 +3782,45 @@
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
         e.preventDefault();
         
-        // If recording active, stop it first
-        if (isRecording) {
-          toggleRecording(); // Stops recording, submits current chunk
-          console.log('⏸️ Ctrl+Alt+Shift+Enter: Recording stopped');
-        }
-        
-        // Now handle insert+submit
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text) {
-          // If chunks pending (including the one we just stopped), queue the insert+submit
-          if (pendingTranscriptions > 0) {
-            pendingInsertAndSubmit = true;
-            console.log('⏳ Insert+Submit queued - waiting for all chunks...');
-            
-            // Visual feedback
-            const btn = document.getElementById('deepgram-send-btn');
-            if (btn) {
-              const originalText = btn.textContent;
-              btn.textContent = '⏳ Queued...';
-              setTimeout(() => {
-                btn.textContent = originalText;
-              }, 1000);
-            }
-          } else {
-            // No pending chunks - execute immediately
-            insertAndSubmit();
-            console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
+        
+        if (!text) return; // No text to submit
+        
+        // If recording active, stop it first and FORCE queue
+        if (isRecording) {
+          toggleRecording(); // Stops recording, submits current chunk (async)
+          pendingInsertAndSubmit = true; // Force queue - chunk is coming
+          console.log('⏸️ Ctrl+Alt+Shift+Enter: Recording stopped + submit queued');
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-send-btn');
+          if (btn) {
+            btn.textContent = '⏳ Queued...';
+            setTimeout(() => {
+              btn.textContent = '⚡ Send';
+            }, 1000);
           }
+          return; // Exit - let chunk completion handle execution
+        }
+        
+        // Recording already stopped - check for pending chunks
+        if (pendingTranscriptions > 0) {
+          pendingInsertAndSubmit = true;
+          console.log('⏳ Insert+Submit queued - waiting for all chunks...');
+          
+          // Visual feedback
+          const btn = document.getElementById('deepgram-send-btn');
+          if (btn) {
+            btn.textContent = '⏳ Queued...';
+            setTimeout(() => {
+              btn.textContent = '⚡ Send';
+            }, 1000);
+          }
+        } else {
+          // No pending chunks - execute immediately
+          insertAndSubmit();
+          console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
         }
       }
       
