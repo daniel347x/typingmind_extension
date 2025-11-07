@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.42',
+    VERSION: '3.43',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3731,13 +3731,21 @@
       }
       
       // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
+      // Special behavior: If recording active, stops recording first, then queues insert
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
+        e.preventDefault();
+        
+        // If recording active, stop it first
+        if (isRecording) {
+          toggleRecording(); // Stops recording, submits current chunk
+          console.log('⏸️ Ctrl+Shift+Enter: Recording stopped');
+        }
+        
+        // Now handle insert
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text && !isRecording) {  // Only if NOT actively recording
-          e.preventDefault();
-          
-          // If chunks pending, queue the insert
+        if (text) {
+          // If chunks pending (including the one we just stopped), queue the insert
           if (pendingTranscriptions > 0) {
             pendingInsert = true;
             console.log('⏳ Insert queued - waiting for all chunks...');
