@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.38',
+    VERSION: '3.39',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3701,7 +3701,7 @@
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text) {
+        if (text && !isRecording) {  // Only if NOT actively recording
           e.preventDefault();
           
           // If chunks pending, queue the insert
@@ -3730,7 +3730,7 @@
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
-        if (text) {
+        if (text && !isRecording) {  // Only if NOT actively recording
           e.preventDefault();
           
           // If chunks pending, queue the insert+submit
