@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.32',
+    VERSION: '3.33',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1289,6 +1289,8 @@
         border-radius: 6px;
         font-size: 14px;
         box-sizing: border-box;
+        background: white;
+        color: #1a202c;
       }
       
       .teams-date-input:focus {
@@ -1321,11 +1323,14 @@
         border: 2px solid #e2e8f0;
         border-radius: 6px;
         font-size: 13px;
+        background: white;
+        color: #1a202c;
       }
       
       .teams-speaker-dropdown:disabled {
         opacity: 0.4;
         cursor: not-allowed;
+        background: #f8f9fa;
       }
       
       .teams-speaker-dropdown:focus {
@@ -3287,30 +3292,29 @@
       slot.className = 'teams-speaker-slot';
       slot.innerHTML = `
         <input type="checkbox" class="teams-speaker-checkbox" id="teams-speaker-check-${i}" data-index="${i}" />
-        <select class="teams-speaker-dropdown" id="teams-speaker-dropdown-${i}" data-index="${i}">
-          <option value="">-- Select or type --</option>
-        </select>
+        <input type="text" class="teams-speaker-dropdown" id="teams-speaker-dropdown-${i}" data-index="${i}" list="teams-speaker-datalist-${i}" placeholder="Type or select..." />
+        <datalist id="teams-speaker-datalist-${i}">
+        </datalist>
       `;
       speakersGrid.appendChild(slot);
       
-      // Make dropdown editable (allows typing new names)
-      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
-      dropdown.setAttribute('contenteditable', 'false'); // Use standard select for now
-      
       // Attach event listeners
       document.getElementById(`teams-speaker-check-${i}`).addEventListener('change', onSpeakerCheckboxChange);
-      dropdown.addEventListener('change', onSpeakerDropdownChange);
+      document.getElementById(`teams-speaker-dropdown-${i}`).addEventListener('input', onSpeakerDropdownChange);
     }
     
     // Populate known speakers in dropdowns
     updateKnownSpeakersList();
     
-    // Restore saved speakers
+    // Restore saved speakers (text inputs now)
     if (savedSpeakers) {
       const speakers = JSON.parse(savedSpeakers);
       speakers.forEach((name, i) => {
         if (name) {
-          document.getElementById(`teams-speaker-dropdown-${i}`).value = name;
+          const input = document.getElementById(`teams-speaker-dropdown-${i}`);
+          if (input) {
+            input.value = name;
+          }
         }
       });
     }
@@ -3327,9 +3331,12 @@
     if (savedDate) {
       document.getElementById('teams-date-input').value = savedDate;
     } else {
-      // Default to today's date
+      // Default to today's date (YYYY-MM-DD format)
       const today = new Date();
-      const dateStr = `${today.toLocaleString('default', { month: 'short' })} ${today.getDate()}, ${today.getFullYear()}`;
+      const year = today.getFullYear();
+      const month = String(today.getMonth() + 1).padStart(2, '0');
+      const day = String(today.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
       document.getElementById('teams-date-input').value = dateStr;
     }
     
@@ -3349,24 +3356,24 @@
   function updateKnownSpeakersList() {
     const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
     
-    // Update all dropdowns
+    // Update all datalists
     for (let i = 0; i < 10; i++) {
-      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
-      const currentValue = dropdown.value;
+      const datalist = document.getElementById(`teams-speaker-datalist-${i}`);
+      const input = document.getElementById(`teams-speaker-dropdown-${i}`);
+      const currentValue = input.value;
       
       // Clear and rebuild options
-      dropdown.innerHTML = '<option value="">-- Select or type --</option>';
+      datalist.innerHTML = '';
       
       knownSpeakers.forEach(name => {
         const option = document.createElement('option');
         option.value = name;
-        option.textContent = name;
-        dropdown.appendChild(option);
+        datalist.appendChild(option);
       });
       
-      // Restore previous value if it exists
-      if (currentValue && knownSpeakers.includes(currentValue)) {
-        dropdown.value = currentValue;
+      // Restore previous value
+      if (currentValue) {
+        input.value = currentValue;
       }
     }
   }
@@ -3377,11 +3384,11 @@
   }
   
   function onSpeakerDropdownChange(e) {
-    const dropdown = e.target;
-    const newName = dropdown.value.trim();
+    const input = e.target;
+    const newName = input.value.trim();
     
     // Add new name to known speakers list
-    if (newName && newName !== '-- Select or type --') {
+    if (newName) {
       const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
       if (!knownSpeakers.includes(newName)) {
         knownSpeakers.push(newName);
@@ -3395,10 +3402,10 @@
   }
   
   function saveTeamsSettings() {
-    // Save speaker names
+    // Save speaker names (from text inputs now, not selects)
     const speakers = [];
     for (let i = 0; i < 10; i++) {
-      speakers.push(document.getElementById(`teams-speaker-dropdown-${i}`).value);
+      speakers.push(document.getElementById(`teams-speaker-dropdown-${i}`).value.trim());
     }
     localStorage.setItem(CONFIG.TEAMS_SPEAKERS_STORAGE, JSON.stringify(speakers));
     
@@ -3423,9 +3430,9 @@
     const activeSpeakers = [];
     for (let i = 0; i < 10; i++) {
       const checkbox = document.getElementById(`teams-speaker-check-${i}`);
-      const dropdown = document.getElementById(`teams-speaker-dropdown-${i}`);
-      if (checkbox.checked && dropdown.value) {
-        activeSpeakers.push({ index: i, name: dropdown.value });
+      const input = document.getElementById(`teams-speaker-dropdown-${i}`);
+      if (checkbox && checkbox.checked && input && input.value.trim()) {
+        activeSpeakers.push({ index: i, name: input.value.trim() });
       }
     }
     
@@ -3500,14 +3507,31 @@
     const transcriptEl = document.getElementById('deepgram-transcript');
     teamsSavedCursorPosition = transcriptEl.selectionStart;
     
-    // Position popover near cursor (center of screen for simplicity)
+    // Position popover over transcription widget (top-center of panel)
     const popover = document.getElementById('teams-message-popover');
-    popover.style.left = '50%';
-    popover.style.top = '50%';
-    popover.style.transform = 'translate(-50%, -50%)';
-    popover.classList.add('visible');
+    const panel = document.getElementById('deepgram-panel');
     
+    if (panel) {
+      const panelRect = panel.getBoundingClientRect();
+      const popoverWidth = 500; // Min width from CSS
+      
+      // Center horizontally over left pane, near top
+      popover.style.left = (panelRect.left + 350) + 'px'; // Center of ~700px left pane
+      popover.style.top = (panelRect.top + 50) + 'px'; // 50px from top of panel
+      popover.style.transform = 'translateX(-50%)'; // Center on that position
+    } else {
+      // Fallback to screen center
+      popover.style.left = '50%';
+      popover.style.top = '20%';
+      popover.style.transform = 'translate(-50%, 0)';
+    }
+    
+    popover.classList.add('visible');
     teamsPopoverVisible = true;
+    
+    // Inherit dark mode from main panel
+    const panelTheme = document.getElementById('deepgram-panel').getAttribute('data-theme');
+    popover.setAttribute('data-theme', panelTheme || 'light');
     
     // Focus first radio button or date field
     const firstRadio = document.querySelector('.teams-radio-button');
