@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.28',
+    VERSION: '3.29',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -609,6 +609,7 @@
         flex-direction: row; /* Changed from column to row for side-by-side layout */
         overflow: hidden;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        resize: both; /* Allow manual resize via drag handle */
       }
       
       #deepgram-panel.open {
@@ -622,7 +623,8 @@
         min-width: 500px; /* Prevent shrinking too small */
         display: flex;
         flex-direction: column;
-        overflow-y: auto;
+        overflow-y: auto; /* Enable scrolling for content overflow */
+        overflow-x: hidden; /* Prevent horizontal scroll */
         flex-shrink: 0;
         height: 100%;
       }
@@ -1654,10 +1656,17 @@
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
             Ctrl+Shift+Enter: Insert to Chat<br>
+            Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
+            <br>
+            <strong>Teams Message Annotation:</strong>
+            Use Ctrl+Shift+M to insert speaker/date delimiters for bulk Teams messages. Configure active speakers in popover (persists across sessions). Auto-toggles between 2 speakers.<br>
             <br>
             <strong>Paste Support:</strong>
             <em>Paste MD:</em> Copy formatted text (bullets, bold, italic) from TypingMind → converts to plain text with ASCII formatting (-, **, *)<br>
-            <em>Paste Email:</em> Copy email content from Gmail → normalizes excessive paragraph spacing
+            <em>Paste Email:</em> Copy email content from Gmail → normalizes excessive paragraph spacing<br>
+            <br>
+            <strong>Auto-Clipboard:</strong>
+            Timer (default 60s) automatically copies transcript to clipboard. Resets on any edit (bounce effect) to prevent overwriting while you're working.
           </div>
         </details>
         </div>
@@ -3502,13 +3511,13 @@
         }
       }
       
-      // Ctrl+M: Show Teams message break popover (when textarea focused)
-      if (e.ctrlKey && e.key === 'm') {
+      // Ctrl+Shift+M: Show Teams message break popover (when textarea focused)
+      if (e.ctrlKey && e.shiftKey && e.key === 'M') {
         const transcriptEl = document.getElementById('deepgram-transcript');
         if (document.activeElement === transcriptEl) {
           e.preventDefault();
           showTeamsPopover();
-          console.log('✓ Ctrl+M: Teams popover triggered');
+          console.log('✓ Ctrl+Shift+M: Teams popover triggered');
         }
       }
       
