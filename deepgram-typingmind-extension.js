@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.40',
+    VERSION: '3.41',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1722,7 +1722,13 @@
       
       <div class="teams-popover-section">
         <label>Date:</label>
-        <input type="text" id="teams-date-input" class="teams-date-input" placeholder="e.g., Nov 7, 2025" />
+        <input type="text" id="teams-date-input" class="teams-date-input" placeholder="e.g., 2025-11-07" />
+      </div>
+      
+      <div class="teams-popover-section">
+        <label>Comment (optional):</label>
+        <textarea id="teams-comment-input" class="teams-date-input" rows="3" placeholder="Optional annotation for this message..."></textarea>
+        <small style="font-size: 11px; color: #999;">Brief note about this message (always starts empty)</small>
       </div>
       
       <div class="teams-popover-section">
@@ -3601,6 +3607,9 @@
     popover.classList.add('visible');
     teamsPopoverVisible = true;
     
+    // Clear comment field (always starts empty)
+    document.getElementById('teams-comment-input').value = '';
+    
     // Inherit dark mode from main panel
     const panelTheme = document.getElementById('deepgram-panel').getAttribute('data-theme');
     popover.setAttribute('data-theme', panelTheme || 'light');
@@ -3638,12 +3647,28 @@
     const speakerIndex = parseInt(selectedBtn.dataset.index);
     const speakerName = selectedBtn.textContent;
     const date = document.getElementById('teams-date-input').value.trim();
+    const comment = document.getElementById('teams-comment-input').value.trim();
     
     // Save last speaker index for toggle logic
     localStorage.setItem(CONFIG.TEAMS_LAST_SPEAKER_STORAGE, speakerIndex.toString());
     
     // Format delimiter (no leading/trailing newlines - user handles spacing)
-    const delimiter = `===MESSAGE_BREAK===\nSpeaker: ${speakerName}\nDate: ${date}\n===END_BREAK===`;
+    let delimiter = `===MESSAGE_BREAK===\nSpeaker: ${speakerName}\nDate: ${date}`;
+    
+    // Add comment if present
+    if (comment) {
+      // Check if multi-line
+      const lines = comment.split('\n').filter(l => l.trim());
+      if (lines.length > 1) {
+        // Multi-line format
+        delimiter += `\nComment:\n${comment}`;
+      } else {
+        // Single-line format
+        delimiter += `\nComment: ${comment}`;
+      }
+    }
+    
+    delimiter += `\n===END_BREAK===`;
     
     // Insert at saved cursor position
     const transcriptEl = document.getElementById('deepgram-transcript');
