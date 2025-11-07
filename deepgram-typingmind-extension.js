@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.36',
+    VERSION: '3.37',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3648,11 +3648,31 @@
       );
       
       // Space: Toggle recording (when not in input)
-      if (e.code === 'Space' && !isInputFocused) {
+      if (e.code === 'Space' && !isInputFocused && !e.ctrlKey) {
         const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
         if (apiKey) {
           e.preventDefault();
           toggleRecording();
+        }
+      }
+      
+      // Ctrl+Space: Stop recording and queue paragraph break
+      if (e.ctrlKey && e.code === 'Space') {
+        e.preventDefault();
+        if (isRecording) {
+          toggleRecording(); // Stop recording (submits chunk)
+          pendingParagraphBreak = true; // Queue paragraph for when chunk returns
+          console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued');
+          
+          // Visual feedback - flash status indicator briefly
+          const statusEl = document.getElementById('deepgram-status');
+          if (statusEl) {
+            const originalBg = statusEl.style.background;
+            statusEl.style.background = '#d4edda';
+            setTimeout(() => {
+              statusEl.style.background = originalBg;
+            }, 300);
+          }
         }
       }
       
