@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.31',
+    VERSION: '3.32',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1030,6 +1030,16 @@
         transform: translateY(-1px);
       }
       
+      .deepgram-btn-send {
+        background: #20c997;
+        color: white;
+      }
+      
+      .deepgram-btn-send:hover {
+        background: #1aa179;
+        transform: translateY(-1px);
+      }
+      
       .deepgram-btn-info {
         background: #17a2b8;
         color: white;
@@ -1636,6 +1646,9 @@
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
             💬 Insert
           </button>
+          <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
+            ⚡ Send
+          </button>
           <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled>
             📋 Copy
           </button>
@@ -1657,6 +1670,7 @@
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
             Ctrl+Shift+Enter: Insert to Chat<br>
+            Ctrl+Alt+Shift+Enter: Insert to Chat & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
             <br>
             <strong>Teams Message Annotation:</strong>
@@ -1810,6 +1824,7 @@
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
     document.getElementById('deepgram-record-btn').addEventListener('click', toggleRecording);
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
+    document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
     document.getElementById('deepgram-paste-email-btn').addEventListener('click', pasteEmail);
@@ -1931,10 +1946,12 @@
   function updateInsertButtonState() {
     const transcript = document.getElementById('deepgram-transcript').value.trim();
     const insertBtn = document.getElementById('deepgram-insert-btn');
+    const sendBtn = document.getElementById('deepgram-send-btn');
     const copyBtn = document.getElementById('deepgram-copy-btn');
     
     // Enable if there's any text, disable if empty
     insertBtn.disabled = !transcript;
+    sendBtn.disabled = !transcript;
     copyBtn.disabled = !transcript;
   }
   
@@ -2822,6 +2839,77 @@
   }
   
   // ==================== TYPINGMIND INTEGRATION ====================
+  
+  function insertAndSubmit() {
+    const text = document.getElementById('deepgram-transcript').value.trim();
+    if (!text) {
+      alert('No transcript to insert!');
+      return;
+    }
+    
+    // First, insert to chat
+    insertToChat();
+    
+    // Wait briefly for React/TypingMind to process the insertion
+    setTimeout(() => {
+      // Find the chat input again
+      const selectors = [
+        '#chat-input-textbox',
+        '[data-element-id="chat-input-textbox"]',
+        'textarea[placeholder*="Press"]',
+        'textarea.main-chat-input',
+        'textarea[placeholder*="Message"]',
+        'textarea'
+      ];
+      
+      let chatInput = null;
+      for (const selector of selectors) {
+        const elements = document.querySelectorAll(selector);
+        for (const element of elements) {
+          if (element.offsetParent !== null && 
+              !element.closest('#deepgram-panel') &&
+              !element.id.includes('deepgram')) {
+            chatInput = element;
+            break;
+          }
+        }
+        if (chatInput) break;
+      }
+      
+      if (chatInput) {
+        // Dispatch Ctrl+Enter event to trigger TypingMind submit
+        const enterEvent = new KeyboardEvent('keydown', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        });
+        
+        chatInput.dispatchEvent(enterEvent);
+        
+        // Also try keyup for good measure
+        const enterEventUp = new KeyboardEvent('keyup', {
+          key: 'Enter',
+          code: 'Enter',
+          keyCode: 13,
+          which: 13,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true
+        });
+        
+        chatInput.dispatchEvent(enterEventUp);
+        
+        console.log('✓ Ctrl+Enter event dispatched to chat input');
+      } else {
+        console.warn('⚠️ Could not find chat input for submit event');
+      }
+    }, 200); // 200ms delay should be enough for insertion to complete
+  }
+  
   function insertToChat() {
     const text = document.getElementById('deepgram-transcript').value.trim();
     if (!text) {
@@ -3502,13 +3590,24 @@
       }
       
       // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
-      if (e.ctrlKey && e.shiftKey && e.key === 'Enter') {
+      if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         if (text) {
           e.preventDefault();
           insertToChat();
           console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+        }
+      }
+      
+      // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
+      if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        const text = transcriptEl ? transcriptEl.value.trim() : '';
+        if (text) {
+          e.preventDefault();
+          insertAndSubmit();
+          console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
         }
       }
       
