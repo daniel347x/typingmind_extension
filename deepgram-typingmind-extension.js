@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.29',
+    VERSION: '3.30',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -620,7 +620,7 @@
       #deepgram-content-container {
         width: 700px; /* Original panel width */
         max-width: 1155px; /* Allow expansion to full panel width */
-        min-width: 500px; /* Prevent shrinking too small */
+        min-width: 250px; /* Mobile-friendly minimum (was 500px) */
         display: flex;
         flex-direction: column;
         overflow-y: auto; /* Enable scrolling for content overflow */
