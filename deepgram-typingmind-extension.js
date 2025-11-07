@@ -2372,6 +2372,13 @@
       // Append to transcript
       appendTranscript(transcription);
       
+      // Check if paragraph break was queued
+      if (pendingParagraphBreak) {
+        addParagraphBreak();
+        pendingParagraphBreak = false;
+        console.log('✅ Queued paragraph break inserted after chunk');
+      }
+      
       // Ensure buttons are enabled
       updateInsertButtonState();
       
@@ -2525,6 +2532,27 @@
   // ==================== CLICK BAR ====================
   
   function clickBarAction() {
+    if (pendingTranscriptions > 0) {
+      // Chunk pending - queue the paragraph break
+      pendingParagraphBreak = true;
+      console.log('⏳ Paragraph break queued (waiting for chunk)');
+      
+      // Visual feedback - flash the click bar green
+      const clickBar = document.getElementById('deepgram-click-bar');
+      if (clickBar) {
+        const originalBg = clickBar.style.background;
+        clickBar.style.background = 'linear-gradient(to bottom, #d4edda 0%, #c3e6cb 100%)';
+        setTimeout(() => {
+          clickBar.style.background = originalBg;
+        }, 400);
+      }
+    } else {
+      // No pending chunks - add paragraph immediately
+      addParagraphBreak();
+    }
+  }
+  
+  function addParagraphBreak() {
     const transcriptEl = document.getElementById('deepgram-transcript');
     
     // Move cursor to end
@@ -2549,7 +2577,7 @@
       transcriptEl.blur();
     }, 250);
     
-    console.log('✅ Click bar: Added paragraph break and focused');
+    console.log('✅ Paragraph break added');
   }
 
   function updateRecordButton(recording) {
