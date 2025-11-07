@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.34',
+    VERSION: '3.36',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -133,6 +133,9 @@
   let pendingTranscriptions = 0;
   let recordingStartTime = null;
   let recordingDurationTimer = null;
+  
+  // Paragraph break queueing
+  let pendingParagraphBreak = false;
   
   // Teams message break state
   let teamsPopoverVisible = false;
