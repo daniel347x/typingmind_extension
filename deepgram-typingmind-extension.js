@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.33',
+    VERSION: '3.34',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1257,6 +1257,10 @@
         max-width: 600px;
       }
       
+      [data-theme="dark"] #teams-message-popover {
+        background: #2d3548;
+      }
+      
       #teams-message-popover.visible {
         display: block;
       }
@@ -1375,6 +1379,7 @@
         border-color: #667eea;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
+        box-shadow: 0 0 15px rgba(102, 126, 234, 0.5);
       }
       
       .teams-popover-buttons {
@@ -1449,6 +1454,8 @@
       [data-theme="dark"] .teams-radio-button.selected {
         border-color: #667eea;
         color: white;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        box-shadow: 0 0 15px rgba(102, 126, 234, 0.6);
       }
       
       [data-theme="dark"] #deepgram-resize-handle {
@@ -3387,15 +3394,20 @@
     const input = e.target;
     const newName = input.value.trim();
     
-    // Add new name to known speakers list
-    if (newName) {
-      const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
-      if (!knownSpeakers.includes(newName)) {
-        knownSpeakers.push(newName);
-        localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
-        updateKnownSpeakersList();
+    // Debounce: Only add to known speakers when user pauses typing
+    // This prevents D, DA, DAN from all being saved
+    clearTimeout(input.saveTimeout);
+    input.saveTimeout = setTimeout(() => {
+      if (newName) {
+        const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+        if (!knownSpeakers.includes(newName)) {
+          knownSpeakers.push(newName);
+          localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
+          updateKnownSpeakersList();
+          console.log('✓ Added new speaker to known list:', newName);
+        }
       }
-    }
+    }, 1000); // Wait 1 second after typing stops
     
     saveTeamsSettings();
     updateTeamsRadioButtons();
@@ -3570,8 +3582,8 @@
     // Save last speaker index for toggle logic
     localStorage.setItem(CONFIG.TEAMS_LAST_SPEAKER_STORAGE, speakerIndex.toString());
     
-    // Format delimiter
-    const delimiter = `\n===MESSAGE_BREAK===\nSpeaker: ${speakerName}\nDate: ${date}\n===END_BREAK===\n\n`;
+    // Format delimiter (no leading/trailing newlines - user handles spacing)
+    const delimiter = `===MESSAGE_BREAK===\nSpeaker: ${speakerName}\nDate: ${date}\n===END_BREAK===`;
     
     // Insert at saved cursor position
     const transcriptEl = document.getElementById('deepgram-transcript');
