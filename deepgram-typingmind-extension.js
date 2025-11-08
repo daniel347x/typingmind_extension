@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.53',
+    VERSION: '3.54',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -969,6 +969,35 @@
         color: #6b7280;
       }
       
+      /* Keyboard Event Indicator Bells */
+      #keyboard-indicators {
+        display: flex;
+        gap: 6px;
+        justify-content: flex-end;
+        margin-bottom: 4px;
+      }
+      
+      .keyboard-bell {
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        border: 2px solid transparent;
+        opacity: 0.3;
+        transition: all 0.1s ease;
+      }
+      
+      .keyboard-bell.flash {
+        opacity: 1;
+        border-color: white;
+        box-shadow: 0 0 8px currentColor;
+        transform: scale(1.3);
+      }
+      
+      .keyboard-bell.space { background: #28a745; }
+      .keyboard-bell.ctrl-space { background: #ffc107; }
+      .keyboard-bell.ultimate { background: #17a2b8; }
+      .keyboard-bell.ultimate-ultimate { background: #9b59b6; }
+      
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
@@ -1641,6 +1670,14 @@
             <span>Transcript</span>
           </label>
           
+          <!-- Keyboard Event Indicators -->
+          <div id="keyboard-indicators">
+            <div class="keyboard-bell space" title="Space" id="bell-space"></div>
+            <div class="keyboard-bell ctrl-space" title="Ctrl+Space" id="bell-ctrl-space"></div>
+            <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
+            <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
+          </div>
+          
           <!-- Paragraph Warning (hidden by default) -->
           <div id="paragraph-warning" style="display: none; background: #ff4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; text-align: center; font-weight: 600;">
             ⚠️ Paragraph already queued
@@ -1928,6 +1965,17 @@
         warning.style.display = 'none';
       }, 1000);
     }
+  }
+  
+  // ==================== KEYBOARD INDICATOR BELLS ====================
+  function flashBell(bellId) {
+    const bell = document.getElementById(bellId);
+    if (!bell) return;
+    
+    bell.classList.add('flash');
+    setTimeout(() => {
+      bell.classList.remove('flash');
+    }, 250);
   }
   
   // ==================== CLEAR STATE ====================
@@ -3779,6 +3827,7 @@
         const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
         if (apiKey) {
           e.preventDefault();
+          flashBell('bell-space'); // Visual indicator
           toggleRecording();
         }
       }
@@ -3786,6 +3835,7 @@
       // Ctrl+Space: Toggle recording with paragraph break
       if (e.ctrlKey && e.code === 'Space') {
         e.preventDefault();
+        flashBell('bell-ctrl-space'); // Visual indicator
         
         if (isRecording) {
           // Recording ON → Turn OFF + queue paragraph
@@ -3833,6 +3883,7 @@
       // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
       // Special behavior: If recording active, stops recording first, then queues insert
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
+        flashBell('bell-ultimate'); // Visual indicator
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         
@@ -3893,6 +3944,7 @@
       // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
       // Special behavior: If recording active, stops recording first, then queues submit
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
+        flashBell('bell-ultimate-ultimate'); // Visual indicator
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         
