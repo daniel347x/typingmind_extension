@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.60',
+    VERSION: '3.61',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1746,7 +1746,7 @@
           <div class="deepgram-info">
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
-            Shift+Space: Stop recording + queue paragraph break<br>
+            ArrowDown: Add paragraph break (queues if chunks pending, immediate otherwise)<br>
             Ctrl+Shift+Enter: ULTIMATE - Stop recording (if active) + Insert to Chat<br>
             Ctrl+Alt+Shift+Enter: ULTIMATE ULTIMATE - Stop recording (if active) + Insert & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
@@ -2714,6 +2714,41 @@
       // No pending chunks - add paragraph immediately
       addParagraphBreak();
     }
+  }
+  
+  function setPendingParagraphFlag() {
+    console.log(ts(), '🏴 setPendingParagraphFlag called');
+    console.log('  pendingParagraphBreak BEFORE:', pendingParagraphBreak);
+    
+    if (pendingParagraphBreak) {
+      showParagraphWarning();
+      console.log(ts(), '⚠️ Pending paragraph flag already set - warning shown');
+    }
+    
+    pendingParagraphBreak = true;
+    console.log('  pendingParagraphBreak AFTER:', pendingParagraphBreak);
+  }
+  
+  function insertNewlineAtEnd() {
+    console.log(ts(), '📝 insertNewlineAtEnd called');
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    const currentText = transcriptEl.value;
+    
+    // Check if already ends with \n\n
+    if (!currentText.endsWith('\n\n')) {
+      transcriptEl.value += '\n\n';
+      console.log(ts(), '✅ Newline appended at end');
+    } else {
+      console.log(ts(), '⚪ Text already ends with newline - skipped');
+    }
+    
+    // Clear pending flag (just in case)
+    pendingParagraphBreak = false;
+    
+    // Move cursor to end and scroll
+    const endPosition = transcriptEl.value.length;
+    transcriptEl.setSelectionRange(endPosition, endPosition);
+    transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
   
   function addParagraphBreak() {
@@ -3848,54 +3883,34 @@
         }
       }
       
-      // Shift+Space: Toggle recording with paragraph break
-      if (e.shiftKey && !e.ctrlKey && e.code === 'Space') {
-        console.log(ts(), '🟡 SHIFT+SPACE HANDLER ENTERED:', {
-          ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, code: e.code, isRecording: isRecording
+      // ArrowDown: Add paragraph break (queue or immediate)
+      if (e.code === 'ArrowDown' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        console.log(ts(), '🟡 ARROW DOWN HANDLER ENTERED:', {
+          isRecording: isRecording,
+          pendingTranscriptions: pendingTranscriptions,
+          pendingParagraphBreak: pendingParagraphBreak
         });
         e.preventDefault();
-        flashBell('bell-ctrl-space'); // Visual indicator
+        flashBell('bell-ctrl-space'); // Visual indicator (yellow bell)
         
         if (isRecording) {
-          // Recording ON → Turn OFF + queue paragraph
-          toggleRecording(); // Stop recording (submits chunk)
-          
-          if (pendingParagraphBreak) {
-            showParagraphWarning();
-            console.log(ts(), '⚠️ Shift+Space: Paragraph already queued - double-press detected');
-          } else {
-            pendingParagraphBreak = true;
-            console.log(ts(), '⏸️ Shift+Space: Recording stopped + paragraph queued');
-          }
-          
-          // Visual feedback - flash status indicator briefly
-          const statusEl = document.getElementById('deepgram-status');
-          if (statusEl) {
-            const originalBg = statusEl.style.background;
-            statusEl.style.background = '#d4edda';
-            setTimeout(() => {
-              statusEl.style.background = originalBg;
-            }, 300);
-          }
+          // Recording ON → Stop, submit chunk, set pending flag, resume
+          console.log(ts(), '⏸️ ArrowDown: Recording ON - stopping to submit chunk');
+          toggleRecording(); // Stop recording (submits chunk, increments pendingTranscriptions)
+          setPendingParagraphFlag(); // Set flag for when chunk returns
+          toggleRecording(); // Resume recording immediately
+          console.log(ts(), '▶️ ArrowDown: Recording resumed after chunk submission');
         } else {
-          // Recording OFF → Queue/add paragraph + turn ON
+          // Recording OFF → Check if chunks pending
           if (pendingTranscriptions > 0) {
-            // Chunks pending - queue paragraph break
-            if (pendingParagraphBreak) {
-              showParagraphWarning();
-              console.log(ts(), '⚠️ Shift+Space: Paragraph already queued');
-            } else {
-              pendingParagraphBreak = true;
-              console.log(ts(), '⏳ Shift+Space: Paragraph queued, starting recording');
-            }
+            // Chunks pending - set flag
+            console.log(ts(), '⏳ ArrowDown: Chunks pending - setting flag');
+            setPendingParagraphFlag();
           } else {
-            // No chunks pending - add paragraph immediately
-            addParagraphBreak();
-            console.log(ts(), '✅ Shift+Space: Paragraph added, starting recording');
+            // No chunks pending - insert newline immediately
+            console.log(ts(), '✅ ArrowDown: No chunks pending - inserting newline now');
+            insertNewlineAtEnd();
           }
-          
-          // Start recording
-          toggleRecording();
         }
       }
       
