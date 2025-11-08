@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.72',
+    VERSION: '3.73',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1422,6 +1422,9 @@
         font-weight: 600;
         color: #333;
         background: #f8f9fa;
+        display: flex;
+        align-items: center;
+        justify-content: center;
       }
       
       .teams-radio-button:hover {
@@ -1434,6 +1437,40 @@
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
         box-shadow: 0 0 15px rgba(102, 126, 234, 0.5);
+      }
+      
+      .teams-radio-button.inactive {
+        opacity: 0.4;
+        cursor: default;
+      }
+      
+      .teams-radio-button.teams-add-new {
+        border-color: #28a745;
+        color: #28a745;
+        font-weight: 700;
+      }
+      
+      .teams-radio-button.teams-add-new:hover {
+        background: #e8f5e9;
+        border-color: #28a745;
+      }
+      
+      .teams-radio-name {
+        flex: 1;
+      }
+      
+      .teams-radio-delete {
+        margin-left: 8px;
+        font-size: 20px;
+        font-weight: 700;
+        color: #dc3545;
+        cursor: pointer;
+        padding: 0 4px;
+        border-radius: 4px;
+      }
+      
+      .teams-radio-delete:hover {
+        background: #ffebee;
       }
       
       .teams-popover-buttons {
@@ -3558,15 +3595,15 @@
       slot.className = 'teams-speaker-slot';
       slot.innerHTML = `
         <input type="checkbox" class="teams-speaker-checkbox" id="teams-speaker-check-${i}" data-index="${i}" />
-        <input type="text" class="teams-speaker-dropdown" id="teams-speaker-dropdown-${i}" data-index="${i}" list="teams-speaker-datalist-${i}" placeholder="Type or select..." />
-        <datalist id="teams-speaker-datalist-${i}">
-        </datalist>
+        <select class="teams-speaker-dropdown" id="teams-speaker-dropdown-${i}" data-index="${i}">
+          <option value="">Select or add new...</option>
+        </select>
       `;
       speakersGrid.appendChild(slot);
       
       // Attach event listeners
       document.getElementById(`teams-speaker-check-${i}`).addEventListener('change', onSpeakerCheckboxChange);
-      document.getElementById(`teams-speaker-dropdown-${i}`).addEventListener('input', onSpeakerDropdownChange);
+      document.getElementById(`teams-speaker-dropdown-${i}`).addEventListener('change', onSpeakerDropdownChange);
     }
     
     // Populate known speakers in dropdowns
@@ -3622,24 +3659,26 @@
   function updateKnownSpeakersList() {
     const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
     
-    // Update all datalists
+    // Update all select dropdowns
     for (let i = 0; i < 10; i++) {
-      const datalist = document.getElementById(`teams-speaker-datalist-${i}`);
-      const input = document.getElementById(`teams-speaker-dropdown-${i}`);
-      const currentValue = input.value;
+      const select = document.getElementById(`teams-speaker-dropdown-${i}`);
+      if (!select) continue;
+      
+      const currentValue = select.value;
       
       // Clear and rebuild options
-      datalist.innerHTML = '';
+      select.innerHTML = '<option value="">Select or add new...</option>';
       
       knownSpeakers.forEach(name => {
         const option = document.createElement('option');
         option.value = name;
-        datalist.appendChild(option);
+        option.textContent = name;
+        select.appendChild(option);
       });
       
       // Restore previous value
-      if (currentValue) {
-        input.value = currentValue;
+      if (currentValue && knownSpeakers.includes(currentValue)) {
+        select.value = currentValue;
       }
     }
   }
@@ -3650,26 +3689,53 @@
   }
   
   function onSpeakerDropdownChange(e) {
-    const input = e.target;
-    const newName = input.value.trim();
-    
-    // Debounce: Only add to known speakers when user pauses typing
-    // This prevents D, DA, DAN from all being saved
-    clearTimeout(input.saveTimeout);
-    input.saveTimeout = setTimeout(() => {
-      if (newName) {
-        const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
-        if (!knownSpeakers.includes(newName)) {
-          knownSpeakers.push(newName);
-          localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
-          updateKnownSpeakersList();
-          console.log('✓ Added new speaker to known list:', newName);
-        }
-      }
-    }, 1000); // Wait 1 second after typing stops
-    
+    // Simple select dropdown - just save and update
     saveTeamsSettings();
     updateTeamsRadioButtons();
+  }
+  
+  function deleteSpeaker(speakerName) {
+    if (!confirm(`Delete "${speakerName}" from saved names?`)) {
+      return;
+    }
+    
+    const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+    const index = knownSpeakers.indexOf(speakerName);
+    
+    if (index > -1) {
+      knownSpeakers.splice(index, 1);
+      localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
+      
+      // Update dropdowns and radio buttons
+      updateKnownSpeakersList();
+      updateTeamsRadioButtons();
+      
+      console.log('✓ Deleted speaker:', speakerName);
+    }
+  }
+  
+  function addNewSpeaker() {
+    const newName = prompt('Enter new speaker name:');
+    if (!newName || !newName.trim()) {
+      return;
+    }
+    
+    const trimmedName = newName.trim();
+    const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+    
+    if (knownSpeakers.includes(trimmedName)) {
+      alert('Speaker already exists!');
+      return;
+    }
+    
+    knownSpeakers.push(trimmedName);
+    localStorage.setItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE, JSON.stringify(knownSpeakers));
+    
+    // Update dropdowns and radio buttons
+    updateKnownSpeakersList();
+    updateTeamsRadioButtons();
+    
+    console.log('✓ Added new speaker:', trimmedName);
   }
   
   function saveTeamsSettings() {
@@ -3698,26 +3764,67 @@
     const radioGrid = document.getElementById('teams-radio-grid');
     radioGrid.innerHTML = '';
     
+    // Get ALL known speakers (not just active)
+    const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+    
+    // Get active speakers (checkbox checked)
     const activeSpeakers = [];
     for (let i = 0; i < 10; i++) {
       const checkbox = document.getElementById(`teams-speaker-check-${i}`);
-      const input = document.getElementById(`teams-speaker-dropdown-${i}`);
-      if (checkbox && checkbox.checked && input && input.value.trim()) {
-        activeSpeakers.push({ index: i, name: input.value.trim() });
+      const select = document.getElementById(`teams-speaker-dropdown-${i}`);
+      if (checkbox && checkbox.checked && select && select.value.trim()) {
+        activeSpeakers.push({ index: i, name: select.value.trim() });
       }
     }
     
-    // Create radio buttons for active speakers
-    activeSpeakers.forEach(speaker => {
+    // Create buttons for ALL known speakers
+    knownSpeakers.forEach((name, idx) => {
+      const isActive = activeSpeakers.some(s => s.name === name);
+      const speakerData = activeSpeakers.find(s => s.name === name);
+      
       const radioBtn = document.createElement('div');
       radioBtn.className = 'teams-radio-button';
-      radioBtn.textContent = speaker.name;
-      radioBtn.dataset.index = speaker.index;
-      radioBtn.addEventListener('click', selectTeamsSpeaker);
+      if (!isActive) {
+        radioBtn.classList.add('inactive'); // Gray out inactive speakers
+      }
+      
+      // Button text: name + delete X
+      radioBtn.innerHTML = `
+        <span class="teams-radio-name">${name}</span>
+        <span class="teams-radio-delete" data-name="${name}">×</span>
+      `;
+      
+      if (isActive && speakerData) {
+        radioBtn.dataset.index = speakerData.index;
+        radioBtn.addEventListener('click', (e) => {
+          // Check if delete button clicked
+          if (e.target.classList.contains('teams-radio-delete')) {
+            deleteSpeaker(e.target.dataset.name);
+          } else {
+            selectTeamsSpeaker(e);
+          }
+        });
+      } else {
+        // Inactive speaker - only allow delete
+        radioBtn.style.cursor = 'default';
+        radioBtn.addEventListener('click', (e) => {
+          if (e.target.classList.contains('teams-radio-delete')) {
+            deleteSpeaker(e.target.dataset.name);
+          }
+        });
+      }
+      
       radioGrid.appendChild(radioBtn);
     });
     
-    // Auto-select based on toggle logic
+    // Add "Add New" button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'teams-radio-button teams-add-new';
+    addBtn.innerHTML = '<span>✚ Add New</span>';
+    addBtn.addEventListener('click', addNewSpeaker);
+    radioGrid.appendChild(addBtn);
+    
+    // Auto-select based on toggle logic (only among active speakers)
     autoSelectSpeaker(activeSpeakers);
     
     // Update auto-info text
