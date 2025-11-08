@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.65',
+    VERSION: '3.66',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4047,8 +4047,8 @@
         console.log('✓ ULTIMATE ULTIMATE: Submit executed immediately (no chunks pending)');
       }
       
-      // Ctrl+Shift+M: Show Teams message break popover (when textarea focused)
-      if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+      // Ctrl+M: Show Teams message break popover (when textarea focused)
+      if (e.ctrlKey && !e.shiftKey && e.key === 'm') {
         console.log(ts(), '🔍 CTRL+SHIFT+M DETECTED:', {
           ctrl: e.ctrlKey,
           shift: e.shiftKey,
