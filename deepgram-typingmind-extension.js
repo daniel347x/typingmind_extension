@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.67',
+    VERSION: '3.71',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1292,19 +1292,27 @@
       /* Teams Message Popover */
       #teams-message-popover {
         position: fixed;
-        background: white;
-        border: 2px solid #667eea;
+        background: transparent;
+        border: none;
         border-radius: 12px;
         box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
-        padding: 20px;
+        padding: 0;
         z-index: 1000000;
         display: none;
         min-width: 500px;
         max-width: 600px;
       }
       
-      [data-theme="dark"] #teams-message-popover {
-        background: #2d3548;
+      .teams-popover-inner {
+        background: white;
+        border: 2px solid #667eea;
+        border-radius: 12px;
+        padding: 20px;
+      }
+      
+      [data-theme="dark"] .teams-popover-inner {
+        background: #2d3548 !important;
+        border-color: #667eea;
       }
       
       #teams-message-popover.visible {
@@ -1779,6 +1787,7 @@
     const teamsPopover = document.createElement('div');
     teamsPopover.id = 'teams-message-popover';
     teamsPopover.innerHTML = `
+      <div class="teams-popover-inner">
       <div class="teams-popover-header">
         Insert Teams Message Break
         <div class="teams-auto-info" id="teams-auto-info"></div>
@@ -1812,6 +1821,7 @@
       <div class="teams-popover-buttons">
         <button class="teams-popover-button primary" id="teams-insert-break-btn">Insert Break</button>
         <button class="teams-popover-button secondary" id="teams-cancel-btn">Cancel</button>
+      </div>
       </div>
     `;
     
@@ -3793,9 +3803,12 @@
     // Clear comment field (always starts empty)
     document.getElementById('teams-comment-input').value = '';
     
-    // Inherit dark mode from main panel
+    // Inherit dark mode from main panel and apply to wrapper
     const panelTheme = document.getElementById('deepgram-panel').getAttribute('data-theme');
-    popover.setAttribute('data-theme', panelTheme || 'light');
+    const popoverInner = popover.querySelector('.teams-popover-inner');
+    if (popoverInner) {
+      popoverInner.setAttribute('data-theme', panelTheme || 'light');
+    }
     
     // Focus first radio button or date field
     const firstRadio = document.querySelector('.teams-radio-button');
