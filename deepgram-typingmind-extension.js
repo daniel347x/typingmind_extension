@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.56',
+    VERSION: '3.57',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3834,6 +3834,9 @@
       
       // Space: Toggle recording (when not in input)
       if (e.code === 'Space' && !isInputFocused && !e.ctrlKey) {
+        console.log(ts(), '🟢 SPACE HANDLER ENTERED:', {
+          ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, code: e.code
+        });
         const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
         if (apiKey) {
           e.preventDefault();
@@ -3844,6 +3847,9 @@
       
       // Ctrl+Shift+Space: Toggle recording with paragraph break
       if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
+        console.log(ts(), '🟡 CTRL+SHIFT+SPACE HANDLER ENTERED:', {
+          ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, code: e.code, isRecording: isRecording
+        });
         e.preventDefault();
         flashBell('bell-ctrl-space'); // Visual indicator
         
