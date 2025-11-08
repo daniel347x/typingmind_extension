@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.74',
+    VERSION: '3.75',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3794,13 +3794,19 @@
         <span class="teams-radio-delete" data-name="${name}">×</span>
       `;
       
+      // Store name in dataset for easy retrieval
+      radioBtn.dataset.name = name;
+      
       if (isActive && speakerData) {
         radioBtn.dataset.index = speakerData.index;
         radioBtn.addEventListener('click', (e) => {
-          // Check if delete button clicked
-          if (e.target.classList.contains('teams-radio-delete')) {
-            deleteSpeaker(e.target.dataset.name);
+          // Check if delete button clicked (check target AND parent)
+          const deleteBtn = e.target.closest('.teams-radio-delete');
+          if (deleteBtn) {
+            e.stopPropagation();
+            deleteSpeaker(deleteBtn.dataset.name);
           } else {
+            // Click anywhere else on button = select it
             selectTeamsSpeaker(e);
           }
         });
@@ -3808,8 +3814,10 @@
         // Inactive speaker - only allow delete
         radioBtn.style.cursor = 'default';
         radioBtn.addEventListener('click', (e) => {
-          if (e.target.classList.contains('teams-radio-delete')) {
-            deleteSpeaker(e.target.dataset.name);
+          const deleteBtn = e.target.closest('.teams-radio-delete');
+          if (deleteBtn) {
+            e.stopPropagation();
+            deleteSpeaker(deleteBtn.dataset.name);
           }
         });
       }
@@ -3877,8 +3885,11 @@
     // Deselect all
     document.querySelectorAll('.teams-radio-button').forEach(btn => btn.classList.remove('selected'));
     
-    // Select clicked
-    e.target.classList.add('selected');
+    // Select clicked button (handle clicks on child spans)
+    const button = e.target.closest('.teams-radio-button');
+    if (button) {
+      button.classList.add('selected');
+    }
   }
   
   function showTeamsPopover() {
@@ -3984,7 +3995,7 @@
     }
     
     const speakerIndex = parseInt(selectedBtn.dataset.index);
-    const speakerName = selectedBtn.textContent;
+    const speakerName = selectedBtn.dataset.name; // Use dataset, not textContent (avoids × char)
     const date = document.getElementById('teams-date-input').value.trim();
     const comment = document.getElementById('teams-comment-input').value.trim();
     
@@ -4228,11 +4239,12 @@
       }
       
       // Enter: Insert break and close popover (when popover visible)
-      // BUT: Allow Enter in comment textarea for multi-line input
+      // BUT: Allow Enter in comment textarea for multi-line input (unless Ctrl+Enter)
       if (e.key === 'Enter' && teamsPopoverVisible) {
         const commentTextarea = document.getElementById('teams-comment-input');
-        if (document.activeElement === commentTextarea) {
+        if (document.activeElement === commentTextarea && !e.ctrlKey) {
           // Let Enter work normally in comment field (new line)
+          // Ctrl+Enter still submits even from comment field
           return;
         }
         e.preventDefault();
