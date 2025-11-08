@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.48',
+    VERSION: '3.49',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3711,10 +3711,12 @@
         }
       }
       
-      // Ctrl+Space: Stop recording and queue paragraph break
+      // Ctrl+Space: Toggle recording with paragraph break
       if (e.ctrlKey && e.code === 'Space') {
         e.preventDefault();
+        
         if (isRecording) {
+          // Recording ON → Turn OFF + queue paragraph
           toggleRecording(); // Stop recording (submits chunk)
           pendingParagraphBreak = true; // Queue paragraph for when chunk returns
           console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued');
@@ -3728,6 +3730,20 @@
               statusEl.style.background = originalBg;
             }, 300);
           }
+        } else {
+          // Recording OFF → Queue/add paragraph + turn ON
+          if (pendingTranscriptions > 0) {
+            // Chunks pending - queue paragraph break
+            pendingParagraphBreak = true;
+            console.log('⏳ Ctrl+Space: Paragraph queued, starting recording');
+          } else {
+            // No chunks pending - add paragraph immediately
+            addParagraphBreak();
+            console.log('✅ Ctrl+Space: Paragraph added, starting recording');
+          }
+          
+          // Start recording
+          toggleRecording();
         }
       }
       
