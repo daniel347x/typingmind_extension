@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.57',
+    VERSION: '3.58',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1906,7 +1906,10 @@
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
-    document.getElementById('deepgram-record-btn').addEventListener('click', toggleRecording);
+    document.getElementById('deepgram-record-btn').addEventListener('click', () => {
+      console.log(ts(), '🖱️ RECORD BUTTON CLICKED (mouse or programmatic)');
+      toggleRecording();
+    });
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
