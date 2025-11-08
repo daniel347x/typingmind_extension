@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.64',
+    VERSION: '3.65',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2997,7 +2997,7 @@
         }
       }, autoClipboardDelay * 1000);
       
-      console.log('✓ Auto-clipboard timer started:', autoClipboardDelay, 'seconds');
+      // console.log('✓ Auto-clipboard timer started:', autoClipboardDelay, 'seconds');
     }
   }
   
@@ -3005,7 +3005,7 @@
     if (autoClipboardTimer) {
       clearInterval(autoClipboardTimer);
       autoClipboardTimer = null;
-      console.log('✓ Auto-clipboard timer stopped');
+      // console.log('✓ Auto-clipboard timer stopped');
     }
   }
   
@@ -3016,7 +3016,7 @@
     // Restart with current delay setting (if enabled)
     if (autoClipboardDelay > 0) {
       startAutoClipboard();
-      console.log('🔄 Auto-clipboard timer reset (bounce effect)');
+      // console.log('🔄 Auto-clipboard timer reset (bounce effect)');
     }
   }
   
