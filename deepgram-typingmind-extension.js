@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.51',
+    VERSION: '3.52',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -134,8 +134,8 @@
   let recordingStartTime = null;
   let recordingDurationTimer = null;
   
-  // Paragraph break queueing
-  let pendingParagraphBreak = false;
+  // Paragraph break queueing (counter for multiple queued breaks)
+  let pendingParagraphBreaks = 0;
   
   // Insert/Submit queueing
   let pendingInsert = false;
@@ -1548,7 +1548,10 @@
       <div id="deepgram-content-container">
         <div class="deepgram-header">
           <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
-          <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
+          <div style="display: flex; gap: 10px; align-items: center;">
+            <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
+            <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
+          </div>
         </div>
         
         <div class="deepgram-content">
@@ -1899,10 +1902,33 @@
     window.onWhisperEndpointChange = onWhisperEndpointChange;
     window.saveWhisperSettings = saveWhisperSettings;
     window.clickBarAction = clickBarAction;
+    window.clearAllState = clearAllState;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
     console.log('📌 Mode:', transcriptionMode);
+  }
+  
+  // ==================== CLEAR STATE ====================
+  function clearAllState() {
+    pendingParagraphBreaks = 0;
+    pendingInsert = false;
+    pendingInsertAndSubmit = false;
+    
+    console.log('🔄 All state flags cleared');
+    console.log('  pendingParagraphBreaks:', pendingParagraphBreaks);
+    console.log('  pendingInsert:', pendingInsert);
+    console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
+    
+    // Visual feedback
+    const statusEl = document.getElementById('deepgram-status');
+    if (statusEl) {
+      const originalBg = statusEl.style.background;
+      statusEl.style.background = '#ffc107';
+      setTimeout(() => {
+        statusEl.style.background = originalBg;
+      }, 500);
+    }
   }
   
   // ==================== UTILITY FUNCTIONS ====================
@@ -2386,11 +2412,11 @@
       // Append to transcript
       appendTranscript(transcription);
       
-      // Check if paragraph break was queued
-      if (pendingParagraphBreak) {
+      // Check if paragraph breaks were queued
+      if (pendingParagraphBreaks > 0) {
         addParagraphBreak();
-        pendingParagraphBreak = false;
-        console.log('✅ Queued paragraph break inserted after chunk');
+        pendingParagraphBreaks--;
+        console.log('✅ Queued paragraph break inserted (remaining:', pendingParagraphBreaks, ')');
       }
       
       // Ensure buttons are enabled
@@ -2405,7 +2431,7 @@
       console.log('  pendingTranscriptions BEFORE decrement:', pendingTranscriptions);
       console.log('  pendingInsert:', pendingInsert);
       console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
-      console.log('  pendingParagraphBreak:', pendingParagraphBreak);
+      console.log('  pendingParagraphBreaks:', pendingParagraphBreaks);
       
       // Decrement pending counter
       pendingTranscriptions--;
@@ -2585,8 +2611,8 @@
   function clickBarAction() {
     if (pendingTranscriptions > 0) {
       // Chunk pending - queue the paragraph break
-      pendingParagraphBreak = true;
-      console.log('⏳ Paragraph break queued (waiting for chunk)');
+      pendingParagraphBreaks++;
+      console.log('⏳ Paragraph break queued (count:', pendingParagraphBreaks, ')');
       
       // Visual feedback - flash the click bar green
       const clickBar = document.getElementById('deepgram-click-bar');
@@ -2598,7 +2624,15 @@
         }, 400);
       }
     } else {
-      // No pending chunks - add paragraph immediately
+      // No pending chunks - add paragraph immediately (or process queued ones first)
+      if (pendingParagraphBreaks > 0) {
+        // Process queued breaks first
+        for (let i = 0; i < pendingParagraphBreaks; i++) {
+          addParagraphBreak();
+        }
+        pendingParagraphBreaks = 0;
+        console.log('✅ Processed queued paragraph breaks');
+      }
       addParagraphBreak();
     }
   }
@@ -3738,8 +3772,8 @@
         if (isRecording) {
           // Recording ON → Turn OFF + queue paragraph
           toggleRecording(); // Stop recording (submits chunk)
-          pendingParagraphBreak = true; // Queue paragraph for when chunk returns
-          console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued');
+          pendingParagraphBreaks++; // Increment counter
+          console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued (count:', pendingParagraphBreaks, ')');
           
           // Visual feedback - flash status indicator briefly
           const statusEl = document.getElementById('deepgram-status');
@@ -3754,10 +3788,17 @@
           // Recording OFF → Queue/add paragraph + turn ON
           if (pendingTranscriptions > 0) {
             // Chunks pending - queue paragraph break
-            pendingParagraphBreak = true;
-            console.log('⏳ Ctrl+Space: Paragraph queued, starting recording');
+            pendingParagraphBreaks++;
+            console.log('⏳ Ctrl+Space: Paragraph queued (count:', pendingParagraphBreaks, '), starting recording');
           } else {
-            // No chunks pending - add paragraph immediately
+            // No chunks pending - add paragraph immediately (process queued first)
+            if (pendingParagraphBreaks > 0) {
+              for (let i = 0; i < pendingParagraphBreaks; i++) {
+                addParagraphBreak();
+              }
+              pendingParagraphBreaks = 0;
+              console.log('✅ Processed queued paragraph breaks before adding new one');
+            }
             addParagraphBreak();
             console.log('✅ Ctrl+Space: Paragraph added, starting recording');
           }
