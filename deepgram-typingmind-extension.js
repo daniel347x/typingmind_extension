@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.54',
+    VERSION: '3.55',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1673,7 +1673,7 @@
           <!-- Keyboard Event Indicators -->
           <div id="keyboard-indicators">
             <div class="keyboard-bell space" title="Space" id="bell-space"></div>
-            <div class="keyboard-bell ctrl-space" title="Ctrl+Space" id="bell-ctrl-space"></div>
+            <div class="keyboard-bell ctrl-space" title="Ctrl+Shift+Space" id="bell-ctrl-space"></div>
             <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
             <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
           </div>
@@ -1736,7 +1736,7 @@
           <div class="deepgram-info">
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
-            Ctrl+Space: Stop recording + queue paragraph break<br>
+            Ctrl+Shift+Space: Stop recording + queue paragraph break<br>
             Ctrl+Shift+Enter: ULTIMATE - Stop recording (if active) + Insert to Chat<br>
             Ctrl+Alt+Shift+Enter: ULTIMATE ULTIMATE - Stop recording (if active) + Insert & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
@@ -3832,8 +3832,8 @@
         }
       }
       
-      // Ctrl+Space: Toggle recording with paragraph break
-      if (e.ctrlKey && e.code === 'Space') {
+      // Ctrl+Shift+Space: Toggle recording with paragraph break
+      if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
         e.preventDefault();
         flashBell('bell-ctrl-space'); // Visual indicator
         
@@ -3843,10 +3843,10 @@
           
           if (pendingParagraphBreak) {
             showParagraphWarning();
-            console.log('⚠️ Ctrl+Space: Paragraph already queued - double-press detected');
+            console.log('⚠️ Ctrl+Shift+Space: Paragraph already queued - double-press detected');
           } else {
             pendingParagraphBreak = true;
-            console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued');
+            console.log('⏸️ Ctrl+Shift+Space: Recording stopped + paragraph queued');
           }
           
           // Visual feedback - flash status indicator briefly
@@ -3864,15 +3864,15 @@
             // Chunks pending - queue paragraph break
             if (pendingParagraphBreak) {
               showParagraphWarning();
-              console.log('⚠️ Ctrl+Space: Paragraph already queued');
+              console.log('⚠️ Ctrl+Shift+Space: Paragraph already queued');
             } else {
               pendingParagraphBreak = true;
-              console.log('⏳ Ctrl+Space: Paragraph queued, starting recording');
+              console.log('⏳ Ctrl+Shift+Space: Paragraph queued, starting recording');
             }
           } else {
             // No chunks pending - add paragraph immediately
             addParagraphBreak();
-            console.log('✅ Ctrl+Space: Paragraph added, starting recording');
+            console.log('✅ Ctrl+Shift+Space: Paragraph added, starting recording');
           }
           
           // Start recording
