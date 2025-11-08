@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.58',
+    VERSION: '3.59',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1683,7 +1683,7 @@
           <!-- Keyboard Event Indicators -->
           <div id="keyboard-indicators">
             <div class="keyboard-bell space" title="Space" id="bell-space"></div>
-            <div class="keyboard-bell ctrl-space" title="Ctrl+Shift+Space" id="bell-ctrl-space"></div>
+            <div class="keyboard-bell ctrl-space" title="Shift+Space" id="bell-ctrl-space"></div>
             <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
             <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
           </div>
@@ -1746,7 +1746,7 @@
           <div class="deepgram-info">
             <strong>Keyboard Shortcuts:</strong>
             Space: Toggle recording (when not typing)<br>
-            Ctrl+Shift+Space: Stop recording + queue paragraph break<br>
+            Shift+Space: Stop recording + queue paragraph break<br>
             Ctrl+Shift+Enter: ULTIMATE - Stop recording (if active) + Insert to Chat<br>
             Ctrl+Alt+Shift+Enter: ULTIMATE ULTIMATE - Stop recording (if active) + Insert & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
@@ -3848,9 +3848,9 @@
         }
       }
       
-      // Ctrl+Shift+Space: Toggle recording with paragraph break
-      if (e.ctrlKey && e.shiftKey && e.code === 'Space') {
-        console.log(ts(), '🟡 CTRL+SHIFT+SPACE HANDLER ENTERED:', {
+      // Shift+Space: Toggle recording with paragraph break
+      if (e.shiftKey && !e.ctrlKey && e.code === 'Space') {
+        console.log(ts(), '🟡 SHIFT+SPACE HANDLER ENTERED:', {
           ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, code: e.code, isRecording: isRecording
         });
         e.preventDefault();
@@ -3862,10 +3862,10 @@
           
           if (pendingParagraphBreak) {
             showParagraphWarning();
-            console.log(ts(), '⚠️ Ctrl+Shift+Space: Paragraph already queued - double-press detected');
+            console.log(ts(), '⚠️ Shift+Space: Paragraph already queued - double-press detected');
           } else {
             pendingParagraphBreak = true;
-            console.log(ts(), '⏸️ Ctrl+Shift+Space: Recording stopped + paragraph queued');
+            console.log(ts(), '⏸️ Shift+Space: Recording stopped + paragraph queued');
           }
           
           // Visual feedback - flash status indicator briefly
@@ -3883,15 +3883,15 @@
             // Chunks pending - queue paragraph break
             if (pendingParagraphBreak) {
               showParagraphWarning();
-              console.log(ts(), '⚠️ Ctrl+Shift+Space: Paragraph already queued');
+              console.log(ts(), '⚠️ Shift+Space: Paragraph already queued');
             } else {
               pendingParagraphBreak = true;
-              console.log(ts(), '⏳ Ctrl+Shift+Space: Paragraph queued, starting recording');
+              console.log(ts(), '⏳ Shift+Space: Paragraph queued, starting recording');
             }
           } else {
             // No chunks pending - add paragraph immediately
             addParagraphBreak();
-            console.log(ts(), '✅ Ctrl+Shift+Space: Paragraph added, starting recording');
+            console.log(ts(), '✅ Shift+Space: Paragraph added, starting recording');
           }
           
           // Start recording
