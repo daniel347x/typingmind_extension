@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.66',
+    VERSION: '3.67',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1466,17 +1466,22 @@
       
       /* Dark mode for Teams popover */
       [data-theme="dark"] #teams-message-popover {
-        background: #1a1d2e;
+        background: #2d3548;
         border-color: #667eea;
+        color: #f3f4f6;
       }
       
       [data-theme="dark"] .teams-popover-header {
-        color: #e4e4e7;
-        border-bottom-color: #374151;
+        color: #f3f4f6;
+        border-bottom-color: #4b5563;
       }
       
       [data-theme="dark"] .teams-popover-section label {
-        color: #e4e4e7;
+        color: #f3f4f6;
+      }
+      
+      [data-theme="dark"] .teams-popover-section small {
+        color: #9ca3af;
       }
       
       [data-theme="dark"] .teams-date-input,
