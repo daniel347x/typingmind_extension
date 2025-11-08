@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.76',
+    VERSION: '3.77',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4278,7 +4278,8 @@
       }
       
       // Number keys 1-9: Select corresponding radio button (when popover visible)
-      if (teamsPopoverVisible && e.key >= '1' && e.key <= '9') {
+      // BUT: Only if NOT typing in an input field
+      if (teamsPopoverVisible && e.key >= '1' && e.key <= '9' && !isInputFocused) {
         const radioButtons = document.querySelectorAll('.teams-radio-button');
         const index = parseInt(e.key) - 1;
         if (radioButtons[index]) {
