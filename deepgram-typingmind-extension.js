@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.59',
+    VERSION: '3.60',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3836,7 +3836,7 @@
       );
       
       // Space: Toggle recording (when not in input)
-      if (e.code === 'Space' && !isInputFocused && !e.ctrlKey) {
+      if (e.code === 'Space' && !isInputFocused && !e.ctrlKey && !e.shiftKey) {
         console.log(ts(), '🟢 SPACE HANDLER ENTERED:', {
           ctrl: e.ctrlKey, shift: e.shiftKey, alt: e.altKey, code: e.code
         });
