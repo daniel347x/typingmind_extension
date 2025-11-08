@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.50',
+    VERSION: '3.51',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3799,16 +3799,11 @@
           return; // Exit - let chunk completion handle execution
         }
         
-        // Recording already stopped - now check if text exists
-        if (!text) {
-          console.log('⚠️ ULTIMATE: No text to insert (transcript empty)');
-          return;
-        }
-        
-        // Recording already stopped - check for pending chunks
+        // Recording already stopped - check for pending chunks FIRST (before text check)
         if (pendingTranscriptions > 0) {
+          // Chunks pending - queue regardless of current text (text may be coming)
           pendingInsert = true;
-          console.log('⏳ Insert queued - waiting for all chunks...');
+          console.log('⏳ ULTIMATE: Insert queued (chunks pending, text may be empty now)');
           
           // Visual feedback
           const btn = document.getElementById('deepgram-insert-btn');
@@ -3818,11 +3813,18 @@
               btn.textContent = '💬 Insert';
             }, 1000);
           }
-        } else {
-          // No pending chunks - execute immediately
-          insertToChat();
-          console.log('✓ Ctrl+Shift+Enter: Insert to Chat triggered');
+          return; // Exit - let chunk completion handle execution
         }
+        
+        // No recording, no chunks pending - NOW check if text exists
+        if (!text) {
+          console.log('⚠️ ULTIMATE: No text to insert (transcript empty, no chunks pending)');
+          return;
+        }
+        
+        // Safe to execute immediately
+        insertToChat();
+        console.log('✓ ULTIMATE: Insert executed immediately (no chunks pending)');
       }
       
       // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
@@ -3859,16 +3861,11 @@
           return; // Exit - let chunk completion handle execution
         }
         
-        // Recording already stopped - now check if text exists
-        if (!text) {
-          console.log('⚠️ ULTIMATE ULTIMATE: No text to submit (transcript empty)');
-          return;
-        }
-        
-        // Recording already stopped - check for pending chunks
+        // Recording already stopped - check for pending chunks FIRST (before text check)
         if (pendingTranscriptions > 0) {
+          // Chunks pending - queue regardless of current text (text may be coming)
           pendingInsertAndSubmit = true;
-          console.log('⏳ Insert+Submit queued - waiting for all chunks...');
+          console.log('⏳ ULTIMATE ULTIMATE: Submit queued (chunks pending, text may be empty now)');
           
           // Visual feedback
           const btn = document.getElementById('deepgram-send-btn');
@@ -3878,11 +3875,18 @@
               btn.textContent = '⚡ Send';
             }, 1000);
           }
-        } else {
-          // No pending chunks - execute immediately
-          insertAndSubmit();
-          console.log('✓ Ctrl+Alt+Shift+Enter: Insert and Submit triggered');
+          return; // Exit - let chunk completion handle execution
         }
+        
+        // No recording, no chunks pending - NOW check if text exists
+        if (!text) {
+          console.log('⚠️ ULTIMATE ULTIMATE: No text to submit (transcript empty, no chunks pending)');
+          return;
+        }
+        
+        // Safe to execute immediately
+        insertAndSubmit();
+        console.log('✓ ULTIMATE ULTIMATE: Submit executed immediately (no chunks pending)');
       }
       
       // Ctrl+Shift+M: Show Teams message break popover (when textarea focused)
