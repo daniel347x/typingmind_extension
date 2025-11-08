@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.61',
+    VERSION: '3.62',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3143,6 +3143,15 @@
         chatInput.dispatchEvent(enterEventUp);
         
         console.log('✓ Ctrl+Enter event dispatched to chat input');
+        
+        // Blur chat input after submit so Space key is ready for recording toggle
+        setTimeout(() => {
+          if (chatInput && document.activeElement === chatInput) {
+            chatInput.blur();
+            console.log('✓ Chat input blurred after submit - Space key ready for recording toggle');
+          }
+        }, 100);
+        
       } else {
         console.warn('⚠️ Could not find chat input for submit event');
       }
