@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.78',
+    VERSION: '3.79',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4562,6 +4562,11 @@
     // Refresh grids
     updateDocAnnotationTypesGrid();
     updateDocAnnotationPeopleGrid();
+    
+    // Focus comment field for immediate typing
+    setTimeout(() => {
+      document.getElementById('doc-annotation-comment-input').focus();
+    }, 100);
     
     console.log('✓ Doc annotation popover shown', docAnnotationSavedSelection);
   }
