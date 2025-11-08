@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.47',
+    VERSION: '3.48',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3746,13 +3746,11 @@
         
         e.preventDefault();
         
-        if (!text) return; // No text to insert
-        
-        // If recording active, stop it first and FORCE queue
+        // If recording active, stop it first and FORCE queue (don't check text yet)
         if (isRecording) {
           toggleRecording(); // Stops recording, submits current chunk (async)
-          pendingInsert = true; // Force queue - chunk is coming
-          console.log('⏸️ Ctrl+Shift+Enter: Recording stopped + insert queued');
+          pendingInsert = true; // Force queue - text is coming from chunk
+          console.log('⏸️ ULTIMATE: Recording stopped + insert queued (text pending)');
           
           // Visual feedback
           const btn = document.getElementById('deepgram-insert-btn');
@@ -3763,6 +3761,12 @@
             }, 1000);
           }
           return; // Exit - let chunk completion handle execution
+        }
+        
+        // Recording already stopped - now check if text exists
+        if (!text) {
+          console.log('⚠️ ULTIMATE: No text to insert (transcript empty)');
+          return;
         }
         
         // Recording already stopped - check for pending chunks
@@ -3802,13 +3806,11 @@
         
         e.preventDefault();
         
-        if (!text) return; // No text to submit
-        
-        // If recording active, stop it first and FORCE queue
+        // If recording active, stop it first and FORCE queue (don't check text yet)
         if (isRecording) {
           toggleRecording(); // Stops recording, submits current chunk (async)
-          pendingInsertAndSubmit = true; // Force queue - chunk is coming
-          console.log('⏸️ Ctrl+Alt+Shift+Enter: Recording stopped + submit queued');
+          pendingInsertAndSubmit = true; // Force queue - text is coming from chunk
+          console.log('⏸️ ULTIMATE ULTIMATE: Recording stopped + submit queued (text pending)');
           
           // Visual feedback
           const btn = document.getElementById('deepgram-send-btn');
@@ -3819,6 +3821,12 @@
             }, 1000);
           }
           return; // Exit - let chunk completion handle execution
+        }
+        
+        // Recording already stopped - now check if text exists
+        if (!text) {
+          console.log('⚠️ ULTIMATE ULTIMATE: No text to submit (transcript empty)');
+          return;
         }
         
         // Recording already stopped - check for pending chunks
