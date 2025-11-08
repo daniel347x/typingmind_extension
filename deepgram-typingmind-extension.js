@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.71',
+    VERSION: '3.72',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3803,11 +3803,47 @@
     // Clear comment field (always starts empty)
     document.getElementById('teams-comment-input').value = '';
     
-    // Inherit dark mode from main panel and apply to wrapper
+    // Apply dark mode via inline styles (nuclear option - CSS wasn't working)
     const panelTheme = document.getElementById('deepgram-panel').getAttribute('data-theme');
     const popoverInner = popover.querySelector('.teams-popover-inner');
-    if (popoverInner) {
-      popoverInner.setAttribute('data-theme', panelTheme || 'light');
+    
+    if (panelTheme === 'dark' && popoverInner) {
+      // Force dark mode via inline styles on wrapper
+      popoverInner.style.backgroundColor = '#2d3548';
+      popoverInner.style.color = '#f3f4f6';
+      
+      // Update header
+      popover.querySelectorAll('.teams-popover-header').forEach(el => {
+        el.style.color = '#f3f4f6';
+        el.style.borderBottomColor = '#4b5563';
+      });
+      
+      // Update labels
+      popover.querySelectorAll('.teams-popover-section label').forEach(el => {
+        el.style.color = '#f3f4f6';
+      });
+      
+      // Update small text
+      popover.querySelectorAll('.teams-popover-section small').forEach(el => {
+        el.style.color = '#9ca3af';
+      });
+    } else if (popoverInner) {
+      // Light mode - clear inline styles
+      popoverInner.style.backgroundColor = '';
+      popoverInner.style.color = '';
+      
+      popover.querySelectorAll('.teams-popover-header').forEach(el => {
+        el.style.color = '';
+        el.style.borderBottomColor = '';
+      });
+      
+      popover.querySelectorAll('.teams-popover-section label').forEach(el => {
+        el.style.color = '';
+      });
+      
+      popover.querySelectorAll('.teams-popover-section small').forEach(el => {
+        el.style.color = '';
+      });
     }
     
     // Focus first radio button or date field
