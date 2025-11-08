@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.46',
+    VERSION: '3.47',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3735,16 +3735,16 @@
       // Special behavior: If recording active, stops recording first, then queues insert
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
         const transcriptEl = document.getElementById('deepgram-transcript');
+        const text = transcriptEl ? transcriptEl.value.trim() : '';
+        
         console.log('🔥 ULTIMATE triggered');
         console.log('  isRecording:', isRecording);
         console.log('  pendingTranscriptions:', pendingTranscriptions);
         console.log('  activeElement:', document.activeElement?.tagName, document.activeElement?.id);
         console.log('  transcript length:', transcriptEl?.value.length);
+        console.log('  text to insert:', text?.substring(0, 50) + '...');
         
         e.preventDefault();
-        
-        const transcriptEl = document.getElementById('deepgram-transcript');
-        const text = transcriptEl ? transcriptEl.value.trim() : '';
         
         if (!text) return; // No text to insert
         
@@ -3789,6 +3789,8 @@
       // Special behavior: If recording active, stops recording first, then queues submit
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
         const transcriptEl = document.getElementById('deepgram-transcript');
+        const text = transcriptEl ? transcriptEl.value.trim() : '';
+        
         console.log('🔥 ULTIMATE ULTIMATE triggered');
         console.log('  isRecording:', isRecording);
         console.log('  pendingTranscriptions:', pendingTranscriptions);
@@ -3796,11 +3798,9 @@
         console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
         console.log('  activeElement:', document.activeElement?.tagName, document.activeElement?.id);
         console.log('  transcript length:', transcriptEl?.value.length);
+        console.log('  text to submit:', text?.substring(0, 50) + '...');
         
         e.preventDefault();
-        
-        const transcriptEl = document.getElementById('deepgram-transcript');
-        const text = transcriptEl ? transcriptEl.value.trim() : '';
         
         if (!text) return; // No text to submit
         
