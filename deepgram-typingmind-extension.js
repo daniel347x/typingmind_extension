@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.62',
+    VERSION: '3.63',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3150,7 +3150,7 @@
             chatInput.blur();
             console.log('✓ Chat input blurred after submit - Space key ready for recording toggle');
           }
-        }, 100);
+        }, 1000);
         
       } else {
         console.warn('⚠️ Could not find chat input for submit event');
