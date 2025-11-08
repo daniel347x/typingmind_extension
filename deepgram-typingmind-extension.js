@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.77',
+    VERSION: '3.78',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -116,7 +116,12 @@
     TEAMS_ACTIVE_STORAGE: 'teams_message_active_speakers',
     TEAMS_DATE_STORAGE: 'teams_message_date',
     TEAMS_LAST_SPEAKER_STORAGE: 'teams_message_last_speaker_index',
-    TEAMS_KNOWN_SPEAKERS_STORAGE: 'teams_message_known_speakers'
+    TEAMS_KNOWN_SPEAKERS_STORAGE: 'teams_message_known_speakers',
+    
+    // Document annotation settings
+    DOC_ANNOTATION_TYPES_STORAGE: 'doc_annotation_types',
+    DOC_ANNOTATION_LAST_TYPE_STORAGE: 'doc_annotation_last_type',
+    DOC_ANNOTATION_LAST_PERSON_STORAGE: 'doc_annotation_last_person'
   };
   
   // ==================== STATE ====================
@@ -154,6 +159,10 @@
   // Teams message break state
   let teamsPopoverVisible = false;
   let teamsSavedCursorPosition = null;
+  
+  // Document annotation state
+  let docAnnotationPopoverVisible = false;
+  let docAnnotationSavedSelection = null;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -1582,6 +1591,218 @@
         color: #9ca3af;
       }
       
+      /* Document Annotation Popover */
+      #doc-annotation-popover {
+        position: fixed;
+        background: transparent;
+        border: none;
+        border-radius: 12px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        padding: 0;
+        z-index: 1000000;
+        display: none;
+        min-width: 500px;
+        max-width: 600px;
+      }
+      
+      .doc-annotation-popover-inner {
+        background: white;
+        border: 2px solid #667eea;
+        border-radius: 12px;
+        padding: 20px;
+      }
+      
+      [data-theme="dark"] .doc-annotation-popover-inner {
+        background: #2d3548 !important;
+        border-color: #667eea;
+      }
+      
+      #doc-annotation-popover.visible {
+        display: block;
+      }
+      
+      .doc-annotation-popover-header {
+        font-size: 16px;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 15px;
+        border-bottom: 2px solid #e2e8f0;
+        padding-bottom: 10px;
+      }
+      
+      .doc-annotation-popover-section {
+        margin-bottom: 15px;
+      }
+      
+      .doc-annotation-popover-section label {
+        display: block;
+        font-weight: 600;
+        color: #333;
+        margin-bottom: 8px;
+        font-size: 13px;
+      }
+      
+      .doc-annotation-comment-input {
+        width: 100%;
+        padding: 8px 12px;
+        border: 2px solid #e2e8f0;
+        border-radius: 6px;
+        font-size: 14px;
+        box-sizing: border-box;
+        background: white;
+        color: #1a202c;
+      }
+      
+      .doc-annotation-comment-input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+      
+      .doc-annotation-radio-section {
+        margin-top: 15px;
+        padding-top: 15px;
+        border-top: 2px solid #e2e8f0;
+      }
+      
+      .doc-annotation-radio-section label {
+        margin-bottom: 12px;
+      }
+      
+      .doc-annotation-radio-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        gap: 10px;
+      }
+      
+      .doc-annotation-radio-button {
+        padding: 15px 10px;
+        border: 3px solid #e2e8f0;
+        border-radius: 8px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        font-weight: 600;
+        color: #333;
+        background: #f8f9fa;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .doc-annotation-radio-button:hover {
+        border-color: #667eea;
+        background: #f0f4ff;
+      }
+      
+      .doc-annotation-radio-button.selected {
+        border-color: #667eea;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        box-shadow: 0 0 15px rgba(102, 126, 234, 0.5);
+      }
+      
+      .doc-annotation-radio-button.doc-add-new {
+        border-color: #28a745;
+        color: #28a745;
+        font-weight: 700;
+      }
+      
+      .doc-annotation-radio-button.doc-add-new:hover {
+        background: #e8f5e9;
+        border-color: #28a745;
+      }
+      
+      .doc-annotation-radio-name {
+        flex: 1;
+      }
+      
+      .doc-annotation-radio-delete {
+        margin-left: 8px;
+        font-size: 20px;
+        font-weight: 700;
+        color: #dc3545;
+        cursor: pointer;
+        padding: 0 4px;
+        border-radius: 4px;
+      }
+      
+      .doc-annotation-radio-delete:hover {
+        background: #ffebee;
+      }
+      
+      .doc-annotation-popover-buttons {
+        display: flex;
+        gap: 10px;
+        margin-top: 15px;
+      }
+      
+      .doc-annotation-popover-button {
+        flex: 1;
+        padding: 10px;
+        border: none;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      
+      .doc-annotation-popover-button.primary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+      }
+      
+      .doc-annotation-popover-button.primary:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+      }
+      
+      .doc-annotation-popover-button.secondary {
+        background: #6c757d;
+        color: white;
+      }
+      
+      .doc-annotation-popover-button.secondary:hover {
+        background: #5a6268;
+      }
+      
+      [data-theme="dark"] .doc-annotation-popover-header {
+        color: #f3f4f6;
+        border-bottom-color: #4b5563;
+      }
+      
+      [data-theme="dark"] .doc-annotation-popover-section label {
+        color: #f3f4f6;
+      }
+      
+      [data-theme="dark"] .doc-annotation-popover-section small {
+        color: #9ca3af;
+      }
+      
+      [data-theme="dark"] .doc-annotation-comment-input {
+        background-color: #2d3548;
+        color: #f3f4f6;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .doc-annotation-radio-button {
+        background: #2d3548;
+        color: #e4e4e7;
+        border-color: #374151;
+      }
+      
+      [data-theme="dark"] .doc-annotation-radio-button:hover {
+        background: #3d4463;
+        border-color: #667eea;
+      }
+      
+      [data-theme="dark"] .doc-annotation-radio-button.selected {
+        border-color: #667eea;
+        color: white;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        box-shadow: 0 0 15px rgba(102, 126, 234, 0.6);
+      }
+      
       /* Responsive adjustments */
       @media (max-width: 1200px) {
         #deepgram-panel {
@@ -1862,9 +2083,46 @@
       </div>
     `;
     
+    // Create Document Annotation popover
+    const docAnnotationPopover = document.createElement('div');
+    docAnnotationPopover.id = 'doc-annotation-popover';
+    docAnnotationPopover.innerHTML = `
+      <div class="doc-annotation-popover-inner">
+      <div class="doc-annotation-popover-header">
+        Document Edit Annotation
+      </div>
+      
+      <div class="doc-annotation-popover-section">
+        <label>Annotation Type:</label>
+        <div class="doc-annotation-radio-grid" id="doc-annotation-types-grid">
+          <!-- Will be populated by JavaScript -->
+        </div>
+      </div>
+      
+      <div class="doc-annotation-popover-section">
+        <label>Person:</label>
+        <div class="doc-annotation-radio-grid" id="doc-annotation-people-grid">
+          <!-- Will be populated by JavaScript (shares Teams speaker list) -->
+        </div>
+      </div>
+      
+      <div class="doc-annotation-popover-section">
+        <label>Comment (optional):</label>
+        <input type="text" id="doc-annotation-comment-input" class="doc-annotation-comment-input" placeholder="Optional comment..." />
+        <small style="font-size: 11px; color: #999;">Added as attribute in XML tag</small>
+      </div>
+      
+      <div class="doc-annotation-popover-buttons">
+        <button class="doc-annotation-popover-button primary" id="doc-annotation-insert-btn">Insert Annotation</button>
+        <button class="doc-annotation-popover-button secondary" id="doc-annotation-cancel-btn">Cancel</button>
+      </div>
+      </div>
+    `;
+    
     document.body.appendChild(toggleBtn);
     document.body.appendChild(panel);
     document.body.appendChild(teamsPopover);
+    document.body.appendChild(docAnnotationPopover);
     console.log('✓ Widget created');
   }
   
@@ -2000,6 +2258,9 @@
     
     // Initialize Teams message break feature
     initializeTeamsMessageBreak();
+    
+    // Initialize Document Annotation feature
+    initializeDocAnnotation();
     
     // Make functions global
     window.deepgramEditApiKey = editApiKey;
@@ -4042,6 +4303,344 @@
     console.log('✓ Teams message break inserted:', speakerName, date);
   }
   
+  // ==================== DOCUMENT ANNOTATION ====================
+  
+  function initializeDocAnnotation() {
+    // Load or initialize default annotation types
+    let annotationTypes = JSON.parse(localStorage.getItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE) || '[]');
+    if (annotationTypes.length === 0) {
+      // Default types
+      annotationTypes = ['added', 'removed', 'modified', 'commented'];
+      localStorage.setItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE, JSON.stringify(annotationTypes));
+    }
+    
+    // Build annotation types radio grid
+    updateDocAnnotationTypesGrid();
+    
+    // Build people radio grid (shares Teams speaker list)
+    updateDocAnnotationPeopleGrid();
+    
+    // Attach button event listeners
+    document.getElementById('doc-annotation-insert-btn').addEventListener('click', insertDocAnnotation);
+    document.getElementById('doc-annotation-cancel-btn').addEventListener('click', hideDocAnnotationPopover);
+    
+    console.log('✓ Document annotation initialized');
+  }
+  
+  function updateDocAnnotationTypesGrid() {
+    const typesGrid = document.getElementById('doc-annotation-types-grid');
+    typesGrid.innerHTML = '';
+    
+    const annotationTypes = JSON.parse(localStorage.getItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE) || '[]');
+    const lastType = localStorage.getItem(CONFIG.DOC_ANNOTATION_LAST_TYPE_STORAGE);
+    
+    // Create buttons for each type
+    annotationTypes.forEach((type) => {
+      const radioBtn = document.createElement('div');
+      radioBtn.className = 'doc-annotation-radio-button';
+      radioBtn.innerHTML = `
+        <span class="doc-annotation-radio-name">${type}</span>
+        <span class="doc-annotation-radio-delete" data-type="${type}">×</span>
+      `;
+      radioBtn.dataset.type = type;
+      
+      // Auto-select last used type
+      if (type === lastType) {
+        radioBtn.classList.add('selected');
+      }
+      
+      radioBtn.addEventListener('click', (e) => {
+        const deleteBtn = e.target.closest('.doc-annotation-radio-delete');
+        if (deleteBtn) {
+          e.stopPropagation();
+          deleteDocAnnotationType(deleteBtn.dataset.type);
+        } else {
+          selectDocAnnotationType(e);
+        }
+      });
+      
+      typesGrid.appendChild(radioBtn);
+    });
+    
+    // Add "Add New" button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'doc-annotation-radio-button doc-add-new';
+    addBtn.innerHTML = '<span>✚ Add New</span>';
+    addBtn.addEventListener('click', addNewDocAnnotationType);
+    typesGrid.appendChild(addBtn);
+    
+    // Auto-select first if none selected
+    if (!lastType && annotationTypes.length > 0) {
+      typesGrid.firstElementChild?.classList.add('selected');
+    }
+  }
+  
+  function updateDocAnnotationPeopleGrid() {
+    const peopleGrid = document.getElementById('doc-annotation-people-grid');
+    peopleGrid.innerHTML = '';
+    
+    // Use Teams known speakers list (shared infrastructure)
+    const knownSpeakers = JSON.parse(localStorage.getItem(CONFIG.TEAMS_KNOWN_SPEAKERS_STORAGE) || '[]');
+    const lastPerson = localStorage.getItem(CONFIG.DOC_ANNOTATION_LAST_PERSON_STORAGE);
+    
+    // Create buttons for each person
+    knownSpeakers.forEach((name) => {
+      const radioBtn = document.createElement('div');
+      radioBtn.className = 'doc-annotation-radio-button';
+      radioBtn.innerHTML = `
+        <span class="doc-annotation-radio-name">${name}</span>
+        <span class="doc-annotation-radio-delete" data-name="${name}">×</span>
+      `;
+      radioBtn.dataset.name = name;
+      
+      // Auto-select last used person
+      if (name === lastPerson) {
+        radioBtn.classList.add('selected');
+      }
+      
+      radioBtn.addEventListener('click', (e) => {
+        const deleteBtn = e.target.closest('.doc-annotation-radio-delete');
+        if (deleteBtn) {
+          e.stopPropagation();
+          deleteDocAnnotationPerson(deleteBtn.dataset.name);
+        } else {
+          selectDocAnnotationPerson(e);
+        }
+      });
+      
+      peopleGrid.appendChild(radioBtn);
+    });
+    
+    // Add "Add New" button
+    const addBtn = document.createElement('div');
+    addBtn.className = 'doc-annotation-radio-button doc-add-new';
+    addBtn.innerHTML = '<span>✚ Add New</span>';
+    addBtn.addEventListener('click', addNewDocAnnotationPerson);
+    peopleGrid.appendChild(addBtn);
+    
+    // Auto-select first if none selected and we have people
+    if (!lastPerson && knownSpeakers.length > 0) {
+      peopleGrid.firstElementChild?.classList.add('selected');
+    }
+  }
+  
+  function selectDocAnnotationType(e) {
+    document.querySelectorAll('#doc-annotation-types-grid .doc-annotation-radio-button').forEach(btn => btn.classList.remove('selected'));
+    const button = e.target.closest('.doc-annotation-radio-button');
+    if (button) {
+      button.classList.add('selected');
+    }
+  }
+  
+  function selectDocAnnotationPerson(e) {
+    document.querySelectorAll('#doc-annotation-people-grid .doc-annotation-radio-button').forEach(btn => btn.classList.remove('selected'));
+    const button = e.target.closest('.doc-annotation-radio-button');
+    if (button) {
+      button.classList.add('selected');
+    }
+  }
+  
+  function deleteDocAnnotationType(typeName) {
+    if (!confirm(`Delete annotation type "${typeName}"?`)) {
+      return;
+    }
+    
+    const types = JSON.parse(localStorage.getItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE) || '[]');
+    const index = types.indexOf(typeName);
+    
+    if (index > -1) {
+      types.splice(index, 1);
+      localStorage.setItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE, JSON.stringify(types));
+      updateDocAnnotationTypesGrid();
+      console.log('✓ Deleted annotation type:', typeName);
+    }
+  }
+  
+  function addNewDocAnnotationType() {
+    const newType = prompt('Enter new annotation type:');
+    if (!newType || !newType.trim()) {
+      return;
+    }
+    
+    const trimmedType = newType.trim().toLowerCase();
+    const types = JSON.parse(localStorage.getItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE) || '[]');
+    
+    if (types.includes(trimmedType)) {
+      alert('Annotation type already exists!');
+      return;
+    }
+    
+    types.push(trimmedType);
+    localStorage.setItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE, JSON.stringify(types));
+    updateDocAnnotationTypesGrid();
+    console.log('✓ Added new annotation type:', trimmedType);
+  }
+  
+  function deleteDocAnnotationPerson(personName) {
+    // This deletes from TEAMS speaker list (shared infrastructure)
+    deleteSpeaker(personName);
+    // Refresh people grid
+    updateDocAnnotationPeopleGrid();
+  }
+  
+  function addNewDocAnnotationPerson() {
+    // This adds to TEAMS speaker list (shared infrastructure)
+    addNewSpeaker();
+    // Refresh people grid
+    updateDocAnnotationPeopleGrid();
+  }
+  
+  function showDocAnnotationPopover() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    
+    // Save current selection (start and end)
+    docAnnotationSavedSelection = {
+      start: transcriptEl.selectionStart,
+      end: transcriptEl.selectionEnd,
+      text: transcriptEl.value.substring(transcriptEl.selectionStart, transcriptEl.selectionEnd)
+    };
+    
+    // Position popover over transcription widget
+    const popover = document.getElementById('doc-annotation-popover');
+    const panel = document.getElementById('deepgram-panel');
+    
+    if (panel) {
+      const panelRect = panel.getBoundingClientRect();
+      popover.style.left = (panelRect.left + 350) + 'px';
+      popover.style.top = (panelRect.top + 50) + 'px';
+      popover.style.transform = 'translateX(-50%)';
+    } else {
+      popover.style.left = '50%';
+      popover.style.top = '20%';
+      popover.style.transform = 'translate(-50%, 0)';
+    }
+    
+    popover.classList.add('visible');
+    docAnnotationPopoverVisible = true;
+    
+    // Clear comment field
+    document.getElementById('doc-annotation-comment-input').value = '';
+    
+    // Apply dark mode via inline styles (nuclear option)
+    const panelTheme = document.getElementById('deepgram-panel').getAttribute('data-theme');
+    const popoverInner = popover.querySelector('.doc-annotation-popover-inner');
+    
+    if (panelTheme === 'dark' && popoverInner) {
+      popoverInner.style.backgroundColor = '#2d3548';
+      popoverInner.style.color = '#f3f4f6';
+      
+      popover.querySelectorAll('.doc-annotation-popover-header').forEach(el => {
+        el.style.color = '#f3f4f6';
+        el.style.borderBottomColor = '#4b5563';
+      });
+      
+      popover.querySelectorAll('.doc-annotation-popover-section label').forEach(el => {
+        el.style.color = '#f3f4f6';
+      });
+      
+      popover.querySelectorAll('.doc-annotation-popover-section small').forEach(el => {
+        el.style.color = '#9ca3af';
+      });
+    } else if (popoverInner) {
+      popoverInner.style.backgroundColor = '';
+      popoverInner.style.color = '';
+      
+      popover.querySelectorAll('.doc-annotation-popover-header').forEach(el => {
+        el.style.color = '';
+        el.style.borderBottomColor = '';
+      });
+      
+      popover.querySelectorAll('.doc-annotation-popover-section label').forEach(el => {
+        el.style.color = '';
+      });
+      
+      popover.querySelectorAll('.doc-annotation-popover-section small').forEach(el => {
+        el.style.color = '';
+      });
+    }
+    
+    // Refresh grids
+    updateDocAnnotationTypesGrid();
+    updateDocAnnotationPeopleGrid();
+    
+    console.log('✓ Doc annotation popover shown', docAnnotationSavedSelection);
+  }
+  
+  function hideDocAnnotationPopover() {
+    const popover = document.getElementById('doc-annotation-popover');
+    popover.classList.remove('visible');
+    docAnnotationPopoverVisible = false;
+    
+    // Return focus to textarea
+    document.getElementById('deepgram-transcript').focus();
+    
+    console.log('✓ Doc annotation popover hidden');
+  }
+  
+  function escapeXmlAttribute(text) {
+    return text
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+  
+  function insertDocAnnotation() {
+    // Get selected type
+    const selectedTypeBtn = document.querySelector('#doc-annotation-types-grid .doc-annotation-radio-button.selected');
+    if (!selectedTypeBtn) {
+      alert('Please select an annotation type');
+      return;
+    }
+    const annotationType = selectedTypeBtn.dataset.type;
+    
+    // Get selected person
+    const selectedPersonBtn = document.querySelector('#doc-annotation-people-grid .doc-annotation-radio-button.selected');
+    if (!selectedPersonBtn) {
+      alert('Please select a person');
+      return;
+    }
+    const personName = selectedPersonBtn.dataset.name;
+    
+    // Get comment (optional)
+    const comment = document.getElementById('doc-annotation-comment-input').value.trim();
+    
+    // Save last selections for next time
+    localStorage.setItem(CONFIG.DOC_ANNOTATION_LAST_TYPE_STORAGE, annotationType);
+    localStorage.setItem(CONFIG.DOC_ANNOTATION_LAST_PERSON_STORAGE, personName);
+    
+    // Generate XML tag
+    let xmlTag;
+    
+    if (docAnnotationSavedSelection.text) {
+      // Has selected text - wrapping tag
+      const escapedComment = comment ? ` comment="${escapeXmlAttribute(comment)}"` : '';
+      xmlTag = `<${annotationType} by="${escapeXmlAttribute(personName)}"${escapedComment}>${docAnnotationSavedSelection.text}</${annotationType}>`;
+    } else {
+      // No selected text - self-closing tag
+      const escapedComment = comment ? ` comment="${escapeXmlAttribute(comment)}"` : '';
+      xmlTag = `<${annotationType} by="${escapeXmlAttribute(personName)}"${escapedComment} />`;
+    }
+    
+    // Insert XML tag into textarea
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    const text = transcriptEl.value;
+    const before = text.substring(0, docAnnotationSavedSelection.start);
+    const after = text.substring(docAnnotationSavedSelection.end);
+    
+    transcriptEl.value = before + xmlTag + after;
+    
+    // Move cursor after inserted tag
+    const newPos = docAnnotationSavedSelection.start + xmlTag.length;
+    transcriptEl.setSelectionRange(newPos, newPos);
+    
+    // Hide popover
+    hideDocAnnotationPopover();
+    
+    console.log('✓ Document annotation inserted:', annotationType, personName, comment || '(no comment)');
+  }
+  
   // ==================== KEYBOARD SHORTCUTS ====================
   function initializeKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
@@ -4258,6 +4857,16 @@
         }
       }
       
+      // Ctrl+U: Show Document Annotation popover (when textarea focused)
+      if (e.ctrlKey && !e.shiftKey && e.key === 'u') {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (document.activeElement === transcriptEl) {
+          e.preventDefault();
+          showDocAnnotationPopover();
+          console.log(ts(), '✓ Ctrl+U: Document annotation popover triggered');
+        }
+      }
+      
       // Enter: Insert break and close popover (when popover visible)
       // BUT: Allow Enter in comment textarea for multi-line input (unless Ctrl+Enter)
       if (e.key === 'Enter' && teamsPopoverVisible) {
@@ -4275,6 +4884,45 @@
       if (e.key === 'Escape' && teamsPopoverVisible) {
         e.preventDefault();
         hideTeamsPopover();
+      }
+      
+      // Document Annotation popover shortcuts
+      if (docAnnotationPopoverVisible) {
+        // Enter: Insert annotation and close
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          insertDocAnnotation();
+        }
+        
+        // Escape: Cancel and close
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          hideDocAnnotationPopover();
+        }
+        
+        // Number keys 1-9: Quick select annotation type or person
+        // Types in first row, people in second row (shift for people)
+        if (e.key >= '1' && e.key <= '9' && !isInputFocused) {
+          const index = parseInt(e.key) - 1;
+          
+          if (e.shiftKey) {
+            // Shift+Number: Select person
+            const peopleButtons = document.querySelectorAll('#doc-annotation-people-grid .doc-annotation-radio-button:not(.doc-add-new)');
+            if (peopleButtons[index]) {
+              e.preventDefault();
+              peopleButtons.forEach(btn => btn.classList.remove('selected'));
+              peopleButtons[index].classList.add('selected');
+            }
+          } else {
+            // Number: Select annotation type
+            const typeButtons = document.querySelectorAll('#doc-annotation-types-grid .doc-annotation-radio-button:not(.doc-add-new)');
+            if (typeButtons[index]) {
+              e.preventDefault();
+              typeButtons.forEach(btn => btn.classList.remove('selected'));
+              typeButtons[index].classList.add('selected');
+            }
+          }
+        }
       }
       
       // Number keys 1-9: Select corresponding radio button (when popover visible)
