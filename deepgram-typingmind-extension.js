@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.63',
+    VERSION: '3.64',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3150,7 +3150,7 @@
             chatInput.blur();
             console.log('✓ Chat input blurred after submit - Space key ready for recording toggle');
           }
-        }, 1000);
+        }, 500);
         
       } else {
         console.warn('⚠️ Could not find chat input for submit event');
@@ -4049,11 +4049,20 @@
       
       // Ctrl+Shift+M: Show Teams message break popover (when textarea focused)
       if (e.ctrlKey && e.shiftKey && e.key === 'M') {
+        console.log(ts(), '🔍 CTRL+SHIFT+M DETECTED:', {
+          ctrl: e.ctrlKey,
+          shift: e.shiftKey,
+          key: e.key,
+          activeElement: document.activeElement?.id || document.activeElement?.tagName,
+          transcriptEl: 'deepgram-transcript'
+        });
         const transcriptEl = document.getElementById('deepgram-transcript');
         if (document.activeElement === transcriptEl) {
           e.preventDefault();
           showTeamsPopover();
-          console.log('✓ Ctrl+Shift+M: Teams popover triggered');
+          console.log(ts(), '✓ Ctrl+Shift+M: Teams popover triggered');
+        } else {
+          console.log(ts(), '⚠️ Ctrl+Shift+M: Focus not in transcript - popover NOT shown');
         }
       }
       
