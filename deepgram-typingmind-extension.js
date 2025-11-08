@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.75',
+    VERSION: '3.76',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4008,10 +4008,11 @@
     // Add comment if present
     if (comment) {
       // Check if multi-line
-      const lines = comment.split('\n').filter(l => l.trim());
+      const lines = comment.split('\n');
       if (lines.length > 1) {
-        // Multi-line format
-        delimiter += `\nComment:\n${comment}`;
+        // Multi-line format with 4-space indent
+        const indentedLines = lines.map(line => '    ' + line).join('\n');
+        delimiter += `\nComment:\n${indentedLines}`;
       } else {
         // Single-line format
         delimiter += `\nComment: ${comment}`;
@@ -4065,7 +4066,26 @@
       }
       
       // ArrowDown: Add paragraph break (queue or immediate)
+      // BUT: Only if NOT typing in an input field AND (not in transcript OR at end of transcript)
       if (e.code === 'ArrowDown' && !e.ctrlKey && !e.shiftKey && !e.altKey) {
+        // Check if typing in any input/textarea (including date, comment, etc.)
+        if (isInputFocused && activeElement.id !== 'deepgram-transcript') {
+          // Typing in non-transcript input - let ArrowDown work normally
+          return;
+        }
+        
+        // Check if in transcript and NOT at end
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (activeElement === transcriptEl) {
+          const cursorPos = transcriptEl.selectionStart;
+          const textLength = transcriptEl.value.length;
+          if (cursorPos < textLength) {
+            // Cursor not at end - let ArrowDown move cursor normally
+            return;
+          }
+        }
+        
+        // Safe to trigger paragraph break logic
         console.log(ts(), '🟡 ARROW DOWN HANDLER ENTERED:', {
           isRecording: isRecording,
           pendingTranscriptions: pendingTranscriptions,
