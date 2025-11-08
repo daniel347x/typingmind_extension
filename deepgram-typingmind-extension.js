@@ -76,11 +76,21 @@
 (function() {
   'use strict';
   
-  console.log('🎙️ Deepgram Extension: Initializing...');
+  // ==================== TIMESTAMP HELPER ====================
+  function ts() {
+    const now = new Date();
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    const seconds = String(now.getSeconds()).padStart(2, '0');
+    const ms = String(now.getMilliseconds()).padStart(3, '0');
+    return `[${hours}:${minutes}:${seconds}.${ms}]`;
+  }
+  
+  console.log(ts(), '🎙️ Deepgram Extension: Initializing...');
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.55',
+    VERSION: '3.56',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2299,7 +2309,7 @@
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
-      console.log('🎤 Microphone access granted (Whisper mode)');
+      console.log(ts(), '🎰 Microphone access granted (Whisper mode)');
       
       // Create MediaRecorder
       mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
@@ -2341,7 +2351,7 @@
       // Start recording duration timer (for red gradient warning)
       startRecordingDurationWarning();
       
-      console.log('✅ Whisper recording started');
+      console.log(ts(), '✅ Whisper recording started');
       
     } catch (error) {
       console.error('❌ Microphone access error:', error);
@@ -2372,7 +2382,7 @@
       // Stop recording duration timer
       stopRecordingDurationWarning();
       
-      console.log('⏹️ Whisper recording stopped');
+      console.log(ts(), '⏹️ Whisper recording stopped');
     }
   }
   
@@ -2436,7 +2446,7 @@
       // Create audio blob
       const audioBlob = new Blob(chunks, { type: 'audio/webm' });
       
-      console.log(`📤 Sending chunk to Whisper (${audioBlob.size} bytes, endpoint: ${endpoint})`);
+      console.log(ts(), `📤 Sending chunk to Whisper (${audioBlob.size} bytes, endpoint: ${endpoint})`);
       
       // Prepare form data
       const formData = new FormData();
@@ -2464,7 +2474,7 @@
         throw new Error(`Whisper API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
       
-      console.log('📥 Response status:', response.status);
+      console.log(ts(), '📥 Response status:', response.status);
       console.log('📥 Response headers:', [...response.headers.entries()]);
       
       const responseText = await response.text();
@@ -2476,7 +2486,7 @@
       const transcription = result.text;
       console.log('📥 Extracted transcription:', transcription);
       
-      console.log('✅ Transcription received:', transcription);
+      console.log(ts(), '✅ Transcription received:', transcription);
       
       // Append to transcript
       appendTranscript(transcription);
@@ -2496,7 +2506,7 @@
       updateStatus(`Error: ${error.message}`, 'disconnected');
       alert(`Whisper transcription failed: ${error.message}`);
     } finally {
-      console.log('📊 sendToWhisper finally block START');
+      console.log(ts(), '📊 sendToWhisper finally block START');
       console.log('  pendingTranscriptions BEFORE decrement:', pendingTranscriptions);
       console.log('  pendingInsert:', pendingInsert);
       console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
@@ -2540,7 +2550,7 @@
         console.log('⏳ Chunks still pending:', pendingTranscriptions);
       }
       
-      console.log('📊 sendToWhisper finally block END');
+      console.log(ts(), '📊 sendToWhisper finally block END');
     }
   }
   
@@ -2601,7 +2611,7 @@
     
     // Start the continuous flash
     doFlash();
-    console.log('✅ Whisper flash started (continuous while recording)');
+    console.log(ts(), '✅ Whisper flash started (continuous while recording)');
   }
   
   function stopWhisperFlash() {
@@ -2616,7 +2626,7 @@
     }
     statusEl.classList.remove('flash');
     
-    console.log('⏹️ Whisper flash stopped');
+    console.log(ts(), '⏹️ Whisper flash stopped');
   }
 
   
@@ -2654,7 +2664,7 @@
       
     }, 500);
     
-    console.log('⏱️ Recording duration warning started');
+    console.log(ts(), '⏱️ Recording duration warning started');
   }
   
   function stopRecordingDurationWarning() {
@@ -2670,7 +2680,7 @@
       statusEl.style.removeProperty('--flash-color');
     }
     
-    console.log('⏹️ Recording duration warning stopped');
+    console.log(ts(), '⏹️ Recording duration warning stopped');
   }
   
   // ==================== END WHISPER FUNCTIONS ====================
@@ -2728,7 +2738,7 @@
       transcriptEl.blur();
     }, 100);
     
-    console.log('✅ Paragraph break added');
+    console.log(ts(), '✅ Paragraph break added');
   }
 
   function updateRecordButton(recording) {
@@ -3843,10 +3853,10 @@
           
           if (pendingParagraphBreak) {
             showParagraphWarning();
-            console.log('⚠️ Ctrl+Shift+Space: Paragraph already queued - double-press detected');
+            console.log(ts(), '⚠️ Ctrl+Shift+Space: Paragraph already queued - double-press detected');
           } else {
             pendingParagraphBreak = true;
-            console.log('⏸️ Ctrl+Shift+Space: Recording stopped + paragraph queued');
+            console.log(ts(), '⏸️ Ctrl+Shift+Space: Recording stopped + paragraph queued');
           }
           
           // Visual feedback - flash status indicator briefly
@@ -3864,15 +3874,15 @@
             // Chunks pending - queue paragraph break
             if (pendingParagraphBreak) {
               showParagraphWarning();
-              console.log('⚠️ Ctrl+Shift+Space: Paragraph already queued');
+              console.log(ts(), '⚠️ Ctrl+Shift+Space: Paragraph already queued');
             } else {
               pendingParagraphBreak = true;
-              console.log('⏳ Ctrl+Shift+Space: Paragraph queued, starting recording');
+              console.log(ts(), '⏳ Ctrl+Shift+Space: Paragraph queued, starting recording');
             }
           } else {
             // No chunks pending - add paragraph immediately
             addParagraphBreak();
-            console.log('✅ Ctrl+Shift+Space: Paragraph added, starting recording');
+            console.log(ts(), '✅ Ctrl+Shift+Space: Paragraph added, starting recording');
           }
           
           // Start recording
@@ -3887,7 +3897,7 @@
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         
-        console.log('🔥 ULTIMATE triggered');
+        console.log(ts(), '🔥 ULTIMATE triggered');
         console.log('  isRecording:', isRecording);
         console.log('  pendingTranscriptions:', pendingTranscriptions);
         console.log('  activeElement:', document.activeElement?.tagName, document.activeElement?.id);
@@ -3948,7 +3958,7 @@
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
         
-        console.log('🔥 ULTIMATE ULTIMATE triggered');
+        console.log(ts(), '🔥 ULTIMATE ULTIMATE triggered');
         console.log('  isRecording:', isRecording);
         console.log('  pendingTranscriptions:', pendingTranscriptions);
         console.log('  pendingInsert:', pendingInsert);
