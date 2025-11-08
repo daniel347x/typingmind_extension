@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.49',
+    VERSION: '3.50',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2401,31 +2401,51 @@
       updateStatus(`Error: ${error.message}`, 'disconnected');
       alert(`Whisper transcription failed: ${error.message}`);
     } finally {
+      console.log('📊 sendToWhisper finally block START');
+      console.log('  pendingTranscriptions BEFORE decrement:', pendingTranscriptions);
+      console.log('  pendingInsert:', pendingInsert);
+      console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
+      console.log('  pendingParagraphBreak:', pendingParagraphBreak);
+      
       // Decrement pending counter
       pendingTranscriptions--;
+      
+      console.log('  pendingTranscriptions AFTER decrement:', pendingTranscriptions);
+      
       updateQueueStatus();
       
       // Update status if no more pending
       if (pendingTranscriptions === 0 && !isRecording) {
         updateStatus('Ready to Record', 'disconnected');
+        console.log('✅ All chunks complete - status updated');
       }
       
       // Check if insert/submit was queued (execute when ALL chunks complete)
       if (pendingTranscriptions === 0) {
+        console.log('✅ All chunks complete - checking for queued actions...');
+        
         if (pendingInsertAndSubmit) {
+          console.log('🎯 Executing queued insertAndSubmit');
           setTimeout(() => {
             insertAndSubmit();
             pendingInsertAndSubmit = false;
-            console.log('✅ Queued Insert+Submit executed (all chunks complete)');
+            console.log('✅ Queued Insert+Submit EXECUTED');
           }, 100); // Brief delay to ensure UI updates complete
         } else if (pendingInsert) {
+          console.log('🎯 Executing queued insertToChat');
           setTimeout(() => {
             insertToChat();
             pendingInsert = false;
-            console.log('✅ Queued Insert executed (all chunks complete)');
+            console.log('✅ Queued Insert EXECUTED');
           }, 100);
+        } else {
+          console.log('⚪ No queued insert/submit actions');
         }
+      } else {
+        console.log('⏳ Chunks still pending:', pendingTranscriptions);
       }
+      
+      console.log('📊 sendToWhisper finally block END');
     }
   }
   
@@ -2603,10 +2623,10 @@
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     
-    // Delay blur by 250ms (user sees cursor blink, then focus returns for Spacebar)
+    // Delay blur by 100ms (user sees cursor blink, then focus returns for Spacebar)
     setTimeout(() => {
       transcriptEl.blur();
-    }, 250);
+    }, 100);
     
     console.log('✅ Paragraph break added');
   }
