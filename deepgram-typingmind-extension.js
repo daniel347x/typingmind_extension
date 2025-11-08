@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.52',
+    VERSION: '3.53',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -134,8 +134,8 @@
   let recordingStartTime = null;
   let recordingDurationTimer = null;
   
-  // Paragraph break queueing (counter for multiple queued breaks)
-  let pendingParagraphBreaks = 0;
+  // Paragraph break queueing (boolean flag with warning on double-press)
+  let pendingParagraphBreak = false;
   
   // Insert/Submit queueing
   let pendingInsert = false;
@@ -1639,6 +1639,14 @@
         <div class="deepgram-section" style="margin-bottom: 0;">
           <label>
             <span>Transcript</span>
+          </label>
+          
+          <!-- Paragraph Warning (hidden by default) -->
+          <div id="paragraph-warning" style="display: none; background: #ff4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; text-align: center; font-weight: 600;">
+            ⚠️ Paragraph already queued
+          </div>
+          
+          <label style="margin-top: 0;">
             <div style="display: flex; gap: 8px; align-items: center;">
               <button class="deepgram-collapse-btn" id="deepgram-darkmode-btn" onclick="window.toggleDarkMode()" title="Toggle dark mode">🌙 Dark</button>
               <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;">
@@ -1903,20 +1911,33 @@
     window.saveWhisperSettings = saveWhisperSettings;
     window.clickBarAction = clickBarAction;
     window.clearAllState = clearAllState;
+    window.showParagraphWarning = showParagraphWarning;
     
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
     console.log('📌 Mode:', transcriptionMode);
   }
   
+  // ==================== PARAGRAPH WARNING ====================
+  function showParagraphWarning() {
+    const warning = document.getElementById('paragraph-warning');
+    if (warning) {
+      warning.style.display = 'block';
+      
+      setTimeout(() => {
+        warning.style.display = 'none';
+      }, 1000);
+    }
+  }
+  
   // ==================== CLEAR STATE ====================
   function clearAllState() {
-    pendingParagraphBreaks = 0;
+    pendingParagraphBreak = false;
     pendingInsert = false;
     pendingInsertAndSubmit = false;
     
     console.log('🔄 All state flags cleared');
-    console.log('  pendingParagraphBreaks:', pendingParagraphBreaks);
+    console.log('  pendingParagraphBreak:', pendingParagraphBreak);
     console.log('  pendingInsert:', pendingInsert);
     console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
     
@@ -2412,11 +2433,11 @@
       // Append to transcript
       appendTranscript(transcription);
       
-      // Check if paragraph breaks were queued
-      if (pendingParagraphBreaks > 0) {
+      // Check if paragraph break was queued
+      if (pendingParagraphBreak) {
         addParagraphBreak();
-        pendingParagraphBreaks--;
-        console.log('✅ Queued paragraph break inserted (remaining:', pendingParagraphBreaks, ')');
+        pendingParagraphBreak = false;
+        console.log('✅ Queued paragraph break inserted');
       }
       
       // Ensure buttons are enabled
@@ -2431,7 +2452,7 @@
       console.log('  pendingTranscriptions BEFORE decrement:', pendingTranscriptions);
       console.log('  pendingInsert:', pendingInsert);
       console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
-      console.log('  pendingParagraphBreaks:', pendingParagraphBreaks);
+      console.log('  pendingParagraphBreak:', pendingParagraphBreak);
       
       // Decrement pending counter
       pendingTranscriptions--;
@@ -2611,8 +2632,13 @@
   function clickBarAction() {
     if (pendingTranscriptions > 0) {
       // Chunk pending - queue the paragraph break
-      pendingParagraphBreaks++;
-      console.log('⏳ Paragraph break queued (count:', pendingParagraphBreaks, ')');
+      if (pendingParagraphBreak) {
+        showParagraphWarning();
+        console.log('⚠️ Paragraph break already queued - double-click detected');
+      } else {
+        pendingParagraphBreak = true;
+        console.log('⏳ Paragraph break queued');
+      }
       
       // Visual feedback - flash the click bar green
       const clickBar = document.getElementById('deepgram-click-bar');
@@ -2624,15 +2650,7 @@
         }, 400);
       }
     } else {
-      // No pending chunks - add paragraph immediately (or process queued ones first)
-      if (pendingParagraphBreaks > 0) {
-        // Process queued breaks first
-        for (let i = 0; i < pendingParagraphBreaks; i++) {
-          addParagraphBreak();
-        }
-        pendingParagraphBreaks = 0;
-        console.log('✅ Processed queued paragraph breaks');
-      }
+      // No pending chunks - add paragraph immediately
       addParagraphBreak();
     }
   }
@@ -3772,8 +3790,14 @@
         if (isRecording) {
           // Recording ON → Turn OFF + queue paragraph
           toggleRecording(); // Stop recording (submits chunk)
-          pendingParagraphBreaks++; // Increment counter
-          console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued (count:', pendingParagraphBreaks, ')');
+          
+          if (pendingParagraphBreak) {
+            showParagraphWarning();
+            console.log('⚠️ Ctrl+Space: Paragraph already queued - double-press detected');
+          } else {
+            pendingParagraphBreak = true;
+            console.log('⏸️ Ctrl+Space: Recording stopped + paragraph queued');
+          }
           
           // Visual feedback - flash status indicator briefly
           const statusEl = document.getElementById('deepgram-status');
@@ -3788,17 +3812,15 @@
           // Recording OFF → Queue/add paragraph + turn ON
           if (pendingTranscriptions > 0) {
             // Chunks pending - queue paragraph break
-            pendingParagraphBreaks++;
-            console.log('⏳ Ctrl+Space: Paragraph queued (count:', pendingParagraphBreaks, '), starting recording');
-          } else {
-            // No chunks pending - add paragraph immediately (process queued first)
-            if (pendingParagraphBreaks > 0) {
-              for (let i = 0; i < pendingParagraphBreaks; i++) {
-                addParagraphBreak();
-              }
-              pendingParagraphBreaks = 0;
-              console.log('✅ Processed queued paragraph breaks before adding new one');
+            if (pendingParagraphBreak) {
+              showParagraphWarning();
+              console.log('⚠️ Ctrl+Space: Paragraph already queued');
+            } else {
+              pendingParagraphBreak = true;
+              console.log('⏳ Ctrl+Space: Paragraph queued, starting recording');
             }
+          } else {
+            // No chunks pending - add paragraph immediately
             addParagraphBreak();
             console.log('✅ Ctrl+Space: Paragraph added, starting recording');
           }
