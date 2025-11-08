@@ -80,7 +80,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.45',
+    VERSION: '3.46',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3734,6 +3734,13 @@
       // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
       // Special behavior: If recording active, stops recording first, then queues insert
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        console.log('🔥 ULTIMATE triggered');
+        console.log('  isRecording:', isRecording);
+        console.log('  pendingTranscriptions:', pendingTranscriptions);
+        console.log('  activeElement:', document.activeElement?.tagName, document.activeElement?.id);
+        console.log('  transcript length:', transcriptEl?.value.length);
+        
         e.preventDefault();
         
         const transcriptEl = document.getElementById('deepgram-transcript');
@@ -3781,6 +3788,15 @@
       // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
       // Special behavior: If recording active, stops recording first, then queues submit
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        console.log('🔥 ULTIMATE ULTIMATE triggered');
+        console.log('  isRecording:', isRecording);
+        console.log('  pendingTranscriptions:', pendingTranscriptions);
+        console.log('  pendingInsert:', pendingInsert);
+        console.log('  pendingInsertAndSubmit:', pendingInsertAndSubmit);
+        console.log('  activeElement:', document.activeElement?.tagName, document.activeElement?.id);
+        console.log('  transcript length:', transcriptEl?.value.length);
+        
         e.preventDefault();
         
         const transcriptEl = document.getElementById('deepgram-transcript');
