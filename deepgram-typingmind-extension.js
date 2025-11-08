@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.73',
+    VERSION: '3.74',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4228,7 +4228,13 @@
       }
       
       // Enter: Insert break and close popover (when popover visible)
+      // BUT: Allow Enter in comment textarea for multi-line input
       if (e.key === 'Enter' && teamsPopoverVisible) {
+        const commentTextarea = document.getElementById('teams-comment-input');
+        if (document.activeElement === commentTextarea) {
+          // Let Enter work normally in comment field (new line)
+          return;
+        }
         e.preventDefault();
         insertTeamsMessageBreak();
       }
