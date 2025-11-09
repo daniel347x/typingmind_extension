@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.81',
+    VERSION: '3.82',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3137,6 +3137,16 @@
   // ==================== TRANSCRIPT MANAGEMENT ====================
   
   function appendTranscript(text) {
+    // If Doc Annotation popup is visible, append to comment field instead
+    if (docAnnotationPopoverVisible) {
+      const commentField = document.getElementById('doc-annotation-comment-input');
+      if (commentField) {
+        const currentComment = commentField.value;
+        commentField.value = currentComment ? currentComment + ' ' + text : text;
+        return; // Don't append to main transcript
+      }
+    }
+    
     const transcriptEl = document.getElementById('deepgram-transcript');
     
     // Clear placeholder
