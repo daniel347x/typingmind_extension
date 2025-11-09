@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.82',
+    VERSION: '3.83',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3143,6 +3143,13 @@
       if (commentField) {
         const currentComment = commentField.value;
         commentField.value = currentComment ? currentComment + ' ' + text : text;
+        
+        // Scroll to end to show newly appended text
+        commentField.scrollLeft = commentField.scrollWidth;
+        
+        // Also set cursor to end
+        commentField.setSelectionRange(commentField.value.length, commentField.value.length);
+        
         return; // Don't append to main transcript
       }
     }
