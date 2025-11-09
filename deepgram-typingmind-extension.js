@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.80',
+    VERSION: '3.81',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4532,7 +4532,7 @@
     
     if (panel) {
       const panelRect = panel.getBoundingClientRect();
-      popover.style.left = (panelRect.left + 350) + 'px';
+      popover.style.left = (panelRect.left + 350 - 640) + 'px'; // Shifted 640px left to uncover document
       popover.style.top = (panelRect.top + 50) + 'px';
       popover.style.transform = 'translateX(-50%)';
     } else {
@@ -4660,16 +4660,19 @@
       xmlTag = `<${annotationType} by="${escapeXmlAttribute(personName)}"${escapedComment} />`;
     }
     
-    // Insert XML tag into textarea
+    // Insert XML tag into textarea with paragraph breaks
     const transcriptEl = document.getElementById('deepgram-transcript');
     const text = transcriptEl.value;
     const before = text.substring(0, docAnnotationSavedSelection.start);
     const after = text.substring(docAnnotationSavedSelection.end);
     
-    transcriptEl.value = before + xmlTag + after;
+    // Add newlines before and after for visual distinction
+    const xmlWithBreaks = '\n\n' + xmlTag + '\n\n';
     
-    // Move cursor after inserted tag
-    const newPos = docAnnotationSavedSelection.start + xmlTag.length;
+    transcriptEl.value = before + xmlWithBreaks + after;
+    
+    // Move cursor after inserted tag (including newlines)
+    const newPos = docAnnotationSavedSelection.start + xmlWithBreaks.length;
     transcriptEl.setSelectionRange(newPos, newPos);
     
     // Hide popover
