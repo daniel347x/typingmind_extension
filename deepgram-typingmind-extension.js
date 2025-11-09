@@ -90,7 +90,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.79',
+    VERSION: '3.80',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1658,6 +1658,21 @@
         border-color: #667eea;
       }
       
+      .doc-annotation-selected-text {
+        width: 100%;
+        padding: 12px;
+        border: 2px solid #667eea;
+        border-radius: 6px;
+        font-size: 14px;
+        line-height: 1.6;
+        box-sizing: border-box;
+        background: #f8f9fa;
+        color: #1a202c;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        resize: vertical;
+        min-height: 80px;
+      }
+      
       .doc-annotation-radio-section {
         margin-top: 15px;
         padding-top: 15px;
@@ -1783,6 +1798,12 @@
         background-color: #2d3548;
         color: #f3f4f6;
         border-color: #374151;
+      }
+      
+      [data-theme="dark"] .doc-annotation-selected-text {
+        background-color: #1e293b;
+        color: #f3f4f6;
+        border-color: #667eea;
       }
       
       [data-theme="dark"] .doc-annotation-radio-button {
@@ -2090,6 +2111,11 @@
       <div class="doc-annotation-popover-inner">
       <div class="doc-annotation-popover-header">
         Document Edit Annotation
+      </div>
+      
+      <div class="doc-annotation-popover-section">
+        <label>Selected Text:</label>
+        <textarea id="doc-annotation-selected-text" class="doc-annotation-selected-text" readonly rows="4" placeholder="(No text selected)"></textarea>
       </div>
       
       <div class="doc-annotation-popover-section">
@@ -4557,6 +4583,12 @@
       popover.querySelectorAll('.doc-annotation-popover-section small').forEach(el => {
         el.style.color = '';
       });
+    }
+    
+    // Populate selected text display
+    const selectedTextDisplay = document.getElementById('doc-annotation-selected-text');
+    if (selectedTextDisplay) {
+      selectedTextDisplay.value = docAnnotationSavedSelection.text || '';
     }
     
     // Refresh grids
