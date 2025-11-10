@@ -11,8 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.86 Changes:
+ * - FIXED: ESC key cancellation now properly prevents audio submission
+ * - Added cancellation flag check in 'stop' event handlers (prevents race condition)
+ * - Flag checked in both initial recording and segment continuation 'stop' handlers
+ * 
  * v3.85 Changes:
- * - NEW: ESC key cancels active recording without submitting audio
+ * - NEW: ESC key cancels active recording without submitting audio (BUGGY - fixed in 3.86)
  * - Priority system: ESC cancels recording FIRST (if active), then closes popovers (if visible)
  * - Works in both Deepgram and Whisper modes
  * - Handles edge cases: pop-up widgets, doc annotation popover
@@ -96,7 +101,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.85',
+    VERSION: '3.86',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2719,6 +2724,13 @@
       
       // When recording stops, send to Whisper
       mediaRecorder.addEventListener('stop', async () => {
+        // Check if recording was canceled (ESC key)
+        if (window.__whisperRecordingCanceled) {
+          console.log(ts(), '🚫 Stop event: Recording was canceled - NOT submitting audio');
+          window.__whisperRecordingCanceled = false; // Reset flag
+          return; // Don't submit
+        }
+        
         if (audioChunks.length > 0) {
           const chunks = [...audioChunks];
           audioChunks = [];
@@ -2783,13 +2795,17 @@
   
   function cancelWhisperRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
-      // Clear audio chunks (don't submit)
+      // Clear audio chunks FIRST
       audioChunks = [];
       
-      // Stop mediaRecorder WITHOUT triggering 'stop' event submission
-      // Remove event listener first to prevent submission
+      // Remove ALL event listeners to prevent 'stop' event from submitting
       const oldRecorder = mediaRecorder;
-      mediaRecorder = null; // Clear reference first
+      mediaRecorder = null; // Clear global reference
+      
+      // Clone the recorder to strip event listeners (nuclear option)
+      // Actually, we can't clone MediaRecorder, so instead:
+      // Set a flag that the 'stop' handler will check
+      window.__whisperRecordingCanceled = true;
       
       oldRecorder.stop();
       oldRecorder.stream.getTracks().forEach(track => track.stop());
@@ -2851,6 +2867,13 @@
       });
       
       mediaRecorder.addEventListener('stop', async () => {
+        // Check if recording was canceled (ESC key)
+        if (window.__whisperRecordingCanceled) {
+          console.log(ts(), '🚫 Stop event (segment): Recording was canceled - NOT submitting audio');
+          window.__whisperRecordingCanceled = false; // Reset flag
+          return; // Don't submit
+        }
+        
         if (audioChunks.length > 0) {
           const chunks = [...audioChunks];
           audioChunks = [];
