@@ -11,13 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
- * v3.89 Changes:
+ * v3.90 Changes:
  * - NEW: Widget width control (customize transcription panel width)
  * - NEW: Transcript textarea height control (independent from panel resize)
  * - REMOVED: Widget height control (conflicted with resizable textarea)
  * - Font size reduced on all controls (11px → 9px for better overflow handling)
  * - Default transcript height: 525px → 480px
  * - FIXED: Sidebar CSS only applies in Chat view (restored clickability in Settings/Agents/etc.)
+ * - FIXED: Sidebar styles actively removed when Chat not active (restores defaults)
  * - FIXED: Keyboard shortcuts (Ctrl+Shift+Enter, Ctrl+Alt+Shift+Enter) now blocked when Chat not active (prevents text loss)
  * 
  * v3.86 Changes:
@@ -110,7 +111,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.89',
+    VERSION: '3.90',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
