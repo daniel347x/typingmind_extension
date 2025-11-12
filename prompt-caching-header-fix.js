@@ -1,10 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.0
+// Version: 4.1
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
 //   3. Intercept and analyze payloads when [DEBUG-command-fileId] trigger detected
 // Issues Fixed:
+//   - v4.1 (Nov 12, 2025): No-op test for documentation validation. Updated welcome message.
 //   - v1.0: TypingMind sends extended-cache-ttl but not base prompt-caching flag
 //   - v2.0: (planned) Strip non-standard ttl field from cache_control objects
 //   - v3.0: Strip "name" field from tool results (MCP adds "name":"STDOUT" but Anthropic rejects it)
@@ -14,7 +15,7 @@
 (function() {
   'use strict';
   
-  console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v4.0 - Initializing...');
+  console.log('🔧 UPDATED WELCOME (Nov 12, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v4.1 - Initializing...');
   
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
   
