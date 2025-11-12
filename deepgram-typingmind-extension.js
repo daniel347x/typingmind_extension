@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.96 Changes:
+ * - CLEANUP: Removed noisy console logs related to sidebar and layout width application.
+ * 
  * v3.95 Changes:
  * - FIXED: Orange background on the 'Click to add paragraph' bar now correctly resets when new transcription is received.
  * 
@@ -129,7 +132,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.95',
+    VERSION: '3.96',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2587,7 +2590,7 @@
         projectsContainer.style.width = projectsWidth + 'px';
       }
       
-      console.log('✓ Sidebar widths applied (Chat view active)');
+      // console.log('✓ Sidebar widths applied (Chat view active)');
     } else {
       // Chat view NOT active - remove sidebar width overrides to restore default behavior
       document.documentElement.style.removeProperty('--sidebar-width');
@@ -2598,10 +2601,10 @@
         navContainer.style.width = '';
       }
       
-      console.log('⊘ Sidebar widths removed (Chat view not active - restoring defaults)');
+      // console.log('⊘ Sidebar widths removed (Chat view not active - restoring defaults)');
     }
     
-    console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
+    // console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
   }
   
   function applyWidgetWidth() {
