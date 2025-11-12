@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.89 Changes:
+ * - NEW: Widget width and height controls (customize transcription panel size)
+ * - Added localStorage persistence for widget dimensions
+ * - Controls appear in settings row next to existing layout controls
+ * 
  * v3.86 Changes:
  * - FIXED: ESC key cancellation now properly prevents audio submission
  * - Added cancellation flag check in 'stop' event handlers (prevents race condition)
@@ -101,7 +106,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.88',
+    VERSION: '3.89',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -140,7 +145,13 @@
     LAYOUT_SIDEBAR_WIDTH_STORAGE: 'layout_sidebar_width',
     DEFAULT_CHAT_WIDTH: 1200,
     DEFAULT_CHAT_MARGIN: 640,
-    DEFAULT_SIDEBAR_WIDTH: 800
+    DEFAULT_SIDEBAR_WIDTH: 800,
+    
+    // Widget dimension settings
+    WIDGET_WIDTH_STORAGE: 'widget_panel_width',
+    WIDGET_HEIGHT_STORAGE: 'widget_panel_height',
+    DEFAULT_WIDGET_WIDTH: 1155,
+    DEFAULT_WIDGET_HEIGHT: 800
   };
   
   // ==================== STATE ====================
@@ -2024,6 +2035,14 @@
                 <span>Sidebar:</span>
                 <input type="number" id="layout-sidebar-width-input" min="300" max="1000" step="50" value="800" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
               </label>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Widget panel width">
+                <span>Widget W:</span>
+                <input type="number" id="widget-width-input" min="600" max="2000" step="50" value="1155" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Widget panel height">
+                <span>Widget H:</span>
+                <input type="number" id="widget-height-input" min="400" max="1200" step="50" value="800" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+              </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
             </div>
@@ -2286,8 +2305,22 @@
       document.getElementById('layout-sidebar-width-input').value = savedSidebarWidth;
     }
     
+    // Load saved widget dimensions
+    const savedWidgetWidth = localStorage.getItem(CONFIG.WIDGET_WIDTH_STORAGE);
+    const savedWidgetHeight = localStorage.getItem(CONFIG.WIDGET_HEIGHT_STORAGE);
+    
+    if (savedWidgetWidth) {
+      document.getElementById('widget-width-input').value = savedWidgetWidth;
+    }
+    if (savedWidgetHeight) {
+      document.getElementById('widget-height-input').value = savedWidgetHeight;
+    }
+    
     // Apply layout widths immediately on page load
-    setTimeout(() => applyLayoutWidths(), 500);
+    setTimeout(() => {
+      applyLayoutWidths();
+      applyWidgetDimensions();
+    }, 500);
     
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
@@ -2331,6 +2364,10 @@
     document.getElementById('layout-chat-width-input')?.addEventListener('change', onLayoutWidthChange);
     document.getElementById('layout-chat-margin-input')?.addEventListener('change', onLayoutWidthChange);
     document.getElementById('layout-sidebar-width-input')?.addEventListener('change', onLayoutWidthChange);
+    
+    // Widget dimension controls
+    document.getElementById('widget-width-input')?.addEventListener('change', onWidgetDimensionChange);
+    document.getElementById('widget-height-input')?.addEventListener('change', onWidgetDimensionChange);
     
     // Initialize resize functionality
     initializeResize();
@@ -2501,6 +2538,31 @@
     }
     
     console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
+  }
+  
+  function applyWidgetDimensions() {
+    const widgetWidth = parseInt(document.getElementById('widget-width-input')?.value) || CONFIG.DEFAULT_WIDGET_WIDTH;
+    const widgetHeight = parseInt(document.getElementById('widget-height-input')?.value) || CONFIG.DEFAULT_WIDGET_HEIGHT;
+    
+    const panel = document.getElementById('deepgram-panel');
+    if (panel) {
+      panel.style.width = widgetWidth + 'px';
+      panel.style.maxHeight = widgetHeight + 'px';
+    }
+    
+    console.log('✓ Widget dimensions applied:', { widgetWidth, widgetHeight });
+  }
+  
+  function onWidgetDimensionChange() {
+    const widgetWidth = parseInt(document.getElementById('widget-width-input')?.value) || CONFIG.DEFAULT_WIDGET_WIDTH;
+    const widgetHeight = parseInt(document.getElementById('widget-height-input')?.value) || CONFIG.DEFAULT_WIDGET_HEIGHT;
+    
+    // Save to localStorage
+    localStorage.setItem(CONFIG.WIDGET_WIDTH_STORAGE, widgetWidth);
+    localStorage.setItem(CONFIG.WIDGET_HEIGHT_STORAGE, widgetHeight);
+    
+    // Apply changes immediately
+    applyWidgetDimensions();
   }
   
   function onLayoutWidthChange() {
