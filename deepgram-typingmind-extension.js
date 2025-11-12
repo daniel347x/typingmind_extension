@@ -132,7 +132,15 @@
     // Document annotation settings
     DOC_ANNOTATION_TYPES_STORAGE: 'doc_annotation_types',
     DOC_ANNOTATION_LAST_TYPE_STORAGE: 'doc_annotation_last_type',
-    DOC_ANNOTATION_LAST_PERSON_STORAGE: 'doc_annotation_last_person'
+    DOC_ANNOTATION_LAST_PERSON_STORAGE: 'doc_annotation_last_person',
+    
+    // Layout width settings
+    LAYOUT_CHAT_WIDTH_STORAGE: 'layout_chat_width',
+    LAYOUT_CHAT_MARGIN_STORAGE: 'layout_chat_margin',
+    LAYOUT_SIDEBAR_WIDTH_STORAGE: 'layout_sidebar_width',
+    DEFAULT_CHAT_WIDTH: 1200,
+    DEFAULT_CHAT_MARGIN: 640,
+    DEFAULT_SIDEBAR_WIDTH: 800
   };
   
   // ==================== STATE ====================
@@ -2004,6 +2012,18 @@
                 <input type="number" id="deepgram-autoclipboard-input" min="0" max="300" step="1" value="0" style="width: 50px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" title="Auto-copy to clipboard every N seconds (0 = disabled)" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-autoscroll-btn" onclick="window.toggleAutoScroll()" title="Toggle auto-scroll when transcribing">Auto-Scroll: ON</button>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Chat message max width">
+                <span>Chat:</span>
+                <input type="number" id="layout-chat-width-input" min="800" max="2000" step="50" value="1200" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Chat left margin">
+                <span>Margin:</span>
+                <input type="number" id="layout-chat-margin-input" min="0" max="1000" step="20" value="640" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Sidebar total width">
+                <span>Sidebar:</span>
+                <input type="number" id="layout-sidebar-width-input" min="300" max="1000" step="50" value="800" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+              </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
             </div>
@@ -2251,6 +2271,24 @@
     }
     updateDarkModeButton();
     
+    // Load saved layout widths
+    const savedChatWidth = localStorage.getItem(CONFIG.LAYOUT_CHAT_WIDTH_STORAGE);
+    const savedChatMargin = localStorage.getItem(CONFIG.LAYOUT_CHAT_MARGIN_STORAGE);
+    const savedSidebarWidth = localStorage.getItem(CONFIG.LAYOUT_SIDEBAR_WIDTH_STORAGE);
+    
+    if (savedChatWidth) {
+      document.getElementById('layout-chat-width-input').value = savedChatWidth;
+    }
+    if (savedChatMargin) {
+      document.getElementById('layout-chat-margin-input').value = savedChatMargin;
+    }
+    if (savedSidebarWidth) {
+      document.getElementById('layout-sidebar-width-input').value = savedSidebarWidth;
+    }
+    
+    // Apply layout widths immediately on page load
+    setTimeout(() => applyLayoutWidths(), 500);
+    
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
@@ -2288,6 +2326,11 @@
     
     // Auto-clipboard timer input
     document.getElementById('deepgram-autoclipboard-input').addEventListener('change', onAutoClipboardDelayChange);
+    
+    // Layout width controls
+    document.getElementById('layout-chat-width-input')?.addEventListener('change', onLayoutWidthChange);
+    document.getElementById('layout-chat-margin-input')?.addEventListener('change', onLayoutWidthChange);
+    document.getElementById('layout-sidebar-width-input')?.addEventListener('change', onLayoutWidthChange);
     
     // Initialize resize functionality
     initializeResize();
@@ -2376,6 +2419,78 @@
     const panel = document.getElementById('deepgram-panel');
     panel.classList.toggle('open');
     isPanelOpen = panel.classList.contains('open');
+  }
+  
+  // ==================== LAYOUT WIDTH CONTROLS ====================
+  
+  function applyLayoutWidths() {
+    const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
+    const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
+    const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
+    
+    // Remove old layout styles if they exist
+    const oldStyle = document.getElementById('typingmind-layout-styles');
+    if (oldStyle) {
+      oldStyle.remove();
+    }
+    
+    // Inject new layout styles
+    const layoutStyle = document.createElement('style');
+    layoutStyle.id = 'typingmind-layout-styles';
+    layoutStyle.textContent = `
+      /* CONTROL 1: Chat message width */
+      .response-block {
+        max-width: ${chatWidth}px !important;
+        margin-left: ${chatMargin}px !important;
+        margin-right: auto !important;
+      }
+    `;
+    document.head.appendChild(layoutStyle);
+    
+    // Apply sidebar width via CSS variables and direct styling
+    document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
+    document.documentElement.style.setProperty('--workspace-width', '0px');
+    
+    const navContainer = document.querySelector('[data-element-id="nav-container"]');
+    if (navContainer) {
+      navContainer.style.width = sidebarWidth + 'px';
+    }
+    
+    // Widen sidebar inner content
+    const sidebarContent = document.querySelector('[data-element-id="sidebar-middle-part"]');
+    if (sidebarContent) {
+      const contentDiv = sidebarContent.querySelector('div > div > div > div');
+      if (contentDiv) {
+        const innerWidth = sidebarWidth - 20; // 20px padding
+        contentDiv.style.minWidth = 'auto';
+        contentDiv.style.maxWidth = innerWidth + 'px';
+        contentDiv.style.width = innerWidth + 'px';
+      }
+    }
+    
+    // Widen projects container
+    const projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
+    if (projectsContainer) {
+      const projectsWidth = sidebarWidth - 60; // 60px total padding (prevents icon overflow)
+      projectsContainer.style.maxWidth = projectsWidth + 'px';
+      projectsContainer.style.width = projectsWidth + 'px';
+    }
+    
+    console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
+  }
+  
+  function onLayoutWidthChange() {
+    const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
+    const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
+    const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
+    
+    // Save to localStorage
+    localStorage.setItem(CONFIG.LAYOUT_CHAT_WIDTH_STORAGE, chatWidth);
+    localStorage.setItem(CONFIG.LAYOUT_CHAT_MARGIN_STORAGE, chatMargin);
+    localStorage.setItem(CONFIG.LAYOUT_SIDEBAR_WIDTH_STORAGE, sidebarWidth);
+    
+    // Apply changes immediately
+    applyLayoutWidths();
   }
   
   function toggleTranscriptHeight() {
