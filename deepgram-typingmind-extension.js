@@ -2444,15 +2444,22 @@
         margin-left: ${chatMargin}px !important;
         margin-right: auto !important;
       }
-      
-      /* Chat input box (bottom text entry) - match chat message alignment */
-      [data-element-id="chat-space-end-part"] .mx-auto {
-        max-width: ${chatWidth}px !important;
-        margin-left: ${chatMargin}px !important;
-        margin-right: auto !important;
-      }
     `;
     document.head.appendChild(layoutStyle);
+    
+    // Chat input box alignment (bottom text entry) - use JavaScript walking approach
+    const textarea = document.getElementById('chat-input-textbox');
+    if (textarea) {
+      let container = textarea;
+      while (container && !container.classList.contains('mx-auto')) {
+        container = container.parentElement;
+      }
+      if (container) {
+        container.style.maxWidth = chatWidth + 'px';
+        container.style.marginLeft = chatMargin + 'px';
+        container.style.marginRight = 'auto';
+      }
+    }
     
     // Apply sidebar width via CSS variables and direct styling
     document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
