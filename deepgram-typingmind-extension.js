@@ -2448,17 +2448,27 @@
     document.head.appendChild(layoutStyle);
     
     // Chat input box alignment (bottom text entry) - use JavaScript walking approach
-    const textarea = document.getElementById('chat-input-textbox');
-    if (textarea) {
-      let container = textarea;
-      while (container && !container.classList.contains('mx-auto')) {
-        container = container.parentElement;
+    // Retry logic since textarea might not exist immediately on page load
+    function alignChatInput() {
+      const textarea = document.getElementById('chat-input-textbox');
+      if (textarea) {
+        let container = textarea;
+        while (container && !container.classList.contains('mx-auto')) {
+          container = container.parentElement;
+        }
+        if (container) {
+          container.style.maxWidth = chatWidth + 'px';
+          container.style.marginLeft = chatMargin + 'px';
+          container.style.marginRight = 'auto';
+          return true;  // Success
+        }
       }
-      if (container) {
-        container.style.maxWidth = chatWidth + 'px';
-        container.style.marginLeft = chatMargin + 'px';
-        container.style.marginRight = 'auto';
-      }
+      return false;  // Not found yet
+    }
+    
+    // Try immediately, retry after 1 second if not found
+    if (!alignChatInput()) {
+      setTimeout(alignChatInput, 1000);
     }
     
     // Apply sidebar width via CSS variables and direct styling
