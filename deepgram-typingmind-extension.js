@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.92 Changes:
+ * - FIXED: Removed 100ms delay from ArrowDown shortcut to prevent missed recordings.
+ * - FIXED: "Click to add paragraph" bar now correctly checks for existing newlines and won't add duplicates.
+ * 
  * v3.91 Changes:
  * - NEW: MutationObserver detects sidebar view switches (auto-applies/removes CSS)
  * - Fixes sidebar clickability by removing width overrides when switching to Models/Settings/etc.
@@ -116,7 +120,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.91',
+    VERSION: '3.92',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3415,6 +3419,24 @@
   // ==================== CLICK BAR ====================
   
   function clickBarAction() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    const currentText = transcriptEl.value;
+
+    // GUARD: Don't add a paragraph break if one already exists at the end
+    if (currentText.trimEnd().endsWith('\n\n') || currentText.trim() === '') {
+      console.log('⚪️ clickBarAction: Paragraph break already exists or content is empty. No action taken.');
+      // Optional: Add a visual indicator that it was ignored, e.g., flash the bar red
+      const clickBar = document.getElementById('deepgram-click-bar');
+      if (clickBar) {
+        const originalBg = clickBar.style.background;
+        clickBar.style.background = 'linear-gradient(to bottom, #f8d7da 0%, #f5c6cb 100%)';
+        setTimeout(() => {
+          clickBar.style.background = originalBg;
+        }, 400);
+      }
+      return;
+    }
+
     if (pendingTranscriptions > 0) {
       // Chunk pending - queue the paragraph break
       if (pendingParagraphBreak) {
@@ -3495,10 +3517,8 @@
     // Scroll to bottom
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
     
-    // Delay blur by 100ms (user sees cursor blink, then focus returns for Spacebar)
-    setTimeout(() => {
-      transcriptEl.blur();
-    }, 100);
+    // Immediately blur to return focus for Spacebar toggle
+    transcriptEl.blur();
     
     console.log(ts(), '✅ Paragraph break added');
   }
