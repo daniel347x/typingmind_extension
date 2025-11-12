@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.95 Changes:
+ * - FIXED: Orange background on the 'Click to add paragraph' bar now correctly resets when new transcription is received.
+ * 
  * v3.94 Changes:
  * - FIXED: "Click to add paragraph" bar logic. Removed `.trimEnd()` from the check, which now correctly prevents adding duplicate newlines.
  * 
@@ -126,7 +129,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.94',
+    VERSION: '3.95',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3548,6 +3551,11 @@
   // ==================== TRANSCRIPT MANAGEMENT ====================
   
   function appendTranscript(text) {
+    // Reset click bar background in case it was left in a warning state
+    const clickBar = document.getElementById('deepgram-click-bar');
+    if (clickBar) {
+      clickBar.style.background = ''; // Resets to CSS default
+    }
     // If Doc Annotation popup is visible, append to comment field instead
     if (docAnnotationPopoverVisible) {
       const commentField = document.getElementById('doc-annotation-comment-input');
