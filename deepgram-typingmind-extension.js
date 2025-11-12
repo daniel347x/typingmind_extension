@@ -101,7 +101,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.87',
+    VERSION: '3.88',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2440,6 +2440,13 @@
     layoutStyle.textContent = `
       /* CONTROL 1: Chat message width */
       .response-block {
+        max-width: ${chatWidth}px !important;
+        margin-left: ${chatMargin}px !important;
+        margin-right: auto !important;
+      }
+      
+      /* Chat input box (bottom text entry) - match chat message alignment */
+      [data-element-id="chat-space-end-part"] .mx-auto {
         max-width: ${chatWidth}px !important;
         margin-left: ${chatMargin}px !important;
         margin-right: auto !important;
