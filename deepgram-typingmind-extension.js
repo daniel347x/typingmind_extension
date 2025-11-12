@@ -151,7 +151,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     WIDGET_HEIGHT_STORAGE: 'widget_panel_height',
     DEFAULT_WIDGET_WIDTH: 1155,
-    DEFAULT_WIDGET_HEIGHT: 800
+    DEFAULT_WIDGET_HEIGHT: 800,
+    TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
+    DEFAULT_TRANSCRIPT_HEIGHT: 480
   };
   
   // ==================== STATE ====================
@@ -1051,7 +1053,7 @@
       .deepgram-transcript {
         width: 100%;
         min-height: 150px;
-        height: 525px;
+        height: 480px;
         padding: 12px;
         border: 2px solid #e2e8f0;
         border-radius: 8px;
@@ -2023,25 +2025,29 @@
                 <input type="number" id="deepgram-autoclipboard-input" min="0" max="300" step="1" value="0" style="width: 50px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" title="Auto-copy to clipboard every N seconds (0 = disabled)" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-autoscroll-btn" onclick="window.toggleAutoScroll()" title="Toggle auto-scroll when transcribing">Auto-Scroll: ON</button>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Chat message max width">
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Chat message max width">
                 <span>Chat:</span>
-                <input type="number" id="layout-chat-width-input" min="800" max="2000" step="50" value="1200" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+                <input type="number" id="layout-chat-width-input" min="800" max="2000" step="50" value="1200" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Chat left margin">
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Chat left margin">
                 <span>Margin:</span>
-                <input type="number" id="layout-chat-margin-input" min="0" max="1000" step="20" value="640" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+                <input type="number" id="layout-chat-margin-input" min="0" max="1000" step="20" value="640" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Sidebar total width">
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Sidebar total width">
                 <span>Sidebar:</span>
-                <input type="number" id="layout-sidebar-width-input" min="300" max="1000" step="50" value="800" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+                <input type="number" id="layout-sidebar-width-input" min="300" max="1000" step="50" value="800" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Widget panel width">
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Widget panel width">
                 <span>Widget W:</span>
-                <input type="number" id="widget-width-input" min="600" max="2000" step="50" value="1155" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+                <input type="number" id="widget-width-input" min="600" max="2000" step="50" value="1155" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;" title="Widget panel height">
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Widget panel height">
                 <span>Widget H:</span>
-                <input type="number" id="widget-height-input" min="400" max="1200" step="50" value="800" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 11px;" />
+                <input type="number" id="widget-height-input" min="400" max="1200" step="50" value="800" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
+              </label>
+              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Transcript textarea height">
+                <span>Text H:</span>
+                <input type="number" id="transcript-height-input" min="150" max="800" step="50" value="480" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -2308,6 +2314,7 @@
     // Load saved widget dimensions
     const savedWidgetWidth = localStorage.getItem(CONFIG.WIDGET_WIDTH_STORAGE);
     const savedWidgetHeight = localStorage.getItem(CONFIG.WIDGET_HEIGHT_STORAGE);
+    const savedTranscriptHeight = localStorage.getItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
     
     if (savedWidgetWidth) {
       document.getElementById('widget-width-input').value = savedWidgetWidth;
@@ -2315,11 +2322,15 @@
     if (savedWidgetHeight) {
       document.getElementById('widget-height-input').value = savedWidgetHeight;
     }
+    if (savedTranscriptHeight) {
+      document.getElementById('transcript-height-input').value = savedTranscriptHeight;
+    }
     
     // Apply layout widths immediately on page load
     setTimeout(() => {
       applyLayoutWidths();
       applyWidgetDimensions();
+      applyTranscriptHeight();
     }, 500);
     
     // Attach event listeners
@@ -2368,6 +2379,7 @@
     // Widget dimension controls
     document.getElementById('widget-width-input')?.addEventListener('change', onWidgetDimensionChange);
     document.getElementById('widget-height-input')?.addEventListener('change', onWidgetDimensionChange);
+    document.getElementById('transcript-height-input')?.addEventListener('change', onTranscriptHeightChange);
     
     // Initialize resize functionality
     initializeResize();
@@ -2563,6 +2575,27 @@
     
     // Apply changes immediately
     applyWidgetDimensions();
+  }
+  
+  function applyTranscriptHeight() {
+    const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
+    
+    const transcript = document.getElementById('deepgram-transcript');
+    if (transcript) {
+      transcript.style.height = transcriptHeight + 'px';
+    }
+    
+    console.log('✓ Transcript height applied:', transcriptHeight);
+  }
+  
+  function onTranscriptHeightChange() {
+    const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
+    
+    // Save to localStorage
+    localStorage.setItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE, transcriptHeight);
+    
+    // Apply changes immediately
+    applyTranscriptHeight();
   }
   
   function onLayoutWidthChange() {
