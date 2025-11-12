@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.94 Changes:
+ * - FIXED: "Click to add paragraph" bar logic. Removed `.trimEnd()` from the check, which now correctly prevents adding duplicate newlines.
+ * 
  * v3.93 Changes:
  * - DOCS: Workflowy documentation validation test. No code changes.
  * 
@@ -123,7 +126,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.93',
+    VERSION: '3.94',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3426,7 +3429,7 @@
     const currentText = transcriptEl.value;
 
     // GUARD: Don't add a paragraph break if one already exists at the end
-    if (currentText.trimEnd().endsWith('\n\n') || currentText.trim() === '') {
+    if (currentText.endsWith('\n\n') || currentText.trim() === '') {
       console.log('⚪️ clickBarAction: Paragraph break already exists or content is empty. No action taken.');
       // Optional: Add a visual indicator that it was ignored, e.g., flash the bar red
       const clickBar = document.getElementById('deepgram-click-bar');
