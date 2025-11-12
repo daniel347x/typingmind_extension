@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.93 Changes:
+ * - DOCS: Workflowy documentation validation test. No code changes.
+ * 
  * v3.92 Changes:
  * - FIXED: Removed 100ms delay from ArrowDown shortcut to prevent missed recordings.
  * - FIXED: "Click to add paragraph" bar now correctly checks for existing newlines and won't add duplicates.
@@ -120,7 +123,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.92',
+    VERSION: '3.93',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
