@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.91 Changes:
+ * - NEW: MutationObserver detects sidebar view switches (auto-applies/removes CSS)
+ * - Fixes sidebar clickability by removing width overrides when switching to Models/Settings/etc.
+ * - Sidebar CSS now dynamically responds to view changes
+ * 
  * v3.90 Changes:
  * - NEW: Widget width control (customize transcription panel width)
  * - NEW: Transcript textarea height control (independent from panel resize)
@@ -111,7 +116,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.90',
+    VERSION: '3.91',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2410,6 +2415,32 @@
     console.log('✓ Widget initialized');
     console.log('📌 Version:', CONFIG.VERSION);
     console.log('📌 Mode:', transcriptionMode);
+    
+    // Watch for sidebar view changes and reapply layout widths
+    initializeSidebarWatcher();
+  }
+  
+  // ==================== SIDEBAR VIEW WATCHER ====================
+  function initializeSidebarWatcher() {
+    // Watch for changes to sidebar content (detect view switches)
+    const targetNode = document.body;
+    
+    const observer = new MutationObserver((mutations) => {
+      // Debounce - only check once per batch of mutations
+      clearTimeout(observer.debounceTimer);
+      observer.debounceTimer = setTimeout(() => {
+        // Reapply layout widths (will apply or remove sidebar CSS based on Chat view active)
+        applyLayoutWidths();
+      }, 100);
+    });
+    
+    observer.observe(targetNode, {
+      childList: true,
+      subtree: true,
+      attributes: false // Don't watch attributes to reduce noise
+    });
+    
+    console.log('✓ Sidebar view watcher initialized');
   }
   
   // ==================== PARAGRAPH WARNING ====================
