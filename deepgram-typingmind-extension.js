@@ -2511,18 +2511,19 @@
       setTimeout(alignChatInput, 1000);
     }
     
-    // Apply sidebar width via CSS variables and direct styling
-    document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
-    document.documentElement.style.setProperty('--workspace-width', '0px');
-    
-    const navContainer = document.querySelector('[data-element-id="nav-container"]');
-    if (navContainer) {
-      navContainer.style.width = sidebarWidth + 'px';
-    }
-    
-    // Widen sidebar inner content
+    // Apply sidebar width ONLY when Chat view is active (sidebar-middle-part exists)
     const sidebarContent = document.querySelector('[data-element-id="sidebar-middle-part"]');
     if (sidebarContent) {
+      // Chat view active - apply sidebar width customizations
+      document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
+      document.documentElement.style.setProperty('--workspace-width', '0px');
+      
+      const navContainer = document.querySelector('[data-element-id="nav-container"]');
+      if (navContainer) {
+        navContainer.style.width = sidebarWidth + 'px';
+      }
+      
+      // Widen sidebar inner content
       const contentDiv = sidebarContent.querySelector('div > div > div > div');
       if (contentDiv) {
         const innerWidth = sidebarWidth - 20; // 20px padding
@@ -2530,14 +2531,18 @@
         contentDiv.style.maxWidth = innerWidth + 'px';
         contentDiv.style.width = innerWidth + 'px';
       }
-    }
-    
-    // Widen projects container
-    const projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
-    if (projectsContainer) {
-      const projectsWidth = sidebarWidth - 60; // 60px total padding (prevents icon overflow)
-      projectsContainer.style.maxWidth = projectsWidth + 'px';
-      projectsContainer.style.width = projectsWidth + 'px';
+      
+      // Widen projects container
+      const projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
+      if (projectsContainer) {
+        const projectsWidth = sidebarWidth - 60; // 60px total padding (prevents icon overflow)
+        projectsContainer.style.maxWidth = projectsWidth + 'px';
+        projectsContainer.style.width = projectsWidth + 'px';
+      }
+      
+      console.log('✓ Sidebar widths applied (Chat view active)');
+    } else {
+      console.log('⊘ Sidebar widths skipped (Chat view not active)');
     }
     
     console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
