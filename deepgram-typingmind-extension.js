@@ -17,6 +17,8 @@
  * - REMOVED: Widget height control (conflicted with resizable textarea)
  * - Font size reduced on all controls (11px → 9px for better overflow handling)
  * - Default transcript height: 525px → 480px
+ * - FIXED: Sidebar CSS only applies in Chat view (restored clickability in Settings/Agents/etc.)
+ * - FIXED: Keyboard shortcuts (Ctrl+Shift+Enter, Ctrl+Alt+Shift+Enter) now blocked when Chat not active (prevents text loss)
  * 
  * v3.86 Changes:
  * - FIXED: ESC key cancellation now properly prevents audio submission
@@ -2542,7 +2544,16 @@
       
       console.log('✓ Sidebar widths applied (Chat view active)');
     } else {
-      console.log('⊘ Sidebar widths skipped (Chat view not active)');
+      // Chat view NOT active - remove sidebar width overrides to restore default behavior
+      document.documentElement.style.removeProperty('--sidebar-width');
+      document.documentElement.style.removeProperty('--workspace-width');
+      
+      const navContainer = document.querySelector('[data-element-id="nav-container"]');
+      if (navContainer) {
+        navContainer.style.width = '';
+      }
+      
+      console.log('⊘ Sidebar widths removed (Chat view not active - restoring defaults)');
     }
     
     console.log('✓ Layout widths applied:', { chatWidth, chatMargin, sidebarWidth });
@@ -5116,6 +5127,13 @@
       // Ctrl+Shift+Enter: Insert to Chat (works globally, even when TypingMind chat is focused)
       // Special behavior: If recording active, stops recording first, then queues insert
       if (e.ctrlKey && e.shiftKey && e.key === 'Enter' && !e.altKey) {
+        // GUARD: Only execute if Chat view is active (prevent text loss in other sidebars)
+        const chatViewActive = document.querySelector('[data-element-id="sidebar-middle-part"]') || document.querySelectorAll('.response-block').length > 0;
+        if (!chatViewActive) {
+          console.log(ts(), '⚠️ ULTIMATE blocked - Chat view not active (preventing text loss)');
+          return; // Don't clear transcript when chat not visible
+        }
+        
         flashBell('bell-ultimate'); // Visual indicator
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
@@ -5177,6 +5195,13 @@
       // Ctrl+Alt+Shift+Enter: Insert to Chat AND Submit (works globally)
       // Special behavior: If recording active, stops recording first, then queues submit
       if (e.ctrlKey && e.altKey && e.shiftKey && e.key === 'Enter') {
+        // GUARD: Only execute if Chat view is active (prevent text loss in other sidebars)
+        const chatViewActive = document.querySelector('[data-element-id="sidebar-middle-part"]') || document.querySelectorAll('.response-block').length > 0;
+        if (!chatViewActive) {
+          console.log(ts(), '⚠️ ULTIMATE ULTIMATE blocked - Chat view not active (preventing text loss)');
+          return; // Don't clear transcript when chat not visible
+        }
+        
         flashBell('bell-ultimate-ultimate'); // Visual indicator
         const transcriptEl = document.getElementById('deepgram-transcript');
         const text = transcriptEl ? transcriptEl.value.trim() : '';
