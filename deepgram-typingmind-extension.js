@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.97 Changes:
+ * - NEW: F-key support for Philips SpeechOne remote control
+ *   - F1: Toggle recording (same as Space)
+ *   - F2: Add paragraph break (same as ArrowDown)
+ *   - F3: Cancel recording (same as Escape)
+ *   - F4: ULTIMATE ULTIMATE - Insert & Submit (same as Ctrl+Alt+Shift+Enter)
+ * 
  * v3.96 Changes:
  * - CLEANUP: Removed noisy console logs related to sidebar and layout width application.
  * 
@@ -132,7 +139,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-    VERSION: '3.96',
+  VERSION: '3.97',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2119,6 +2126,12 @@
             Ctrl+Shift+Enter: ULTIMATE - Stop recording (if active) + Insert to Chat<br>
             Ctrl+Alt+Shift+Enter: ULTIMATE ULTIMATE - Stop recording (if active) + Insert & Submit<br>
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
+            <br>
+            <strong>🎮 Philips SpeechOne Remote Control:</strong><br>
+            F1: Toggle recording<br>
+            F2: Add paragraph break<br>
+            F3: Cancel recording<br>
+            F4: ULTIMATE ULTIMATE - Insert & Submit<br>
             <br>
             <strong>Teams Message Annotation:</strong>
             Use Ctrl+Shift+M to insert speaker/date delimiters for bulk Teams messages. Configure active speakers in popover (persists across sessions). Auto-toggles between 2 speakers.<br>
@@ -5141,6 +5154,103 @@
           flashBell('bell-space'); // Visual indicator
           toggleRecording();
         }
+      }
+      
+      // F-KEYS: Philips SpeechOne Remote Control Support
+      // F1 = Toggle recording (same as Space)
+      // F2 = Add paragraph (same as ArrowDown)
+      // F3 = Cancel recording (same as Escape)
+      // F4 = ULTIMATE ULTIMATE (same as Ctrl+Alt+Shift+Enter)
+      
+      // F1: Toggle recording (mirrors Space key behavior)
+      if (e.key === 'F1') {
+        if (!isInputFocused) {
+          e.preventDefault();
+          console.log(ts(), '🎮 F1: Toggle recording (remote control)');
+          toggleRecording();
+        }
+        return;
+      }
+      
+      // F2: Add paragraph break (mirrors ArrowDown behavior)
+      if (e.key === 'F2') {
+        if (!isInputFocused || activeElement.id === 'deepgram-transcript') {
+          const transcriptEl = document.getElementById('deepgram-transcript');
+          if (transcriptEl && activeElement.id === 'deepgram-transcript') {
+            const cursorPos = transcriptEl.selectionStart;
+            const textLength = transcriptEl.value.length;
+            if (cursorPos < textLength) {
+              return; // Let F2 work normally if cursor not at end
+            }
+          }
+          
+          e.preventDefault();
+          console.log(ts(), '🎮 F2: Add paragraph break (remote control)');
+          
+          if (isRecording) {
+            console.log(ts(), '🎮 F2: Recording ON - stopping to submit chunk');
+            toggleRecording();
+            setPendingParagraphFlag();
+            toggleRecording();
+            console.log(ts(), '🎮 F2: Recording resumed after chunk submission');
+          } else {
+            if (pendingTranscriptions > 0) {
+              console.log(ts(), '🎮 F2: Chunks pending - setting flag');
+              setPendingParagraphFlag();
+            } else {
+              console.log(ts(), '🎮 F2: No chunks pending - inserting newline now');
+              insertNewlineAtEnd();
+            }
+          }
+        }
+        return;
+      }
+      
+      // F3: Cancel recording (mirrors Escape key behavior)
+      if (e.key === 'F3') {
+        if (isRecording) {
+          console.log(ts(), '🎮 F3: Canceling active recording (remote control)');
+          e.preventDefault();
+          
+          if (transcriptionMode === 'whisper') {
+            cancelWhisperRecording();
+          } else {
+            cancelDeepgramRecording();
+          }
+        }
+        return;
+      }
+      
+      // F4: ULTIMATE ULTIMATE - Insert & Submit (mirrors Ctrl+Alt+Shift+Enter)
+      if (e.key === 'F4') {
+        // GUARD: Only execute if Chat view is active
+        const sidebarId = document.querySelector('[data-sidebar-id]')?.getAttribute('data-sidebar-id');
+        if (sidebarId !== 'chat') {
+          console.log(ts(), '🎮 F4: Blocked - Chat view not active (sidebar:', sidebarId, ')');
+          return;
+        }
+        
+        e.preventDefault();
+        console.log(ts(), '🎮 F4: ULTIMATE ULTIMATE triggered (remote control)');
+        
+        if (isRecording) {
+          console.log(ts(), '🎮 F4: Recording active - stopping first');
+          toggleRecording();
+        }
+        
+        if (pendingTranscriptions > 0) {
+          console.log(ts(), '🎮 F4: Chunks pending - queueing submit after completion');
+          queuedAction = 'insertAndSubmit';
+        } else {
+          const text = document.getElementById('deepgram-transcript').value.trim();
+          if (text) {
+            console.log(ts(), '🎮 F4: No chunks pending - executing submit now');
+            insertAndSubmit();
+          } else {
+            console.log(ts(), '🎮 F4: No text to submit');
+          }
+        }
+        return;
       }
       
       // ArrowDown: Add paragraph break (queue or immediate)
