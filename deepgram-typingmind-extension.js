@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.108 Changes:
+ * - NEW: Shift+F4 handler for toggle recording (Shift+F3 has browser conflict)
+ * - AutoHotkey intercepts Shift+F3 → sends Shift+F4 to widget
+ * - Updated mapping: Shift+F4=Toggle, Shift+F5=Paragraph, Shift+F6=Cancel, Shift+F11=Submit
+ * 
  * v3.107 Changes:
  * - FIXED: AutoHotkey now uses passthrough logic (Shift+F3 → Shift+F3, no transformation)
  * - Confirms correct mapping: Shift+F3=Toggle, Shift+F5=Paragraph, Shift+F6=Cancel, Shift+F11=Submit
@@ -189,7 +194,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.107',
+  VERSION: '3.108',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5229,6 +5234,23 @@
           console.log(ts(), '🎮 Shift+F3: Toggle recording (remote control)');
         toggleRecording();
         return;
+      
+      // Shift+F4: Toggle recording (remote control - alternate for Shift+F3 browser conflict)
+      // ALWAYS works (blurs transcript first for remote UX)
+      if (e.key === 'F4' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        
+        // Blur transcript if focused (remote control should always work)
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (document.activeElement === transcriptEl) {
+          transcriptEl.blur();
+          console.log(ts(), '🎮 Shift+F4: Blurred transcript for remote control');
+        }
+        
+        console.log(ts(), '🎮 Shift+F4: Toggle recording (remote control)');
+        toggleRecording();
+        return;
+      }
 
       
       // F6: Remote toggle recording (smart blur + timeout)
