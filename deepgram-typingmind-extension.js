@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.103 Changes:
+ * - FIXED: F6 handler timeout removed (was breaking toggle - now synchronous)
+ * - CHANGED: Recording duration gradient 30s → 60s (more time before red warning)
+ * 
  * v3.102 Changes:
  * - NEW: F6 key handler for remote toggle recording (smart blur + timeout)
  *   - AutoHotkey sends plain F6 (not Shift+F3)
@@ -170,7 +174,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.102',
+  VERSION: '3.103',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3432,10 +3436,10 @@
         return;
       }
       
-      // Gradient from green to red over 30 seconds
+      // Gradient from green to red over 60 seconds
       // 0s: green (#ccff66)
-      // 30s: red (#ff0000)
-      const progress = Math.min(elapsed / 30, 1); // 0 to 1
+      // 60s: red (#ff0000)
+      const progress = Math.min(elapsed / 60, 1); // 0 to 1
       
       // Interpolate between green and red
       const startR = 204, startG = 255, startB = 102; // #ccff66
@@ -5211,30 +5215,23 @@
         toggleRecording();
         return;
       
-      // F6: Remote toggle recording (smart blur + timeout)
+      // F6: Remote toggle recording (smart blur - SYNCHRONOUS)
       // Called by AutoHotkey (plain F6, not Shift+F6)
-      // Blurs transcript if focused, waits 300ms, then toggles
+      // Blurs transcript if focused, then toggles immediately (no timeout)
       if (e.key === 'F6' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         
         const transcriptEl = document.getElementById('deepgram-transcript');
         
-        // Check if transcript has focus
+        // Blur if focused (synchronous - no timeout needed)
         if (document.activeElement === transcriptEl) {
-          // Blur first
           transcriptEl.blur();
-          console.log(ts(), '🎤 F6: Transcript focused - blurring, waiting 300ms before toggle');
-          
-          // Wait 300ms then toggle
-          setTimeout(() => {
-            console.log(ts(), '🎤 F6: Timeout complete - toggling recording');
-            toggleRecording();
-          }, 300);
-        } else {
-          // Not focused - toggle immediately
-          console.log(ts(), '🎤 F6: Transcript not focused - toggling immediately');
-          toggleRecording();
+          console.log(ts(), '🎤 F6: Blurred transcript');
         }
+        
+        // Toggle immediately (synchronous)
+        console.log(ts(), '🎤 F6: Toggling recording');
+        toggleRecording();
         
         return;
       }
