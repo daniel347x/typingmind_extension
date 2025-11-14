@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.99 Changes:
+ * - CHANGED: F-keys now require Shift modifier (Shift+F1, Shift+F2, etc.)
+ *   - Prevents conflicts with browser/system F-key functions
+ *   - Update SpeechControl to map buttons to Shift+F1/F2/F3/F4
+ * 
  * v3.98 Changes:
  * - ENHANCED: F-keys now blur transcript box before executing (remote control UX)
  *   - Prevents Space/ArrowDown from typing in transcript when focus is inside
@@ -145,7 +150,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.98',
+  VERSION: '3.99',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2134,10 +2139,11 @@
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
             <br>
             <strong>🎮 Philips SpeechOne Remote Control:</strong><br>
-            F1: Toggle recording<br>
-            F2: Add paragraph break<br>
-            F3: Cancel recording<br>
-            F4: ULTIMATE ULTIMATE - Insert & Submit<br>
+            Shift+F1: Toggle recording<br>
+            Shift+F2: Add paragraph break<br>
+            Shift+F3: Cancel recording<br>
+            Shift+F4: ULTIMATE ULTIMATE - Insert & Submit<br>
+            <em>(Configure remote buttons to send Shift+F1/F2/F3/F4 in SpeechControl)</em><br>
             <br>
             <strong>Teams Message Annotation:</strong>
             Use Ctrl+Shift+M to insert speaker/date delimiters for bulk Teams messages. Configure active speakers in popover (persists across sessions). Auto-toggles between 2 speakers.<br>
@@ -5163,14 +5169,14 @@
       }
       
       // F-KEYS: Philips SpeechOne Remote Control Support
-      // F1 = Toggle recording (same as Space)
-      // F2 = Add paragraph (same as ArrowDown)
-      // F3 = Cancel recording (same as Escape)
-      // F4 = ULTIMATE ULTIMATE (same as Ctrl+Alt+Shift+Enter)
+      // Shift+F1 = Toggle recording (same as Space)
+      // Shift+F2 = Add paragraph (same as ArrowDown)
+      // Shift+F3 = Cancel recording (same as Escape)
+      // Shift+F4 = ULTIMATE ULTIMATE (same as Ctrl+Alt+Shift+Enter)
       
-      // F1: Toggle recording (mirrors Space key behavior)
+      // Shift+F1: Toggle recording (mirrors Space key behavior)
       // ALWAYS works, even if transcript focused (blurs first for remote UX)
-      if (e.key === 'F1') {
+      if (e.key === 'F1' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         
         // Blur transcript if focused (remote control should always work)
@@ -5185,9 +5191,9 @@
         return;
       }
       
-      // F2: Add paragraph break (mirrors ArrowDown behavior)
+      // Shift+F2: Add paragraph break (mirrors ArrowDown behavior)
       // ALWAYS works (blurs transcript first for remote UX)
-      if (e.key === 'F2') {
+      if (e.key === 'F2' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         
         // Blur transcript if focused (remote control should always work)
@@ -5217,9 +5223,9 @@
         return;
       }
       
-      // F3: Cancel recording (mirrors Escape key behavior)
+      // Shift+F3: Cancel recording (mirrors Escape key behavior)
       // ALWAYS works (blurs transcript first for remote UX)
-      if (e.key === 'F3') {
+      if (e.key === 'F3' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         
         // Blur transcript if focused (remote control should always work)
@@ -5241,9 +5247,9 @@
         return;
       }
       
-      // F4: ULTIMATE ULTIMATE - Insert & Submit (mirrors Ctrl+Alt+Shift+Enter)
+      // Shift+F4: ULTIMATE ULTIMATE - Insert & Submit (mirrors Ctrl+Alt+Shift+Enter)
       // ALWAYS works (blurs transcript first for remote UX)
-      if (e.key === 'F4') {
+      if (e.key === 'F4' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         // GUARD: Only execute if Chat view is active
         const sidebarId = document.querySelector('[data-sidebar-id]')?.getAttribute('data-sidebar-id');
         if (sidebarId !== 'chat') {
