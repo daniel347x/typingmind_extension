@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.100 Changes:
+ * - CHANGED: Switched to Shift+F3/F9/F10/F11 (F1/F2/F4 have browser conflicts even with Shift)
+ *   - Shift+F3: Toggle recording
+ *   - Shift+F9: Add paragraph break
+ *   - Shift+F10: Cancel recording
+ *   - Shift+F11: ULTIMATE ULTIMATE - Insert & Submit
+ * 
  * v3.99 Changes:
  * - CHANGED: F-keys now require Shift modifier (Shift+F1, Shift+F2, etc.)
  *   - Prevents conflicts with browser/system F-key functions
@@ -150,7 +157,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.99',
+  VERSION: '3.100',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2139,11 +2146,11 @@
             Ctrl+Shift+M: Insert Teams Message Break (popover)<br>
             <br>
             <strong>🎮 Philips SpeechOne Remote Control:</strong><br>
-            Shift+F1: Toggle recording<br>
-            Shift+F2: Add paragraph break<br>
-            Shift+F3: Cancel recording<br>
-            Shift+F4: ULTIMATE ULTIMATE - Insert & Submit<br>
-            <em>(Configure remote buttons to send Shift+F1/F2/F3/F4 in SpeechControl)</em><br>
+            Shift+F3: Toggle recording<br>
+            Shift+F9: Add paragraph break<br>
+            Shift+F10: Cancel recording<br>
+            Shift+F11: ULTIMATE ULTIMATE - Insert & Submit<br>
+            <em>(Configure remote buttons to send these shortcuts in SpeechControl)</em><br>
             <br>
             <strong>Teams Message Annotation:</strong>
             Use Ctrl+Shift+M to insert speaker/date delimiters for bulk Teams messages. Configure active speakers in popover (persists across sessions). Auto-toggles between 2 speakers.<br>
@@ -5169,62 +5176,14 @@
       }
       
       // F-KEYS: Philips SpeechOne Remote Control Support
-      // Shift+F1 = Toggle recording (same as Space)
-      // Shift+F2 = Add paragraph (same as ArrowDown)
-      // Shift+F3 = Cancel recording (same as Escape)
-      // Shift+F4 = ULTIMATE ULTIMATE (same as Ctrl+Alt+Shift+Enter)
+      // Shift+F3 = Toggle recording (same as Space)
+      // Shift+F9 = Add paragraph (same as ArrowDown)
+      // Shift+F10 = Cancel recording (same as Escape)
+      // Shift+F11 = ULTIMATE ULTIMATE (same as Ctrl+Alt+Shift+Enter)
+      // Note: F1/F2/F4 have browser conflicts even with Shift, using F3/F9/F10/F11 instead
       
-      // Shift+F1: Toggle recording (mirrors Space key behavior)
+      // Shift+F3: Toggle recording (mirrors Space key behavior)
       // ALWAYS works, even if transcript focused (blurs first for remote UX)
-      if (e.key === 'F1' && e.shiftKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        
-        // Blur transcript if focused (remote control should always work)
-        const transcriptEl = document.getElementById('deepgram-transcript');
-        if (document.activeElement === transcriptEl) {
-          transcriptEl.blur();
-          console.log(ts(), '🎮 F1: Blurred transcript for remote control');
-        }
-        
-        console.log(ts(), '🎮 F1: Toggle recording (remote control)');
-        toggleRecording();
-        return;
-      }
-      
-      // Shift+F2: Add paragraph break (mirrors ArrowDown behavior)
-      // ALWAYS works (blurs transcript first for remote UX)
-      if (e.key === 'F2' && e.shiftKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        
-        // Blur transcript if focused (remote control should always work)
-        const transcriptEl = document.getElementById('deepgram-transcript');
-        if (document.activeElement === transcriptEl) {
-          transcriptEl.blur();
-          console.log(ts(), '🎮 F2: Blurred transcript for remote control');
-        }
-        
-        console.log(ts(), '🎮 F2: Add paragraph break (remote control)');
-        
-        if (isRecording) {
-          console.log(ts(), '🎮 F2: Recording ON - stopping to submit chunk');
-          toggleRecording();
-          setPendingParagraphFlag();
-          toggleRecording();
-          console.log(ts(), '🎮 F2: Recording resumed after chunk submission');
-        } else {
-          if (pendingTranscriptions > 0) {
-            console.log(ts(), '🎮 F2: Chunks pending - setting flag');
-            setPendingParagraphFlag();
-          } else {
-            console.log(ts(), '🎮 F2: No chunks pending - inserting newline now');
-            insertNewlineAtEnd();
-          }
-        }
-        return;
-      }
-      
-      // Shift+F3: Cancel recording (mirrors Escape key behavior)
-      // ALWAYS works (blurs transcript first for remote UX)
       if (e.key === 'F3' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         
@@ -5232,11 +5191,60 @@
         const transcriptEl = document.getElementById('deepgram-transcript');
         if (document.activeElement === transcriptEl) {
           transcriptEl.blur();
-          console.log(ts(), '🎮 F3: Blurred transcript for remote control');
+          console.log(ts(), '🎮 Shift+F3: Blurred transcript for remote control');
+          }
+          
+          console.log(ts(), '🎮 Shift+F3: Toggle recording (remote control)');
+        toggleRecording();
+        return;
+      }
+      
+      // Shift+F9: Add paragraph break (mirrors ArrowDown behavior)
+      // ALWAYS works (blurs transcript first for remote UX)
+      if (e.key === 'F9' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        
+        // Blur transcript if focused (remote control should always work)
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (document.activeElement === transcriptEl) {
+          transcriptEl.blur();
+          console.log(ts(), '🎮 Shift+F9: Blurred transcript for remote control');
+        }
+        
+        console.log(ts(), '🎮 Shift+F9: Add paragraph break (remote control)');
+        
+        if (isRecording) {
+          console.log(ts(), '🎮 Shift+F9: Recording ON - stopping to submit chunk');
+          toggleRecording();
+          setPendingParagraphFlag();
+          toggleRecording();
+          console.log(ts(), '🎮 Shift+F9: Recording resumed after chunk submission');
+        } else {
+          if (pendingTranscriptions > 0) {
+            console.log(ts(), '🎮 Shift+F9: Chunks pending - setting flag');
+            setPendingParagraphFlag();
+          } else {
+            console.log(ts(), '🎮 Shift+F9: No chunks pending - inserting newline now');
+            insertNewlineAtEnd();
+          }
+        }
+        return;
+      }
+      
+      // Shift+F10: Cancel recording (mirrors Escape key behavior)
+      // ALWAYS works (blurs transcript first for remote UX)
+      if (e.key === 'F10' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        
+        // Blur transcript if focused (remote control should always work)
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        if (document.activeElement === transcriptEl) {
+          transcriptEl.blur();
+          console.log(ts(), '🎮 Shift+F10: Blurred transcript for remote control');
         }
         
         if (isRecording) {
-          console.log(ts(), '🎮 F3: Canceling active recording (remote control)');
+          console.log(ts(), '🎮 Shift+F10: Canceling active recording (remote control)');
           
           if (transcriptionMode === 'whisper') {
             cancelWhisperRecording();
@@ -5247,13 +5255,13 @@
         return;
       }
       
-      // Shift+F4: ULTIMATE ULTIMATE - Insert & Submit (mirrors Ctrl+Alt+Shift+Enter)
+      // Shift+F11: ULTIMATE ULTIMATE - Insert & Submit (mirrors Ctrl+Alt+Shift+Enter)
       // ALWAYS works (blurs transcript first for remote UX)
-      if (e.key === 'F4' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      if (e.key === 'F11' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         // GUARD: Only execute if Chat view is active
         const sidebarId = document.querySelector('[data-sidebar-id]')?.getAttribute('data-sidebar-id');
         if (sidebarId !== 'chat') {
-          console.log(ts(), '🎮 F4: Blocked - Chat view not active (sidebar:', sidebarId, ')');
+          console.log(ts(), '🎮 Shift+F11: Blocked - Chat view not active (sidebar:', sidebarId, ')');
           return;
         }
         
@@ -5263,26 +5271,26 @@
         const transcriptEl = document.getElementById('deepgram-transcript');
         if (document.activeElement === transcriptEl) {
           transcriptEl.blur();
-          console.log(ts(), '🎮 F4: Blurred transcript for remote control');
+          console.log(ts(), '🎮 Shift+F11: Blurred transcript for remote control');
         }
         
-        console.log(ts(), '🎮 F4: ULTIMATE ULTIMATE triggered (remote control)');
+        console.log(ts(), '🎮 Shift+F11: ULTIMATE ULTIMATE triggered (remote control)');
         
         if (isRecording) {
-          console.log(ts(), '🎮 F4: Recording active - stopping first');
+          console.log(ts(), '🎮 Shift+F11: Recording active - stopping first');
           toggleRecording();
         }
         
         if (pendingTranscriptions > 0) {
-          console.log(ts(), '🎮 F4: Chunks pending - queueing submit after completion');
+          console.log(ts(), '🎮 Shift+F11: Chunks pending - queueing submit after completion');
           queuedAction = 'insertAndSubmit';
         } else {
           const text = document.getElementById('deepgram-transcript').value.trim();
           if (text) {
-            console.log(ts(), '🎮 F4: No chunks pending - executing submit now');
+            console.log(ts(), '🎮 Shift+F11: No chunks pending - executing submit now');
             insertAndSubmit();
           } else {
-            console.log(ts(), '🎮 F4: No text to submit');
+            console.log(ts(), '🎮 Shift+F11: No text to submit');
           }
         }
         return;
