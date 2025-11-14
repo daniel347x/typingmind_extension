@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.106 Changes:
+ * - FIXED: Restored correct function key mapping (Shift+F6 = Cancel, not Toggle)
+ * - Removed orphaned plain F6 handler (Chrome intercepts it anyway)
+ * 
  * v3.105 Changes:
  * - CHANGED: Shift+F6 now toggles recording (was cancel) - fixes Chrome F6 navigation conflict
  * - AutoHotkey sends Shift+F6 instead of plain F6 (Chrome intercepts plain F6)
@@ -181,7 +185,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.105',
+  VERSION: '3.106',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5285,7 +5289,7 @@
         return;
       }
       
-      // Shift+F6: Toggle recording (remote control - replaces plain F6 due to Chrome conflict)
+      // Shift+F6: Cancel recording (mirrors Escape key behavior)
       // ALWAYS works (blurs transcript first for remote UX)
       if (e.key === 'F6' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
@@ -5297,9 +5301,15 @@
           console.log(ts(), '🎮 Shift+F6: Blurred transcript for remote control');
         }
         
-        console.log(ts(), '🎮 Shift+F6: Toggle recording (remote control)');
-        toggleRecording();
-        
+        if (isRecording) {
+          console.log(ts(), '🎮 Shift+F6: Canceling active recording (remote control)');
+          
+          if (transcriptionMode === 'whisper') {
+            cancelWhisperRecording();
+          } else {
+            cancelDeepgramRecording();
+          }
+        }
         return;
       }
       
