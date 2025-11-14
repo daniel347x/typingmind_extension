@@ -170,7 +170,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.101',
+  VERSION: '3.102',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
