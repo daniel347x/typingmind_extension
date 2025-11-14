@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.104 Changes:
+ * - REVERTED: Recording duration gradient back to 30s (60s causes Whisper hallucination loops)
+ * 
  * v3.103 Changes:
  * - FIXED: F6 handler timeout removed (was breaking toggle - now synchronous)
  * - CHANGED: Recording duration gradient 30s → 60s (more time before red warning)
@@ -174,7 +177,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.103',
+  VERSION: '3.104',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3436,10 +3439,10 @@
         return;
       }
       
-      // Gradient from green to red over 60 seconds
+      // Gradient from green to red over 30 seconds
       // 0s: green (#ccff66)
-      // 60s: red (#ff0000)
-      const progress = Math.min(elapsed / 60, 1); // 0 to 1
+      // 30s: red (#ff0000)
+      const progress = Math.min(elapsed / 30, 1); // 0 to 1
       
       // Interpolate between green and red
       const startR = 204, startG = 255, startB = 102; // #ccff66
