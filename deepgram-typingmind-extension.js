@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.105 Changes:
+ * - CHANGED: Shift+F6 now toggles recording (was cancel) - fixes Chrome F6 navigation conflict
+ * - AutoHotkey sends Shift+F6 instead of plain F6 (Chrome intercepts plain F6)
+ * 
  * v3.104 Changes:
  * - REVERTED: Recording duration gradient back to 30s (60s causes Whisper hallucination loops)
  * 
@@ -177,7 +181,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.104',
+  VERSION: '3.105',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5217,28 +5221,7 @@
           console.log(ts(), '🎮 Shift+F3: Toggle recording (remote control)');
         toggleRecording();
         return;
-      
-      // F6: Remote toggle recording (smart blur - SYNCHRONOUS)
-      // Called by AutoHotkey (plain F6, not Shift+F6)
-      // Blurs transcript if focused, then toggles immediately (no timeout)
-      if (e.key === 'F6' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        
-        const transcriptEl = document.getElementById('deepgram-transcript');
-        
-        // Blur if focused (synchronous - no timeout needed)
-        if (document.activeElement === transcriptEl) {
-          transcriptEl.blur();
-          console.log(ts(), '🎤 F6: Blurred transcript');
-        }
-        
-        // Toggle immediately (synchronous)
-        console.log(ts(), '🎤 F6: Toggling recording');
-        toggleRecording();
-        
-        return;
-      }
-      
+
       
       // F6: Remote toggle recording (smart blur + timeout)
       // Called by AutoHotkey (plain F6, not Shift+F6)
@@ -5302,7 +5285,7 @@
         return;
       }
       
-      // Shift+F6: Cancel recording (mirrors Escape key behavior)
+      // Shift+F6: Toggle recording (remote control - replaces plain F6 due to Chrome conflict)
       // ALWAYS works (blurs transcript first for remote UX)
       if (e.key === 'F6' && e.shiftKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
@@ -5314,15 +5297,9 @@
           console.log(ts(), '🎮 Shift+F6: Blurred transcript for remote control');
         }
         
-        if (isRecording) {
-          console.log(ts(), '🎮 Shift+F6: Canceling active recording (remote control)');
-          
-          if (transcriptionMode === 'whisper') {
-            cancelWhisperRecording();
-          } else {
-            cancelDeepgramRecording();
-          }
-        }
+        console.log(ts(), '🎮 Shift+F6: Toggle recording (remote control)');
+        toggleRecording();
+        
         return;
       }
       
