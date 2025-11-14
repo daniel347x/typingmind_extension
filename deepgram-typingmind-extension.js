@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.107 Changes:
+ * - FIXED: AutoHotkey now uses passthrough logic (Shift+F3 → Shift+F3, no transformation)
+ * - Confirms correct mapping: Shift+F3=Toggle, Shift+F5=Paragraph, Shift+F6=Cancel, Shift+F11=Submit
+ * 
  * v3.106 Changes:
  * - FIXED: Restored correct function key mapping (Shift+F6 = Cancel, not Toggle)
  * - Removed orphaned plain F6 handler (Chrome intercepts it anyway)
@@ -185,7 +189,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.106',
+  VERSION: '3.107',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
