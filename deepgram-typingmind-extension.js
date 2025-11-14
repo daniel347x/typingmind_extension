@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.102 Changes:
+ * - NEW: F6 key handler for remote toggle recording (smart blur + timeout)
+ *   - AutoHotkey sends plain F6 (not Shift+F3)
+ *   - Widget blurs transcript if focused, waits 300ms, then toggles
+ *   - Fixes: Escape key canceling recording instead of toggling
+ * 
  * v3.101 Changes:
  * - CHANGED: Switch Shift+F9→F5, Shift+F10→F6 (F9/F10 also blocked by browser)
  *   - Shift+F3: Toggle recording (WORKING)
@@ -5204,6 +5210,64 @@
           console.log(ts(), '🎮 Shift+F3: Toggle recording (remote control)');
         toggleRecording();
         return;
+      
+      // F6: Remote toggle recording (smart blur + timeout)
+      // Called by AutoHotkey (plain F6, not Shift+F6)
+      // Blurs transcript if focused, waits 300ms, then toggles
+      if (e.key === 'F6' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        
+        // Check if transcript has focus
+        if (document.activeElement === transcriptEl) {
+          // Blur first
+          transcriptEl.blur();
+          console.log(ts(), '🎤 F6: Transcript focused - blurring, waiting 300ms before toggle');
+          
+          // Wait 300ms then toggle
+          setTimeout(() => {
+            console.log(ts(), '🎤 F6: Timeout complete - toggling recording');
+            toggleRecording();
+          }, 300);
+        } else {
+          // Not focused - toggle immediately
+          console.log(ts(), '🎤 F6: Transcript not focused - toggling immediately');
+          toggleRecording();
+        }
+        
+        return;
+      }
+      
+      
+      // F6: Remote toggle recording (smart blur + timeout)
+      // Called by AutoHotkey (plain F6, not Shift+F6)
+      // Blurs transcript if focused, waits 300ms, then toggles
+      if (e.key === 'F6' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        
+        const transcriptEl = document.getElementById('deepgram-transcript');
+        
+        // Check if transcript has focus
+        if (document.activeElement === transcriptEl) {
+          // Blur first
+          transcriptEl.blur();
+          console.log(ts(), '🎤 F6: Transcript focused - blurring, waiting 300ms before toggle');
+          
+          // Wait 300ms then toggle
+          setTimeout(() => {
+            console.log(ts(), '🎤 F6: Timeout complete - toggling recording');
+            toggleRecording();
+          }, 300);
+        } else {
+          // Not focused - toggle immediately
+          console.log(ts(), '🎤 F6: Transcript not focused - toggling immediately');
+          toggleRecording();
+        }
+        
+        return;
+      }
+      
       }
       
       // Shift+F5: Add paragraph break (mirrors ArrowDown behavior)
