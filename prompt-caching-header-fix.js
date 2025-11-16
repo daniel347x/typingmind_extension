@@ -553,7 +553,7 @@ function ensureGpt51UsageWidget() {
     return fetchPromise;
   };
 
-  console.log('✅ Prompt Caching & Tool Result Fix & Payload Analysis v4.3 - Active and monitoring');
+  console.log('✅ Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Active and monitoring');
   console.log('📊 Will inject prompt-caching-2024-07-31 flag into all Anthropic API requests');
   console.log('🔧 Will strip "name" field from tool_result content blocks');
   console.log('🔎 Will analyze payloads when [DEBUG-command-fileId] trigger detected');
