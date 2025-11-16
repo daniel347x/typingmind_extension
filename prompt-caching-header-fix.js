@@ -274,8 +274,8 @@ function ensureGpt51UsageWidget() {
       el.id = 'gpt51-usage-widget';
       el.style.position = 'fixed';
       el.style.top = '12px';
-      // Move widget 250px left from original right edge position
-      el.style.right = '62px';
+      // Move widget ~300px left from original right edge position
+      el.style.right = '312px';
       el.style.zIndex = '99999';
       el.style.background = 'rgba(0,0,0,0.80)';
       el.style.color = '#fff';
