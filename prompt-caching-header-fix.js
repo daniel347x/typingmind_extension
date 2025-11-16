@@ -136,26 +136,81 @@
     }
     if (!userMessages.length) return null;
 
-    const first = userMessages[0];
-    let text = '';
-    if (typeof first.content === 'string') {
-      text = first.content;
-    } else if (Array.isArray(first.content)) {
-      const textBlocks = first.content.filter(
-        block => block && (block.type === 'text' || block.type === 'input_text')
-      );
-      text = textBlocks.map(block => block.text || '').join(' ');
+    // 1) Primary: look for "load files <keyword>" in the FIRST user message
+    (function() {
+      const first = userMessages[0];
+      let text = '';
+      if (typeof first.content === 'string') {
+        text = first.content;
+      } else if (Array.isArray(first.content)) {
+        const textBlocks = first.content.filter(
+          block => block && (block.type === 'text' || block.type === 'input_text')
+        );
+        text = textBlocks.map(block => block.text || '').join(' ');
+      }
+      const lower = text.toLowerCase();
+      const prefix = 'load files';
+      const idx = lower.indexOf(prefix);
+      if (idx !== -1) {
+        let after = text.slice(idx + prefix.length).trim();
+        if (after) {
+          if (after.length > 128) after = after.slice(0, 128);
+          return after;
+        }
+      }
+      return null;
+    })();
+
+    const primaryId = (function() {
+      const first = userMessages[0];
+      let text = '';
+      if (typeof first.content === 'string') {
+        text = first.content;
+      } else if (Array.isArray(first.content)) {
+        const textBlocks = first.content.filter(
+          block => block && (block.type === 'text' || block.type === 'input_text')
+        );
+        text = textBlocks.map(block => block.text || '').join(' ');
+      }
+      const lower = text.toLowerCase();
+      const prefix = 'load files';
+      const idx = lower.indexOf(prefix);
+      if (idx === -1) return null;
+      let after = text.slice(idx + prefix.length).trim();
+      if (!after) return null;
+      if (after.length > 128) after = after.slice(0, 128);
+      return after;
+    })();
+
+    if (primaryId) return primaryId;
+
+    // 2) Safety: if no load-files keyword, scan the next few user messages
+    //    for a line starting with "CONVERSATION IDENTITY: <keyword>".
+    const maxToScan = Math.min(userMessages.length, 10);
+    const idPrefix = 'conversation identity:';
+
+    for (let i = 1; i < maxToScan; i++) {
+      const msg = userMessages[i];
+      let text = '';
+      if (typeof msg.content === 'string') {
+        text = msg.content;
+      } else if (Array.isArray(msg.content)) {
+        const textBlocks = msg.content.filter(
+          block => block && (block.type === 'text' || block.type === 'input_text')
+        );
+        text = textBlocks.map(block => block.text || '').join(' ');
+      }
+      const trimmed = text.trim();
+      const lower = trimmed.toLowerCase();
+      if (lower.startsWith(idPrefix)) {
+        let after = trimmed.slice(idPrefix.length).trim();
+        if (!after) continue;
+        if (after.length > 128) after = after.slice(0, 128);
+        return after;
+      }
     }
 
-    const lower = text.toLowerCase();
-    const prefix = 'load files';
-    const idx = lower.indexOf(prefix);
-    if (idx === -1) return null;
-
-    let after = text.slice(idx + prefix.length).trim();
-    if (!after) return null;
-    if (after.length > 128) after = after.slice(0, 128);
-    return after;
+    return null;
   }
 
   function getGpt51UsageStore() {
