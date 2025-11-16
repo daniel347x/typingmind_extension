@@ -21,6 +21,8 @@
 (function() {
   'use strict';
 
+  const EXT_VERSION = '4.5';
+
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
     INPUT_CACHED_PER_TOKEN:   0.125 / 1e6,   // $0.125 per 1M cached input tokens
@@ -374,7 +376,7 @@ function ensureGpt51UsageWidget() {
     });
 
     // Header + total are always visible
-    lines.push('<div style="font-weight:bold;margin-bottom:2px;">GPT-5.1 Conversations (v4.5)</div>');
+    lines.push('<div style="font-weight:bold;margin-bottom:2px;">GPT-5.1 Conversations (v' + EXT_VERSION + ')</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-bottom:4px;">≈ Total cost: $' + totalCost.toFixed(4) + '</div>');
 
     // Active conversation row is always visible (never collapsible)
