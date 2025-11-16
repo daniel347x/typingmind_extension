@@ -201,6 +201,7 @@
     stats.cost = (stats.cost || 0) + turnCost;
     stats.lastContextInput = input;
     stats.lastContextPct   = contextPct;
+    stats.hidden = false; // ensure conversation reappears in widget once new usage arrives
 
     store[convId] = stats;
     saveGpt51UsageStore(store);
@@ -235,7 +236,10 @@
         if (target && target.dataset && target.dataset.convId) {
           const convId = target.dataset.convId;
           const store = getGpt51UsageStore();
-          delete store[convId];
+          const stats = store[convId] || {};
+          // Mark as hidden instead of deleting so stats persist and can be revived on next message
+          stats.hidden = true;
+          store[convId] = stats;
           saveGpt51UsageStore(store);
           renderGpt51UsageWidget();
           ev.stopPropagation();
@@ -249,7 +253,7 @@
     if (typeof document === 'undefined') return;
     const el = ensureGpt51UsageWidget();
     const store = getGpt51UsageStore();
-    const convIds = Object.keys(store);
+    const convIds = Object.keys(store).filter(id => !store[id].hidden);
     if (!convIds.length) {
       el.textContent = 'GPT-5.1 usage: (no tracked conversations)';
       return;
