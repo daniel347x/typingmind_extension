@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.4
+// Version: 4.5
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,7 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.5 (Nov 16, 2025): Expose active extension version in GPT-5.1 widget title to confirm deployment state
 //   - v4.4 (Nov 16, 2025): Prime Forge widget tweaks (font bump, collapsible "other conversations", horizontal offset) and NBSP normalization in block_insert_or_replace workflow
 //   - v4.3 (Nov 16, 2025): Adds per-conversation usage tracking and lightweight UI widget keyed by first "load files <keyword>" user message, plus approximate cost based on hard-coded GPT-5.1 pricing
 //   - v4.2 (Nov 16, 2025): Injects prompt_cache_key & prompt_cache_retention for OpenAI GPT-5.1 /v1/responses calls
@@ -373,7 +374,7 @@ function ensureGpt51UsageWidget() {
     });
 
     // Header + total are always visible
-    lines.push('<div style="font-weight:bold;margin-bottom:2px;">GPT-5.1 Conversations</div>');
+    lines.push('<div style="font-weight:bold;margin-bottom:2px;">GPT-5.1 Conversations (v4.5)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-bottom:4px;">≈ Total cost: $' + totalCost.toFixed(4) + '</div>');
 
     // Active conversation row is always visible (never collapsible)
