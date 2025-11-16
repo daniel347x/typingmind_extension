@@ -223,7 +223,7 @@
       const raw = localStorage.getItem('gpt51_conv_usage');
       return raw ? JSON.parse(raw) : {};
     } catch (e) {
-      console.warn('⚠️ [v4.3] Failed to parse gpt51_conv_usage from localStorage:', e);
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse gpt51_conv_usage from localStorage:', e);
       return {};
     }
   }
@@ -232,7 +232,7 @@
     try {
       localStorage.setItem('gpt51_conv_usage', JSON.stringify(store));
     } catch (e) {
-      console.warn('⚠️ [v4.3] Failed to save gpt51_conv_usage to localStorage:', e);
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save gpt51_conv_usage to localStorage:', e);
     }
   }
 
@@ -535,17 +535,17 @@ function ensureGpt51UsageWidget() {
                 const usage = data && data.response && data.response.usage;
                 if (usage && convIdForThisCall) {
                   updateGpt51Usage(convIdForThisCall, usage);
-                  console.log('📈 [v4.3] Updated GPT-5.1 usage for conversation:', convIdForThisCall, usage);
+                  console.log('📈 [v' + EXT_VERSION + '] Updated GPT-5.1 usage for conversation:', convIdForThisCall, usage);
                 }
               }
             } catch (e) {
-              console.warn('⚠️ [v4.3] Failed to parse SSE usage from OpenAI Responses:', e);
+              console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse SSE usage from OpenAI Responses:', e);
             }
           }).catch(function(e) {
-            console.warn('⚠️ [v4.3] Failed to read OpenAI Responses clone body:', e);
+            console.warn('⚠️ [v' + EXT_VERSION + '] Failed to read OpenAI Responses clone body:', e);
           });
         } catch (e) {
-          console.warn('⚠️ [v4.3] Failed to clone OpenAI Responses response:', e);
+          console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone OpenAI Responses response:', e);
         }
         return response;
       });
