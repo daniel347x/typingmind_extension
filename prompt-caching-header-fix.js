@@ -31,7 +31,7 @@
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
 
-  console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v4.3 - Initializing...');
+  console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
 
