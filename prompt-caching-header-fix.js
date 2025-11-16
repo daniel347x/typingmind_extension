@@ -25,6 +25,8 @@
     OUTPUT_PER_TOKEN:         10 / 1e6       // $10 per 1M output tokens
   };
 
+  const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
+
   console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v4.3 - Initializing...');
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
@@ -190,11 +192,15 @@
       cached * GPT51_PRICING.INPUT_CACHED_PER_TOKEN +
       output * GPT51_PRICING.OUTPUT_PER_TOKEN;
 
+    const contextPct = GPT51_CONTEXT_LIMIT > 0 ? (input / GPT51_CONTEXT_LIMIT * 100) : 0;
+
     stats.input += input;
     stats.cached += cached;
     stats.output += output;
     stats.total += total;
     stats.cost = (stats.cost || 0) + turnCost;
+    stats.lastContextInput = input;
+    stats.lastContextPct   = contextPct;
 
     store[convId] = stats;
     saveGpt51UsageStore(store);
@@ -258,14 +264,24 @@
       const cachedPct = s.input > 0 ? ((s.cached / s.input) * 100).toFixed(1) : '0.0';
       const safeId = convId.replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const cost = s.cost || 0;
+      const ctxInput = s.lastContextInput || 0;
+      const ctxPct = s.lastContextPct != null ? s.lastContextPct : 0;
+      const ctxPctStr = ctxPct.toFixed ? ctxPct.toFixed(1) : ctxPct.toString();
+      const ctxColor = ctxPct >= 75 ? '#ff8080' : (ctxPct >= 50 ? '#ffcf80' : '#a0ffa0');
       totalCost += cost;
       convLines.push(
-        '<div style="margin-bottom:3px;">'
-          + '<span style="float:right;cursor:pointer;color:#ffaaaa;margin-left:6px;" data-conv-id="' + safeId + '">×</span>'
-          + '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">'
-          + safeId + '</div>'
-          + '<div style="font-size:10px;opacity:0.85;">in:' + s.input + ' cached:' + s.cached + ' (' + cachedPct + '%) out:' + s.output + ' · $' + cost.toFixed(4) + '</div>'
-        + '</div>'
+        '<div style="margin-bottom:3px;">' +
+          '<span style="float:right;cursor:pointer;color:#ffaaaa;margin-left:6px;" data-conv-id="' + safeId + '">×</span>' +
+          '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">' +
+            safeId +
+          '</div>' +
+          '<div style="font-size:10px;opacity:0.85;">' +
+            'in:' + s.input + ' cached:' + s.cached + ' (' + cachedPct + '%) out:' + s.output + ' · $' + cost.toFixed(4) +
+          '</div>' +
+          '<div style="font-size:10px;margin-top:1px;color:' + ctxColor + ';">' +
+            'ctx:' + ctxInput + ' (' + ctxPctStr + '% of 400k)' +
+          '</div>' +
+        '</div>'
       );
     });
 
