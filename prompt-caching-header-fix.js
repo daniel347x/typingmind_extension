@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.3
+// Version: 4.4
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,7 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.4 (Nov 16, 2025): Prime Forge widget tweaks (font bump, collapsible "other conversations", horizontal offset) and NBSP normalization in block_insert_or_replace workflow
 //   - v4.3 (Nov 16, 2025): Adds per-conversation usage tracking and lightweight UI widget keyed by first "load files <keyword>" user message, plus approximate cost based on hard-coded GPT-5.1 pricing
 //   - v4.2 (Nov 16, 2025): Injects prompt_cache_key & prompt_cache_retention for OpenAI GPT-5.1 /v1/responses calls
 //   - v4.1 (Nov 12, 2025): No-op test for documentation validation. Updated welcome message.
@@ -262,20 +263,21 @@
     saveGpt51UsageStore(store);
     renderGpt51UsageWidget();
   }
-
-  function ensureGpt51UsageWidget() {
+function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
       el = document.createElement('div');
       el.id = 'gpt51-usage-widget';
       el.style.position = 'fixed';
       el.style.top = '12px';
-      el.style.right = '12px';
+      // Move widget 250px left from original right edge position
+      el.style.right = '262px';
       el.style.zIndex = '99999';
       el.style.background = 'rgba(0,0,0,0.80)';
       el.style.color = '#fff';
       el.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
-      el.style.fontSize = '11px';
+      // Bump base font size one notch
+      el.style.fontSize = '12px';
       el.style.padding = '6px 8px';
       el.style.borderRadius = '4px';
       el.style.maxWidth = '260px';
@@ -288,16 +290,29 @@
 
       el.addEventListener('click', function(ev) {
         const target = ev.target;
-        if (target && target.dataset && target.dataset.convId) {
-          const convId = target.dataset.convId;
-          const store = getGpt51UsageStore();
-          const stats = store[convId] || {};
-          // Mark as hidden instead of deleting so stats persist and can be revived on next message
-          stats.hidden = true;
-          store[convId] = stats;
-          saveGpt51UsageStore(store);
-          renderGpt51UsageWidget();
-          ev.stopPropagation();
+        if (target && target.dataset) {
+          // Close (hide) a specific conversation from the list
+          if (target.dataset.convId) {
+            const convId = target.dataset.convId;
+            const store = getGpt51UsageStore();
+            const stats = store[convId] || {};
+            // Mark as hidden instead of deleting so stats persist and can be revived on next message
+            stats.hidden = true;
+            store[convId] = stats;
+            saveGpt51UsageStore(store);
+            renderGpt51UsageWidget();
+            ev.stopPropagation();
+            return;
+          }
+          // Toggle visibility of "other" conversations (collapsible region)
+          if (target.dataset.toggle === 'others') {
+            const widget = ensureGpt51UsageWidget();
+            const currentlyCollapsed = widget.dataset.othersCollapsed === 'true' || !widget.dataset.othersCollapsed;
+            widget.dataset.othersCollapsed = String(!currentlyCollapsed);
+            renderGpt51UsageWidget();
+            ev.stopPropagation();
+            return;
+          }
         }
       });
     }
@@ -316,9 +331,16 @@
 
     const lines = [];
     let totalCost = 0;
-    const convLines = [];
 
-    convIds.slice(-5).reverse().forEach(convId => {
+    // Use up to the last 5 conversations, most recent first
+    const ordered = convIds.slice(-5).reverse();
+    const activeId = ordered[0];
+    const otherIds = ordered.slice(1);
+
+    let activeLine = null;
+    const otherLines = [];
+
+    ordered.forEach((convId, idx) => {
       const s = store[convId];
       const cachedPct = s.input > 0 ? ((s.cached / s.input) * 100).toFixed(1) : '0.0';
       const safeId = convId.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -328,7 +350,8 @@
       const ctxPctStr = ctxPct.toFixed ? ctxPct.toFixed(1) : ctxPct.toString();
       const ctxColor = ctxPct >= 75 ? '#ff8080' : (ctxPct >= 50 ? '#ffcf80' : '#a0ffa0');
       totalCost += cost;
-      convLines.push(
+
+      const rowHtml =
         '<div style="margin-bottom:3px;">' +
           '<span style="float:right;cursor:pointer;color:#ffaaaa;margin-left:6px;" data-conv-id="' + safeId + '">×</span>' +
           '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">' +
@@ -340,13 +363,44 @@
           '<div style="font-size:10px;margin-top:1px;color:' + ctxColor + ';">' +
             'ctx:' + ctxInput + ' (' + ctxPctStr + '% of 400k)' +
           '</div>' +
-        '</div>'
-      );
+        '</div>';
+
+      if (idx === 0) {
+        activeLine = rowHtml; // Always-visible active conversation
+      } else {
+        otherLines.push(rowHtml); // Candidates for collapsible region
+      }
     });
 
+    // Header + total are always visible
     lines.push('<div style="font-weight:bold;margin-bottom:2px;">GPT-5.1 Conversations</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-bottom:4px;">≈ Total cost: $' + totalCost.toFixed(4) + '</div>');
-    convLines.forEach(line => lines.push(line));
+
+    // Active conversation row is always visible (never collapsible)
+    if (activeLine) {
+      lines.push(activeLine);
+    }
+
+    // Collapsible region for all OTHER conversations
+    if (otherLines.length > 0) {
+      const collapsed = el.dataset.othersCollapsed === 'true' || !el.dataset.othersCollapsed;
+      const toggleLabel = collapsed
+        ? 'Show other conversations (' + otherLines.length + ')'
+        : 'Hide other conversations';
+
+      lines.push(
+        '<div style="font-size:10px;opacity:0.9;margin:2px 0 4px 0;cursor:pointer;text-decoration:underline;" data-toggle="others">' +
+          toggleLabel +
+        '</div>'
+      );
+
+      if (!collapsed) {
+        otherLines.forEach(line => lines.push(line));
+      }
+    }
+
+    el.innerHTML = lines.join('');
+  }
 
     el.innerHTML = lines.join('');
   }
