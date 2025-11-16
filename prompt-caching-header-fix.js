@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.5
+// Version: 4.6
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,7 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.6 (Nov 16, 2025): Render GPT-5.1 Conversations widget on load using persisted localStorage stats (no message required)
 //   - v4.5 (Nov 16, 2025): Expose active extension version in GPT-5.1 widget title to confirm deployment state
 //   - v4.4 (Nov 16, 2025): Prime Forge widget tweaks (font bump, collapsible "other conversations", horizontal offset) and NBSP normalization in block_insert_or_replace workflow
 //   - v4.3 (Nov 16, 2025): Adds per-conversation usage tracking and lightweight UI widget keyed by first "load files <keyword>" user message, plus approximate cost based on hard-coded GPT-5.1 pricing
@@ -21,7 +22,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.5';
+  const EXT_VERSION = '4.6';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -552,6 +553,15 @@ function ensureGpt51UsageWidget() {
 
     return fetchPromise;
   };
+
+  // Initial render from any persisted usage in localStorage so widget appears on load
+  try {
+    if (typeof document !== 'undefined') {
+      renderGpt51UsageWidget();
+    }
+  } catch (e) {
+    console.warn('⚠️ [v' + EXT_VERSION + '] Failed initial GPT-5.1 widget render:', e);
+  }
 
   console.log('✅ Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Active and monitoring');
   console.log('📊 Will inject prompt-caching-2024-07-31 flag into all Anthropic API requests');
