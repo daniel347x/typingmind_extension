@@ -1,21 +1,23 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.1
+// Version: 4.2
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
 //   3. Intercept and analyze payloads when [DEBUG-command-fileId] trigger detected
+//   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 // Issues Fixed:
+//   - v4.2 (Nov 16, 2025): Injects prompt_cache_key & prompt_cache_retention for OpenAI GPT-5.1 /v1/responses calls
 //   - v4.1 (Nov 12, 2025): No-op test for documentation validation. Updated welcome message.
 //   - v1.0: TypingMind sends extended-cache-ttl but not base prompt-caching flag
 //   - v2.0: (planned) Strip non-standard ttl field from cache_control objects
 //   - v3.0: Strip "name" field from tool results (MCP adds "name":"STDOUT" but Anthropic rejects it)
 //   - v4.0: Payload analysis for debugging tool call patterns
-// Impact: Enables 80-90% cost savings via prompt caching + fixes run_command crashes + payload debugging
+// Impact: Enables 80-90% cost savings via prompt caching (Anthropic + OpenAI GPT-5.1) + fixes run_command crashes + payload debugging
 
 (function() {
   'use strict';
   
-  console.log('🔧 UPDATED WELCOME (Nov 12, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v4.1 - Initializing...');
+  console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v4.2 - Initializing...');
   
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
   
@@ -131,11 +133,11 @@
   // Store original fetch function
   const originalFetch = window.fetch;
   
-  // Override fetch to intercept Anthropic API calls
+  // Override fetch to intercept API calls
   window.fetch = function(...args) {
     const [url, options = {}] = args;
     
-    // Check if this is an Anthropic API call
+    // ==================== ANTHROPIC BRANCH ====================
     if (url.includes('api.anthropic.com')) {
       try {
         // Parse request body if it exists
@@ -196,7 +198,39 @@
           }
         }
       } catch (e) {
-        console.warn('⚠️ [v3.0] Failed to parse/modify request:', e);
+        console.warn('⚠️ [v3.0] Failed to parse/modify Anthropic request:', e);
+      }
+    }
+    
+    // ==================== OPENAI RESPONSES BRANCH (GPT-5.1 prompt caching) ====================
+    else if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+          
+          // Only target GPT-5.1 family; match prefix for future variants
+          const model = body.model || '';
+          if (typeof model === 'string' && model.startsWith('gpt-5.1')) {
+            if (!body.prompt_cache_key) {
+              body.prompt_cache_key = 'dan-dagger-gpt5.1-v1';
+              modified = true;
+              console.log('✅ [v4.2] Injected prompt_cache_key for GPT-5.1 Responses:', body.prompt_cache_key);
+            }
+            if (body.prompt_cache_retention == null) {
+              body.prompt_cache_retention = 3600; // seconds
+              modified = true;
+              console.log('✅ [v4.2] Injected prompt_cache_retention for GPT-5.1 Responses:', body.prompt_cache_retention);
+            }
+          }
+          
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v4.2] OpenAI Responses request body updated for prompt caching');
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ [v4.2] Failed to parse/modify OpenAI Responses request:', e);
       }
     }
     
@@ -204,9 +238,9 @@
     return originalFetch(...args);
   };
   
-  console.log('✅ Prompt Caching & Tool Result Fix & Payload Analysis v4.0 - Active and monitoring');
+  console.log('✅ Prompt Caching & Tool Result Fix & Payload Analysis v4.2 - Active and monitoring');
   console.log('📊 Will inject prompt-caching-2024-07-31 flag into all Anthropic API requests');
   console.log('🔧 Will strip "name" field from tool_result content blocks');
   console.log('🔎 Will analyze payloads when [DEBUG-command-fileId] trigger detected');
-  console.log('💰 Expected result: 80-90% cost reduction + run_command working + payload debugging');
+  console.log('💰 Expected result: 80-90% cost reduction (Anthropic + OpenAI GPT-5.1) + run_command working + payload debugging');
 })();
