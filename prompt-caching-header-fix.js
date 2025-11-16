@@ -405,9 +405,6 @@ function ensureGpt51UsageWidget() {
     el.innerHTML = lines.join('');
   }
 
-    el.innerHTML = lines.join('');
-  }
-
   // ==================== FETCH OVERRIDE ====================
 
   const originalFetch = window.fetch;
