@@ -218,7 +218,7 @@
               console.log('✅ [v4.2] Injected prompt_cache_key for GPT-5.1 Responses:', body.prompt_cache_key);
             }
             if (body.prompt_cache_retention == null) {
-              body.prompt_cache_retention = 3600; // seconds
+              body.prompt_cache_retention = '24h'; // allowed values: 'in_memory' or '24h'
               modified = true;
               console.log('✅ [v4.2] Injected prompt_cache_retention for GPT-5.1 Responses:', body.prompt_cache_retention);
             }
