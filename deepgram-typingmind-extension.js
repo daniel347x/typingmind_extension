@@ -11,7 +11,7 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
- * v3.108 Changes:
+ * v3.109 Changes:
  * - NEW: Shift+F4 handler for toggle recording (Shift+F3 has browser conflict)
  * - AutoHotkey intercepts Shift+F3 → sends Shift+F4 to widget
  * - Updated mapping: Shift+F4=Toggle, Shift+F5=Paragraph, Shift+F6=Cancel, Shift+F11=Submit
@@ -194,7 +194,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.108',
+  VERSION: '3.109',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4011,6 +4011,18 @@
       alert('No transcript to insert!');
       return;
     }
+
+    // ALWAYS copy transcript text to clipboard on insert attempt (success or failure)
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text)
+        .then(() => {
+          lastCopiedText = text;
+          console.log('📋 Transcript copied to clipboard on insertToChat');
+        })
+        .catch(err => {
+          console.error('❌ Clipboard copy on insertToChat failed:', err);
+        });
+    }
     
     console.log('🔍 Searching for TypingMind chat input...');
     
@@ -4160,10 +4172,7 @@
       console.error('❌ Could not find chat input element');
       console.log('💡 Available textareas:', document.querySelectorAll('textarea'));
       console.log('💡 Available contenteditable:', document.querySelectorAll('[contenteditable="true"]'));
-      alert('Could not find chat input. Opening browser console for debugging.\n\nPlease use the Copy button and paste manually.');
-      
-      // Auto-copy as fallback
-      copyTranscript();
+      alert('Could not find chat input. Transcript has been copied to your clipboard; please paste it manually into the chat box.');
     }
   }
   
