@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.110 Changes:
+ * - NEW: Tie TypingMind tool-call Input/Output popup modal width to Chat pane width (layout controls in this widget)
+ * 
  * v3.109 Changes:
  * - NEW: Shift+F4 handler for toggle recording (Shift+F3 has browser conflict)
  * - AutoHotkey intercepts Shift+F3 → sends Shift+F4 to widget
@@ -194,7 +197,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.109',
+  VERSION: '3.110',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2602,6 +2605,12 @@
         max-width: ${chatWidth}px !important;
         margin-left: ${chatMargin}px !important;
         margin-right: auto !important;
+      }
+
+      /* CONTROL 2: Tool-call popup modal width (align with chat width) */
+      [data-element-id="pop-up-modal"] {
+        max-width: ${chatWidth}px !important;
+        width: 100% !important;
       }
     `;
     document.head.appendChild(layoutStyle);
