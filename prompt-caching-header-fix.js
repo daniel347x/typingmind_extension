@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.7
+// Version: 4.8
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,7 +7,7 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
-//   - v4.7 (Nov 17, 2025): Widen TypingMind tool-call Input/Output popup modal for better payload visibility
+//   - v4.8 (Nov 17, 2025): Move tool-call popup width control into Deepgram/Whisper widget; keep this extension focused on payloads only
 //   - v4.6 (Nov 16, 2025): Render GPT-5.1 Conversations widget on load using persisted localStorage stats (no message required)
 //   - v4.5 (Nov 16, 2025): Expose active extension version in GPT-5.1 widget title to confirm deployment state
 //   - v4.4 (Nov 16, 2025): Prime Forge widget tweaks (font bump, collapsible "other conversations", horizontal offset) and NBSP normalization in block_insert_or_replace workflow
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.7';
+  const EXT_VERSION = '4.8';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -408,24 +408,6 @@
     el.innerHTML = lines.join('');
   }
 
-  function injectToolPopupWidthOverride() {
-    try {
-      if (typeof document === 'undefined') return;
-      if (document.getElementById('tm-tool-popup-width-style')) return;
-      const style = document.createElement('style');
-      style.id = 'tm-tool-popup-width-style';
-      style.textContent = `
-        [data-element-id="pop-up-modal"] {
-          max-width: 72rem !important;
-          width: 100% !important;
-        }
-      `;
-      document.head.appendChild(style);
-    } catch (e) {
-      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to inject tool popup width override:', e);
-    }
-  }
-
   // ==================== FETCH OVERRIDE ====================
 
   const originalFetch = window.fetch;
@@ -578,7 +560,6 @@
   try {
     if (typeof document !== 'undefined') {
       renderGpt51UsageWidget();
-      injectToolPopupWidthOverride();
     }
   } catch (e) {
     console.warn('⚠️ [v' + EXT_VERSION + '] Failed initial GPT-5.1 widget render:', e);
