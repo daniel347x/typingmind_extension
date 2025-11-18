@@ -11,8 +11,8 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
- * v3.114 Changes:
- * - NEW: Add global 375px left shift to tool-call popup (on top of Chat margin) for final visual alignment
+ * v3.115 Changes:
+ * - NEW: Increase global left shift to 500px (chat margin - 500) for tool-call popup alignment
  * 
  * v3.110 Changes:
  * - NEW: Tie TypingMind tool-call Input/Output popup modal width to Chat pane width (layout controls in this widget)
@@ -200,7 +200,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.114',
+  VERSION: '3.115',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2614,7 +2614,7 @@
       [data-element-id="pop-up-modal"] {
         max-width: ${chatWidth}px !important;
         width: 100% !important;
-        margin-left: ${chatMargin - 375}px !important;
+        margin-left: ${chatMargin - 500}px !important;
         margin-right: auto !important;
       }
     `;
