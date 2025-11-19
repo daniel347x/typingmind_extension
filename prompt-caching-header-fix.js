@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.8
+// Version: 4.9
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.8';
+  const EXT_VERSION = '4.9';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -410,6 +410,36 @@
 
   // ==================== FETCH OVERRIDE ====================
 
+  function repairHistoricAnthropicToolInputs(body) {
+    if (!Array.isArray(body.messages) || body.messages.length < 2) return false;
+    let changed = false;
+    const lastIndex = body.messages.length - 1;
+
+    for (let i = 0; i < lastIndex; i++) {
+      const msg = body.messages[i];
+      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+      msg.content.forEach((block, blockIdx) => {
+        if (!block || block.type !== 'tool_use') return;
+
+        const input = block.input;
+        const isEmpty =
+          input == null ||
+          (typeof input === 'string' && input.trim() === '') ||
+          (Array.isArray(input) && input.length === 0) ||
+          (typeof input === 'object' && !Array.isArray(input) && Object.keys(input).length === 0);
+
+        if (isEmpty) {
+          block.input = { __tm_repaired_empty_input: true };
+          console.log(`🩹 [v${EXT_VERSION}] Repaired empty tool_use.input on historic message ${i}, block ${blockIdx}, tool: ${block.name}`);
+          changed = true;
+        }
+      });
+    }
+
+    return changed;
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
@@ -462,6 +492,10 @@
                 });
               }
             });
+          }
+
+          if (repairHistoricAnthropicToolInputs(body)) {
+            modified = true;
           }
 
           if (modified) {
