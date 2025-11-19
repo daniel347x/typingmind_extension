@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.9
+// Version: 4.10
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.9';
+  const EXT_VERSION = '4.10';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -32,6 +32,9 @@
   };
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
+
+  // Last Anthropic request body (for export of user+assistant-only JSON)
+  let lastAnthropicBodyForExport = null;
 
   console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
 
@@ -269,6 +272,69 @@
     renderGpt51UsageWidget();
   }
 
+  function exportAnthropicConversationToClipboard() {
+    if (!lastAnthropicBodyForExport || !Array.isArray(lastAnthropicBodyForExport.messages)) {
+      alert('No Anthropic conversation available to export yet.');
+      return;
+    }
+
+    const srcMessages = lastAnthropicBodyForExport.messages;
+    const filtered = [];
+
+    srcMessages.forEach(msg => {
+      if (!msg || (msg.role !== 'user' && msg.role !== 'assistant')) return;
+      const originalContent = msg.content;
+      const newMsg = { role: msg.role };
+
+      if (typeof originalContent === 'string') {
+        const t = originalContent.trim();
+        if (!t) return;
+        newMsg.content = t;
+      } else if (Array.isArray(originalContent)) {
+        const textBlocks = originalContent.filter(
+          b => b && b.type === 'text' && typeof b.text === 'string' && b.text.trim() !== ''
+        );
+        if (!textBlocks.length) return;
+        const combined = textBlocks.map(b => b.text).join('\n\n');
+        const t = combined.trim();
+        if (!t) return;
+        newMsg.content = t;
+      } else {
+        return;
+      }
+
+      filtered.push(newMsg);
+    });
+
+    const exportObj = {
+      model: lastAnthropicBodyForExport.model || null,
+      created_at: new Date().toISOString(),
+      messages: filtered
+    };
+
+    const json = JSON.stringify(exportObj, null, 2);
+
+    try {
+      localStorage.setItem('tm_export_conversation_last', json);
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save tm_export_conversation_last to localStorage:', e);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(
+        function() {
+          alert('Exported Anthropic conversation (user+assistant only) to clipboard.');
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed for export:', err);
+          alert('Export prepared (user+assistant only), but clipboard write failed. See console/localStorage.');
+        }
+      );
+    } else {
+      alert('Export prepared (user+assistant only). Retrieve from localStorage key: tm_export_conversation_last.');
+    }
+  }
+
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
@@ -307,6 +373,12 @@
             store[convId] = stats;
             saveGpt51UsageStore(store);
             renderGpt51UsageWidget();
+            ev.stopPropagation();
+            return;
+          }
+          // Export Anthropic conversation (user+assistant-only JSON)
+          if (target.dataset.action === 'export-anthropic-conversation') {
+            exportAnthropicConversationToClipboard();
             ev.stopPropagation();
             return;
           }
@@ -405,6 +477,8 @@
       }
     }
 
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
+
     el.innerHTML = lines.join('');
   }
 
@@ -452,6 +526,9 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
+
+          // Capture latest Anthropic body for export tooling
+          lastAnthropicBodyForExport = body;
 
           const debugTrigger = checkForDebugTrigger(body);
           if (debugTrigger) {
