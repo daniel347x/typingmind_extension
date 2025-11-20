@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.12
+// Version: 4.11
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.12';
+  const EXT_VERSION = '4.11';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -494,12 +494,6 @@
       el.addEventListener('click', function(ev) {
         const target = ev.target;
         if (target && target.dataset) {
-          // Open payload tool filter modal
-          if (target.dataset.action === 'open-payload-modal') {
-            openPayloadModal();
-            ev.stopPropagation();
-            return;
-          }
           // Close (hide) a specific conversation from the list
           if (target.dataset.convId) {
             const convId = target.dataset.convId;
@@ -629,397 +623,13 @@
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
 
     el.innerHTML = lines.join('');
-  }
-
-  // ==================== PAYLOAD TOOL FILTERS & MODAL ====================
-
-  let lastSeenConversation = null;
-
-  function getPayloadFilterStore() {
-    try {
-      const raw = localStorage.getItem('tm_payload_tool_filters');
-      return raw ? JSON.parse(raw) : {};
-    } catch (e) {
-      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse tm_payload_tool_filters from localStorage:', e);
-      return {};
-    }
-  }
-
-  function savePayloadFilterStore(store) {
-    try {
-      localStorage.setItem('tm_payload_tool_filters', JSON.stringify(store));
-    } catch (e) {
-      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save tm_payload_tool_filters to localStorage:', e);
-    }
-  }
-
-  function conversationKey(vendor, convId) {
-    return vendor + '::' + convId;
-  }
-
-  function getFilterForConversation(vendor, convId) {
-    if (!vendor || !convId) {
-      return { convId: null, vendor: null, toolEntries: {} };
-    }
-    const store = getPayloadFilterStore();
-    const key = conversationKey(vendor, convId);
-    return store[key] || { convId, vendor, toolEntries: {} };
-  }
-
-  function saveFilterForConversation(cfg) {
-    if (!cfg || !cfg.vendor || !cfg.convId) return;
-    const store = getPayloadFilterStore();
-    const key = conversationKey(cfg.vendor, cfg.convId);
-    store[key] = cfg;
-    savePayloadFilterStore(store);
-  }
-
-  function deleteFilterConversation(convKey) {
-    const store = getPayloadFilterStore();
-    if (store[convKey]) {
-      delete store[convKey];
-      savePayloadFilterStore(store);
-    }
-  }
-
-  function notePayloadConversation(vendor, convId, model) {
-    if (!vendor || !convId) return;
-    lastSeenConversation = { vendor, convId, model: model || null };
-  }
-
-  const TOOL_INPUT_STUB = { _tm_excluded: true, _tm_stub: true };
-  const TOOL_OUTPUT_STUB = [{ type: 'text', text: '[tm_excluded_tool_output]' }];
-
-  function collectAnthropicToolGroups(body) {
-    const groups = {};
-    if (!body || !Array.isArray(body.messages)) return groups;
-    const messages = body.messages;
-
-    messages.forEach((msg, msgIndex) => {
-      if (!msg || !Array.isArray(msg.content)) return;
-      msg.content.forEach((block, blockIndex) => {
-        if (!block || !block.type) return;
-        if (block.type === 'tool_use') {
-          const id = block.id || ('m' + msgIndex + '_b' + blockIndex);
-          const g = groups[id] || (groups[id] = {
-            id,
-            name: block.name || 'tool',
-            toolUseBlocks: [],
-            toolResultBlocks: [],
-            inputSize: 0,
-            outputSize: 0
-          });
-          g.toolUseBlocks.push({ msgIndex, blockIndex, blockRef: block });
-          if (block.input !== undefined) {
-            try { g.inputSize += JSON.stringify(block.input).length; } catch (e) {}
-          }
-        } else if (block.type === 'tool_result' && block.tool_use_id) {
-          const id = block.tool_use_id;
-          const g = groups[id] || (groups[id] = {
-            id,
-            name: block.name || 'tool',
-            toolUseBlocks: [],
-            toolResultBlocks: [],
-            inputSize: 0,
-            outputSize: 0
-          });
-          g.toolResultBlocks.push({ msgIndex, blockIndex, blockRef: block });
-          if (block.content !== undefined) {
-            try { g.outputSize += JSON.stringify(block.content).length; } catch (e) {}
-          }
-        }
-      });
-    });
-
-    return groups;
-  }
-
-  function applyAnthropicToolFilters(body, vendor, convId) {
-    if (!body || !Array.isArray(body.messages) || !vendor || !convId) return false;
-    const groups = collectAnthropicToolGroups(body);
-    const keys = Object.keys(groups);
-    if (!keys.length) return false;
-
-    const cfg = getFilterForConversation(vendor, convId);
-    let changed = false;
-
-    keys.forEach(id => {
-      const g = groups[id];
-      const entry = cfg.toolEntries[id] || { includeInput: true, includeOutput: true };
-
-      if (!entry.includeInput) {
-        g.toolUseBlocks.forEach(info => {
-          const block = info.blockRef;
-          if (block && block.input !== undefined && block.input !== TOOL_INPUT_STUB) {
-            block.input = TOOL_INPUT_STUB;
-            changed = true;
-          }
-        });
-      }
-
-      if (!entry.includeOutput) {
-        g.toolResultBlocks.forEach(info => {
-          const block = info.blockRef;
-          if (block && block.content !== undefined && block.content !== TOOL_OUTPUT_STUB) {
-            block.content = TOOL_OUTPUT_STUB;
-            changed = true;
-          }
-        });
-      }
-
-      cfg.toolEntries[id] = entry;
-    });
-
-    if (changed) {
-      saveFilterForConversation(cfg);
-    }
-
-    return changed;
-  }
-
-  function humanReadableSize(bytes) {
-    if (!bytes || isNaN(bytes)) return '0 B';
-    if (bytes < 1024) return bytes + ' B';
-    const kb = bytes / 1024;
-    if (kb < 1024) return kb.toFixed(1) + ' KB';
-    const mb = kb / 1024;
-    return mb.toFixed(2) + ' MB';
-  }
-
-  let payloadModalEl = null;
-  let payloadModalInnerEl = null;
-
-  function ensurePayloadModal() {
-    if (payloadModalEl) return payloadModalEl;
-
-    const overlay = document.createElement('div');
-    overlay.id = 'tm-payload-modal-overlay';
-    overlay.style.position = 'fixed';
-    overlay.style.inset = '0';
-    overlay.style.zIndex = '100000';
-    overlay.style.background = 'rgba(0,0,0,0.55)';
-    overlay.style.display = 'none';
-
-    const panel = document.createElement('div');
-    panel.id = 'tm-payload-modal';
-    panel.style.position = 'absolute';
-    panel.style.top = '50%';
-    panel.style.left = '50%';
-    panel.style.transform = 'translate(-50%, -50%)';
-    panel.style.width = '80vw';
-    panel.style.height = '80vh';
-    panel.style.background = 'rgba(15,15,20,0.96)';
-    panel.style.color = '#fff';
-    panel.style.borderRadius = '6px';
-    panel.style.boxShadow = '0 4px 16px rgba(0,0,0,0.6)';
-    panel.style.padding = '10px 12px';
-    panel.style.display = 'flex';
-    panel.style.flexDirection = 'column';
-    panel.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
-    panel.style.fontSize = '12px';
-
-    const header = document.createElement('div');
-    header.style.display = 'flex';
-    header.style.alignItems = 'center';
-    header.style.justifyContent = 'space-between';
-    header.style.marginBottom = '6px';
-    header.innerHTML =
-      '<div style="font-weight:600;">Payload Tool Filters</div>' +
-      '<div style="font-size:11px;opacity:0.8;">' +
-      'Use this to exclude large tool inputs/outputs from future payloads while keeping prompt caching viable.' +
-      '</div>' +
-      '<button data-action="close-payload-modal" ' +
-      'style="margin-left:8px;background:#444;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Close</button>';
-
-    const body = document.createElement('div');
-    body.id = 'tm-payload-modal-body';
-    body.style.flex = '1';
-    body.style.overflow = 'auto';
-    body.style.marginTop = '4px';
-
-    panel.appendChild(header);
-    panel.appendChild(body);
-    overlay.appendChild(panel);
-    document.body.appendChild(overlay);
-
-    overlay.addEventListener('click', function(ev) {
-      const t = ev.target;
-      if (t.dataset && t.dataset.action === 'close-payload-modal') {
-        closePayloadModal();
-        ev.stopPropagation();
-        return;
-      }
-      if (t === overlay) {
-        closePayloadModal();
-        return;
-      }
-      if (t.dataset && t.dataset.action === 'delete-payload-conv') {
-        const convKey = t.dataset.convKey;
-        deleteFilterConversation(convKey);
-        renderPayloadModal();
-        ev.stopPropagation();
-        return;
-      }
-      if (t.dataset && t.dataset.part && t.dataset.groupId) {
-        const part = t.dataset.part; // "input" or "output"
-        const groupId = t.dataset.groupId;
-        if (!lastSeenConversation || !lastSeenConversation.vendor || !lastSeenConversation.convId) {
-          return;
-        }
-        const cfg = getFilterForConversation(lastSeenConversation.vendor, lastSeenConversation.convId);
-        const entry = cfg.toolEntries[groupId] || { includeInput: true, includeOutput: true };
-        if (part === 'input') {
-          entry.includeInput = !entry.includeInput;
-        } else if (part === 'output') {
-          entry.includeOutput = !entry.includeOutput;
-        }
-        cfg.toolEntries[groupId] = entry;
-        saveFilterForConversation(cfg);
-        renderPayloadModal();
-        ev.stopPropagation();
-        return;
-      }
-    });
-
-    payloadModalEl = overlay;
-    payloadModalInnerEl = body;
-    return overlay;
-  }
-
-  function renderPayloadModal() {
-    if (typeof document === 'undefined') return;
-    const overlay = ensurePayloadModal();
-    const bodyEl = payloadModalInnerEl;
-    if (!bodyEl) return;
-
-    const store = getPayloadFilterStore();
-    const convKeys = Object.keys(store);
-
-    let html = '';
-
-    // Global conversation list
-    html += '<div style="margin-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.15);padding-bottom:4px;">';
-    html += '<div style="font-weight:600;margin-bottom:2px;">Tracked conversations</div>';
-    if (!convKeys.length) {
-      html += '<div style="font-size:11px;opacity:0.8;">No payload filter state yet. Open a conversation and toggle tool filters to create entries.</div>';
-    } else {
-      convKeys.forEach(key => {
-        const cfg = store[key] || {};
-        const safeLabel = ((cfg.vendor || '?') + ' :: ' + (cfg.convId || key)).replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        html += '<div style="font-size:11px;margin-bottom:2px;display:flex;align-items:center;justify-content:space-between;">' +
-          '<span style="max-width:80%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + safeLabel + '</span>' +
-          '<button data-action="delete-payload-conv" data-conv-key="' + key + '" ' +
-          'style="margin-left:6px;background:#552222;color:#fff;border:none;border-radius:3px;padding:1px 4px;font-size:10px;cursor:pointer;">Delete</button>' +
-          '</div>';
-      });
-    }
-    html += '</div>';
-
-    // Current conversation section
-    html += '<div>';
-    html += '<div style="font-weight:600;margin-bottom:2px;">Current conversation</div>';
-
-    if (!lastSeenConversation || !lastSeenConversation.vendor || !lastSeenConversation.convId) {
-      html += '<div style="font-size:11px;opacity:0.8;">No active conversation detected yet. Send a message (with your usual "load files &lt;id&gt;" pattern) and try again.</div>';
-      html += '</div>';
-      bodyEl.innerHTML = html;
-      return;
-    }
-
-    const vendor = lastSeenConversation.vendor;
-    const convId = lastSeenConversation.convId;
-    const model = lastSeenConversation.model || '';
-    const headerLine = '[' + vendor + '] ' + convId + (model ? (' · ' + model) : '');
-    html += '<div style="font-size:11px;opacity:0.9;margin-bottom:4px;">' + headerLine + '</div>';
-
-    if (vendor !== 'anthropic') {
-      html += '<div style="font-size:11px;opacity:0.8;">Tool payload filtering is currently implemented for Anthropic. This conversation is ' + vendor + ', so only global management applies for now.</div>';
-      html += '</div>';
-      bodyEl.innerHTML = html;
-      return;
-    }
-
-    if (!lastAnthropicBodyForExport || !Array.isArray(lastAnthropicBodyForExport.messages)) {
-      html += '<div style="font-size:11px;opacity:0.8;">No cached Anthropic payload for this conversation yet. Send a message and try again.</div>';
-      html += '</div>';
-      bodyEl.innerHTML = html;
-      return;
-    }
-
-    const groups = collectAnthropicToolGroups(lastAnthropicBodyForExport);
-    const ids = Object.keys(groups);
-    if (!ids.length) {
-      html += '<div style="font-size:11px;opacity:0.8;">No tool calls found in the latest Anthropic payload for this conversation.</div>';
-      html += '</div>';
-      bodyEl.innerHTML = html;
-      return;
-    }
-
-    const cfg = getFilterForConversation(vendor, convId);
-
-    html += '<div style="font-size:11px;opacity:0.9;margin-bottom:2px;">Tool calls in latest Anthropic payload</div>';
-    html += '<div style="font-size:10px;opacity:0.8;margin-bottom:4px;">Toggle input/output to exclude large arguments from future payloads. Excluded parts will be replaced with small constant stubs to preserve prompt caching.</div>';
-
-    ids.forEach(id => {
-      const g = groups[id];
-      const entry = cfg.toolEntries[id] || { includeInput: true, includeOutput: true };
-      const safeId = id.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const name = (g.name || 'tool').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-      const inSize = humanReadableSize(g.inputSize);
-      const outSize = humanReadableSize(g.outputSize);
-
-      const bothIncluded = entry.includeInput && entry.includeOutput;
-      const bothExcluded = !entry.includeInput && !entry.includeOutput;
-
-      let rowBg = 'rgba(20,40,24,0.85)'; // both included
-      if (bothExcluded) {
-        rowBg = 'rgba(40,40,40,0.85)';
-      } else if (!entry.includeInput || !entry.includeOutput) {
-        rowBg = 'rgba(32,32,32,0.85)';
-      }
-
-      const inputBg = entry.includeInput ? '#245f36' : '#444444';
-      const outputBg = entry.includeOutput ? '#245f36' : '#444444';
-
-      html += '<div style="margin-bottom:4px;padding:4px;border-radius:4px;background:' + rowBg + ';">';
-      html += '<div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
-              name + ' <span style="opacity:0.7;font-weight:400;">[' + safeId + ']</span></div>';
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:2px;font-size:11px;">';
-      html += '<div>in: ' + inSize + ' · out: ' + outSize + '</div>';
-      html += '<div>';
-      html += '<button data-group-id="' + id + '" data-part="input" ' +
-              'style="margin-left:4px;background:' + inputBg + ';color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">In</button>';
-      html += '<button data-group-id="' + id + '" data-part="output" ' +
-              'style="margin-left:4px;background:' + outputBg + ';color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">Out</button>';
-      html += '</div>';
-      html += '</div>';
-      html += '</div>';
-    });
-
-    html += '</div>';
-    bodyEl.innerHTML = html;
-  }
-
-  function openPayloadModal() {
-    if (typeof document === 'undefined') return;
-    const overlay = ensurePayloadModal();
-    overlay.style.display = 'block';
-    renderPayloadModal();
-  }
-
-  function closePayloadModal() {
-    if (!payloadModalEl) return;
-    payloadModalEl.style.display = 'none';
   }
 
   // ==================== FETCH OVERRIDE ====================
 
   function repairHistoricAnthropicToolInputs(body) {
-```
     if (!Array.isArray(body.messages) || body.messages.length < 2) return false;
     let changed = false;
     const lastIndex = body.messages.length - 1;
@@ -1054,23 +664,16 @@
   window.fetch = function(...args) {
     const [url, options = {}] = args;
     let convIdForThisCall = null;
-    let vendorForThisCall = null;
 
     // ==================== ANTHROPIC BRANCH ====================
     if (url.includes('api.anthropic.com')) {
-      vendorForThisCall = 'anthropic';
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
 
-          // Capture latest Anthropic body for export tooling (deep clone)
-          try {
-            lastAnthropicBodyForExport = JSON.parse(JSON.stringify(body));
-          } catch (e) {
-            lastAnthropicBodyForExport = null;
-            console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone Anthropic body for export:', e);
-          }
+          // Capture latest Anthropic body for export tooling
+          lastAnthropicBodyForExport = body;
 
           const debugTrigger = checkForDebugTrigger(body);
           if (debugTrigger) {
@@ -1117,17 +720,6 @@
             modified = true;
           }
 
-          const convId = deriveConversationIdFromBody(body);
-          if (convId && vendorForThisCall) {
-            convIdForThisCall = convId;
-            notePayloadConversation(vendorForThisCall, convId, body.model);
-            if (vendorForThisCall === 'anthropic') {
-              if (applyAnthropicToolFilters(body, vendorForThisCall, convIdForThisCall)) {
-                modified = true;
-              }
-            }
-          }
-
           if (modified) {
             options.body = JSON.stringify(body);
             console.log('✅ [v3.0] Anthropic request body sanitized and ready');
@@ -1140,7 +732,6 @@
 
     // ==================== GEMINI (GOOGLE GENERATIVE LANGUAGE) BRANCH ====================
     else if (url.includes('generativelanguage.googleapis.com')) {
-      vendorForThisCall = 'gemini';
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
@@ -1154,7 +745,6 @@
 
     // ==================== OPENAI RESPONSES BRANCH (GPT-5.1 prompt caching + usage) ====================
     else if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
-      vendorForThisCall = 'openai';
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
@@ -1167,12 +757,7 @@
 
           const model = body.model || '';
           if (typeof model === 'string' && model.startsWith('gpt-5.1')) {
-            try {
-              lastGpt51BodyForExport = JSON.parse(JSON.stringify(body));
-            } catch (e) {
-              lastGpt51BodyForExport = null;
-              console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone GPT-5.1 body for export:', e);
-            }
+            lastGpt51BodyForExport = body;
             if (!body.prompt_cache_key) {
               body.prompt_cache_key = 'dan-dagger-gpt5.1-v1';
               modified = true;
