@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.10
+// Version: 4.11
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.10';
+  const EXT_VERSION = '4.11';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -38,6 +38,9 @@
 
   // Last Gemini request body (for export of user+assistant-only JSON)
   let lastGeminiBodyForExport = null;
+
+  // Last GPT-5.1 request body (for export of user+assistant-only JSON)
+  let lastGpt51BodyForExport = null;
 
   console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
 
@@ -395,6 +398,74 @@
     }
   }
 
+  function exportGpt51ConversationToClipboard() {
+    if (!lastGpt51BodyForExport || !Array.isArray(lastGpt51BodyForExport.input)) {
+      alert('No GPT-5.1 conversation available to export yet.');
+      return;
+    }
+
+    const src = lastGpt51BodyForExport.input;
+    const filtered = [];
+
+    src.forEach(entry => {
+      if (!entry || (entry.role !== 'user' && entry.role !== 'assistant')) return;
+
+      const content = entry.content;
+      if (typeof content === 'string') {
+        const t = content.trim();
+        if (!t) return;
+        filtered.push({ role: entry.role, content: t });
+        return;
+      }
+
+      if (Array.isArray(content)) {
+        const texts = content
+          .filter(p => p && typeof p.text === 'string' && p.text.trim() !== '')
+          .map(p => p.text.trim());
+        if (!texts.length) return;
+        const combined = texts.join('\n\n').trim();
+        if (!combined) return;
+        filtered.push({
+          role: entry.role,
+          content: combined,
+        });
+      }
+    });
+
+    if (!filtered.length) {
+      alert('No user/assistant messages found to export for GPT-5.1.');
+      return;
+    }
+
+    const exportObj = {
+      model: lastGpt51BodyForExport.model || null,
+      created_at: new Date().toISOString(),
+      messages: filtered,
+    };
+
+    const json = JSON.stringify(exportObj, null, 2);
+
+    try {
+      localStorage.setItem('tm_export_gpt51_conversation_last', json);
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save tm_export_gpt51_conversation_last to localStorage:', e);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(
+        function() {
+          alert('Exported GPT-5.1 conversation (user+assistant only) to clipboard.');
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed for GPT-5.1 export:', err);
+          alert('GPT-5.1 export prepared (user+assistant only), but clipboard write failed. See console/localStorage.');
+        }
+      );
+    } else {
+      alert('GPT-5.1 export prepared (user+assistant only). Retrieve from localStorage key: tm_export_gpt51_conversation_last.');
+    }
+  }
+
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
@@ -445,6 +516,12 @@
           // Export Gemini conversation (user+assistant-only JSON)
           if (target.dataset.action === 'export-gemini-conversation') {
             exportGeminiConversationToClipboard();
+            ev.stopPropagation();
+            return;
+          }
+          // Export GPT-5.1 conversation (user+assistant-only JSON)
+          if (target.dataset.action === 'export-gpt51-conversation') {
+            exportGpt51ConversationToClipboard();
             ev.stopPropagation();
             return;
           }
@@ -545,6 +622,7 @@
 
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
 
     el.innerHTML = lines.join('');
   }
@@ -679,6 +757,7 @@
 
           const model = body.model || '';
           if (typeof model === 'string' && model.startsWith('gpt-5.1')) {
+            lastGpt51BodyForExport = body;
             if (!body.prompt_cache_key) {
               body.prompt_cache_key = 'dan-dagger-gpt5.1-v1';
               modified = true;
