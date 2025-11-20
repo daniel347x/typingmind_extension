@@ -36,6 +36,9 @@
   // Last Anthropic request body (for export of user+assistant-only JSON)
   let lastAnthropicBodyForExport = null;
 
+  // Last Gemini request body (for export of user+assistant-only JSON)
+  let lastGeminiBodyForExport = null;
+
   console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
@@ -335,6 +338,63 @@
     }
   }
 
+  function exportGeminiConversationToClipboard() {
+    if (!lastGeminiBodyForExport || !Array.isArray(lastGeminiBodyForExport.contents)) {
+      alert('No Gemini conversation available to export yet.');
+      return;
+    }
+
+    const srcContents = lastGeminiBodyForExport.contents;
+    const filtered = [];
+
+    srcContents.forEach(entry => {
+      if (!entry || (entry.role !== 'user' && entry.role !== 'model')) return;
+      if (!Array.isArray(entry.parts)) return;
+
+      const texts = entry.parts
+        .filter(p => p && typeof p.text === 'string' && p.text.trim() !== '')
+        .map(p => p.text.trim());
+
+      if (!texts.length) return;
+
+      const combined = texts.join('\n\n').trim();
+      if (!combined) return;
+
+      filtered.push({
+        role: entry.role === 'model' ? 'assistant' : 'user',
+        content: combined
+      });
+    });
+
+    const exportObj = {
+      model: lastGeminiBodyForExport.model || null,
+      created_at: new Date().toISOString(),
+      messages: filtered
+    };
+
+    const json = JSON.stringify(exportObj, null, 2);
+
+    try {
+      localStorage.setItem('tm_export_gemini_conversation_last', json);
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save tm_export_gemini_conversation_last to localStorage:', e);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(
+        function() {
+          alert('Exported Gemini conversation (user+assistant only) to clipboard.');
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed for Gemini export:', err);
+          alert('Gemini export prepared (user+assistant only), but clipboard write failed. See console/localStorage.');
+        }
+      );
+    } else {
+      alert('Gemini export prepared (user+assistant only). Retrieve from localStorage key: tm_export_gemini_conversation_last.');
+    }
+  }
+
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
@@ -379,6 +439,12 @@
           // Export Anthropic conversation (user+assistant-only JSON)
           if (target.dataset.action === 'export-anthropic-conversation') {
             exportAnthropicConversationToClipboard();
+            ev.stopPropagation();
+            return;
+          }
+          // Export Gemini conversation (user+assistant-only JSON)
+          if (target.dataset.action === 'export-gemini-conversation') {
+            exportGeminiConversationToClipboard();
             ev.stopPropagation();
             return;
           }
@@ -478,6 +544,7 @@
     }
 
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
 
     el.innerHTML = lines.join('');
   }
@@ -582,6 +649,19 @@
         }
       } catch (e) {
         console.warn('⚠️ [v3.0] Failed to parse/modify Anthropic request:', e);
+      }
+    }
+
+    // ==================== GEMINI (GOOGLE GENERATIVE LANGUAGE) BRANCH ====================
+    else if (url.includes('generativelanguage.googleapis.com')) {
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          // Capture latest Gemini body for export tooling (no mutation)
+          lastGeminiBodyForExport = body;
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse Gemini request body for export capture:', e);
       }
     }
 
