@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.15
+// Version: 4.16
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.15';
+  const EXT_VERSION = '4.16';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1071,6 +1071,47 @@
     return changed;
   }
 
+  function repairAnthropicEmptyMessageContent(body) {
+    if (!Array.isArray(body.messages) || body.messages.length === 0) return false;
+    let changed = false;
+
+    body.messages.forEach((msg, msgIdx) => {
+      if (!msg) return;
+      if (msg.role !== 'assistant' && msg.role !== 'user') return;
+
+      const c = msg.content;
+
+      // Case 1: string content that is empty/whitespace
+      if (typeof c === 'string') {
+        if (c.trim() === '') {
+          msg.content = `[tm_repaired_empty_${msg.role}_message]`;
+          console.log(`🩹 [v${EXT_VERSION}] Repaired empty ${msg.role} string content on message ${msgIdx}`);
+          changed = true;
+        }
+        return;
+      }
+
+      // Case 2: array content with no blocks (e.g. content: [])
+      if (Array.isArray(c)) {
+        if (c.length === 0) {
+          msg.content = [{ type: 'text', text: `[tm_repaired_empty_${msg.role}_content]` }];
+          console.log(`🩹 [v${EXT_VERSION}] Repaired empty ${msg.role} content array on message ${msgIdx}`);
+          changed = true;
+        }
+        return;
+      }
+
+      // Case 3: null/undefined content
+      if (c == null) {
+        msg.content = [{ type: 'text', text: `[tm_repaired_empty_${msg.role}_content]` }];
+        console.log(`🩹 [v${EXT_VERSION}] Repaired missing ${msg.role} content on message ${msgIdx}`);
+        changed = true;
+      }
+    });
+
+    return changed;
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
@@ -1136,6 +1177,9 @@
           }
 
           if (repairHistoricAnthropicToolInputs(body)) {
+            modified = true;
+          }
+          if (repairAnthropicEmptyMessageContent(body)) {
             modified = true;
           }
 
