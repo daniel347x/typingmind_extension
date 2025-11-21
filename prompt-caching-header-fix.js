@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.14
+// Version: 4.15
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.14';
+  const EXT_VERSION = '4.15';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -563,8 +563,19 @@
     const el = ensureGpt51UsageWidget();
     const store = getGpt51UsageStore();
     const convIds = Object.keys(store).filter(id => !store[id].hidden);
-    if (!convIds.length) {
-      el.textContent = 'GPT-5.1 usage: (no tracked conversations)';
+    
+    // Always show export/modal links (work for all vendors), even if no GPT-5.1 convs
+    const hasGpt51Convs = convIds.length > 0;
+    
+    if (!hasGpt51Convs) {
+      // No GPT-5.1 conversations, but still render universal controls
+      const lines = [];
+      lines.push('GPT-5.1 usage: (no tracked conversations)');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+      el.innerHTML = lines.join('');
       return;
     }
 
