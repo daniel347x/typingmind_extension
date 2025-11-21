@@ -42,7 +42,15 @@
   // Last GPT-5.1 request body (for export of user+assistant-only JSON)
   let lastGpt51BodyForExport = null;
 
-  console.log('🔧 UPDATED WELCOME (Nov 16, 2025) - Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
+  console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
+  
+  // DEBUG: Expose conversation state for console inspection
+  window._payloadExtDebug = {
+    getLastSeenConv: () => lastSeenConversation,
+    getAnthropicBody: () => lastAnthropicBodyForExport,
+    getGeminiBody: () => lastGeminiBodyForExport,
+    getGpt51Body: () => lastGpt51BodyForExport
+  };
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
 
