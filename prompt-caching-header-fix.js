@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.23
+// Version: 4.24
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.23';
+  const EXT_VERSION = '4.24';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -532,6 +532,15 @@
             ev.stopPropagation();
             return;
           }
+          
+          // TOGGLE GEMINI REPAIR (v4.24)
+          if (target.dataset.action === 'toggle-gemini-repair') {
+            const enabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
+            localStorage.setItem('tm_gemini_repair_enabled', String(!enabled));
+            alert('Gemini Repair is now: ' + (!enabled ? 'ENABLED (Reload Required)' : 'DISABLED (Reload Required)'));
+            ev.stopPropagation();
+            return;
+          }
           // Close (hide) a specific conversation from the list
           if (target.dataset.convId) {
             const convId = target.dataset.convId;
@@ -689,6 +698,11 @@
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+    
+    const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
+    const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
+    const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
 
     el.innerHTML = lines.join('');
   }
@@ -1427,18 +1441,37 @@
 
           // 🩹 Primary repair: ensure all parts in each content share a thoughtSignature,
           // and propagate the most recent signature forward across model turns.
-          if (repairGeminiThoughtSignatures(body)) {
-            modified = true;
+          
+          const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
+          
+          if (repairEnabled) {
+             if (repairGeminiThoughtSignatures(body)) {
+               modified = true;
+             }
+          } else {
+             // PASSIVE MODE: Scan for tokens to cache, but DO NOT modify body.
+             // We call repairGeminiThoughtSignatures in a "dry run" way? 
+             // Actually, repairGeminiThoughtSignatures modifies in place.
+             // So we need to wrap the modification logic inside the function or duplicate the scanning logic.
+             // Simpler: Let's just scan for tokens here to keep the cache alive.
+             
+             if (body && Array.isArray(body.contents)) {
+               body.contents.forEach(entry => {
+                 if (entry && Array.isArray(entry.parts)) {
+                   entry.parts.forEach(part => {
+                     if (part && typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim()) {
+                        cacheGeminiThoughtSignature(part.thoughtSignature.trim());
+                     }
+                   });
+                 }
+               });
+             }
           }
 
-          // 🧪 Fallback: if there is STILL no thoughtSignature anywhere (for example when
-          // switching mid-stream from a non-thinking provider and TypingMind never
-          // propagated one), synthesize a dummy signature for model-role contents on
-          // Gemini 3 thinking models so that the provider will at least accept the
-          // request instead of hard-failing.
+          // 🧪 Fallback: if there is STILL no thoughtSignature anywhere...
           const isGemini3Thinking = typeof url === 'string' && url.includes('/models/gemini-3');
 
-          if (isGemini3Thinking && !hasAnyGeminiThoughtSignature(body)) {
+          if (repairEnabled && isGemini3Thinking && !hasAnyGeminiThoughtSignature(body)) {
             if (synthesizeGeminiThoughtSignature(body)) {
               modified = true;
             }
