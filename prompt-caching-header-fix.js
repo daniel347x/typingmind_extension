@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.16
+// Version: 4.17
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.16';
+  const EXT_VERSION = '4.17';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -501,11 +501,31 @@
       el.style.cursor = 'default';
       el.style.whiteSpace = 'normal';
       el.style.lineHeight = '1.3';
+      const storedCollapsed = localStorage.getItem('gpt51_widget_collapsed');
+      if (storedCollapsed === 'true' || storedCollapsed === 'false') {
+        el.dataset.collapsed = storedCollapsed;
+      }
       document.body.appendChild(el);
 
       el.addEventListener('click', function(ev) {
         const target = ev.target;
         if (target && target.dataset) {
+          // Toggle entire widget collapsed/expanded
+          if (target.dataset.action === 'toggle-widget') {
+            const widget = ensureGpt51UsageWidget();
+            const currentlyCollapsed = widget.dataset.collapsed === 'true';
+            const nextState = !currentlyCollapsed;
+            widget.dataset.collapsed = String(nextState);
+            try {
+              localStorage.setItem('gpt51_widget_collapsed', widget.dataset.collapsed);
+            } catch (e) {
+              console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save gpt51_widget_collapsed to localStorage:', e);
+            }
+            renderGpt51UsageWidget();
+            ev.stopPropagation();
+            return;
+          }
+
           // Open payload tool filter modal
           if (target.dataset.action === 'open-payload-modal') {
             openPayloadModal();
@@ -563,14 +583,31 @@
     const el = ensureGpt51UsageWidget();
     const store = getGpt51UsageStore();
     const convIds = Object.keys(store).filter(id => !store[id].hidden);
-    
-    // Always show export/modal links (work for all vendors), even if no GPT-5.1 convs
     const hasGpt51Convs = convIds.length > 0;
-    
+
+    // Widget-level collapse state (persisted in localStorage)
+    const collapsed = el.dataset.collapsed === 'true' ||
+      (!el.dataset.collapsed && localStorage.getItem('gpt51_widget_collapsed') === 'true');
+
+    const lines = [];
+    const toggleIcon = collapsed ? '▸' : '▾';
+    lines.push(
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:10px;margin-bottom:2px;">' +
+        '<span>GPT-5.1 Conversations (v' + EXT_VERSION + ')</span>' +
+        '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;margin-left:6px;">' + toggleIcon + '</span>' +
+      '</div>'
+    );
+
+    if (collapsed) {
+      lines.push('<div style="font-size:10px;opacity:0.85;">(collapsed – click ▸ to expand)</div>');
+      el.innerHTML = lines.join('');
+      return;
+    }
+
+    // Always show export/modal links (work for all vendors), even if no GPT-5.1 convs
     if (!hasGpt51Convs) {
       // No GPT-5.1 conversations, but still render universal controls
-      const lines = [];
-      lines.push('GPT-5.1 usage: (no tracked conversations)');
+      lines.push('<div style="font-size:12px;opacity:0.9;margin-bottom:4px;">GPT-5.1 usage: (no tracked conversations)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
@@ -579,7 +616,6 @@
       return;
     }
 
-    const lines = [];
     let totalCost = 0;
 
     // Use up to the last 5 conversations, most recent first
@@ -1112,6 +1148,36 @@
     return changed;
   }
 
+  function repairGeminiThoughtSignatures(body) {
+    if (!body || !Array.isArray(body.contents)) return false;
+
+    let changed = false;
+    let lastThoughtSignature = null;
+
+    body.contents.forEach((entry, contentIdx) => {
+      if (!entry || !Array.isArray(entry.parts)) return;
+
+      entry.parts.forEach((part, partIdx) => {
+        if (!part || typeof part !== 'object') return;
+
+        if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim() !== '') {
+          lastThoughtSignature = part.thoughtSignature;
+          return;
+        }
+
+        if (part.functionCall && !part.thoughtSignature && lastThoughtSignature) {
+          part.thoughtSignature = lastThoughtSignature;
+          changed = true;
+          console.log(
+            `🩹 [v${EXT_VERSION}] Repaired missing Gemini thoughtSignature on functionCall (contents[${contentIdx}].parts[${partIdx}])`
+          );
+        }
+      });
+    });
+
+    return changed;
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
@@ -1210,11 +1276,28 @@
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
-          // Capture latest Gemini body for export tooling (no mutation)
-          lastGeminiBodyForExport = body;
+          let modified = false;
+
+          // Capture latest Gemini body for export tooling (deep clone so we preserve pre-repair state).
+          try {
+            lastGeminiBodyForExport = JSON.parse(JSON.stringify(body));
+          } catch (e) {
+            lastGeminiBodyForExport = null;
+            console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone Gemini body for export:', e);
+          }
+
+          // 🩹 Repair missing thoughtSignature on functionCall parts by propagating the most recent one.
+          if (repairGeminiThoughtSignatures(body)) {
+            modified = true;
+          }
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] Gemini request body repaired (thoughtSignature backfilled for functionCall parts)');
+          }
         }
       } catch (e) {
-        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse Gemini request body for export capture:', e);
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify Gemini request body:', e);
       }
     }
 
