@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.24
+// Version: 4.25
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.24';
+  const EXT_VERSION = '4.25';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -537,7 +537,7 @@
           if (target.dataset.action === 'toggle-gemini-repair') {
             const enabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
             localStorage.setItem('tm_gemini_repair_enabled', String(!enabled));
-            alert('Gemini Repair is now: ' + (!enabled ? 'ENABLED (Reload Required)' : 'DISABLED (Reload Required)'));
+            alert('Gemini Repair is now: ' + (!enabled ? 'ENABLED' : 'DISABLED'));
             ev.stopPropagation();
             return;
           }
@@ -621,6 +621,12 @@
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+      
+      const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
+      const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
+      const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
+
       el.innerHTML = lines.join('');
       return;
     }
