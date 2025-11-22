@@ -1157,23 +1157,94 @@
     body.contents.forEach((entry, contentIdx) => {
       if (!entry || !Array.isArray(entry.parts)) return;
 
+      // First pass: discover any existing signature for this content
+      let contentSignature = null;
+      entry.parts.forEach(part => {
+        if (!part || typeof part !== 'object') return;
+        if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim() !== '') {
+          const sig = part.thoughtSignature.trim();
+          if (!contentSignature) {
+            contentSignature = sig;
+          } else if (contentSignature !== sig) {
+            console.warn(
+              `⚠️ [v${EXT_VERSION}] Mismatched Gemini thoughtSignature values in contents[${contentIdx}]; using first encountered.`
+            );
+          }
+        }
+      });
+
+      // If this content has no signature but we have a prior one and this is a model turn,
+      // propagate the last signature forward (common for tool-only or continuation turns).
+      if (!contentSignature && lastThoughtSignature && entry.role === 'model') {
+        const hasToolOrText = entry.parts.some(
+          p => p && (p.functionCall || typeof p.text === 'string')
+        );
+        if (hasToolOrText) {
+          contentSignature = lastThoughtSignature;
+        }
+      }
+
+      // Second pass: apply the contentSignature uniformly to all parts in this content.
+      if (contentSignature) {
+        entry.parts.forEach((part, partIdx) => {
+          if (!part || typeof part !== 'object') return;
+          if (!part.thoughtSignature) {
+            part.thoughtSignature = contentSignature;
+            changed = true;
+            console.log(
+              `🩹 [v${EXT_VERSION}] Repaired missing Gemini thoughtSignature on part (contents[${contentIdx}].parts[${partIdx}])`
+            );
+          }
+        });
+        lastThoughtSignature = contentSignature;
+      }
+    });
+
+    return changed;
+  }
+
+  function hasAnyGeminiThoughtSignature(body) {
+    if (!body || !Array.isArray(body.contents)) return false;
+    for (let i = 0; i < body.contents.length; i++) {
+      const entry = body.contents[i];
+      if (!entry || !Array.isArray(entry.parts)) continue;
+      for (let j = 0; j < entry.parts.length; j++) {
+        const part = entry.parts[j];
+        if (!part || typeof part !== 'object') continue;
+        if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim() !== '') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  function synthesizeGeminiThoughtSignature(body) {
+    if (!body || !Array.isArray(body.contents)) return false;
+
+    const synthetic = 'tm-init-thought-signature-v1';
+    let changed = false;
+
+    body.contents.forEach((entry, contentIdx) => {
+      if (!entry || entry.role !== 'model' || !Array.isArray(entry.parts)) return;
+
       entry.parts.forEach((part, partIdx) => {
         if (!part || typeof part !== 'object') return;
-
-        if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim() !== '') {
-          lastThoughtSignature = part.thoughtSignature;
-          return;
-        }
-
-        if (part.functionCall && !part.thoughtSignature && lastThoughtSignature) {
-          part.thoughtSignature = lastThoughtSignature;
+        if (!part.thoughtSignature) {
+          part.thoughtSignature = synthetic;
           changed = true;
           console.log(
-            `🩹 [v${EXT_VERSION}] Repaired missing Gemini thoughtSignature on functionCall (contents[${contentIdx}].parts[${partIdx}])`
+            `🧪 [v${EXT_VERSION}] Synthesized Gemini thoughtSignature for model part (contents[${contentIdx}].parts[${partIdx}])`
           );
         }
       });
     });
+
+    if (changed) {
+      console.log(
+        '🧪 [v' + EXT_VERSION + '] No Gemini thoughtSignature present; applied synthetic init signature to model contents for this request.'
+      );
+    }
 
     return changed;
   }
@@ -1286,14 +1357,28 @@
             console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone Gemini body for export:', e);
           }
 
-          // 🩹 Repair missing thoughtSignature on functionCall parts by propagating the most recent one.
+          // 🩹 Primary repair: ensure all parts in each content share a thoughtSignature,
+          // and propagate the most recent signature forward across model turns.
           if (repairGeminiThoughtSignatures(body)) {
             modified = true;
           }
 
+          // 🧪 Fallback: if there is STILL no thoughtSignature anywhere (for example when
+          // switching mid-stream from a non-thinking provider and TypingMind never
+          // propagated one), synthesize a dummy signature for model-role contents on
+          // Gemini 3 thinking models so that the provider will at least accept the
+          // request instead of hard-failing.
+          const model = body.model || '';
+          const isGemini3Thinking = typeof model === 'string' && model.startsWith('gemini-3');
+          if (isGemini3Thinking && !hasAnyGeminiThoughtSignature(body)) {
+            if (synthesizeGeminiThoughtSignature(body)) {
+              modified = true;
+            }
+          }
+
           if (modified) {
             options.body = JSON.stringify(body);
-            console.log('✅ [v' + EXT_VERSION + '] Gemini request body repaired (thoughtSignature backfilled for functionCall parts)');
+            console.log('✅ [v' + EXT_VERSION + '] Gemini request body repaired/supplemented (thoughtSignature present on all model contents)');
           }
         }
       } catch (e) {
