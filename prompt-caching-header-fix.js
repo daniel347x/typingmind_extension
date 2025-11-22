@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.19
+// Version: 4.20
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.19';
+  const EXT_VERSION = '4.20';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1173,9 +1173,10 @@
         }
       });
 
-      // If this content has no signature but we have a prior one and this is a model turn,
-      // propagate the last signature forward (common for tool-only or continuation turns).
-      if (!contentSignature && lastThoughtSignature && entry.role === 'model') {
+      // If this content has no signature but we have a prior one, propagate the last
+      // signature forward to any content that actually carries text or functionCall parts
+      // (user or model). This keeps the whole thinking exchange coherent.
+      if (!contentSignature && lastThoughtSignature) {
         const hasToolOrText = entry.parts.some(
           p => p && (p.functionCall || typeof p.text === 'string')
         );
@@ -1285,7 +1286,12 @@
 
     body.contents.forEach((entry, contentIdx) => {
       if (!entry || !Array.isArray(entry.parts)) return;
-      if (entry.role !== 'model') return;
+
+      // Only bother with contents that actually carry text or functionCall parts.
+      const hasToolOrText = entry.parts.some(
+        p => p && (p.functionCall || typeof p.text === 'string')
+      );
+      if (!hasToolOrText) return;
 
       entry.parts.forEach((part, partIdx) => {
         if (!part || typeof part !== 'object') return;
@@ -1294,7 +1300,7 @@
           part.thoughtSignature = synthetic;
           changed = true;
           console.log(
-            `🧪 [v${EXT_VERSION}] Applied cached Gemini thoughtSignature seed to model part (contents[${contentIdx}].parts[${partIdx}])`
+            `🧪 [v${EXT_VERSION}] Applied cached Gemini thoughtSignature seed to part (contents[${contentIdx}].parts[${partIdx}])`
           );
         }
       });
@@ -1302,7 +1308,7 @@
 
     if (changed) {
       console.log(
-        '🧪 [v' + EXT_VERSION + '] Used cached Gemini thoughtSignature seed to supplement model contents for this Gemini-3 request.'
+        '🧪 [v' + EXT_VERSION + '] Used cached Gemini thoughtSignature seed to supplement contents for this Gemini-3 request.'
       );
     }
 
