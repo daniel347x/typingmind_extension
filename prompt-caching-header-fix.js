@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.18
+// Version: 4.19
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.18';
+  const EXT_VERSION = '4.19';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1186,6 +1186,7 @@
 
       // Second pass: apply the contentSignature uniformly to all parts in this content.
       if (contentSignature) {
+        cacheGeminiThoughtSignature(contentSignature);
         entry.parts.forEach((part, partIdx) => {
           if (!part || typeof part !== 'object') return;
           if (!part.thoughtSignature) {
@@ -1219,22 +1220,81 @@
     return false;
   }
 
+  const GEMINI_THOUGHT_SIGNATURE_CACHE_KEY = '__tmGeminiThoughtSignatureSeed_v1';
+
+  function cacheGeminiThoughtSignature(sig) {
+    try {
+      if (!sig || typeof sig !== 'string') return;
+      if (!sig.trim()) return;
+
+      // Avoid caching our own synthetic values if any pre-v4.19 code still exists
+      if (sig.startsWith('tm-init-')) return;
+
+      if (window.__tmGeminiThoughtSignatureSeed !== sig) {
+        window.__tmGeminiThoughtSignatureSeed = sig;
+        console.log('💾 [v' + EXT_VERSION + '] Cached Gemini thoughtSignature seed:', sig);
+      }
+
+      try {
+        const existing = window.localStorage.getItem(GEMINI_THOUGHT_SIGNATURE_CACHE_KEY);
+        if (existing !== sig) {
+          window.localStorage.setItem(GEMINI_THOUGHT_SIGNATURE_CACHE_KEY, sig);
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Could not persist Gemini thoughtSignature seed to localStorage:', e);
+      }
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Error while caching Gemini thoughtSignature seed:', e);
+    }
+  }
+
+  function getCachedGeminiThoughtSignature() {
+    try {
+      if (typeof window.__tmGeminiThoughtSignatureSeed === 'string' &&
+          window.__tmGeminiThoughtSignatureSeed.trim()) {
+        return window.__tmGeminiThoughtSignatureSeed;
+      }
+
+      try {
+        const fromLS = window.localStorage.getItem(GEMINI_THOUGHT_SIGNATURE_CACHE_KEY);
+        if (typeof fromLS === 'string' && fromLS.trim()) {
+          window.__tmGeminiThoughtSignatureSeed = fromLS;
+          console.log('💾 [v' + EXT_VERSION + '] Loaded Gemini thoughtSignature seed from localStorage:', fromLS);
+          return fromLS;
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Could not read Gemini thoughtSignature seed from localStorage:', e);
+      }
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Error while reading Gemini thoughtSignature seed:', e);
+    }
+
+    return null;
+  }
+
   function synthesizeGeminiThoughtSignature(body) {
+    const synthetic = getCachedGeminiThoughtSignature();
+    if (!synthetic) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] No cached Gemini thoughtSignature seed available; cannot synthesize. Request may fail with missing thought_signature.');
+      return false;
+    }
+
     if (!body || !Array.isArray(body.contents)) return false;
 
-    const synthetic = 'tm-init-thought-signature-v1';
     let changed = false;
 
     body.contents.forEach((entry, contentIdx) => {
-      if (!entry || entry.role !== 'model' || !Array.isArray(entry.parts)) return;
+      if (!entry || !Array.isArray(entry.parts)) return;
+      if (entry.role !== 'model') return;
 
       entry.parts.forEach((part, partIdx) => {
         if (!part || typeof part !== 'object') return;
-        if (!part.thoughtSignature) {
+        const hasSig = typeof part.thoughtSignature === 'string' && part.thoughtSignature.trim() !== '';
+        if (!hasSig) {
           part.thoughtSignature = synthetic;
           changed = true;
           console.log(
-            `🧪 [v${EXT_VERSION}] Synthesized Gemini thoughtSignature for model part (contents[${contentIdx}].parts[${partIdx}])`
+            `🧪 [v${EXT_VERSION}] Applied cached Gemini thoughtSignature seed to model part (contents[${contentIdx}].parts[${partIdx}])`
           );
         }
       });
@@ -1242,7 +1302,7 @@
 
     if (changed) {
       console.log(
-        '🧪 [v' + EXT_VERSION + '] No Gemini thoughtSignature present; applied synthetic init signature to model contents for this request.'
+        '🧪 [v' + EXT_VERSION + '] Used cached Gemini thoughtSignature seed to supplement model contents for this Gemini-3 request.'
       );
     }
 
