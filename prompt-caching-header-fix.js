@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.17
+// Version: 4.18
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.17';
+  const EXT_VERSION = '4.18';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1368,8 +1368,8 @@
           // propagated one), synthesize a dummy signature for model-role contents on
           // Gemini 3 thinking models so that the provider will at least accept the
           // request instead of hard-failing.
-          const model = body.model || '';
-          const isGemini3Thinking = typeof model === 'string' && model.startsWith('gemini-3');
+          const isGemini3Thinking = typeof url === 'string' && url.includes('/models/gemini-3');
+
           if (isGemini3Thinking && !hasAnyGeminiThoughtSignature(body)) {
             if (synthesizeGeminiThoughtSignature(body)) {
               modified = true;
