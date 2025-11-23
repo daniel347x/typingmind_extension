@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.25
+// Version: 4.26
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.25';
+  const EXT_VERSION = '4.26';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -39,6 +39,9 @@
   // Last Gemini request body (for export of user+assistant-only JSON)
   let lastGeminiBodyForExport = null;
 
+  // Last Grok request body (for export of user+assistant-only JSON)
+  let lastGrokBodyForExport = null;
+
   // Last GPT-5.1 request body (for export of user+assistant-only JSON)
   let lastGpt51BodyForExport = null;
 
@@ -49,6 +52,7 @@
     getLastSeenConv: () => lastSeenConversation,
     getAnthropicBody: () => lastAnthropicBodyForExport,
     getGeminiBody: () => lastGeminiBodyForExport,
+    getGrokBody: () => lastGrokBodyForExport,
     getGpt51Body: () => lastGpt51BodyForExport
   };
 
@@ -478,6 +482,74 @@
     }
   }
 
+  function exportGrokConversationToClipboard() {
+    if (!lastGrokBodyForExport || !Array.isArray(lastGrokBodyForExport.messages)) {
+      alert('No Grok conversation available to export yet.');
+      return;
+    }
+
+    const src = lastGrokBodyForExport.messages;
+    const filtered = [];
+
+    src.forEach(entry => {
+      if (!entry || (entry.role !== 'user' && entry.role !== 'assistant')) return;
+
+      const content = entry.content;
+      if (typeof content === 'string') {
+        const t = content.trim();
+        if (!t) return;
+        filtered.push({ role: entry.role, content: t });
+        return;
+      }
+
+      if (Array.isArray(content)) {
+        const texts = content
+          .filter(p => p && typeof p.text === 'string' && p.text.trim() !== '')
+          .map(p => p.text.trim());
+        if (!texts.length) return;
+        const combined = texts.join('\n\n').trim();
+        if (!combined) return;
+        filtered.push({
+          role: entry.role,
+          content: combined,
+        });
+      }
+    });
+
+    if (!filtered.length) {
+      alert('No user/assistant messages found to export for Grok.');
+      return;
+    }
+
+    const exportObj = {
+      model: lastGrokBodyForExport.model || null,
+      created_at: new Date().toISOString(),
+      messages: filtered,
+    };
+
+    const json = JSON.stringify(exportObj, null, 2);
+
+    try {
+      localStorage.setItem('tm_export_grok_conversation_last', json);
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save tm_export_grok_conversation_last to localStorage:', e);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(
+        function() {
+          alert('Exported Grok conversation (user+assistant only) to clipboard.');
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed for Grok export:', err);
+          alert('Grok export prepared (user+assistant only), but clipboard write failed. See console/localStorage.');
+        }
+      );
+    } else {
+      alert('Grok export prepared (user+assistant only). Retrieve from localStorage key: tm_export_grok_conversation_last.');
+    }
+  }
+
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
@@ -566,6 +638,12 @@
             ev.stopPropagation();
             return;
           }
+          // Export Grok conversation (user+assistant-only JSON)
+          if (target.dataset.action === 'export-grok-conversation') {
+            exportGrokConversationToClipboard();
+            ev.stopPropagation();
+            return;
+          }
           // Export GPT-5.1 conversation (user+assistant-only JSON)
           if (target.dataset.action === 'export-gpt51-conversation') {
             exportGpt51ConversationToClipboard();
@@ -619,9 +697,10 @@
       lines.push('<div style="font-size:12px;opacity:0.9;margin-bottom:4px;">GPT-5.1 usage: (no tracked conversations)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
-      
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+
       const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
       const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
       const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
@@ -702,6 +781,7 @@
 
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
     
@@ -1456,11 +1536,6 @@
              }
           } else {
              // PASSIVE MODE: Scan for tokens to cache, but DO NOT modify body.
-             // We call repairGeminiThoughtSignatures in a "dry run" way? 
-             // Actually, repairGeminiThoughtSignatures modifies in place.
-             // So we need to wrap the modification logic inside the function or duplicate the scanning logic.
-             // Simpler: Let's just scan for tokens here to keep the cache alive.
-             
              if (body && Array.isArray(body.contents)) {
                body.contents.forEach(entry => {
                  if (entry && Array.isArray(entry.parts)) {
@@ -1490,6 +1565,35 @@
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify Gemini request body:', e);
+      }
+    }
+
+    // ==================== GROK (xAI) BRANCH ====================
+    else if (url.includes('api.x.ai')) {
+      vendorForThisCall = 'grok';
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+
+          // Capture latest Grok body for export tooling
+          try {
+            lastGrokBodyForExport = JSON.parse(JSON.stringify(body));
+          } catch (e) {
+            lastGrokBodyForExport = null;
+            console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone Grok body for export:', e);
+          }
+
+          // If Grok needs prompt caching or other repairs in future, add here.
+          // For now, just capture.
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] Grok request body processed');
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify Grok request:', e);
       }
     }
 
