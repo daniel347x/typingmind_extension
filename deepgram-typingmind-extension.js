@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.122 Changes:
+ * - FIXED: Sidebar hover icons still clipping. Reverted to fixed-width approach with larger buffer (120px instead of 60px) to prevent icon overflow.
+ * 
  * v3.121 Changes:
  * - FIXED: Sidebar project list icons clipping. Changed text span width from fixed pixels to `flex: 1; width: auto !important` so it shrinks gracefully when hover icons appear.
  * 
@@ -212,7 +215,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.121',
+  VERSION: '3.122',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2644,11 +2647,10 @@
       }
 
       /* 3c. The folder/chat label spans (prevent text truncation too early) */
-      /* Use flex-basis and auto width to allow shrinking when hover icons appear */
+      /* Reserve 120px for hover icons (trash, star, hamburger) to prevent clipping */
       [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
-        max-width: 100% !important;
-        width: auto !important;
-        flex: 1 1 auto !important;
+        max-width: ${sidebarWidth - 120}px !important;
+        width: ${sidebarWidth - 120}px !important;
       }
     `;
     document.head.appendChild(layoutStyle);
