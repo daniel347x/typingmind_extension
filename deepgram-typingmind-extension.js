@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.123 Changes:
+ * - FIXED: Sidebar hover icons still clipping at 120px buffer. Increased to 180px to fully accommodate all three hover icons plus New Conversation button.
+ * 
  * v3.122 Changes:
  * - FIXED: Sidebar hover icons still clipping. Reverted to fixed-width approach with larger buffer (120px instead of 60px) to prevent icon overflow.
  * 
@@ -215,7 +218,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.122',
+  VERSION: '3.123',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2647,10 +2650,10 @@
       }
 
       /* 3c. The folder/chat label spans (prevent text truncation too early) */
-      /* Reserve 120px for hover icons (trash, star, hamburger) to prevent clipping */
+      /* Reserve 180px for hover icons (New Chat, trash, star, hamburger) to prevent clipping */
       [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
-        max-width: ${sidebarWidth - 120}px !important;
-        width: ${sidebarWidth - 120}px !important;
+        max-width: ${sidebarWidth - 180}px !important;
+        width: ${sidebarWidth - 180}px !important;
       }
     `;
     document.head.appendChild(layoutStyle);
