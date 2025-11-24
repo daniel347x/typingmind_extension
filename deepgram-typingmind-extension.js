@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.124 Changes:
+ * - FIXED: Root cause found - [data-element-id="sidebar-middle-part"] itself is too narrow (686px vs 750px inner content). Added CSS to widen the outer container.
+ * 
  * v3.123 Changes:
  * - FIXED: Sidebar hover icons still clipping at 120px buffer. Increased to 180px to fully accommodate all three hover icons plus New Conversation button.
  * 
@@ -218,7 +221,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.123',
+  VERSION: '3.124',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2637,19 +2640,25 @@
       }
 
       /* CONTROL 3: Sidebar Internal Widths (Force override inline styles) */
-      /* 3a. The internal table wrapper that clamps content width */
+      /* 3a. The outer sidebar-middle-part container (was 686px, needs to match inner content) */
+      [data-element-id="sidebar-middle-part"] {
+        width: ${sidebarWidth}px !important;
+        max-width: ${sidebarWidth}px !important;
+      }
+
+      /* 3b. The internal table wrapper that clamps content width */
       [data-element-id="sidebar-middle-part"] > div > div > div[style*="display: table"] {
         max-width: ${sidebarWidth}px !important;
         width: ${sidebarWidth}px !important;
       }
 
-      /* 3b. The inner content container padding wrapper */
+      /* 3c. The inner content container padding wrapper */
       [data-element-id="sidebar-middle-part"] > div > div > div[style*="display: table"] > div {
         max-width: ${sidebarWidth}px !important;
         width: ${sidebarWidth}px !important;
       }
 
-      /* 3c. The folder/chat label spans (prevent text truncation too early) */
+      /* 3d. The folder/chat label spans (prevent text truncation too early) */
       /* Reserve 180px for hover icons (New Chat, trash, star, hamburger) to prevent clipping */
       [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
         max-width: ${sidebarWidth - 180}px !important;
