@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.121 Changes:
+ * - FIXED: Sidebar project list icons clipping. Changed text span width from fixed pixels to `flex: 1; width: auto !important` so it shrinks gracefully when hover icons appear.
+ * 
  * v3.120 Changes:
  * - FIXED: TypingMind Chat sidebar width (robust fix): Moved sidebar width overrides to CSS with !important to defeat React's inline style re-application.
  * 
@@ -209,7 +212,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.120',
+  VERSION: '3.121',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2641,9 +2644,11 @@
       }
 
       /* 3c. The folder/chat label spans (prevent text truncation too early) */
+      /* Use flex-basis and auto width to allow shrinking when hover icons appear */
       [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
-        max-width: ${sidebarWidth - 60}px !important;
-        width: ${sidebarWidth - 60}px !important;
+        max-width: 100% !important;
+        width: auto !important;
+        flex: 1 1 auto !important;
       }
     `;
     document.head.appendChild(layoutStyle);
