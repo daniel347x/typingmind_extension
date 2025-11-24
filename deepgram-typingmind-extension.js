@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.120 Changes:
+ * - FIXED: TypingMind Chat sidebar width (robust fix): Moved sidebar width overrides to CSS with !important to defeat React's inline style re-application.
+ * 
  * v3.119 Changes:
  * - FIXED: TypingMind Chat sidebar: widen internal table wrapper + folder label spans so project/chat list truly uses full sidebar width (no more black strip on right).
  * 
@@ -206,7 +209,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.119',
+  VERSION: '3.120',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2623,6 +2626,25 @@
         margin-left: ${chatMargin - 585}px !important;
         margin-right: auto !important;
       }
+
+      /* CONTROL 3: Sidebar Internal Widths (Force override inline styles) */
+      /* 3a. The internal table wrapper that clamps content width */
+      [data-element-id="sidebar-middle-part"] > div > div > div[style*="display: table"] {
+        max-width: ${sidebarWidth}px !important;
+        width: ${sidebarWidth}px !important;
+      }
+
+      /* 3b. The inner content container padding wrapper */
+      [data-element-id="sidebar-middle-part"] > div > div > div[style*="display: table"] > div {
+        max-width: ${sidebarWidth}px !important;
+        width: ${sidebarWidth}px !important;
+      }
+
+      /* 3c. The folder/chat label spans (prevent text truncation too early) */
+      [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
+        max-width: ${sidebarWidth - 60}px !important;
+        width: ${sidebarWidth - 60}px !important;
+      }
     `;
     document.head.appendChild(layoutStyle);
     
@@ -2671,35 +2693,8 @@
         contentDiv.style.width = innerWidth + 'px';
       }
       
-      // Widen projects container (robust to Tailwind class changes)
-      // TypingMind occasionally changes the exact spacing class (space-y-2 → space-y-1.5, etc.),
-      // which can cause the inner project list to stay narrow even when the outer sidebar is wide.
-      //
-      // Strategy:
-      // 1. Prefer the original target: .p-2.space-y-2 under sidebar-middle-part.
-      // 2. If not found, look for any descendant with a class containing "space-y-" under a .p-2 container.
-      // 3. As a final fallback, widen the first .p-2 container under the sidebar-middle-part.
-      // Fix internal table wrapper that clamps sidebar content width
-      // TypingMind wraps the sidebar content in a <div style="display: table; max-width: 730px; width: 730px;">.
-      // If we only widen the outer nav container, that inner table stays narrow and creates
-      // the "wide black strip on the right" inside the left pane.
-      const tableWrapper = sidebarContent.querySelector('div[style*="display: table"]');
-      if (tableWrapper) {
-        tableWrapper.style.maxWidth = sidebarWidth + 'px';
-        tableWrapper.style.width = sidebarWidth + 'px';
-      }
-
-      // Widen folder label spans inside each chat folder row
-      // These spans currently have inline styles like max-width: 690px; width: 690px;
-      // which keep the list column too narrow even when the sidebar is wider.
-      const folderLabelSpans = sidebarContent.querySelectorAll('[data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center');
-      if (folderLabelSpans.length > 0) {
-        const labelWidth = sidebarWidth - 60; // reserve ~60px for right-side icons/padding
-        folderLabelSpans.forEach(span => {
-          span.style.maxWidth = labelWidth + 'px';
-          span.style.width = labelWidth + 'px';
-        });
-      }
+      // CSS rules in 'typingmind-layout-styles' now handle the heavy lifting (table wrapper + spans)
+      // to defeat React's inline style re-application.
       
       // console.log('✓ Sidebar widths applied (Chat view active)');
     } else {
