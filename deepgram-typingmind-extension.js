@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.119 Changes:
+ * - FIXED: TypingMind Chat sidebar: widen internal table wrapper + folder label spans so project/chat list truly uses full sidebar width (no more black strip on right).
+ * 
  * v3.118 Changes:
  * - FIXED: Sidebar projects list width selector so inner list stays wide when TypingMind changes Tailwind spacing classes (no more narrow project column with black strip).
  * 
@@ -203,7 +206,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.118',
+  VERSION: '3.119',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2676,15 +2679,26 @@
       // 1. Prefer the original target: .p-2.space-y-2 under sidebar-middle-part.
       // 2. If not found, look for any descendant with a class containing "space-y-" under a .p-2 container.
       // 3. As a final fallback, widen the first .p-2 container under the sidebar-middle-part.
-      let projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
-      if (!projectsContainer && sidebarContent) {
-        projectsContainer = sidebarContent.querySelector('.p-2 [class*="space-y-"]') ||
-                            sidebarContent.querySelector('.p-2');
+      // Fix internal table wrapper that clamps sidebar content width
+      // TypingMind wraps the sidebar content in a <div style="display: table; max-width: 730px; width: 730px;">.
+      // If we only widen the outer nav container, that inner table stays narrow and creates
+      // the "wide black strip on the right" inside the left pane.
+      const tableWrapper = sidebarContent.querySelector('div[style*="display: table"]');
+      if (tableWrapper) {
+        tableWrapper.style.maxWidth = sidebarWidth + 'px';
+        tableWrapper.style.width = sidebarWidth + 'px';
       }
-      if (projectsContainer) {
-        const projectsWidth = sidebarWidth - 60; // 60px total padding (prevents icon overflow)
-        projectsContainer.style.maxWidth = projectsWidth + 'px';
-        projectsContainer.style.width = projectsWidth + 'px';
+
+      // Widen folder label spans inside each chat folder row
+      // These spans currently have inline styles like max-width: 690px; width: 690px;
+      // which keep the list column too narrow even when the sidebar is wider.
+      const folderLabelSpans = sidebarContent.querySelectorAll('[data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center');
+      if (folderLabelSpans.length > 0) {
+        const labelWidth = sidebarWidth - 60; // reserve ~60px for right-side icons/padding
+        folderLabelSpans.forEach(span => {
+          span.style.maxWidth = labelWidth + 'px';
+          span.style.width = labelWidth + 'px';
+        });
       }
       
       // console.log('✓ Sidebar widths applied (Chat view active)');
