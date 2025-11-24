@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.118 Changes:
+ * - FIXED: Sidebar projects list width selector so inner list stays wide when TypingMind changes Tailwind spacing classes (no more narrow project column with black strip).
+ * 
  * v3.117 Changes:
  * - NEW: Fine-tune global left shift to 585px (chat margin - 585) for tool-call popup alignment (widget still opens by default)
  * 
@@ -200,7 +203,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.117',
+  VERSION: '3.118',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2665,8 +2668,19 @@
         contentDiv.style.width = innerWidth + 'px';
       }
       
-      // Widen projects container
-      const projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
+      // Widen projects container (robust to Tailwind class changes)
+      // TypingMind occasionally changes the exact spacing class (space-y-2 → space-y-1.5, etc.),
+      // which can cause the inner project list to stay narrow even when the outer sidebar is wide.
+      //
+      // Strategy:
+      // 1. Prefer the original target: .p-2.space-y-2 under sidebar-middle-part.
+      // 2. If not found, look for any descendant with a class containing "space-y-" under a .p-2 container.
+      // 3. As a final fallback, widen the first .p-2 container under the sidebar-middle-part.
+      let projectsContainer = document.querySelector('[data-element-id="sidebar-middle-part"] .p-2.space-y-2');
+      if (!projectsContainer && sidebarContent) {
+        projectsContainer = sidebarContent.querySelector('.p-2 [class*="space-y-"]') ||
+                            sidebarContent.querySelector('.p-2');
+      }
       if (projectsContainer) {
         const projectsWidth = sidebarWidth - 60; // 60px total padding (prevents icon overflow)
         projectsContainer.style.maxWidth = projectsWidth + 'px';
