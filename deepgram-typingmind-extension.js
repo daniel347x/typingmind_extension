@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.125 Changes:
+ * - FIXED: Clamp selected chat highlight row and nav container overflow to keep selection fully inside the sidebar.
+ * 
  * v3.124 Changes:
  * - FIXED: Root cause found - [data-element-id="sidebar-middle-part"] itself is too narrow (686px vs 750px inner content). Added CSS to widen the outer container.
  * 
@@ -221,7 +224,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.124',
+  VERSION: '3.125',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
