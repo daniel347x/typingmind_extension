@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.128 Changes:
+ * - FIXED: Selected chat row & title now use inline !important widths tied to Sidebar control (matches manual max-width hack, preserves hover icons).
+ * 
  * v3.127 Changes:
  * - FIXED: Inline selected chat title width based on Sidebar control (reserves hover icon space dynamically per sidebar width).
  * 
@@ -230,7 +233,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.127',
+  VERSION: '3.128',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2736,12 +2739,21 @@
         contentDiv.style.width = innerWidth + 'px';
       }
 
+      // Inline width for selected chat row – clamp container itself with !important
+      const selectedRow = document.querySelector('[data-element-id="selected-chat-item"]');
+      if (selectedRow) {
+        const maxRowWidth = sidebarWidth; // tie directly to Sidebar control
+        selectedRow.style.setProperty('max-width', maxRowWidth + 'px', 'important');
+        selectedRow.style.setProperty('width', maxRowWidth + 'px', 'important');
+        selectedRow.style.boxSizing = 'border-box';
+      }
+
       // Inline width for selected chat title text – reserve room for hover icons (trash, favorite, menu)
       const selectedTitle = document.querySelector('[data-element-id="selected-chat-item"] .truncate');
       if (selectedTitle) {
         const reservedIconWidth = 180; // initial guess – matches folder-row buffer
         const maxTitleWidth = Math.max(100, sidebarWidth - reservedIconWidth);
-        selectedTitle.style.maxWidth = maxTitleWidth + 'px';
+        selectedTitle.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
         selectedTitle.style.minWidth = '0';
       }
       
