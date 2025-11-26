@@ -2664,6 +2664,13 @@
         max-width: ${sidebarWidth - 180}px !important;
         width: ${sidebarWidth - 180}px !important;
       }
+
+      /* 3e. Clamp selected chat row highlight so it never spills past the sidebar */
+      [data-element-id="selected-chat-item"] {
+        max-width: ${sidebarWidth}px !important;
+        width: ${sidebarWidth}px !important;
+        box-sizing: border-box;
+      }
     `;
     document.head.appendChild(layoutStyle);
     
@@ -2701,6 +2708,8 @@
       const navContainer = document.querySelector('[data-element-id="nav-container"]');
       if (navContainer) {
         navContainer.style.width = sidebarWidth + 'px';
+        navContainer.style.maxWidth = sidebarWidth + 'px';
+        navContainer.style.overflow = 'hidden';
       }
       
       // Widen sidebar inner content
