@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.127 Changes:
+ * - FIXED: Inline selected chat title width based on Sidebar control (reserves hover icon space dynamically per sidebar width).
+ * 
  * v3.126 Changes:
  * - FIXED: Selected chat title text now reserves width for hover icons so trash/favorite/menu remain fully visible inside the sidebar.
  * 
@@ -227,7 +230,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.126',
+  VERSION: '3.127',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2731,6 +2734,15 @@
         contentDiv.style.minWidth = 'auto';
         contentDiv.style.maxWidth = innerWidth + 'px';
         contentDiv.style.width = innerWidth + 'px';
+      }
+
+      // Inline width for selected chat title text – reserve room for hover icons (trash, favorite, menu)
+      const selectedTitle = document.querySelector('[data-element-id="selected-chat-item"] .truncate');
+      if (selectedTitle) {
+        const reservedIconWidth = 180; // initial guess – matches folder-row buffer
+        const maxTitleWidth = Math.max(100, sidebarWidth - reservedIconWidth);
+        selectedTitle.style.maxWidth = maxTitleWidth + 'px';
+        selectedTitle.style.minWidth = '0';
       }
       
       // CSS rules in 'typingmind-layout-styles' now handle the heavy lifting (table wrapper + spans)
