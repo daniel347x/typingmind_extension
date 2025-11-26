@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.130 Changes:
+ * - FIXED: Applied inline !important width clamps to root header, folder rows, subfolders, and custom chat items (all tied to Sidebar-100px) so icons remain visible.
+ * 
  * v3.129 Changes:
  * - TWEAKED: Selected chat row container is ~100px narrower than Sidebar width; title width now derived from this narrower row for better icon spacing.
  * 
@@ -236,7 +239,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.129',
+  VERSION: '3.130',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2761,6 +2764,58 @@
         const maxTitleWidth = Math.max(100, containerWidth - reservedIconWidth);
         selectedTitle.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
         selectedTitle.style.minWidth = '0';
+      }
+
+      // Inline widths for folder headings (chat folders) – same nuclear treatment
+      const folderRows = document.querySelectorAll('[data-element-id="chat-folder"]');
+      folderRows.forEach(folder => {
+        const folderRowWidth = Math.max(200, sidebarWidth - 100); // mirror selected row clamp
+        folder.style.setProperty('max-width', folderRowWidth + 'px', 'important');
+        folder.style.setProperty('width', folderRowWidth + 'px', 'important');
+        folder.style.boxSizing = 'border-box';
+
+        // Folder label text (left side)
+        const folderLabel = folder.querySelector('span.text-left.w-full.min-w-0.flex.items-center.justify-center');
+        if (folderLabel) {
+          const reservedIconWidth = 180; // same icon buffer
+          const maxLabelWidth = Math.max(100, folderRowWidth - reservedIconWidth);
+          folderLabel.style.setProperty('max-width', maxLabelWidth + 'px', 'important');
+          folderLabel.style.minWidth = '0';
+        }
+      });
+
+      // Inline widths for unselected conversation rows (custom chat items)
+      const customChatRows = document.querySelectorAll('[data-element-id="custom-chat-item"]');
+      customChatRows.forEach(row => {
+        const chatRowWidth = Math.max(200, sidebarWidth - 100); // same clamp as folders/selected row
+        row.style.setProperty('max-width', chatRowWidth + 'px', 'important');
+        row.style.setProperty('width', chatRowWidth + 'px', 'important');
+        row.style.boxSizing = 'border-box';
+
+        const chatLabel = row.querySelector('.truncate') || row.querySelector('span.text-left.w-full.min-w-0.flex.items-center.justify-center');
+        if (chatLabel) {
+          const reservedIconWidth = 180;
+          const maxChatLabelWidth = Math.max(100, chatRowWidth - reservedIconWidth);
+          chatLabel.style.setProperty('max-width', maxChatLabelWidth + 'px', 'important');
+          chatLabel.style.minWidth = '0';
+        }
+      });
+
+      // Inline width for root-level folder header (top section header bar)
+      const rootHeader = sidebarContent.querySelector('div.flex.items-center.justify-between.mb-2');
+      if (rootHeader) {
+        const headerWidth = Math.max(200, sidebarWidth - 100);
+        rootHeader.style.setProperty('max-width', headerWidth + 'px', 'important');
+        rootHeader.style.setProperty('width', headerWidth + 'px', 'important');
+        rootHeader.style.boxSizing = 'border-box';
+
+        const headerLabel = rootHeader.querySelector('.truncate') || rootHeader.querySelector('span');
+        if (headerLabel) {
+          const reservedIconWidth = 180;
+          const maxHeaderLabelWidth = Math.max(100, headerWidth - reservedIconWidth);
+          headerLabel.style.setProperty('max-width', maxHeaderLabelWidth + 'px', 'important');
+          headerLabel.style.minWidth = '0';
+        }
       }
       
       // CSS rules in 'typingmind-layout-styles' now handle the heavy lifting (table wrapper + spans)
