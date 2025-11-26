@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.129 Changes:
+ * - TWEAKED: Selected chat row container is ~100px narrower than Sidebar width; title width now derived from this narrower row for better icon spacing.
+ * 
  * v3.128 Changes:
  * - FIXED: Selected chat row & title now use inline !important widths tied to Sidebar control (matches manual max-width hack, preserves hover icons).
  * 
@@ -233,7 +236,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.128',
+  VERSION: '3.129',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2741,8 +2744,10 @@
 
       // Inline width for selected chat row – clamp container itself with !important
       const selectedRow = document.querySelector('[data-element-id="selected-chat-item"]');
+      let maxRowWidth = null;
       if (selectedRow) {
-        const maxRowWidth = sidebarWidth; // tie directly to Sidebar control
+        // Make selected row ~100px narrower than Sidebar width
+        maxRowWidth = Math.max(200, sidebarWidth - 100);
         selectedRow.style.setProperty('max-width', maxRowWidth + 'px', 'important');
         selectedRow.style.setProperty('width', maxRowWidth + 'px', 'important');
         selectedRow.style.boxSizing = 'border-box';
@@ -2751,8 +2756,9 @@
       // Inline width for selected chat title text – reserve room for hover icons (trash, favorite, menu)
       const selectedTitle = document.querySelector('[data-element-id="selected-chat-item"] .truncate');
       if (selectedTitle) {
-        const reservedIconWidth = 180; // initial guess – matches folder-row buffer
-        const maxTitleWidth = Math.max(100, sidebarWidth - reservedIconWidth);
+        const reservedIconWidth = 180; // matches folder-row buffer
+        const containerWidth = maxRowWidth || sidebarWidth;
+        const maxTitleWidth = Math.max(100, containerWidth - reservedIconWidth);
         selectedTitle.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
         selectedTitle.style.minWidth = '0';
       }
