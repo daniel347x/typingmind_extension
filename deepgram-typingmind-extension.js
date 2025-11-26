@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.126 Changes:
+ * - FIXED: Selected chat title text now reserves width for hover icons so trash/favorite/menu remain fully visible inside the sidebar.
+ * 
  * v3.125 Changes:
  * - FIXED: Clamp selected chat highlight row and nav container overflow to keep selection fully inside the sidebar.
  * 
@@ -224,7 +227,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.125',
+  VERSION: '3.126',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2673,6 +2676,12 @@
         max-width: ${sidebarWidth}px !important;
         width: ${sidebarWidth}px !important;
         box-sizing: border-box;
+      }
+
+      /* 3f. Selected chat title text – reserve room for hover icons (trash, favorite, menu) */
+      [data-element-id="selected-chat-item"] .truncate {
+        max-width: ${sidebarWidth - 180}px !important;
+        min-width: 0 !important;
       }
     `;
     document.head.appendChild(layoutStyle);
