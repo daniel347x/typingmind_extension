@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.131 Changes:
+ * - ENHANCED: Doc annotation popup – after switching annotation type, keyboard focus returns to the comment input so you can keep typing without the mouse.
+ * 
  * v3.130 Changes:
  * - FIXED: Applied inline !important width clamps to root header, folder rows, subfolders, and custom chat items (all tied to Sidebar-100px) so icons remain visible.
  * 
@@ -239,7 +242,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.130',
+  VERSION: '3.131',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5134,6 +5137,18 @@
     const button = e.target.closest('.doc-annotation-radio-button');
     if (button) {
       button.classList.add('selected');
+    }
+
+    // After changing annotation type, immediately return focus to the
+    // comment input so Dan can keep typing without touching the mouse.
+    const commentInput = document.getElementById('doc-annotation-comment-input');
+    if (commentInput) {
+      // Focus and move cursor to end (preserves existing text).
+      const len = commentInput.value.length;
+      commentInput.focus();
+      if (commentInput.setSelectionRange) {
+        commentInput.setSelectionRange(len, len);
+      }
     }
   }
   
