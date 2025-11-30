@@ -2939,6 +2939,22 @@
     const inputContainer = overlay.querySelector('#tm-tool-input-args');
     const outputContainer = overlay.querySelector('#tm-tool-output-args');
 
+    // Match modal width to Chat pane width (slightly narrower on each side)
+    let chatWidth = CONFIG.DEFAULT_CHAT_WIDTH;
+    const chatWidthInput = document.getElementById('layout-chat-width-input');
+    const storedChatWidth = localStorage.getItem(CONFIG.LAYOUT_CHAT_WIDTH_STORAGE);
+    const candidate = chatWidthInput?.value || storedChatWidth;
+    if (candidate) {
+      const parsed = parseInt(candidate, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        chatWidth = parsed;
+      }
+    }
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || chatWidth;
+    const desiredWidth = Math.max(400, Math.min(chatWidth - 20, viewportWidth - 40));
+    modal.style.maxWidth = desiredWidth + 'px';
+    modal.style.width = '100%';
+
     const fullName = provider && functionName
       ? `${provider}.${functionName}`
       : functionName || provider || 'Tool Call';
@@ -3000,6 +3016,88 @@
     while (el.firstChild) el.removeChild(el.firstChild);
   }
 
+  function isMultiLineOrTabbed(str) {
+    if (typeof str !== 'string') return false;
+    return str.indexOf('\n') >= 0 || str.indexOf('\t') >= 0;
+  }
+
+  function formatLeafStringLines(str, indent) {
+    const pad = '  '.repeat(indent);
+    const normalized = String(str || '').replace(/\r\n/g, '\n');
+    const parts = normalized.split('\n');
+    return parts.map(line => pad + line);
+  }
+
+  function complexToLines(val, indent) {
+    const pad = '  '.repeat(indent);
+    const lines = [];
+
+    if (Array.isArray(val)) {
+      if (val.length === 0) {
+        lines.push(pad + '[]');
+        return lines;
+      }
+      lines.push(pad + '[');
+      val.forEach(item => {
+        const childLines = complexToLines(item, indent + 2);
+        const bulletPad = '  '.repeat(indent + 1);
+        if (childLines.length === 1) {
+          lines.push(bulletPad + '- ' + childLines[0].trim());
+        } else {
+          lines.push(bulletPad + '- ' + childLines[0].trim());
+          for (let i = 1; i < childLines.length; i++) {
+            lines.push(bulletPad + '  ' + childLines[i]);
+          }
+        }
+      });
+      lines.push(pad + ']');
+      return lines;
+    }
+
+    if (val && typeof val === 'object') {
+      const keys = Object.keys(val);
+      if (!keys.length) {
+        lines.push(pad + '{}');
+        return lines;
+      }
+      lines.push(pad + '{');
+      keys.forEach(key => {
+        const v = val[key];
+        const keyPad = '  '.repeat(indent + 1);
+        if (v === null || typeof v === 'number' || typeof v === 'boolean') {
+          lines.push(keyPad + key + ': ' + String(v));
+        } else if (typeof v === 'string') {
+          const s = v;
+          if (!isMultiLineOrTabbed(s) && s.length <= 80) {
+            lines.push(keyPad + key + ': "' + s.replace(/"/g, '\\"') + '"');
+          } else {
+            lines.push(keyPad + key + ':');
+            const leafLines = formatLeafStringLines(s, indent + 2);
+            lines.push(...leafLines);
+          }
+        } else {
+          lines.push(keyPad + key + ':');
+          const childLines = complexToLines(v, indent + 2);
+          lines.push(...childLines);
+        }
+      });
+      lines.push(pad + '}');
+      return lines;
+    }
+
+    if (typeof val === 'string') {
+      return formatLeafStringLines(val, indent);
+    }
+
+    lines.push(pad + String(val));
+    return lines;
+  }
+
+  function prettyPrintComplex(value) {
+    const lines = complexToLines(value, 0);
+    return lines.join('\n');
+  }
+
   function parseToolArgs(rawText, fullName) {
     if (!rawText) return [];
 
@@ -3048,13 +3146,14 @@
       };
     }
 
-    // Arrays / objects → pretty JSON
+    // Arrays / objects → pretty-printed structure with multiline leaf strings
     if (Array.isArray(val) || (typeof val === 'object')) {
       return {
         name,
         display: 'block',
-        isJson: true,
-        value: JSON.stringify(val, null, 2)
+        isJson: false,
+        value: val,
+        isComplex: true
       };
     }
 
@@ -3136,7 +3235,13 @@
       const pre = document.createElement('pre');
       pre.className = 'tm-tool-arg-value tm-tool-arg-value-block';
       const code = document.createElement('code');
-      code.textContent = arg.value;
+      let text;
+      if (arg.isComplex) {
+        text = prettyPrintComplex(arg.value);
+      } else {
+        text = arg.value;
+      }
+      code.textContent = text;
       pre.appendChild(code);
       wrapper.appendChild(pre);
     }
