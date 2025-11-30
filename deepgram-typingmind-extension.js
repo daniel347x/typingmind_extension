@@ -2036,8 +2036,15 @@
 
       /* ========== TypingMind Tool Call Readability Modal ========== */
 
-      .tm-tool-mini-button {
-        margin-left: auto;
+      .tm-tool-row-has-view {
+        position: relative;
+      }
+
+      .tm-tool-row-has-view .tm-tool-mini-button {
+        position: absolute;
+        right: 100px; /* shift 100px left from the right edge */
+        top: 50%;
+        transform: translateY(-50%);
         padding: 2px 8px;
         border-radius: 9999px;
         border: 1px solid rgba(148, 163, 184, 0.9);
@@ -2048,9 +2055,19 @@
         line-height: 1.2;
         cursor: pointer;
         white-space: nowrap;
+        opacity: 0;
+        pointer-events: none;
+        transition:
+          opacity 0.12s ease-out,
+          background 0.12s ease-out;
       }
 
-      .tm-tool-mini-button:hover {
+      .tm-tool-row-has-view:hover .tm-tool-mini-button {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .tm-tool-row-has-view .tm-tool-mini-button:hover {
         background: #e5e7eb;
       }
 
@@ -2847,6 +2864,9 @@
       const functionName = fnNameEl.textContent.trim();
       const rawInputText = argsSpan.textContent.trim();
       if (!rawInputText) return;
+
+      // Mark this row so CSS can position/hover the button
+      row.classList.add('tm-tool-row-has-view');
 
       // Inline "View" button at right edge
       const btn = document.createElement('button');
