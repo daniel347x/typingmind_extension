@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.135 Changes:
+ * - TWEAKED: TypingMind tool-call "View" button now only appears on hover and is positioned to avoid TypingMind's own hover controls.
+ * 
  * v3.134 Changes:
  * - NEW: TypingMind tool-call readability modal ("View" button on tool slivers → full-screen prettified args)
  * 
@@ -251,7 +254,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.134',
+  VERSION: '3.135',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
