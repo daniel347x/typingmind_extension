@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.133 Changes:
+ * - FIXED: Empty folder placeholder width now tracks Sidebar setting (20px narrower than conversation rows, using sidebarWidth - 120 dynamic clamp).
+ * 
  * v3.132 Changes:
  * - FIXED: Sidebar conversation titles now align flush-left even before hover (conversation row flex alignment rule added for custom chat items).
  * 
@@ -245,7 +248,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.132',
+  VERSION: '3.133',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2705,6 +2708,18 @@
       /* 3g. Conversation title row alignment – align titles flush-left even before hover */
       [data-element-id="custom-chat-item"] .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
         justify-content: flex-start !important;
+      }
+
+      /* 3h. Selected conversation title row alignment – match unselected left alignment */
+      [data-element-id="selected-chat-item"] .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
+        justify-content: flex-start !important;
+      }
+
+      /* 3i. Empty folder placeholder width – slightly narrower than conversation rows */
+      [data-element-id="sidebar-middle-part"] div.pl-3.relative.flex.flex-col.border-l.border-slate-600.mt-1.gap-y-2 {
+        max-width: ${Math.max(200, sidebarWidth - 120)}px !important;
+        width: ${Math.max(200, sidebarWidth - 120)}px !important;
+        box-sizing: border-box;
       }
     `;
     document.head.appendChild(layoutStyle);
