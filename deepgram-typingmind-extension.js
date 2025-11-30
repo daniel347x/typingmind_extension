@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.134 Changes:
+ * - NEW: TypingMind tool-call readability modal ("View" button on tool slivers → full-screen prettified args)
+ * 
  * v3.133 Changes:
  * - FIXED: Empty folder placeholder width now tracks Sidebar setting (20px narrower than conversation rows, using sidebarWidth - 120 dynamic clamp).
  * 
@@ -248,7 +251,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.133',
+  VERSION: '3.134',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2030,7 +2033,202 @@
           display: none;
         }
       }
-    `;
+
+      /* ========== TypingMind Tool Call Readability Modal ========== */
+
+      .tm-tool-mini-button {
+        margin-left: auto;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        border: 1px solid rgba(148, 163, 184, 0.9);
+        background: rgba(248, 250, 252, 0.95);
+        color: #475569;
+        font-size: 10px;
+        font-weight: 500;
+        line-height: 1.2;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+
+      .tm-tool-mini-button:hover {
+        background: #e5e7eb;
+      }
+
+      .tm-tool-modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.75);
+        display: none;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000001; /* Above widget & TM popups */
+      }
+
+      .tm-tool-modal-overlay.tm-open {
+        display: flex;
+      }
+
+      .tm-tool-modal {
+        background: #f9fafb;
+        color: #111827;
+        border-radius: 12px;
+        max-width: 1100px;
+        width: calc(100% - 40px);
+        max-height: 90vh;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+          "Liberation Mono", "Courier New", monospace;
+      }
+
+      .tm-tool-modal.tm-dark {
+        background: #020617;
+        color: #e5e7eb;
+      }
+
+      .tm-tool-modal-header {
+        padding: 10px 16px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .tm-tool-modal-title {
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+        color: #4b5563;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-modal-title {
+        color: #9ca3af;
+      }
+
+      .tm-tool-modal-close {
+        border: none;
+        background: transparent;
+        color: inherit;
+        font-size: 18px;
+        width: 28px;
+        height: 28px;
+        border-radius: 9999px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .tm-tool-modal-close:hover {
+        background: rgba(148, 163, 184, 0.2);
+      }
+
+      .tm-tool-modal-body {
+        padding: 12px 16px 16px 16px;
+        display: flex;
+        gap: 16px;
+        overflow: auto;
+        font-size: 12px;
+      }
+
+      .tm-tool-modal-section {
+        flex: 1 1 0;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .tm-tool-section-title {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        margin-bottom: 6px;
+        color: #6b7280;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-section-title {
+        color: #9ca3af;
+      }
+
+      .tm-tool-arg-list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      .tm-tool-arg {
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.45);
+        background: #ffffff;
+        padding: 6px 8px;
+        overflow: hidden;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-arg {
+        background: #020617;
+        border-color: rgba(51, 65, 85, 0.9);
+      }
+
+      .tm-tool-arg-name {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #6b7280;
+        margin-bottom: 4px;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-arg-name {
+        color: #9ca3af;
+      }
+
+      .tm-tool-arg-value {
+        font-size: 11px;
+        color: inherit;
+      }
+
+      .tm-tool-arg-value-inline code {
+        font-family: inherit;
+        background: rgba(148, 163, 184, 0.08);
+        padding: 1px 4px;
+        border-radius: 4px;
+      }
+
+      .tm-tool-arg-value-block {
+        max-height: 320px;
+        overflow: auto;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: rgba(15, 23, 42, 0.95);
+        color: #e5e7eb;
+        white-space: pre;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-arg-value-block {
+        background: rgba(15, 23, 42, 0.98);
+      }
+
+      .tm-tool-arg-value-block code {
+        font-family: inherit;
+      }
+
+      .tm-tool-arg-empty {
+        font-size: 11px;
+        font-style: italic;
+        color: #9ca3af;
+      }
+
+      @media (max-width: 900px) {
+        .tm-tool-modal-body {
+          flex-direction: column;
+        }
+      }
+
+      `;
     document.head.appendChild(style);
     console.log('✓ Styles injected');
   }
@@ -2581,7 +2779,348 @@
     
     console.log('✓ Sidebar view watcher initialized');
   }
-  
+
+  // ==================== TYPINGMIND TOOL CALL READABILITY ====================
+
+  // Optional: known argument names for nicer labels
+  const TOOL_ARG_NAME_OVERRIDES = {
+    'typingmind-filesystem.edit_file': ['path', 'edits', 'dryRun'],
+    'typingmind-filesystem.write_file': ['path', 'content'],
+    'typingmind-filesystem.read_file': ['path', 'tail', 'head'],
+    'typingmind-filesystem.read_text_file': ['path', 'tail', 'head'],
+    // Add more as needed
+  };
+
+  let toolModalOverlay = null;
+  let toolModalOpen = false;
+
+  function initializeToolCallInspector() {
+    // Initial scan for existing tool call rows
+    scanToolCallRows(document);
+
+    // Watch for new messages being added
+    const root = document.body;
+    const observer = new MutationObserver(mutations => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1) {
+            scanToolCallRows(node);
+          }
+        }
+      }
+    });
+    observer.observe(root, { childList: true, subtree: true });
+
+    // ESC to close modal
+    document.addEventListener('keydown', evt => {
+      if (!toolModalOpen) return;
+      if (evt.key === 'Escape') {
+        closeToolModal();
+      }
+    });
+
+    console.log('✓ Tool call inspector initialized');
+  }
+
+  function scanToolCallRows(root) {
+    if (!root.querySelectorAll) return;
+
+    const rows = root.querySelectorAll(
+      '[data-element-id="additional-actions-of-response-container"] .text-xs'
+    );
+    if (!rows.length) return;
+
+    rows.forEach(row => {
+      if (row.dataset.tmToolModalBound === '1') return;
+
+      const providerEl = row.querySelector('span.font-semibold');
+      const fnNameEl =
+        providerEl && providerEl.nextElementSibling &&
+        providerEl.nextElementSibling.classList.contains('ml-1')
+          ? providerEl.nextElementSibling
+          : null;
+      const argsSpan = row.querySelector('span.italic');
+
+      if (!providerEl || !fnNameEl || !argsSpan) return;
+
+      const provider = providerEl.textContent.trim();
+      const functionName = fnNameEl.textContent.trim();
+      const rawInputText = argsSpan.textContent.trim();
+      if (!rawInputText) return;
+
+      // Inline "View" button at right edge
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'tm-tool-mini-button';
+      btn.textContent = 'View';
+      btn.title = 'View full tool input/output';
+
+      btn.addEventListener('click', evt => {
+        evt.stopPropagation();
+        openToolModal({
+          provider,
+          functionName,
+          rawInputText,
+          rawOutputText: null // TODO: wire once we see output DOM
+        });
+      });
+
+      row.appendChild(btn);
+      row.dataset.tmToolModalBound = '1';
+    });
+  }
+
+  function ensureToolModalElements() {
+    if (toolModalOverlay) return toolModalOverlay;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tm-tool-modal-overlay';
+    overlay.className = 'tm-tool-modal-overlay';
+    overlay.innerHTML = `
+      <div class="tm-tool-modal" id="tm-tool-modal">
+        <div class="tm-tool-modal-header">
+          <div class="tm-tool-modal-title" id="tm-tool-modal-title"></div>
+          <button type="button" class="tm-tool-modal-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="tm-tool-modal-body">
+          <div class="tm-tool-modal-section">
+            <div class="tm-tool-section-title">Input Arguments</div>
+            <div class="tm-tool-arg-list" id="tm-tool-input-args"></div>
+          </div>
+          <div class="tm-tool-modal-section">
+            <div class="tm-tool-section-title">Output</div>
+            <div class="tm-tool-arg-list" id="tm-tool-output-args"></div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    overlay.addEventListener('click', evt => {
+      if (evt.target === overlay) {
+        closeToolModal();
+      }
+    });
+
+    const closeBtn = overlay.querySelector('.tm-tool-modal-close');
+    closeBtn.addEventListener('click', closeToolModal);
+
+    document.body.appendChild(overlay);
+    toolModalOverlay = overlay;
+    return overlay;
+  }
+
+  function openToolModal({ provider, functionName, rawInputText, rawOutputText }) {
+    const overlay = ensureToolModalElements();
+    const modal = overlay.querySelector('#tm-tool-modal');
+    const titleEl = overlay.querySelector('#tm-tool-modal-title');
+    const inputContainer = overlay.querySelector('#tm-tool-input-args');
+    const outputContainer = overlay.querySelector('#tm-tool-output-args');
+
+    const fullName = provider && functionName
+      ? `${provider}.${functionName}`
+      : functionName || provider || 'Tool Call';
+
+    titleEl.textContent = fullName;
+
+    // Theme: match Deepgram panel's theme if available
+    const panel = document.getElementById('deepgram-panel');
+    const isDark = panel && panel.getAttribute('data-theme') === 'dark';
+    modal.classList.toggle('tm-dark', !!isDark);
+
+    // Parse and render input args
+    clearChildren(inputContainer);
+    const inputArgs = parseToolArgs(rawInputText, fullName);
+    if (!inputArgs.length) {
+      const empty = document.createElement('div');
+      empty.className = 'tm-tool-arg-empty';
+      empty.textContent = 'No input arguments captured.';
+      inputContainer.appendChild(empty);
+    } else {
+      inputArgs.forEach(arg => renderArgBlock(inputContainer, arg));
+    }
+
+    // Parse and render output if we have it
+    clearChildren(outputContainer);
+    if (rawOutputText && rawOutputText.trim()) {
+      const outputArgs = parseToolArgs(rawOutputText, `${fullName}:output`);
+      if (!outputArgs.length) {
+        renderArgBlock(outputContainer, {
+          name: 'result',
+          display: 'block',
+          value: rawOutputText
+        });
+      } else {
+        outputArgs.forEach(arg => renderArgBlock(outputContainer, arg));
+      }
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'tm-tool-arg-empty';
+      empty.textContent = 'No output captured (or not parsed yet).';
+      outputContainer.appendChild(empty);
+    }
+
+    overlay.classList.add('tm-open');
+    toolModalOpen = true;
+
+    // Prevent background scroll while modal open
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeToolModal() {
+    if (!toolModalOverlay) return;
+    toolModalOverlay.classList.remove('tm-open');
+    toolModalOpen = false;
+    document.body.style.overflow = '';
+  }
+
+  function clearChildren(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+
+  function parseToolArgs(rawText, fullName) {
+    if (!rawText) return [];
+
+    let trimmed = rawText.trim();
+
+    // Try to parse as JSON array of positional args: ["E:\\...path", [...], false]
+    let jsonCandidate = trimmed;
+    if (!jsonCandidate.startsWith('[')) {
+      jsonCandidate = '[' + jsonCandidate + ']';
+    }
+
+    let values;
+    try {
+      values = JSON.parse(jsonCandidate);
+    } catch (err) {
+      console.warn('Tool modal: JSON.parse failed for args', { fullName, rawText, err });
+      // Fallback: one big raw argument
+      return [{
+        name: 'arguments',
+        display: 'block',
+        isJson: false,
+        value: rawText
+      }];
+    }
+
+    if (!Array.isArray(values)) {
+      values = [values];
+    }
+
+    const overrideNames = TOOL_ARG_NAME_OVERRIDES[fullName] || [];
+
+    return values.map((val, idx) => {
+      const name = overrideNames[idx] || `arg${idx + 1}`;
+      return classifyArgValue(name, val);
+    });
+  }
+
+  function classifyArgValue(name, val) {
+    // Scalars
+    if (val === null || typeof val === 'number' || typeof val === 'boolean') {
+      return {
+        name,
+        display: 'inline',
+        isJson: false,
+        value: String(val)
+      };
+    }
+
+    // Arrays / objects → pretty JSON
+    if (Array.isArray(val) || (typeof val === 'object')) {
+      return {
+        name,
+        display: 'block',
+        isJson: true,
+        value: JSON.stringify(val, null, 2)
+      };
+    }
+
+    // Strings
+    if (typeof val === 'string') {
+      const s = val;
+
+      // Heuristic: if string itself looks like JSON, try to prettify
+      const trimmed = s.trim();
+      let innerJson = null;
+      if (
+        (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+        (trimmed.startsWith('[') && trimmed.endsWith(']'))
+      ) {
+        try {
+          innerJson = JSON.parse(trimmed);
+        } catch (_) {
+          innerJson = null;
+        }
+      }
+
+      if (innerJson !== null) {
+        return {
+          name,
+          display: 'block',
+          isJson: true,
+          value: JSON.stringify(innerJson, null, 2)
+        };
+      }
+
+      // Multiline or long strings → show as block
+      const hasNewlines = s.indexOf('\n') >= 0;
+      const isLong = s.length > 120;
+
+      if (hasNewlines || isLong) {
+        return {
+          name,
+          display: 'block',
+          isJson: false,
+          value: s
+        };
+      }
+
+      // Short single-line string
+      return {
+        name,
+        display: 'inline',
+        isJson: false,
+        value: s
+      };
+    }
+
+    // Fallback
+    return {
+      name,
+      display: 'block',
+      isJson: false,
+      value: String(val)
+    };
+  }
+
+  function renderArgBlock(container, arg) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'tm-tool-arg';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'tm-tool-arg-name';
+    nameEl.textContent = arg.name;
+    wrapper.appendChild(nameEl);
+
+    if (arg.display === 'inline') {
+      const valEl = document.createElement('div');
+      valEl.className = 'tm-tool-arg-value tm-tool-arg-value-inline';
+      const code = document.createElement('code');
+      code.textContent = arg.value;
+      valEl.appendChild(code);
+      wrapper.appendChild(valEl);
+    } else {
+      const pre = document.createElement('pre');
+      pre.className = 'tm-tool-arg-value tm-tool-arg-value-block';
+      const code = document.createElement('code');
+      code.textContent = arg.value;
+      pre.appendChild(code);
+      wrapper.appendChild(pre);
+    }
+
+    container.appendChild(wrapper);
+  }  
+
   // ==================== PARAGRAPH WARNING ====================
   function showParagraphWarning() {
     const warning = document.getElementById('paragraph-warning');
@@ -5942,6 +6481,7 @@
       createWidget();
       initializeWidget();
       initializeKeyboardShortcuts();
+      initializeToolCallInspector();
 
       // Open panel by default on page load
       const panel = document.getElementById('deepgram-panel');
