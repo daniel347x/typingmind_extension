@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.132 Changes:
+ * - FIXED: Sidebar conversation titles now align flush-left even before hover (conversation row flex alignment rule added for custom chat items).
+ * 
  * v3.131 Changes:
  * - ENHANCED: Doc annotation popup – after switching annotation type, keyboard focus returns to the comment input so you can keep typing without the mouse.
  * 
@@ -242,7 +245,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.131',
+  VERSION: '3.132',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2697,6 +2700,11 @@
       [data-element-id="selected-chat-item"] .truncate {
         max-width: ${sidebarWidth - 180}px !important;
         min-width: 0 !important;
+      }
+
+      /* 3g. Conversation title row alignment – align titles flush-left even before hover */
+      [data-element-id="custom-chat-item"] .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
+        justify-content: flex-start !important;
       }
     `;
     document.head.appendChild(layoutStyle);
