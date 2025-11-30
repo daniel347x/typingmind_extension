@@ -2181,6 +2181,7 @@
       }
 
       .tm-tool-arg {
+        position: relative;
         border-radius: 8px;
         border: 1px solid rgba(148, 163, 184, 0.45);
         background: #ffffff;
@@ -2191,6 +2192,41 @@
       .tm-tool-modal.tm-dark .tm-tool-arg {
         background: #020617;
         border-color: rgba(51, 65, 85, 0.9);
+      }
+
+      .tm-tool-arg-copy {
+        position: absolute;
+        top: 4px;
+        right: 6px;
+        font-size: 9px;
+        padding: 1px 6px;
+        border-radius: 9999px;
+        border: 1px solid rgba(148, 163, 184, 0.6);
+        background: rgba(248, 250, 252, 0.9);
+        color: #4b5563;
+        cursor: pointer;
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.12s ease-out, background 0.12s ease-out;
+      }
+
+      .tm-tool-arg:hover .tm-tool-arg-copy {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      .tm-tool-arg-copy:hover {
+        background: #e5e7eb;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-arg-copy {
+        background: rgba(15, 23, 42, 0.9);
+        color: #e5e7eb;
+        border-color: rgba(75, 85, 99, 0.9);
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-arg-copy:hover {
+        background: rgba(31, 41, 55, 0.9);
       }
 
       .tm-tool-arg-name {
@@ -2204,6 +2240,15 @@
 
       .tm-tool-modal.tm-dark .tm-tool-arg-name {
         color: #9ca3af;
+      }
+
+      .tm-tool-k {
+        color: #0ea5e9;
+        font-weight: 600;
+      }
+
+      .tm-tool-modal.tm-dark .tm-tool-k {
+        color: #38bdf8;
       }
 
       .tm-tool-arg-value {
@@ -3232,6 +3277,40 @@
       valEl.appendChild(code);
       wrapper.appendChild(valEl);
     } else {
+      // Copy button for block values
+      const copyBtn = document.createElement('button');
+      copyBtn.type = 'button';
+      copyBtn.className = 'tm-tool-arg-copy';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', evt => {
+        evt.stopPropagation();
+        let text;
+        if (arg.isComplex) {
+          text = prettyPrintComplex(arg.value);
+        } else {
+          text = String(arg.value ?? '');
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(err => {
+            console.error('Tool arg copy failed', err);
+          });
+        } else {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.top = '-1000px';
+          document.body.appendChild(ta);
+          ta.select();
+          try {
+            document.execCommand('copy');
+          } catch (err) {
+            console.error('execCommand copy failed', err);
+          }
+          document.body.removeChild(ta);
+        }
+      });
+      wrapper.appendChild(copyBtn);
+
       const pre = document.createElement('pre');
       pre.className = 'tm-tool-arg-value tm-tool-arg-value-block';
       const code = document.createElement('code');
@@ -3241,7 +3320,22 @@
       } else {
         text = arg.value;
       }
-      code.textContent = text;
+      const allLines = String(text || '').split('\n');
+      allLines.forEach((line, idx) => {
+        if (idx > 0) code.appendChild(document.createTextNode('\n'));
+        const m = line.match(/^(\s*)([A-Za-z0-9_$]+):(\s*)(.*)$/);
+        if (m) {
+          const [, indent, key, ws, rest] = m;
+          if (indent) code.appendChild(document.createTextNode(indent));
+          const keySpan = document.createElement('span');
+          keySpan.className = 'tm-tool-k';
+          keySpan.textContent = key;
+          code.appendChild(keySpan);
+          code.appendChild(document.createTextNode(':' + ws + rest));
+        } else {
+          code.appendChild(document.createTextNode(line));
+        }
+      });
       pre.appendChild(code);
       wrapper.appendChild(pre);
     }
