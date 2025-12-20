@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.26
+// Version: 4.28
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.26';
+  const EXT_VERSION = '4.28';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1417,6 +1417,118 @@
     return changed;
   }
 
+  function repairAnthropicMissingToolResults(body) {
+    if (!body || !Array.isArray(body.messages)) return false;
+
+    let changed = false;
+    const messages = body.messages;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+      // Collect all tool_use IDs in this assistant message
+      const toolUseIds = [];
+      msg.content.forEach(block => {
+        if (block && block.type === 'tool_use' && block.id) {
+          toolUseIds.push(block.id);
+        }
+      });
+
+      if (toolUseIds.length === 0) continue;
+
+      // Check the next message for corresponding tool_results
+      const nextMsg = messages[i + 1];
+      if (!nextMsg || nextMsg.role !== 'user') {
+        // No following user message at all - inject stub for all tool_uses
+        const stubContent = toolUseIds.map(id => ({
+          type: 'tool_result',
+          tool_use_id: id,
+          content: [{ type: 'text', text: '✓' }]
+        }));
+        messages.splice(i + 1, 0, {
+          role: 'user',
+          content: stubContent
+        });
+        console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result message after assistant message ${i} for ${toolUseIds.length} tool_use(s)`);
+        changed = true;
+        continue;
+      }
+
+      // Next message exists - check which tool_results are present
+      if (!Array.isArray(nextMsg.content)) {
+        nextMsg.content = [];
+      }
+
+      const existingResultIds = new Set();
+      nextMsg.content.forEach(block => {
+        if (block && block.type === 'tool_result' && block.tool_use_id) {
+          existingResultIds.add(block.tool_use_id);
+        }
+      });
+
+      // Inject stubs for missing tool_results
+      toolUseIds.forEach(id => {
+        if (!existingResultIds.has(id)) {
+          nextMsg.content.push({
+            type: 'tool_result',
+            tool_use_id: id,
+            content: [{ type: 'text', text: '✓' }]
+          });
+          console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result for tool_use_id: ${id} in message ${i + 1}`);
+          changed = true;
+        }
+      });
+    }
+
+    return changed;
+  }
+
+  function repairOpenAIOrphanedToolCalls(body) {
+    if (!body || !Array.isArray(body.input)) return false;
+
+    let changed = false;
+    const messages = body.input;
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      if (!msg || msg.role !== 'assistant') continue;
+
+      // Check if this message has function_call content
+      let hasFunctionCall = false;
+      if (Array.isArray(msg.content)) {
+        hasFunctionCall = msg.content.some(block => block && block.type === 'function_call');
+      }
+
+      if (!hasFunctionCall) continue;
+
+      // Check if there's an output_text block in the same message
+      const hasOutputText = Array.isArray(msg.content) &&
+        msg.content.some(block => block && block.type === 'output_text');
+
+      if (hasOutputText) continue; // Already has output_text, no repair needed
+
+      // Need to inject a dummy output_text block before the function_call(s)
+      if (Array.isArray(msg.content)) {
+        // Find position of first function_call
+        const firstToolIdx = msg.content.findIndex(block => block && block.type === 'function_call');
+        if (firstToolIdx >= 0) {
+          // Insert dummy output_text before first function_call
+          msg.content.splice(firstToolIdx, 0, {
+            type: 'output_text',
+            text: 'ACK'
+          });
+          console.log(
+            `🩹 [v${EXT_VERSION}] Repaired orphaned tool call in message ${i}: inserted dummy output_text before function_call`
+          );
+          changed = true;
+        }
+      }
+    }
+
+    return changed;
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
@@ -1485,6 +1597,10 @@
             modified = true;
           }
           if (repairAnthropicEmptyMessageContent(body)) {
+            modified = true;
+          }
+          // 🩹 FIX: Inject missing tool_result blocks (v4.28)
+          if (repairAnthropicMissingToolResults(body)) {
             modified = true;
           }
 
@@ -1630,13 +1746,18 @@
             }
           }
 
+          // 🩹 FIX: Ensure every function_call has a preceding output_text (v4.27)
+          if (repairOpenAIOrphanedToolCalls(body)) {
+            modified = true;
+          }
+
           if (modified) {
             options.body = JSON.stringify(body);
-            console.log('✅ [v4.2] OpenAI Responses request body updated for prompt caching');
+            console.log('✅ [v4.27] OpenAI Responses request body updated (prompt caching + orphaned tool call repair)');
           }
         }
       } catch (e) {
-        console.warn('⚠️ [v4.2] Failed to parse/modify OpenAI Responses request:', e);
+        console.warn('⚠️ [v4.27] Failed to parse/modify OpenAI Responses request:', e);
       }
     }
 
