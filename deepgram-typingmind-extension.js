@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.136 Changes:
+ * - FIXED: Updated empty folder placeholder width selector for new TypingMind sidebar markup; clamps width inside visible sidebar pane.
+ * 
  * v3.135 Changes:
  * - TWEAKED: TypingMind tool-call "View" button now only appears on hover and is positioned to avoid TypingMind's own hover controls.
  * 
@@ -254,7 +257,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.135',
+  VERSION: '3.136',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3477,9 +3480,18 @@
       }
 
       /* 3i. Empty folder placeholder width – slightly narrower than conversation rows */
-      [data-element-id="sidebar-middle-part"] div.pl-3.relative.flex.flex-col.border-l.border-slate-600.mt-1.gap-y-2 {
+      [data-element-id="sidebar-middle-part"]
+        div.pl-6.relative.flex.flex-col.mt-1.gap-y-2 {
         max-width: ${Math.max(200, sidebarWidth - 120)}px !important;
         width: ${Math.max(200, sidebarWidth - 120)}px !important;
+        box-sizing: border-box;
+      }
+
+      /* Make the dashed "Empty folder" rect respect that width */
+      [data-element-id="sidebar-middle-part"]
+        div.pl-6.relative.flex.flex-col.mt-1.gap-y-2
+        > div.text-slate-500.border-dashed {
+        width: 100% !important;
         box-sizing: border-box;
       }
     `;
