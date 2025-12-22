@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.137 Changes:
+ * - FIXED: Folders section header row width now clamps to sidebar width and reserves space for action icons.
+ * - TWEAKED: Selected chat row highlight margin and hover icon alignment to visually match other sidebar entries.
+ * 
  * v3.136 Changes:
  * - FIXED: Updated empty folder placeholder width selector for new TypingMind sidebar markup; clamps width inside visible sidebar pane.
  * 
@@ -257,7 +261,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.136',
+  VERSION: '3.137',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3461,6 +3465,7 @@
         max-width: ${sidebarWidth}px !important;
         width: ${sidebarWidth}px !important;
         box-sizing: border-box;
+        margin-right: 8px !important; /* small inner margin on the right inside the visible black pane */
       }
 
       /* 3f. Selected chat title text – reserve room for hover icons (trash, favorite, menu) */
@@ -3474,9 +3479,9 @@
         justify-content: flex-start !important;
       }
 
-      /* 3h. Selected conversation title row alignment – match unselected left alignment */
+      /* 3h. Selected conversation title row – title left, hover icons right (match other entries) */
       [data-element-id="selected-chat-item"] .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
-        justify-content: flex-start !important;
+        justify-content: space-between !important;
       }
 
       /* 3i. Empty folder placeholder width – slightly narrower than conversation rows */
@@ -3493,6 +3498,21 @@
         > div.text-slate-500.border-dashed {
         width: 100% !important;
         box-sizing: border-box;
+      }
+
+      /* 3j. Folders section header row – clamp to sidebar width and reserve icon space */
+      [data-element-id="sidebar-middle-part"]
+        [data-element-id="folders-category-toggle-button"] {
+        max-width: ${Math.max(200, sidebarWidth - 100)}px !important;
+        width: ${Math.max(200, sidebarWidth - 100)}px !important;
+        box-sizing: border-box;
+      }
+
+      /* Left side (icon + 'Folders' + count pill) – don't crush the icon buttons */
+      [data-element-id="sidebar-middle-part"]
+        [data-element-id="folders-category-toggle-button"] > span {
+        max-width: ${Math.max(100, sidebarWidth - 180)}px !important;
+        min-width: 0 !important;
       }
     `;
     document.head.appendChild(layoutStyle);
