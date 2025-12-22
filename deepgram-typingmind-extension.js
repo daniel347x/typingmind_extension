@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.139 Changes:
+ * - TWEAKED: Nested chat rows (subfolder indentation) are slightly narrower so their right margin matches top-level rows inside the black pane.
+ * 
  * v3.138 Changes:
  * - FIXED: Unselected chat row hover icons now align on the right (matching selected row and folders) and share the same inner right margin.
  * 
@@ -264,7 +267,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.138',
+  VERSION: '3.139',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3615,7 +3618,19 @@
       // Inline widths for unselected conversation rows (custom chat items)
       const customChatRows = document.querySelectorAll('[data-element-id="custom-chat-item"]');
       customChatRows.forEach(row => {
-        const chatRowWidth = Math.max(200, sidebarWidth - 100); // same clamp as folders/selected row
+        // Detect indentation padding on the wrapper (e.g., 16px top-level, 32px nested)
+        let extraIndent = 0;
+        const wrapper = row.closest('div.relative.justify-start.items-start.gap-x-2.inline-flex');
+        if (wrapper && wrapper.style && wrapper.style.paddingLeft) {
+          const m = wrapper.style.paddingLeft.match(/calc\((\d+)px\)/);
+          if (m) {
+            const indentPx = parseInt(m[1], 10) || 0;
+            // Base indent is 16px; anything beyond that we treat as nested and shrink width accordingly
+            extraIndent = Math.max(0, indentPx - 16);
+          }
+        }
+
+        const chatRowWidth = Math.max(200, sidebarWidth - 100 - extraIndent); // shrink nested rows slightly
         row.style.setProperty('max-width', chatRowWidth + 'px', 'important');
         row.style.setProperty('width', chatRowWidth + 'px', 'important');
         row.style.boxSizing = 'border-box';
