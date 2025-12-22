@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.138 Changes:
+ * - FIXED: Unselected chat row hover icons now align on the right (matching selected row and folders) and share the same inner right margin.
+ * 
  * v3.137 Changes:
  * - FIXED: Folders section header row width now clamps to sidebar width and reserves space for action icons.
  * - TWEAKED: Selected chat row highlight margin and hover icon alignment to visually match other sidebar entries.
@@ -261,7 +264,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.137',
+  VERSION: '3.138',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3468,15 +3471,21 @@
         margin-right: 8px !important; /* small inner margin on the right inside the visible black pane */
       }
 
+      /* 3ea. Unselected chat row – match inner right margin with selected row & folders */
+      [data-element-id="custom-chat-item"] {
+        margin-right: 8px !important;
+      }
+
       /* 3f. Selected chat title text – reserve room for hover icons (trash, favorite, menu) */
       [data-element-id="selected-chat-item"] .truncate {
         max-width: ${sidebarWidth - 180}px !important;
         min-width: 0 !important;
       }
 
-      /* 3g. Conversation title row alignment – align titles flush-left even before hover */
-      [data-element-id="custom-chat-item"] .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
-        justify-content: flex-start !important;
+      /* 3g. Conversation title row – title left, hover icons right (unselected chats) */
+      [data-element-id="custom-chat-item"]
+        .flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center {
+        justify-content: space-between !important;
       }
 
       /* 3h. Selected conversation title row – title left, hover icons right (match other entries) */
