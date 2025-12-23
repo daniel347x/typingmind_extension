@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.140 Changes:
+ * - FIXED: Selected chat row (nested in subfolder) now compensates for indent so right margin matches top-level selection.
+ * 
  * v3.139 Changes:
  * - TWEAKED: Nested chat rows (subfolder indentation) are slightly narrower so their right margin matches top-level rows inside the black pane.
  * 
@@ -267,7 +270,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.139',
+  VERSION: '3.140',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3580,8 +3583,20 @@
       const selectedRow = document.querySelector('[data-element-id="selected-chat-item"]');
       let maxRowWidth = null;
       if (selectedRow) {
-        // Make selected row ~100px narrower than Sidebar width
-        maxRowWidth = Math.max(200, sidebarWidth - 100);
+        // Detect indentation on wrapper (same logic as unselected rows)
+        let extraIndent = 0;
+        const wrapper = selectedRow.closest('div.relative.justify-start.items-start.gap-x-2.inline-flex');
+        if (wrapper && wrapper.style && wrapper.style.paddingLeft) {
+          const m = wrapper.style.paddingLeft.match(/calc\((\d+)px\)/);
+          if (m) {
+            const indentPx = parseInt(m[1], 10) || 0;
+            // Base indent is 16px; anything beyond that we treat as nested
+            extraIndent = Math.max(0, indentPx - 16);
+          }
+        }
+
+        // Make selected row narrower based on sidebar width + indent compensation
+        maxRowWidth = Math.max(200, sidebarWidth - 100 - extraIndent);
         selectedRow.style.setProperty('max-width', maxRowWidth + 'px', 'important');
         selectedRow.style.setProperty('width', maxRowWidth + 'px', 'important');
         selectedRow.style.boxSizing = 'border-box';
