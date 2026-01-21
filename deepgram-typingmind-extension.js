@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.141 Changes:
+ * - NEW: Collapsible top control section; everything above the "Ready to Record" status, including layout controls, can be hidden in one click.
+ * 
  * v3.140 Changes:
  * - FIXED: Selected chat row (nested in subfolder) now compensates for indent so right margin matches top-level selection.
  * 
@@ -270,7 +273,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.140',
+  VERSION: '3.141',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2331,12 +2334,14 @@
         <div class="deepgram-header">
           <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
+            <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" onclick="(function(btn){var top=document.getElementById('deepgram-top-section');if(!top)return;var hidden=top.style.display==='none';top.style.display=hidden?'':'none';btn.textContent=hidden?'⬆ Collapse':'⬇ Expand';btn.title=hidden?'Hide rarely-used controls above status panel':'Show rarely-used controls above status panel';})(this);" title="Hide rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬆ Collapse</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
             <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
           </div>
         </div>
         
         <div class="deepgram-content">
+        <div id="deepgram-top-section">
         <!-- API Key Section -->
         <div class="deepgram-section" id="deepgram-api-section">
           <label>Deepgram API Key</label>
@@ -2402,40 +2407,9 @@
             </button>
           </div>
         </div>
-        
-        <!-- Status -->
-        <!-- Keyterms Section -->
-        <div class="deepgram-section" id="deepgram-keyterms-section" style="display: none;">
-          <label>Keyterms (Optional)</label>
-          <textarea id="deepgram-keyterms-input" rows="2" placeholder="LlamaIndex, TypingMind, Obsidian"></textarea>
-          <small>Add technical terms to improve accuracy (comma-separated)</small>
-        </div>
-        
-        <!-- Status -->
-        <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
-        
-        <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">Whisper Standing By</div>
-        
-        <!-- Transcript -->
-        <div class="deepgram-section" style="margin-bottom: 0;">
-          <label>
-            <span>Transcript</span>
-          </label>
-          
-          <!-- Keyboard Event Indicators -->
-          <div id="keyboard-indicators">
-            <div class="keyboard-bell space" title="Space" id="bell-space"></div>
-            <div class="keyboard-bell ctrl-space" title="Shift+Space" id="bell-ctrl-space"></div>
-            <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
-            <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
-          </div>
-          
-          <!-- Paragraph Warning (hidden by default) -->
-          <div id="paragraph-warning" style="display: none; background: #ff4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; text-align: center; font-weight: 600;">
-            ⚠️ Paragraph already queued
-          </div>
-          
+
+        <!-- Layout and rarely-used controls (collapsible) -->
+        <div class="deepgram-section" id="deepgram-layout-section">
           <label style="margin-top: 0;">
             <div style="display: flex; gap: 8px; align-items: center;">
               <button class="deepgram-collapse-btn" id="deepgram-darkmode-btn" onclick="window.toggleDarkMode()" title="Toggle dark mode">🌙 Dark</button>
@@ -2468,6 +2442,35 @@
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
             </div>
           </label>
+        </div>
+
+        </div>
+
+        <!-- Status -->
+        <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
+        
+        <!-- Queue Status (Always Visible) -->
+        <div id="deepgram-queue-status">Whisper Standing By</div>
+        
+        <!-- Transcript -->
+        <div class="deepgram-section" style="margin-bottom: 0;">
+          <label>
+            <span>Transcript</span>
+          </label>
+          
+          <!-- Keyboard Event Indicators -->
+          <div id="keyboard-indicators">
+            <div class="keyboard-bell space" title="Space" id="bell-space"></div>
+            <div class="keyboard-bell ctrl-space" title="Shift+Space" id="bell-ctrl-space"></div>
+            <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
+            <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
+          </div>
+          
+          <!-- Paragraph Warning (hidden by default) -->
+          <div id="paragraph-warning" style="display: none; background: #ff4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; text-align: center; font-weight: 600;">
+            ⚠️ Paragraph already queued
+          </div>
+          
           <textarea id="deepgram-transcript" class="deepgram-transcript" placeholder="Your transcription will appear here..."></textarea>
           <div id="deepgram-click-bar" onclick="window.clickBarAction()">
             <span id="deepgram-click-bar-label">Click to add paragraph</span>
