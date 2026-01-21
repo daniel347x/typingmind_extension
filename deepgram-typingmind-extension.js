@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.142 Changes:
+ * - TWEAKED: Expanding the top control section automatically sets transcript height to 240px for a more compact view.
+ * - MOVED: "Keyboard Shortcuts & Features" block up under the Whisper prompt so it collapses along with the top controls.
+ * 
  * v3.141 Changes:
  * - NEW: Collapsible top control section; everything above the "Ready to Record" status, including layout controls, can be hidden in one click.
  * 
@@ -273,7 +277,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.141',
+  VERSION: '3.142',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2334,7 +2338,7 @@
         <div class="deepgram-header">
           <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
-            <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" onclick="(function(btn){var top=document.getElementById('deepgram-top-section');if(!top)return;var hidden=top.style.display==='none';top.style.display=hidden?'':'none';btn.textContent=hidden?'⬆ Collapse':'⬇ Expand';btn.title=hidden?'Hide rarely-used controls above status panel':'Show rarely-used controls above status panel';})(this);" title="Hide rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬆ Collapse</button>
+            <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" onclick="(function(btn){var top=document.getElementById('deepgram-top-section');if(!top)return;var hidden=top.style.display==='none';top.style.display=hidden?'':'none';btn.textContent=hidden?'⬆ Collapse':'⬇ Expand';btn.title=hidden?'Hide rarely-used controls above status panel':'Show rarely-used controls above status panel';if(hidden){var t=document.getElementById('deepgram-transcript');var h=document.getElementById('transcript-height-input');if(t){t.style.height='240px';}if(h){h.value='240';}}})(this);" title="Hide rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬆ Collapse</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
             <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
           </div>
@@ -5428,6 +5432,18 @@
       `;
       speakersGrid.appendChild(slot);
       
+      // Move "Keyboard Shortcuts & Features" block up under Whisper prompt so it collapses with the top section
+      try {
+        const infoDetails = document.querySelector('.deepgram-info-details');
+        const whisperPromptSection = document.getElementById('whisper-prompt-section');
+        const topSection = document.getElementById('deepgram-top-section');
+        if (infoDetails && whisperPromptSection && topSection && whisperPromptSection.parentElement === topSection) {
+          topSection.insertBefore(infoDetails, whisperPromptSection.nextSibling);
+        }
+      } catch (e) {
+        console.error('Failed to reposition Keyboard Shortcuts & Features block:', e);
+      }
+
       // Attach event listeners
       document.getElementById(`teams-speaker-check-${i}`).addEventListener('change', onSpeakerCheckboxChange);
       document.getElementById(`teams-speaker-dropdown-${i}`).addEventListener('change', onSpeakerDropdownChange);
