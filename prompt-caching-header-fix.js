@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.30
+// Version: 4.28
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.30';
+  const EXT_VERSION = '4.28';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1716,16 +1716,6 @@
     // ==================== OPENAI RESPONSES BRANCH (GPT-5.1 prompt caching + usage) ====================
     else if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
       vendorForThisCall = 'openai';
-      
-      // FIX: Inject required openai-beta header for Responses API preview (lowercase for CORS)
-      if (!options.headers) {
-        options.headers = {};
-      }
-      if (!options.headers['openai-beta']) {
-        options.headers['openai-beta'] = 'responses=v1';
-        console.log('✓ [v4.30] Injected openai-beta: responses=v1 header (lowercase for CORS compatibility)');
-      }
-      
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
