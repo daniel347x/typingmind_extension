@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.146 Changes:
+ * - FIX: Remove "phantom icon container" width in non-hover state by taking the icon container out of the flex flow
+ *   (absolute-position it within the title row). Title uses padding-right to reserve space on hover.
+ *
  * v3.145 Changes:
  * - TWEAK: Better non-hover sizing: measure BOTH (a) full icon-area reserve and (b) right-side gutter.
  *   Non-hover uses only the gutter reserve; hover uses full icon-area reserve.
@@ -290,7 +294,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.145',
+  VERSION: '3.146',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3501,21 +3505,54 @@
     };
   }
 
+  function prepareConversationTitleRow(rowEl) {
+    // Ensure the icon cluster container doesn't consume width when icons are hidden.
+    // We do this by taking the icon container out of the flex flow (absolute positioning).
+    if (!rowEl) return null;
+
+    const titleEl = rowEl.querySelector('.truncate.w-full') || rowEl.querySelector('.truncate');
+    if (!titleEl) return null;
+
+    const titleRow = titleEl.parentElement;
+    const iconContainer = titleEl.nextElementSibling;
+
+    if (titleRow && iconContainer && iconContainer.classList && iconContainer.classList.contains('flex')) {
+      // Only patch once per DOM node.
+      if (titleRow.dataset.tmIconAbs !== '1') {
+        titleRow.dataset.tmIconAbs = '1';
+
+        // Make the title row the positioning context.
+        titleRow.style.position = 'relative';
+
+        // Title should own the full row width; ellipsis behavior governed by padding-right.
+        titleEl.style.setProperty('width', '100%', 'important');
+        titleEl.style.setProperty('flex', '1 1 auto', 'important');
+        titleEl.style.setProperty('min-width', '0', 'important');
+        titleEl.style.setProperty('max-width', '100%', 'important');
+
+        // Remove icon container from flow so it doesn't create a "phantom" blank region.
+        iconContainer.style.position = 'absolute';
+        iconContainer.style.right = '0';
+        iconContainer.style.top = '50%';
+        iconContainer.style.transform = 'translateY(-50%)';
+        iconContainer.style.zIndex = '2';
+      }
+    }
+
+    return { titleEl };
+  }
+
   function applyConversationTitleWidthForRow(rowEl, hover) {
     if (!rowEl) return;
-    const titleEl = rowEl.querySelector('.truncate');
-    if (!titleEl) return;
+    const prepared = prepareConversationTitleRow(rowEl);
+    if (!prepared) return;
 
-    const rowRect = rowEl.getBoundingClientRect();
-    if (!rowRect || rowRect.width <= 0) return;
-
-    // When not hovered, icons are hidden, so reserve ~0 space and let the title breathe.
-    // On hover, reserve the measured icon cluster width (so the title doesn't overlap the icons).
     const reserve = hover ? getConversationReserveHover() : getConversationReserveNonHover();
 
-    const maxTitleWidth = Math.max(60, Math.round(rowRect.width - reserve));
-    titleEl.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
-    titleEl.style.setProperty('min-width', '0', 'important');
+    // Use padding-right rather than max-width so the title can occupy the full row when icons are hidden,
+    // while still preventing overlap when icons appear on hover.
+    prepared.titleEl.style.setProperty('padding-right', reserve + 'px', 'important');
+    prepared.titleEl.style.setProperty('min-width', '0', 'important');
   }
 
   function installConversationHoverReserveCalculator(sidebarContentEl) {
@@ -3592,8 +3629,8 @@
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
     const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
-    // Non-hover reserve: keep only the right gutter so ellipsis doesn't appear too far left.
-    // Hover handler will apply the full icon-area reserve dynamically.
+    // For CSS rules, we keep a small non-hover gutter. Icon container is now taken out of flow via JS (absolute),
+    // so this gutter should be the ONLY remaining right-side whitespace in non-hover.
     const reservedConversationIconWidth = getConversationReserveNonHover();
     
     // Remove old layout styles if they exist
@@ -3812,6 +3849,9 @@
       // Inline widths for unselected conversation rows (custom chat items)
       const customChatRows = document.querySelectorAll('[data-element-id="custom-chat-item"]');
       customChatRows.forEach(row => {
+        // Ensure icon container doesn't consume width in non-hover state.
+        prepareConversationTitleRow(row);
+
         // Detect indentation padding on the wrapper (e.g., 16px top-level, 32px nested)
         let extraIndent = 0;
         const wrapper = row.closest('div.relative.justify-start.items-start.gap-x-2.inline-flex');
