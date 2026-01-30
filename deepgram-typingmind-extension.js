@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.145 Changes:
+ * - TWEAK: Better non-hover sizing: measure BOTH (a) full icon-area reserve and (b) right-side gutter.
+ *   Non-hover uses only the gutter reserve; hover uses full icon-area reserve.
+ *
  * v3.144 Changes:
  * - TWEAK: Use the measured icon reserve ONLY while a conversation row is hovered; non-hover state uses ~0 reserve so ellipsis
  *   doesn't appear prematurely when icons are hidden.
@@ -286,7 +290,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.144',
+  VERSION: '3.145',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -375,9 +379,13 @@
   let docAnnotationSavedSelection = null;
 
   // Sidebar conversation title sizing (Option C test)
-  // We measure the actual hover icon cluster width (trash/star/menu) on first hover of a conversation row,
+  // We measure the actual hover icon cluster footprint (trash/star/menu) on first hover of a conversation row,
   // cache it, then use it to avoid over-aggressive title truncation.
-  let cachedConversationIconReserveWidth = null;
+  // We cache TWO reserves:
+  // - reserveHover: from icon cluster LEFT edge → row RIGHT edge (icons + right gutter)
+  // - reserveNonHover: only the right gutter (row RIGHT edge - icon cluster RIGHT edge)
+  let cachedConversationReserveHover = null;
+  let cachedConversationReserveNonHover = null;
   let convoReserveMeasureInFlight = false;
   
   // ==================== RICH TEXT CONVERSION ====================
@@ -3435,15 +3443,23 @@
   
   // ==================== LAYOUT WIDTH CONTROLS ====================
 
-  function getConversationIconReserveWidth() {
-    // Fallback retains previous behavior until we successfully measure.
-    if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) {
-      return cachedConversationIconReserveWidth;
+  function getConversationReserveHover() {
+    if (typeof cachedConversationReserveHover === 'number' && cachedConversationReserveHover > 0) {
+      return cachedConversationReserveHover;
     }
+    // fallback: historical safe value
     return 180;
   }
 
-  function measureConversationIconClusterWidth(conversationRowEl) {
+  function getConversationReserveNonHover() {
+    if (typeof cachedConversationReserveNonHover === 'number' && cachedConversationReserveNonHover >= 0) {
+      return cachedConversationReserveNonHover;
+    }
+    // default: small gutter so the ellipsis doesn't run into the sidebar edge
+    return 8;
+  }
+
+  function measureConversationIconClusterReserves(conversationRowEl) {
     if (!conversationRowEl) return null;
 
     // Try to find the top "title + icons" flex row inside the conversation row.
@@ -3470,11 +3486,19 @@
 
     const minLeft = Math.min(...candidates.map(c => c.rect.left));
     const maxRight = Math.max(...candidates.map(c => c.rect.right));
-    const width = maxRight - minLeft;
 
-    if (!isFinite(width) || width <= 0 || width > 400) return null;
+    // reserveHover = (row right edge) - (icon cluster left edge)
+    const reserveHover = rowRect.right - minLeft;
+    // reserveNonHover = (row right edge) - (icon cluster right edge)  => keep only the right gutter when icons are hidden
+    const reserveNonHover = rowRect.right - maxRight;
 
-    return width;
+    if (!isFinite(reserveHover) || reserveHover <= 0 || reserveHover > 600) return null;
+    if (!isFinite(reserveNonHover) || reserveNonHover < 0 || reserveNonHover > 200) return null;
+
+    return {
+      reserveHover: Math.round(reserveHover),
+      reserveNonHover: Math.round(reserveNonHover)
+    };
   }
 
   function applyConversationTitleWidthForRow(rowEl, hover) {
@@ -3487,9 +3511,7 @@
 
     // When not hovered, icons are hidden, so reserve ~0 space and let the title breathe.
     // On hover, reserve the measured icon cluster width (so the title doesn't overlap the icons).
-    const reserve = hover && (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0)
-      ? cachedConversationIconReserveWidth
-      : 0;
+    const reserve = hover ? getConversationReserveHover() : getConversationReserveNonHover();
 
     const maxTitleWidth = Math.max(60, Math.round(rowRect.width - reserve));
     titleEl.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
@@ -3512,7 +3534,7 @@
       if (!row) return;
 
       // If we already measured, immediately apply hover sizing.
-      if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) {
+      if (typeof cachedConversationReserveHover === 'number' && cachedConversationReserveHover > 0) {
         applyConversationTitleWidthForRow(row, true);
         return;
       }
@@ -3523,12 +3545,18 @@
 
       requestAnimationFrame(() => {
         try {
-          const iconWidth = measureConversationIconClusterWidth(row);
-          if (iconWidth) {
-            const safety = 0; // keep tight; user prefers minimal/none extra padding
-            const reserve = Math.round(Math.min(300, Math.max(40, iconWidth + safety)));
-            cachedConversationIconReserveWidth = reserve;
-            console.log('✓ Measured conversation hover icon reserve width:', reserve, '(icons:', Math.round(iconWidth), ')');
+          const reserves = measureConversationIconClusterReserves(row);
+          if (reserves) {
+            cachedConversationReserveHover = Math.max(40, Math.min(600, reserves.reserveHover));
+            cachedConversationReserveNonHover = Math.max(0, Math.min(200, reserves.reserveNonHover));
+
+            console.log(
+              '✓ Measured conversation reserves:',
+              'hover=',
+              cachedConversationReserveHover,
+              'nonHover=',
+              cachedConversationReserveNonHover
+            );
           }
 
           // Apply hover sizing now (if measurement succeeded) and also refresh global layout widths.
@@ -3564,9 +3592,9 @@
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
     const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
-    // Non-hover state: don't reserve icon space, because the icon cluster is hidden.
-    // Hover handler will apply the measured reserve width dynamically.
-    const reservedConversationIconWidth = 0;
+    // Non-hover reserve: keep only the right gutter so ellipsis doesn't appear too far left.
+    // Hover handler will apply the full icon-area reserve dynamically.
+    const reservedConversationIconWidth = getConversationReserveNonHover();
     
     // Remove old layout styles if they exist
     const oldStyle = document.getElementById('typingmind-layout-styles');
