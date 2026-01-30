@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.144 Changes:
+ * - TWEAK: Use the measured icon reserve ONLY while a conversation row is hovered; non-hover state uses ~0 reserve so ellipsis
+ *   doesn't appear prematurely when icons are hidden.
+ * - TWEAK: Reduce/remove extra safety padding added to measured icon width.
+ *
  * v3.143 Changes:
  * - FIXED (test): Conversation title truncation: measure hover icon cluster width on first hover of a conversation row,
  *   cache it, and size `.truncate` accordingly (removes over-aggressive fixed reserve).
@@ -281,7 +286,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.143',
+  VERSION: '3.144',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3472,45 +3477,85 @@
     return width;
   }
 
+  function applyConversationTitleWidthForRow(rowEl, hover) {
+    if (!rowEl) return;
+    const titleEl = rowEl.querySelector('.truncate');
+    if (!titleEl) return;
+
+    const rowRect = rowEl.getBoundingClientRect();
+    if (!rowRect || rowRect.width <= 0) return;
+
+    // When not hovered, icons are hidden, so reserve ~0 space and let the title breathe.
+    // On hover, reserve the measured icon cluster width (so the title doesn't overlap the icons).
+    const reserve = hover && (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0)
+      ? cachedConversationIconReserveWidth
+      : 0;
+
+    const maxTitleWidth = Math.max(60, Math.round(rowRect.width - reserve));
+    titleEl.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
+    titleEl.style.setProperty('min-width', '0', 'important');
+  }
+
   function installConversationHoverReserveCalculator(sidebarContentEl) {
     if (!sidebarContentEl) return;
     if (sidebarContentEl.dataset.tmConvoReserveInstalled === '1') return;
     sidebarContentEl.dataset.tmConvoReserveInstalled = '1';
 
-    const maybeMeasure = evt => {
-      // Only conversation rows should trigger measurement (NOT folders).
-      const row = evt.target && evt.target.closest
+    const findConvoRow = evt => {
+      return evt.target && evt.target.closest
         ? evt.target.closest('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]')
         : null;
+    };
+
+    const onEnter = evt => {
+      const row = findConvoRow(evt);
       if (!row) return;
 
-      // Only measure once per page load.
-      if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) return;
+      // If we already measured, immediately apply hover sizing.
+      if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) {
+        applyConversationTitleWidthForRow(row, true);
+        return;
+      }
+
+      // Otherwise, do not shrink prematurely; measure first (once), then apply hover sizing.
       if (convoReserveMeasureInFlight) return;
       convoReserveMeasureInFlight = true;
 
-      // Let :hover styles / icon reveal settle.
       requestAnimationFrame(() => {
         try {
           const iconWidth = measureConversationIconClusterWidth(row);
           if (iconWidth) {
-            const safety = 16; // small buffer for gaps/padding
-            const reserve = Math.round(Math.min(300, Math.max(80, iconWidth + safety)));
+            const safety = 0; // keep tight; user prefers minimal/none extra padding
+            const reserve = Math.round(Math.min(300, Math.max(40, iconWidth + safety)));
             cachedConversationIconReserveWidth = reserve;
             console.log('✓ Measured conversation hover icon reserve width:', reserve, '(icons:', Math.round(iconWidth), ')');
-
-            // Re-apply widths globally now that we have a better reserve value.
-            setTimeout(() => applyLayoutWidths(), 0);
           }
+
+          // Apply hover sizing now (if measurement succeeded) and also refresh global layout widths.
+          applyConversationTitleWidthForRow(row, true);
+          setTimeout(() => applyLayoutWidths(), 0);
         } finally {
           convoReserveMeasureInFlight = false;
         }
       });
     };
 
+    const onLeave = evt => {
+      const row = findConvoRow(evt);
+      if (!row) return;
+
+      // If we're still inside the same row, ignore.
+      const toEl = evt.relatedTarget;
+      if (toEl && row.contains(toEl)) return;
+
+      applyConversationTitleWidthForRow(row, false);
+    };
+
     // Use bubbling events for delegation across re-renders.
-    sidebarContentEl.addEventListener('mouseover', maybeMeasure, true);
-    sidebarContentEl.addEventListener('focusin', maybeMeasure, true);
+    sidebarContentEl.addEventListener('mouseover', onEnter, true);
+    sidebarContentEl.addEventListener('focusin', onEnter, true);
+    sidebarContentEl.addEventListener('mouseout', onLeave, true);
+    sidebarContentEl.addEventListener('focusout', onLeave, true);
 
     console.log('✓ Conversation hover reserve calculator installed');
   }
@@ -3519,7 +3564,9 @@
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
     const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
-    const reservedConversationIconWidth = getConversationIconReserveWidth();
+    // Non-hover state: don't reserve icon space, because the icon cluster is hidden.
+    // Hover handler will apply the measured reserve width dynamically.
+    const reservedConversationIconWidth = 0;
     
     // Remove old layout styles if they exist
     const oldStyle = document.getElementById('typingmind-layout-styles');
