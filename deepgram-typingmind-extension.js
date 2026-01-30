@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.148 Changes:
+ * - FIX: Folder titles: remove fixed 180px reserve; absolute-position folder hover icon cluster; use padding-right reserve
+ *   (non-hover ~gutter only; hover uses measured reserve).
+ *
+ * v3.147 Changes:
+ * - FIX: Folder title truncation: apply the same "absolute icon cluster" treatment to chat folders.
+ *   Removes the always-on 180px reserve so long folder names can fill width when not hovered.
+ *
  * v3.146 Changes:
  * - FIX: Remove "phantom icon container" width in non-hover state by taking the icon container out of the flex flow
  *   (absolute-position it within the title row). Title uses padding-right to reserve space on hover.
@@ -294,7 +302,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.146',
+  VERSION: '3.148',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -382,15 +390,16 @@
   let docAnnotationPopoverVisible = false;
   let docAnnotationSavedSelection = null;
 
-  // Sidebar conversation title sizing (Option C test)
-  // We measure the actual hover icon cluster footprint (trash/star/menu) on first hover of a conversation row,
-  // cache it, then use it to avoid over-aggressive title truncation.
-  // We cache TWO reserves:
-  // - reserveHover: from icon cluster LEFT edge → row RIGHT edge (icons + right gutter)
-  // - reserveNonHover: only the right gutter (row RIGHT edge - icon cluster RIGHT edge)
+  // Sidebar conversation title sizing
+  // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
   let cachedConversationReserveHover = null;
   let cachedConversationReserveNonHover = null;
   let convoReserveMeasureInFlight = false;
+
+  // Sidebar folder title sizing (same principle)
+  let cachedFolderReserveHover = null;
+  let cachedFolderReserveNonHover = null;
+  let folderReserveMeasureInFlight = false;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -3459,8 +3468,23 @@
     if (typeof cachedConversationReserveNonHover === 'number' && cachedConversationReserveNonHover >= 0) {
       return cachedConversationReserveNonHover;
     }
-    // default: small gutter so the ellipsis doesn't run into the sidebar edge
-    return 8;
+    // default: tiny gutter so ellipsis doesn't run into the sidebar edge
+    return 6;
+  }
+
+  function getFolderReserveHover() {
+    if (typeof cachedFolderReserveHover === 'number' && cachedFolderReserveHover > 0) {
+      return cachedFolderReserveHover;
+    }
+    // fallback: old conservative reserve (new chat + menu)
+    return 120;
+  }
+
+  function getFolderReserveNonHover() {
+    if (typeof cachedFolderReserveNonHover === 'number' && cachedFolderReserveNonHover >= 0) {
+      return cachedFolderReserveNonHover;
+    }
+    return 6;
   }
 
   function measureConversationIconClusterReserves(conversationRowEl) {
@@ -3540,6 +3564,63 @@
     }
 
     return { titleEl };
+  }
+
+  function prepareFolderTitleRow(folderEl) {
+    // Folder node structure (from Dan's snippet):
+    // <div data-element-id="chat-folder" ...>
+    //   <button ...> ... <span class="... justify-center" style="max-width: 170px !important"> ... </span> </button>
+    //   <div> <div class="flex ... pr-2 sm:opacity-0 group-hover:opacity-100"> ...buttons... </div> </div>
+    // </div>
+    if (!folderEl) return null;
+
+    const buttonEl = folderEl.querySelector('button');
+    if (!buttonEl) return null;
+
+    const iconShell = buttonEl.nextElementSibling; // the sibling div that wraps the hover icons
+    const iconContainer = iconShell ? iconShell.querySelector('.flex.items-center') : null;
+
+    // The main label wrapper span that currently gets max-width: 170px !important
+    const labelWrapper = buttonEl.querySelector('span.space-y-1.text-left.w-full.min-w-0.flex.items-center.justify-center')
+      || buttonEl.querySelector('span.text-left.w-full.min-w-0');
+
+    const titleRow = folderEl; // outer is already a flex row
+
+    if (titleRow && iconShell) {
+      if (titleRow.dataset.tmFolderIconAbs !== '1') {
+        titleRow.dataset.tmFolderIconAbs = '1';
+
+        titleRow.style.position = 'relative';
+
+        // Let the button take full width; title sizing via padding-right.
+        buttonEl.style.setProperty('width', '100%', 'important');
+        buttonEl.style.setProperty('flex', '1 1 auto', 'important');
+        buttonEl.style.setProperty('min-width', '0', 'important');
+
+        // Kill the forced narrow max-width on the label wrapper (this was the "second margin").
+        if (labelWrapper) {
+          labelWrapper.style.setProperty('max-width', '100%', 'important');
+          labelWrapper.style.setProperty('width', '100%', 'important');
+          labelWrapper.style.setProperty('justify-content', 'flex-start', 'important');
+        }
+
+        // Absolute-position the icon shell so it doesn't consume width when hidden.
+        iconShell.style.position = 'absolute';
+        iconShell.style.right = '0';
+        iconShell.style.top = '50%';
+        iconShell.style.transform = 'translateY(-50%)';
+        iconShell.style.zIndex = '2';
+
+        // Ensure the inner icon container doesn't unexpectedly stretch.
+        if (iconContainer) {
+          iconContainer.style.setProperty('width', 'auto', 'important');
+        }
+      }
+    }
+
+    // The truncating span inside the folder title line
+    const truncateEl = buttonEl.querySelector('.truncate');
+    return { buttonEl, truncateEl };
   }
 
   function applyConversationTitleWidthForRow(rowEl, hover) {
@@ -3625,6 +3706,78 @@
     console.log('✓ Conversation hover reserve calculator installed');
   }
 
+  function applyFolderTitleReserve(folderEl, hover) {
+    const prepared = prepareFolderTitleRow(folderEl);
+    if (!prepared || !prepared.buttonEl) return;
+
+    const reserve = hover ? getFolderReserveHover() : getFolderReserveNonHover();
+    prepared.buttonEl.style.setProperty('padding-right', reserve + 'px', 'important');
+  }
+
+  function installFolderHoverReserveCalculator(sidebarContentEl) {
+    if (!sidebarContentEl) return;
+    if (sidebarContentEl.dataset.tmFolderReserveInstalled === '1') return;
+    sidebarContentEl.dataset.tmFolderReserveInstalled = '1';
+
+    const findFolder = evt => {
+      return evt.target && evt.target.closest
+        ? evt.target.closest('[data-element-id="chat-folder"]')
+        : null;
+    };
+
+    const onEnter = evt => {
+      const folder = findFolder(evt);
+      if (!folder) return;
+
+      // Always prepare the DOM for full-width titles.
+      prepareFolderTitleRow(folder);
+      applyFolderTitleReserve(folder, true);
+
+      if (typeof cachedFolderReserveHover === 'number' && cachedFolderReserveHover > 0) return;
+      if (folderReserveMeasureInFlight) return;
+      folderReserveMeasureInFlight = true;
+
+      requestAnimationFrame(() => {
+        try {
+          const rowRect = folder.getBoundingClientRect();
+          const midX = rowRect.left + rowRect.width * 0.55;
+
+          const candidates = Array.from(folder.querySelectorAll('button'))
+            .map(el => ({ el, rect: el.getBoundingClientRect() }))
+            .filter(({ rect }) => rect && rect.width > 0 && rect.height > 0 && rect.left > midX);
+
+          if (candidates.length) {
+            const minLeft = Math.min(...candidates.map(c => c.rect.left));
+            const maxRight = Math.max(...candidates.map(c => c.rect.right));
+            cachedFolderReserveHover = Math.round(Math.max(40, Math.min(400, rowRect.right - minLeft)));
+            cachedFolderReserveNonHover = Math.round(Math.max(0, Math.min(80, rowRect.right - maxRight)));
+            console.log('✓ Measured folder reserves:', 'hover=', cachedFolderReserveHover, 'nonHover=', cachedFolderReserveNonHover);
+          }
+
+          // Apply again now that we might have measured.
+          applyFolderTitleReserve(folder, true);
+        } finally {
+          folderReserveMeasureInFlight = false;
+        }
+      });
+    };
+
+    const onLeave = evt => {
+      const folder = findFolder(evt);
+      if (!folder) return;
+      const toEl = evt.relatedTarget;
+      if (toEl && folder.contains(toEl)) return;
+      applyFolderTitleReserve(folder, false);
+    };
+
+    sidebarContentEl.addEventListener('mouseover', onEnter, true);
+    sidebarContentEl.addEventListener('focusin', onEnter, true);
+    sidebarContentEl.addEventListener('mouseout', onLeave, true);
+    sidebarContentEl.addEventListener('focusout', onLeave, true);
+
+    console.log('✓ Folder hover reserve calculator installed');
+  }
+
   function applyLayoutWidths() {
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
@@ -3677,11 +3830,11 @@
         width: ${sidebarWidth}px !important;
       }
 
-      /* 3d. The folder/chat label spans (prevent text truncation too early) */
-      /* Reserve 180px for hover icons (New Chat, trash, star, hamburger) to prevent clipping */
+      /* 3d. Folder label wrapper should be full width (icons are taken out of flow via JS absolute positioning) */
       [data-element-id="chat-folder"] span.text-left.w-full.min-w-0.flex.items-center.justify-center {
-        max-width: ${sidebarWidth - 180}px !important;
-        width: ${sidebarWidth - 180}px !important;
+        max-width: 100% !important;
+        width: 100% !important;
+        justify-content: flex-start !important;
       }
 
       /* 3e. Clamp selected chat row highlight so it never spills past the sidebar */
@@ -3776,6 +3929,7 @@
     if (sidebarContent) {
       // Chat view active - apply sidebar width customizations
       installConversationHoverReserveCalculator(sidebarContent);
+      installFolderHoverReserveCalculator(sidebarContent);
       document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
       document.documentElement.style.setProperty('--workspace-width', '0px');
       
@@ -3836,14 +3990,9 @@
         folder.style.setProperty('width', folderRowWidth + 'px', 'important');
         folder.style.boxSizing = 'border-box';
 
-        // Folder label text (left side)
-        const folderLabel = folder.querySelector('span.text-left.w-full.min-w-0.flex.items-center.justify-center');
-        if (folderLabel) {
-          const reservedIconWidth = 180; // same icon buffer
-          const maxLabelWidth = Math.max(100, folderRowWidth - reservedIconWidth);
-          folderLabel.style.setProperty('max-width', maxLabelWidth + 'px', 'important');
-          folderLabel.style.minWidth = '0';
-        }
+        // Ensure folder icon cluster doesn't consume width when hidden, and set non-hover reserve.
+        prepareFolderTitleRow(folder);
+        applyFolderTitleReserve(folder, false);
       });
 
       // Inline widths for unselected conversation rows (custom chat items)
