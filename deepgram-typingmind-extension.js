@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.143 Changes:
+ * - FIXED (test): Conversation title truncation: measure hover icon cluster width on first hover of a conversation row,
+ *   cache it, and size `.truncate` accordingly (removes over-aggressive fixed reserve).
+ *
  * v3.142 Changes:
  * - TWEAKED: Expanding the top control section automatically sets transcript height to 240px for a more compact view.
  * - MOVED: "Keyboard Shortcuts & Features" block up under the Whisper prompt so it collapses along with the top controls.
@@ -277,7 +281,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.142',
+  VERSION: '3.143',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -364,6 +368,12 @@
   // Document annotation state
   let docAnnotationPopoverVisible = false;
   let docAnnotationSavedSelection = null;
+
+  // Sidebar conversation title sizing (Option C test)
+  // We measure the actual hover icon cluster width (trash/star/menu) on first hover of a conversation row,
+  // cache it, then use it to avoid over-aggressive title truncation.
+  let cachedConversationIconReserveWidth = null;
+  let convoReserveMeasureInFlight = false;
   
   // ==================== RICH TEXT CONVERSION ====================
   
@@ -3419,11 +3429,97 @@
   }
   
   // ==================== LAYOUT WIDTH CONTROLS ====================
-  
+
+  function getConversationIconReserveWidth() {
+    // Fallback retains previous behavior until we successfully measure.
+    if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) {
+      return cachedConversationIconReserveWidth;
+    }
+    return 180;
+  }
+
+  function measureConversationIconClusterWidth(conversationRowEl) {
+    if (!conversationRowEl) return null;
+
+    // Try to find the top "title + icons" flex row inside the conversation row.
+    const titleRow =
+      conversationRowEl.querySelector(
+        '.flex.flex-col.gap-y-1.text-left.w-full.min-w-0 > .flex.items-center'
+      ) || conversationRowEl.querySelector('.flex.items-center');
+
+    if (!titleRow) return null;
+
+    const rowRect = titleRow.getBoundingClientRect();
+    if (!rowRect || rowRect.width <= 0) return null;
+
+    // Icons live on the right side. Use a midpoint heuristic to avoid accidentally measuring left-side icons.
+    const midX = rowRect.left + rowRect.width * 0.55;
+
+    const candidates = Array.from(
+      titleRow.querySelectorAll('button, [role="button"]')
+    )
+      .map(el => ({ el, rect: el.getBoundingClientRect() }))
+      .filter(({ rect }) => rect && rect.width > 0 && rect.height > 0 && rect.left > midX);
+
+    if (!candidates.length) return null;
+
+    const minLeft = Math.min(...candidates.map(c => c.rect.left));
+    const maxRight = Math.max(...candidates.map(c => c.rect.right));
+    const width = maxRight - minLeft;
+
+    if (!isFinite(width) || width <= 0 || width > 400) return null;
+
+    return width;
+  }
+
+  function installConversationHoverReserveCalculator(sidebarContentEl) {
+    if (!sidebarContentEl) return;
+    if (sidebarContentEl.dataset.tmConvoReserveInstalled === '1') return;
+    sidebarContentEl.dataset.tmConvoReserveInstalled = '1';
+
+    const maybeMeasure = evt => {
+      // Only conversation rows should trigger measurement (NOT folders).
+      const row = evt.target && evt.target.closest
+        ? evt.target.closest('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]')
+        : null;
+      if (!row) return;
+
+      // Only measure once per page load.
+      if (typeof cachedConversationIconReserveWidth === 'number' && cachedConversationIconReserveWidth > 0) return;
+      if (convoReserveMeasureInFlight) return;
+      convoReserveMeasureInFlight = true;
+
+      // Let :hover styles / icon reveal settle.
+      requestAnimationFrame(() => {
+        try {
+          const iconWidth = measureConversationIconClusterWidth(row);
+          if (iconWidth) {
+            const safety = 16; // small buffer for gaps/padding
+            const reserve = Math.round(Math.min(300, Math.max(80, iconWidth + safety)));
+            cachedConversationIconReserveWidth = reserve;
+            console.log('✓ Measured conversation hover icon reserve width:', reserve, '(icons:', Math.round(iconWidth), ')');
+
+            // Re-apply widths globally now that we have a better reserve value.
+            setTimeout(() => applyLayoutWidths(), 0);
+          }
+        } finally {
+          convoReserveMeasureInFlight = false;
+        }
+      });
+    };
+
+    // Use bubbling events for delegation across re-renders.
+    sidebarContentEl.addEventListener('mouseover', maybeMeasure, true);
+    sidebarContentEl.addEventListener('focusin', maybeMeasure, true);
+
+    console.log('✓ Conversation hover reserve calculator installed');
+  }
+
   function applyLayoutWidths() {
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
     const sidebarWidth = parseInt(document.getElementById('layout-sidebar-width-input')?.value) || CONFIG.DEFAULT_SIDEBAR_WIDTH;
+    const reservedConversationIconWidth = getConversationIconReserveWidth();
     
     // Remove old layout styles if they exist
     const oldStyle = document.getElementById('typingmind-layout-styles');
@@ -3491,7 +3587,7 @@
 
       /* 3f. Selected chat title text – reserve room for hover icons (trash, favorite, menu) */
       [data-element-id="selected-chat-item"] .truncate {
-        max-width: ${sidebarWidth - 180}px !important;
+        max-width: ${sidebarWidth - reservedConversationIconWidth}px !important;
         min-width: 0 !important;
       }
 
@@ -3567,6 +3663,7 @@
     const sidebarContent = document.querySelector('[data-element-id="sidebar-middle-part"]');
     if (sidebarContent) {
       // Chat view active - apply sidebar width customizations
+      installConversationHoverReserveCalculator(sidebarContent);
       document.documentElement.style.setProperty('--sidebar-width', sidebarWidth + 'px');
       document.documentElement.style.setProperty('--workspace-width', '0px');
       
@@ -3612,7 +3709,7 @@
       // Inline width for selected chat title text – reserve room for hover icons (trash, favorite, menu)
       const selectedTitle = document.querySelector('[data-element-id="selected-chat-item"] .truncate');
       if (selectedTitle) {
-        const reservedIconWidth = 180; // matches folder-row buffer
+        const reservedIconWidth = reservedConversationIconWidth;
         const containerWidth = maxRowWidth || sidebarWidth;
         const maxTitleWidth = Math.max(100, containerWidth - reservedIconWidth);
         selectedTitle.style.setProperty('max-width', maxTitleWidth + 'px', 'important');
@@ -3659,7 +3756,7 @@
 
         const chatLabel = row.querySelector('.truncate') || row.querySelector('span.text-left.w-full.min-w-0.flex.items-center.justify-center');
         if (chatLabel) {
-          const reservedIconWidth = 180;
+          const reservedIconWidth = reservedConversationIconWidth;
           const maxChatLabelWidth = Math.max(100, chatRowWidth - reservedIconWidth);
           chatLabel.style.setProperty('max-width', maxChatLabelWidth + 'px', 'important');
           chatLabel.style.minWidth = '0';
