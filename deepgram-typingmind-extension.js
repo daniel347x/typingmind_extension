@@ -302,7 +302,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.148',
+  VERSION: '3.149',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -320,7 +320,9 @@
     WHISPER_ENDPOINT_STORAGE: 'whisper_extension_endpoint',
     WHISPER_PROMPT_STORAGE: 'whisper_extension_prompt',
     DEFAULT_OPENAI_ENDPOINT: 'https://api.openai.com/v1/audio/transcriptions',
-    DEFAULT_LOCAL_ENDPOINT: 'http://localhost:8001/v1/audio/transcriptions',
+    // NOTE: use 127.0.0.1 (not localhost) to avoid IPv6 ::1 / port-forwarding surprises.
+    // NOTE: we run a tiny CORS proxy on :8002 that forwards to the Whisper server on :8000.
+    DEFAULT_LOCAL_ENDPOINT: 'http://127.0.0.1:8002/v1/audio/transcriptions',
     DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon',
     
     // Teams message break settings
@@ -2704,8 +2706,20 @@
     const whisperEndpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE);
     const endpointSelect = document.getElementById('whisper-endpoint-select');
     if (whisperEndpoint) {
-      if (whisperEndpoint === CONFIG.DEFAULT_LOCAL_ENDPOINT) {
+      const isLocal =
+        whisperEndpoint === CONFIG.DEFAULT_LOCAL_ENDPOINT ||
+        whisperEndpoint === 'http://localhost:8000/v1/audio/transcriptions' ||
+        whisperEndpoint === 'http://localhost:8001/v1/audio/transcriptions' ||
+        whisperEndpoint === 'http://127.0.0.1:8000/v1/audio/transcriptions' ||
+        whisperEndpoint === 'http://127.0.0.1:8001/v1/audio/transcriptions';
+
+      if (isLocal) {
         endpointSelect.value = 'local';
+
+        // Normalize any legacy localhost endpoints to the current default.
+        if (whisperEndpoint !== CONFIG.DEFAULT_LOCAL_ENDPOINT) {
+          localStorage.setItem(CONFIG.WHISPER_ENDPOINT_STORAGE, CONFIG.DEFAULT_LOCAL_ENDPOINT);
+        }
       } else if (whisperEndpoint === CONFIG.DEFAULT_OPENAI_ENDPOINT) {
         endpointSelect.value = 'openai';
       } else {
