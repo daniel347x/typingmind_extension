@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.38
+// Version: 4.39
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.38';
+  const EXT_VERSION = '4.39';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1972,16 +1972,13 @@
       const inDisabled = hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;';
 
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
-      html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
-      html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65vw;">' +
+      html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
               '<span style="opacity:0.8;">#' + (idx + 1) + '</span> ' + protocol +
               (model ? (' <span style="opacity:0.75;">(' + model + ')</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
-      html += '<div style="font-size:10px;opacity:0.85;white-space:nowrap;">' + ts + '</div>';
-      html += '</div>';
-
-      html += '<div style="font-size:11px;opacity:0.9;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
+      html += '<div style="font-size:10px;opacity:0.85;margin-top:2px;color:#8cf;">' + ts + '</div>';
+      html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
       html += '<div style="margin-top:2px;">' +
