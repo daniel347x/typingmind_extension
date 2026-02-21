@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.33
+// Version: 4.34
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.33';
+  const EXT_VERSION = '4.34';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2528,6 +2528,17 @@
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
 
           if (isClaude) {
+            // TEST (v4.34): Try top-level automatic cache_control first.
+            // If OpenRouter's /chat/completions rejects this for Claude, we'll see a 400 error
+            // and can fall back to block-level injection.
+            if (!body.cache_control) {
+              body.cache_control = { type: 'ephemeral' };
+              console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected TOP-LEVEL cache_control (automatic caching test)');
+              modified = true;
+            }
+
+            // Also keep block-level injection as backup (in case top-level is ignored but accepted).
+            // This ensures at least tools+system are cached even if automatic doesn't work.
             if (ensureOpenRouterClaudeCacheControl(body)) {
               modified = true;
             }
