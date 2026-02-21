@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.37
+// Version: 4.38
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.37';
+  const EXT_VERSION = '4.38';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -284,7 +284,7 @@
     // Ignore TypingMind internal sync/telemetry calls and localhost traffic (noise)
     try {
       const u = String(url || '').toLowerCase();
-      if (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('/_vercel/')) {
+      if (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel')) {
         return null;
       }
     } catch (e) {}
@@ -292,9 +292,11 @@
     const id = 'cap_' + Date.now() + '_' + Math.random().toString(16).slice(2);
     const headersNorm = tmMaybeRedactHeaders(tmNormalizeHeaders(options && options.headers));
 
+    const now = new Date();
     const record = {
       id,
-      ts: new Date().toISOString(),
+      ts: now.toISOString(),
+      ts_local: now.toLocaleString('en-US', { hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit' }),
       url: String(url || ''),
       method: (options && options.method) ? String(options.method) : 'POST',
       vendorHint: vendorForThisCall || null,
@@ -1947,7 +1949,7 @@
 
     items.forEach((cap, idx) => {
       if (!cap) return;
-      const ts = escapeHtml(cap.ts || '');
+      const ts = escapeHtml(cap.ts_local || cap.ts || '');
       const url = escapeHtml(cap.url || '');
       const protocol = escapeHtml(cap.protocol || 'unknown');
       const capId = escapeHtml(cap.id || '');
