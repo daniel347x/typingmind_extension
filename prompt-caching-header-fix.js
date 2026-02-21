@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.39
+// Version: 4.40
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.39';
+  const EXT_VERSION = '4.40';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -325,14 +325,26 @@
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
 
-        const truncated = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
-        const candidateStr = JSON.stringify(truncated);
+        // Always try skeleton first (compact); fall back to truncated if small enough.
+        // This prevents localStorage quota overflow for huge payloads.
+        var skeleton = tmBuildHugeSkeleton(parsed);
+        var skeletonStr = JSON.stringify(skeleton);
 
-        if (candidateStr.length > TM_PAYLOAD_CAPTURE_TRULY_HUGE_CHARS) {
-          record.body_skeleton = tmBuildHugeSkeleton(parsed);
-          record.stored_as_skeleton = true;
+        // If skeleton is under 50KB, store it as body for richer debugging.
+        // Otherwise store just the skeleton.
+        if (skeletonStr.length < 50000) {
+          var truncated = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+          var truncatedStr = JSON.stringify(truncated);
+          // Cap per-entry body at 200KB to keep ring buffer under localStorage limits
+          if (truncatedStr.length < 200000) {
+            record.body = truncated;
+          } else {
+            record.body_skeleton = skeleton;
+            record.stored_as_skeleton = true;
+          }
         } else {
-          record.body = truncated;
+          record.body_skeleton = skeleton;
+          record.stored_as_skeleton = true;
         }
       } else if (bodyRaw != null) {
         // Non-string body (rare in TypingMind LLM calls, but possible).
@@ -347,7 +359,27 @@
     while (ring.length > TM_PAYLOAD_CAPTURE_MAX_ENTRIES) {
       ring.shift();
     }
-    tmWriteCaptureRing(ring);
+
+    // Guard against localStorage quota overflow: if write fails, evict oldest entries and retry
+    var writeOk = false;
+    for (var attempt = 0; attempt < 5 && !writeOk; attempt++) {
+      try {
+        localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(ring));
+        writeOk = true;
+      } catch (quotaErr) {
+        // Evict oldest entry and retry
+        if (ring.length > 1) {
+          ring.shift();
+          console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] Payload capture ring exceeded localStorage quota; evicted oldest entry (attempt ' + (attempt + 1) + ')');
+        } else {
+          // Even a single entry is too large; store a minimal stub
+          ring[0] = { id: record.id, ts: record.ts, ts_local: record.ts_local, url: record.url, protocol: record.protocol, _tm_oversized: true };
+          try { localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(ring)); } catch (e2) {}
+          console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] Payload capture: even single entry too large for localStorage; stored stub.');
+          writeOk = true;
+        }
+      }
+    }
 
     return id;
   }
