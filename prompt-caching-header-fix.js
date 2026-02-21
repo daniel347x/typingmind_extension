@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.40
+// Version: 4.41
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.40';
+  const EXT_VERSION = '4.41';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2351,55 +2351,111 @@
     return changed;
   }
 
-  function ensureOpenRouterClaudeCacheControl(body) {
-    // OpenRouter prompt caching for Claude requires cache_control breakpoints.
-    // OpenAI-compatible /chat/completions payloads can represent message.content as an
-    // array of {type:'text', text:'...'} blocks; cache_control must be attached to a text block.
-    //
-    // Strategy (minimal + safe): ensure the FIRST system message has cache_control on its
-    // text block. This should cache tools + that system prefix across turns.
-    if (!body || !Array.isArray(body.messages)) return false;
-
-    const messages = body.messages;
-    const sysIdx = messages.findIndex(m => m && m.role === 'system');
-    if (sysIdx < 0) return false;
-
-    const msg = messages[sysIdx];
+  function tmInjectCacheControlOnMessage(msg, label) {
+    // Inject cache_control: {type:'ephemeral'} on a single message's content.
+    // Handles string content (wraps to multipart) and array content (tags last text block).
+    // Returns true if modified.
     if (!msg) return false;
+    var cc = { type: 'ephemeral' };
 
-    const cc = { type: 'ephemeral' }; // default 5-minute TTL; can be upgraded later
-
-    // If content is a string, wrap it as a multipart text block with cache_control.
     if (typeof msg.content === 'string') {
-      const t = msg.content;
+      var t = msg.content;
       msg.content = [{ type: 'text', text: t, cache_control: cc }];
-      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control into system message (wrapped string → multipart).');
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control on ' + (label || 'message') + ' (wrapped string).');
       return true;
     }
 
-    // If content is already an array, add cache_control to the last text block.
     if (Array.isArray(msg.content)) {
-      // Prefer the last block that looks like a text block.
-      for (let i = msg.content.length - 1; i >= 0; i--) {
-        const b = msg.content[i];
+      // Find last text block and tag it.
+      for (var i = msg.content.length - 1; i >= 0; i--) {
+        var b = msg.content[i];
         if (!b || typeof b !== 'object') continue;
         if (b.type === 'text' && typeof b.text === 'string') {
           if (!b.cache_control) {
             b.cache_control = cc;
-            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control into existing system text block.');
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control on ' + (label || 'message') + '.');
             return true;
           }
           return false; // already has cache_control
         }
       }
-
-      // No text blocks found → append a minimal text block with cache_control.
+      // No text blocks: append minimal one.
       msg.content.push({ type: 'text', text: ' ', cache_control: cc });
-      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: appended text block with cache_control to system message.');
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: appended cache_control block on ' + (label || 'message') + '.');
       return true;
     }
 
     return false;
+  }
+
+  function ensureOpenRouterClaudeCacheControl(body) {
+    // OpenRouter prompt caching for Claude requires cache_control breakpoints (max 4 per request).
+    // cache_control markers are NOT part of the cache key hash (confirmed by Claude Code behavior
+    // and Anthropic docs on prefix matching). So we can safely move/add them each turn.
+    //
+    // Strategy (v4.41):
+    //   Breakpoint 1: system message (caches tools + system prefix)
+    //   Breakpoints 2-4: user messages at offsets from the end of the messages array.
+    //     - last user message (caches entire conversation up to current turn)
+    //     - 2nd-to-last user message (supports deleting last 1-2 messages)
+    //     - 5th-to-last user message (supports deleting up to ~5 messages)
+    //   This uses all 4 breakpoints for maximum cache coverage + resilience to message deletion.
+    if (!body || !Array.isArray(body.messages)) return false;
+
+    var messages = body.messages;
+    var changed = false;
+
+    // 1) System message breakpoint
+    var sysIdx = messages.findIndex(function(m) { return m && m.role === 'system'; });
+    if (sysIdx >= 0) {
+      if (tmInjectCacheControlOnMessage(messages[sysIdx], 'system[' + sysIdx + ']')) {
+        changed = true;
+      }
+    }
+
+    // 2) Collect indices of all user messages (excluding system)
+    var userIndices = [];
+    for (var i = 0; i < messages.length; i++) {
+      if (messages[i] && messages[i].role === 'user') {
+        userIndices.push(i);
+      }
+    }
+
+    // Place breakpoints at: last, 2-back, 5-back, 10-back (from end of user messages)
+    // But we only have 3 remaining breakpoint slots (1 used by system).
+    // So use: last, 2-back, and whichever of 5-back or 10-back is available (prefer 10-back for wider coverage).
+    var offsets = [0, 2, 10]; // offsets from end of userIndices array (0 = last)
+    var placed = 0;
+    var usedMsgIndices = new Set();
+
+    for (var oi = 0; oi < offsets.length && placed < 3; oi++) {
+      var off = offsets[oi];
+      var uiPos = userIndices.length - 1 - off;
+      if (uiPos < 0) continue;
+      var msgIdx = userIndices[uiPos];
+      if (usedMsgIndices.has(msgIdx)) continue; // don't double-tag same message
+      usedMsgIndices.add(msgIdx);
+
+      if (tmInjectCacheControlOnMessage(messages[msgIdx], 'user[' + msgIdx + '] (offset -' + off + ')')) {
+        changed = true;
+        placed++;
+      }
+    }
+
+    // If we haven't placed 3 yet and 5-back is available and different from what we placed
+    if (placed < 3 && userIndices.length > 5) {
+      var fallbackPos = userIndices.length - 1 - 5;
+      if (fallbackPos >= 0) {
+        var fallbackIdx = userIndices[fallbackPos];
+        if (!usedMsgIndices.has(fallbackIdx)) {
+          if (tmInjectCacheControlOnMessage(messages[fallbackIdx], 'user[' + fallbackIdx + '] (offset -5 fallback)')) {
+            changed = true;
+          }
+        }
+      }
+    }
+
+    return changed;
   }
 
   function repairOpenAIOrphanedToolCalls(body) {
