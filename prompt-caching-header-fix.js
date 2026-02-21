@@ -2692,6 +2692,12 @@
     // Matches: openrouter.ai/api/v1/messages (Claude Messages API via OpenRouter)
     // Strategy: inject ONLY top-level cache_control with ttl:'1h' — NO per-message breakpoints.
     // The native Anthropic protocol supports automatic caching via top-level cache_control.
+    //
+    // ⚠️ CORS BLOCKED IN TYPINGMIND (Feb 2026): This branch currently does NOT fire from TypingMind
+    // because OpenRouter's /api/v1/messages endpoint does not set CORS headers for browser requests,
+    // and TypingMind's proxy does not support this endpoint either. This branch is preserved for
+    // future use if CORS is resolved (e.g., OpenRouter adds CORS, or a local proxy is used).
+    // Until then, all OpenRouter+Claude traffic goes through the OpenAI-compat branch below.
     else if (url.includes('openrouter.ai') && url.includes('/v1/messages')) {
       vendorForThisCall = 'openrouter-anthropic';
       try {
