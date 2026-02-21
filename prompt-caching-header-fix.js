@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.42
+// Version: 4.43
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.42';
+  const EXT_VERSION = '4.43';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -179,7 +179,8 @@
     const u = String(url || '');
     if (u.includes('/v1/responses')) return 'openai-responses';
     if (u.includes('/v1/chat/completions')) return 'openai-chat-completions';
-    if (u.includes('api.anthropic.com') || (bodyObj && Array.isArray(bodyObj.messages) && !Array.isArray(bodyObj.input))) {
+    // Anthropic-native: direct Anthropic OR OpenRouter Anthropic Skin (/api/v1/messages)
+    if (u.includes('api.anthropic.com') || (u.includes('openrouter.ai') && u.includes('/v1/messages')) || (bodyObj && Array.isArray(bodyObj.messages) && !Array.isArray(bodyObj.input))) {
       return 'anthropic-messages';
     }
     if (bodyObj && Array.isArray(bodyObj.contents)) return 'gemini-generatecontent';
@@ -2684,6 +2685,48 @@
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify Grok request:', e);
+      }
+    }
+
+    // ==================== OPENROUTER ANTHROPIC SKIN (native Anthropic protocol) BRANCH ====================
+    // Matches: openrouter.ai/api/v1/messages (Claude Messages API via OpenRouter)
+    // Strategy: inject ONLY top-level cache_control with ttl:'1h' — NO per-message breakpoints.
+    // The native Anthropic protocol supports automatic caching via top-level cache_control.
+    else if (url.includes('openrouter.ai') && url.includes('/v1/messages')) {
+      vendorForThisCall = 'openrouter-anthropic';
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+
+          // Inject top-level automatic cache_control with 1h TTL
+          if (!body.cache_control) {
+            body.cache_control = { type: 'ephemeral', ttl: '1h' };
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin: injected top-level cache_control with ttl:1h');
+            modified = true;
+          }
+
+          // Ensure anthropic-beta header includes prompt-caching
+          options.headers = options.headers || {};
+          const currentBeta = options.headers['anthropic-beta'] || '';
+          if (!currentBeta.includes('prompt-caching-2024-07-31')) {
+            options.headers['anthropic-beta'] = currentBeta ? currentBeta + ',prompt-caching-2024-07-31' : 'prompt-caching-2024-07-31';
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin: injected prompt-caching beta header');
+            modified = true;
+          }
+
+          // Repair tools/content issues (same as direct Anthropic)
+          if (repairHistoricAnthropicToolInputs(body)) modified = true;
+          if (repairAnthropicEmptyMessageContent(body)) modified = true;
+          if (repairAnthropicMissingToolResults(body)) modified = true;
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin request body updated');
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify OpenRouter Anthropic Skin request:', e);
       }
     }
 
