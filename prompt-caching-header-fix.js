@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.36
+// Version: 4.37
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.36';
+  const EXT_VERSION = '4.37';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -57,7 +57,32 @@
   const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
 
   const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 20;
-  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS = 1000;
+  const TM_PAYLOAD_CAPTURE_TRUNCATION_KEY = 'tm_payload_capture_truncation';
+  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 1000;
+
+  function tmGetTruncationLimit() {
+    try {
+      const v = parseInt(localStorage.getItem(TM_PAYLOAD_CAPTURE_TRUNCATION_KEY), 10);
+      return (!isNaN(v) && v >= 100) ? v : TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT;
+    } catch (e) {
+      return TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT;
+    }
+  }
+
+  function tmSetTruncationLimit(val) {
+    try {
+      const n = parseInt(val, 10);
+      if (!isNaN(n) && n >= 100) {
+        localStorage.setItem(TM_PAYLOAD_CAPTURE_TRUNCATION_KEY, String(n));
+        return n;
+      }
+    } catch (e) {}
+    return tmGetTruncationLimit();
+  }
+
+  // Backwards-compat alias (used in pre-4.37 code paths that reference the const directly)
+  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS = TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT;
+
 
   // "Truly huge" fallback threshold (after truncation). If a capture exceeds this,
   // we store a skeleton that preserves protocol-critical fields (model, cache_control,
@@ -298,7 +323,7 @@
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
 
-        const truncated = tmTruncateStringsDeep(parsed, TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+        const truncated = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
         const candidateStr = JSON.stringify(truncated);
 
         if (candidateStr.length > TM_PAYLOAD_CAPTURE_TRULY_HUGE_CHARS) {
@@ -348,11 +373,11 @@
           try {
             // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
-            patch.response_body = tmTruncateStringsDeep(parsed, TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+            patch.response_body = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
-            var headLimit = TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS;
+            var headLimit = tmGetTruncationLimit();
             patch.response_body_head = s.slice(0, headLimit) +
               (s.length > headLimit ? ('... [tm_truncated +' + (s.length - headLimit) + ' chars]') : '');
 
@@ -997,6 +1022,14 @@
             return;
           }
 
+          // Truncation limit change
+          if (target.dataset.action === 'set-truncation-limit') {
+            const newVal = target.value;
+            tmSetTruncationLimit(newVal);
+            ev.stopPropagation();
+            return;
+          }
+
           // Clear ALL GPT-5.1 tracked conversations
           if (target.dataset.action === 'clear-gpt51-conversations') {
             const ok = confirm('Clear ALL tracked GPT-5.1 conversations from this widget?');
@@ -1105,6 +1138,7 @@
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
 
       const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
       const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
@@ -1112,6 +1146,13 @@
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
 
       el.innerHTML = lines.join('');
+
+      // Wire up truncation input (needs change event, not click)
+      var truncInput = el.querySelector('#tm-trunc-input');
+      if (truncInput) {
+        truncInput.addEventListener('change', function() { tmSetTruncationLimit(this.value); });
+        truncInput.addEventListener('click', function(e) { e.stopPropagation(); });
+      }
       return;
     }
 
@@ -1191,13 +1232,21 @@
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
-    
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
+
     const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
     const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
     const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
 
     el.innerHTML = lines.join('');
+
+    // Wire up truncation input (needs change event, not click)
+    var truncInput2 = el.querySelector('#tm-trunc-input');
+    if (truncInput2) {
+      truncInput2.addEventListener('change', function() { tmSetTruncationLimit(this.value); });
+      truncInput2.addEventListener('click', function(e) { e.stopPropagation(); });
+    }
   }
 
   // ==================== PAYLOAD TOOL FILTERS & MODAL ====================
