@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.32
+// Version: 4.33
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.32';
+  const EXT_VERSION = '4.33';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2199,6 +2199,57 @@
     return changed;
   }
 
+  function ensureOpenRouterClaudeCacheControl(body) {
+    // OpenRouter prompt caching for Claude requires cache_control breakpoints.
+    // OpenAI-compatible /chat/completions payloads can represent message.content as an
+    // array of {type:'text', text:'...'} blocks; cache_control must be attached to a text block.
+    //
+    // Strategy (minimal + safe): ensure the FIRST system message has cache_control on its
+    // text block. This should cache tools + that system prefix across turns.
+    if (!body || !Array.isArray(body.messages)) return false;
+
+    const messages = body.messages;
+    const sysIdx = messages.findIndex(m => m && m.role === 'system');
+    if (sysIdx < 0) return false;
+
+    const msg = messages[sysIdx];
+    if (!msg) return false;
+
+    const cc = { type: 'ephemeral' }; // default 5-minute TTL; can be upgraded later
+
+    // If content is a string, wrap it as a multipart text block with cache_control.
+    if (typeof msg.content === 'string') {
+      const t = msg.content;
+      msg.content = [{ type: 'text', text: t, cache_control: cc }];
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control into system message (wrapped string → multipart).');
+      return true;
+    }
+
+    // If content is already an array, add cache_control to the last text block.
+    if (Array.isArray(msg.content)) {
+      // Prefer the last block that looks like a text block.
+      for (let i = msg.content.length - 1; i >= 0; i--) {
+        const b = msg.content[i];
+        if (!b || typeof b !== 'object') continue;
+        if (b.type === 'text' && typeof b.text === 'string') {
+          if (!b.cache_control) {
+            b.cache_control = cc;
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control into existing system text block.');
+            return true;
+          }
+          return false; // already has cache_control
+        }
+      }
+
+      // No text blocks found → append a minimal text block with cache_control.
+      msg.content.push({ type: 'text', text: ' ', cache_control: cc });
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: appended text block with cache_control to system message.');
+      return true;
+    }
+
+    return false;
+  }
+
   function repairOpenAIOrphanedToolCalls(body) {
     if (!body || !Array.isArray(body.input)) return false;
 
@@ -2425,6 +2476,33 @@
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify Grok request:', e);
+      }
+    }
+
+    // ==================== OPENROUTER (OpenAI-compatible) BRANCH ====================
+    else if (url.includes('openrouter.ai') && url.includes('/api/v1/chat/completions')) {
+      vendorForThisCall = 'openrouter';
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+
+          const model = (body && typeof body.model === 'string') ? body.model : '';
+          const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
+
+          if (isClaude) {
+            if (ensureOpenRouterClaudeCacheControl(body)) {
+              modified = true;
+            }
+          }
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter request body updated');
+          }
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify OpenRouter request:', e);
       }
     }
 
