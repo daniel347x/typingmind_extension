@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.35
+// Version: 4.36
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.35';
+  const EXT_VERSION = '4.36';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -259,7 +259,7 @@
     // Ignore TypingMind internal sync/telemetry calls and localhost traffic (noise)
     try {
       const u = String(url || '').toLowerCase();
-      if (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.')) {
+      if (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('/_vercel/')) {
         return null;
       }
     } catch (e) {}
@@ -346,12 +346,45 @@
         function(text) {
           const patch = { response_body_chars: (typeof text === 'string' ? text.length : null) };
           try {
-            // Try JSON parse first
+            // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
             patch.response_body = tmTruncateStringsDeep(parsed, TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
           } catch (e) {
-            // Store truncated text (1000 chars)
-            patch.response_body = tmTruncateStringsDeep(String(text || ''), TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+            // SSE/streaming: store head for context
+            var s = String(text || '');
+            var headLimit = TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS;
+            patch.response_body_head = s.slice(0, headLimit) +
+              (s.length > headLimit ? ('... [tm_truncated +' + (s.length - headLimit) + ' chars]') : '');
+
+            // Extract usage from SSE stream by scanning all data: lines
+            try {
+              var lines = s.split('\n');
+              var lastUsage = null;
+              var anthropicUsage = null;
+              for (var li = 0; li < lines.length; li++) {
+                var line = lines[li].trim();
+                if (!line.startsWith('data: ')) continue;
+                var jsonStr = line.slice(6).trim();
+                if (jsonStr === '[DONE]') continue;
+                try {
+                  var parsed2 = JSON.parse(jsonStr);
+                  // OpenRouter-style: usage in root of chunk
+                  if (parsed2 && parsed2.usage) { lastUsage = parsed2.usage; }
+                  // Anthropic-style: usage in message_start
+                  if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
+                    anthropicUsage = parsed2.message.usage;
+                  }
+                  // Anthropic-style: additional usage in message_delta
+                  if (parsed2 && parsed2.type === 'message_delta' && parsed2.usage) {
+                    anthropicUsage = anthropicUsage || {};
+                    var du = parsed2.usage;
+                    for (var k in du) { if (Object.prototype.hasOwnProperty.call(du, k)) { anthropicUsage[k] = du[k]; } }
+                  }
+                } catch (parseErr) {}
+              }
+              if (lastUsage) { patch.response_usage = lastUsage; }
+              if (anthropicUsage) { patch.response_anthropic_usage = anthropicUsage; }
+            } catch (usageErr) {}
           }
           tmUpdateCaptureRecord(captureId, patch);
         },
@@ -1765,7 +1798,9 @@
       system_tools_prefix_hash,
       response_status: cap.response_status,
       response_ok: cap.response_ok,
-      response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null
+      response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null,
+      response_usage: cap.response_usage || null,
+      response_anthropic_usage: cap.response_anthropic_usage || null
     };
   }
 
