@@ -1704,6 +1704,36 @@
     return out;
   }
 
+  function tmFnv1a32(str) {
+    // Simple fast deterministic hash for debugging prefix stability.
+    // Not cryptographic.
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      // h *= 16777619 (FNV prime) with 32-bit overflow
+      h = (h + ((h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24))) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
+  function tmComputeSystemToolsPrefixHash(reqBody) {
+    try {
+      if (!reqBody || typeof reqBody !== 'object') return null;
+      const tools = Array.isArray(reqBody.tools) ? reqBody.tools : null;
+      // For OpenAI chat-completions payloads, system is a message with role=system.
+      let system = null;
+      if (Array.isArray(reqBody.messages)) {
+        const sys = reqBody.messages.find(m => m && m.role === 'system');
+        system = sys ? sys.content : null;
+      }
+      const stableObj = { tools, system };
+      const s = JSON.stringify(stableObj);
+      return tmFnv1a32(s);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function tmBuildCaptureSummary(cap) {
     if (!cap) return null;
     const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
@@ -1711,12 +1741,14 @@
     let model = null;
     let hasCacheControl = null;
     let cacheControlSummary = null;
+    let system_tools_prefix_hash = null;
 
     try {
       if (reqBody && typeof reqBody === 'object') {
         model = reqBody.model || null;
         cacheControlSummary = tmSummarizeCacheControl(reqBody);
         hasCacheControl = !!(cacheControlSummary && cacheControlSummary.hasAny);
+        system_tools_prefix_hash = tmComputeSystemToolsPrefixHash(reqBody);
       }
     } catch (e) {}
 
@@ -1730,6 +1762,7 @@
       model,
       hasCacheControl,
       cacheControlSummary,
+      system_tools_prefix_hash,
       response_status: cap.response_status,
       response_ok: cap.response_ok,
       response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null
@@ -1835,13 +1868,16 @@
       const protocol = escapeHtml(cap.protocol || 'unknown');
       const capId = escapeHtml(cap.id || '');
 
-      // Attempt to show model
+      // Attempt to show model + prefix hash
       let model = '';
+      let prefixHash = '';
       try {
-        const b = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
-        model = (b && b.model) ? String(b.model) : '';
+        const sum = tmBuildCaptureSummary(cap);
+        model = (sum && sum.model) ? String(sum.model) : '';
+        prefixHash = (sum && sum.system_tools_prefix_hash) ? String(sum.system_tools_prefix_hash) : '';
       } catch (e) {}
       model = escapeHtml(model);
+      prefixHash = escapeHtml(prefixHash);
 
       const outBtnStyle = 'background:#245f36;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
       const inBtnStyle  = 'background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
@@ -1854,6 +1890,7 @@
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65vw;">' +
               '<span style="opacity:0.8;">#' + (idx + 1) + '</span> ' + protocol +
               (model ? (' <span style="opacity:0.75;">(' + model + ')</span>') : '') +
+              (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
       html += '<div style="font-size:10px;opacity:0.85;white-space:nowrap;">' + ts + '</div>';
       html += '</div>';
