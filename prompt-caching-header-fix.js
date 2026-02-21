@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.28
+// Version: 4.29
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.28';
+  const EXT_VERSION = '4.29';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -48,12 +48,296 @@
   console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
   
   // DEBUG: Expose conversation state for console inspection
+  // NOTE: These are best-effort debugging utilities, not part of TypingMind itself.
+  //       They exist so a human can quickly export the latest payload(s) for agent analysis.
+
+  const TM_PAYLOAD_CAPTURE_RING_KEY = 'tm_payload_captures_v1';
+  const TM_PAYLOAD_CAPTURE_EXPORT_KEY = 'tm_payload_captures_last_export';
+  const TM_PAYLOAD_CAPTURE_ENABLED_KEY = 'tm_payload_capture_enabled';
+  const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
+
+  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 20;
+  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS = 1000;
+
+  // "Truly huge" fallback threshold (after truncation). If a capture exceeds this,
+  // we store a skeleton that preserves protocol-critical fields (model, cache_control,
+  // tool_use ids, etc.) while stripping large text.
+  const TM_PAYLOAD_CAPTURE_TRULY_HUGE_CHARS = 2_000_000;
+
+  function tmCaptureEnabled() {
+    try {
+      // Default: ON unless explicitly disabled.
+      return localStorage.getItem(TM_PAYLOAD_CAPTURE_ENABLED_KEY) !== 'false';
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function tmNormalizeHeaders(h) {
+    const out = {};
+    if (!h) return out;
+    try {
+      if (typeof Headers !== 'undefined' && h instanceof Headers) {
+        h.forEach((v, k) => { out[k] = v; });
+        return out;
+      }
+    } catch (e) {}
+
+    if (Array.isArray(h)) {
+      h.forEach(pair => {
+        if (!pair || pair.length < 2) return;
+        out[String(pair[0])] = String(pair[1]);
+      });
+      return out;
+    }
+
+    if (typeof h === 'object') {
+      Object.keys(h).forEach(k => { out[k] = String(h[k]); });
+    }
+
+    return out;
+  }
+
+  function tmMaybeRedactHeaders(headersObj) {
+    try {
+      const redact = localStorage.getItem(TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY) === 'true';
+      if (!redact) return headersObj;
+    } catch (e) {
+      return headersObj;
+    }
+
+    const out = { ...headersObj };
+    Object.keys(out).forEach(k => {
+      const lower = String(k).toLowerCase();
+      if (lower === 'authorization' || lower === 'cookie' || lower === 'x-api-key') {
+        out[k] = '[REDACTED]';
+      }
+    });
+    return out;
+  }
+
+  function tmTruncateStringsDeep(x, maxChars, seen) {
+    if (x == null) return x;
+
+    const t = typeof x;
+    if (t === 'string') {
+      if (x.length <= maxChars) return x;
+      const extra = x.length - maxChars;
+      return x.slice(0, maxChars) + `… [tm_truncated +${extra} chars]`;
+    }
+    if (t === 'number' || t === 'boolean') return x;
+
+    if (!seen) seen = new WeakSet();
+    if (t === 'object') {
+      // Avoid circular refs
+      try {
+        if (seen.has(x)) return '[tm_circular_ref]';
+        seen.add(x);
+      } catch (e) {}
+
+      if (Array.isArray(x)) {
+        // NO array truncation (per Dan request)
+        return x.map(v => tmTruncateStringsDeep(v, maxChars, seen));
+      }
+
+      const out = {};
+      Object.keys(x).forEach(k => {
+        out[k] = tmTruncateStringsDeep(x[k], maxChars, seen);
+      });
+      return out;
+    }
+
+    return `[tm_unhandled_type:${t}]`;
+  }
+
+  function tmDetectProtocol(url, bodyObj) {
+    const u = String(url || '');
+    if (u.includes('/v1/responses')) return 'openai-responses';
+    if (u.includes('/v1/chat/completions')) return 'openai-chat-completions';
+    if (u.includes('api.anthropic.com') || (bodyObj && Array.isArray(bodyObj.messages) && !Array.isArray(bodyObj.input))) {
+      return 'anthropic-messages';
+    }
+    if (bodyObj && Array.isArray(bodyObj.contents)) return 'gemini-generatecontent';
+    return 'unknown';
+  }
+
+  function tmBuildHugeSkeleton(bodyObj) {
+    // Preserve enough structure to debug cache_control placement + tool use + protocol.
+    // Intentionally strips large text.
+    if (!bodyObj || typeof bodyObj !== 'object') return bodyObj;
+
+    // Anthropic/OpenAI chat-style
+    if (Array.isArray(bodyObj.messages)) {
+      return {
+        _tm_skeleton: true,
+        model: bodyObj.model || null,
+        cache_control: bodyObj.cache_control || undefined,
+        tools: Array.isArray(bodyObj.tools) ? { count: bodyObj.tools.length } : undefined,
+        system: bodyObj.system ? '[tm_system_present]' : undefined,
+        messages: bodyObj.messages.map(m => {
+          const msg = { role: m && m.role ? m.role : null };
+          const c = m && m.content;
+          if (typeof c === 'string') {
+            msg.content = tmTruncateStringsDeep(c, 200);
+          } else if (Array.isArray(c)) {
+            msg.content = c.map(block => {
+              if (!block || typeof block !== 'object') return block;
+              const b = { type: block.type || null };
+              // Keep the cache_control object if present
+              if (block.cache_control) b.cache_control = block.cache_control;
+              // Keep tool wiring
+              if (block.id) b.id = block.id;
+              if (block.tool_use_id) b.tool_use_id = block.tool_use_id;
+              if (block.name) b.name = block.name;
+              // Keep short previews of text
+              if (typeof block.text === 'string') b.text = tmTruncateStringsDeep(block.text, 200);
+              // Keep input/output shapes but truncate deep strings
+              if (block.input !== undefined) b.input = tmTruncateStringsDeep(block.input, 200);
+              if (block.content !== undefined) b.content = tmTruncateStringsDeep(block.content, 200);
+              return b;
+            });
+          } else {
+            msg.content = '[tm_content_unhandled]';
+          }
+          return msg;
+        })
+      };
+    }
+
+    // OpenAI Responses API style
+    if (Array.isArray(bodyObj.input)) {
+      return {
+        _tm_skeleton: true,
+        model: bodyObj.model || null,
+        prompt_cache_key: bodyObj.prompt_cache_key,
+        prompt_cache_retention: bodyObj.prompt_cache_retention,
+        input: bodyObj.input.map(m => {
+          const msg = { role: m && m.role ? m.role : null };
+          const c = m && m.content;
+          msg.content = tmTruncateStringsDeep(c, 200);
+          return msg;
+        })
+      };
+    }
+
+    return {
+      _tm_skeleton: true,
+      keys: Object.keys(bodyObj)
+    };
+  }
+
+  function tmReadCaptureRing() {
+    try {
+      const raw = localStorage.getItem(TM_PAYLOAD_CAPTURE_RING_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function tmWriteCaptureRing(arr) {
+    try {
+      localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(arr));
+    } catch (e) {
+      // If localStorage is full or blocked, do not break fetch.
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to persist payload capture ring buffer:', e);
+    }
+  }
+
+  function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall) {
+    if (!tmCaptureEnabled()) return;
+
+    const headersNorm = tmMaybeRedactHeaders(tmNormalizeHeaders(options && options.headers));
+
+    const record = {
+      ts: new Date().toISOString(),
+      url: String(url || ''),
+      method: (options && options.method) ? String(options.method) : 'POST',
+      vendorHint: vendorForThisCall || null,
+      convIdHint: convIdForThisCall || null,
+      headers: headersNorm,
+      body_parse_error: null,
+      protocol: 'unknown',
+      body: null,
+      body_skeleton: null,
+      body_chars_estimate: null,
+      stored_as_skeleton: false
+    };
+
+    try {
+      const bodyRaw = options && options.body;
+      if (typeof bodyRaw === 'string') {
+        record.body_chars_estimate = bodyRaw.length;
+        const parsed = JSON.parse(bodyRaw);
+        record.protocol = tmDetectProtocol(url, parsed);
+
+        const truncated = tmTruncateStringsDeep(parsed, TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+        const candidateStr = JSON.stringify(truncated);
+
+        if (candidateStr.length > TM_PAYLOAD_CAPTURE_TRULY_HUGE_CHARS) {
+          record.body_skeleton = tmBuildHugeSkeleton(parsed);
+          record.stored_as_skeleton = true;
+        } else {
+          record.body = truncated;
+        }
+      } else if (bodyRaw != null) {
+        // Non-string body (rare in TypingMind LLM calls, but possible).
+        record.body = { _tm_non_string_body: true, type: typeof bodyRaw };
+      }
+    } catch (e) {
+      record.body_parse_error = String(e && e.message ? e.message : e);
+    }
+
+    const ring = tmReadCaptureRing();
+    ring.push(record);
+    while (ring.length > TM_PAYLOAD_CAPTURE_MAX_ENTRIES) {
+      ring.shift();
+    }
+    tmWriteCaptureRing(ring);
+  }
+
+  function tmExportPayloadCapturesToClipboard() {
+    const ring = tmReadCaptureRing();
+    const json = JSON.stringify(ring, null, 2);
+
+    try {
+      localStorage.setItem(TM_PAYLOAD_CAPTURE_EXPORT_KEY, json);
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save payload capture export to localStorage:', e);
+    }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      return navigator.clipboard.writeText(json).then(
+        function() {
+          console.log('✅ [v' + EXT_VERSION + '] Copied payload captures to clipboard (' + ring.length + ' entries).');
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed for payload captures:', err);
+        }
+      );
+    }
+
+    console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard API not available. Read from localStorage key: ' + TM_PAYLOAD_CAPTURE_EXPORT_KEY);
+  }
+
+  function tmClearPayloadCaptures() {
+    try {
+      localStorage.removeItem(TM_PAYLOAD_CAPTURE_RING_KEY);
+    } catch (e) {}
+  }
+
   window._payloadExtDebug = {
+    // Existing
     getLastSeenConv: () => lastSeenConversation,
     getAnthropicBody: () => lastAnthropicBodyForExport,
     getGeminiBody: () => lastGeminiBodyForExport,
     getGrokBody: () => lastGrokBodyForExport,
-    getGpt51Body: () => lastGpt51BodyForExport
+    getGpt51Body: () => lastGpt51BodyForExport,
+
+    // NEW: always-on payload capture ring buffer
+    getCaptures: () => tmReadCaptureRing(),
+    exportCapturesToClipboard: () => tmExportPayloadCapturesToClipboard(),
+    clearCaptures: () => tmClearPayloadCaptures()
   };
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
@@ -1759,6 +2043,17 @@
       } catch (e) {
         console.warn('⚠️ [v4.27] Failed to parse/modify OpenAI Responses request:', e);
       }
+    }
+
+
+    // ==================== PAYLOAD CAPTURE (always-on, ring buffer) ====================
+    // Captures the FINAL outbound request payload (after any modifications above).
+    // This makes it easy to debug provider URLs (OpenRouter vs direct), request protocol,
+    // and prompt caching markers without using the Network tab.
+    try {
+      tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall);
+    } catch (e) {
+      // Never break requests due to capture
     }
 
     const fetchPromise = originalFetch(...args);
