@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.43
+// Version: 4.44
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.43';
+  const EXT_VERSION = '4.44';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -47,6 +47,82 @@
 
   console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
   
+  // ==================== OPENROUTER CACHE TTL WARNING ====================
+  // Tracks the last OpenRouter+Claude request timestamp and displays a visual
+  // warning in the widget when the 5-minute cache TTL is about to expire.
+  let tmOpenRouterLastRequestTs = 0;
+  let tmOpenRouterCacheWarningInterval = null;
+  const TM_OR_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  const TM_OR_CACHE_WARN_MS = 3 * 60 * 1000; // Start warning at 3 minutes
+
+  function tmResetOpenRouterCacheTimer() {
+    tmOpenRouterLastRequestTs = Date.now();
+    // Clear any existing warning state on the widget immediately
+    tmUpdateCacheWarningDisplay();
+    // Start interval if not already running
+    if (!tmOpenRouterCacheWarningInterval) {
+      tmOpenRouterCacheWarningInterval = setInterval(tmUpdateCacheWarningDisplay, 1000);
+    }
+  }
+
+  function tmUpdateCacheWarningDisplay() {
+    const widget = document.getElementById('gpt51-usage-widget');
+    if (!widget) return;
+
+    const elapsed = Date.now() - tmOpenRouterLastRequestTs;
+    const remaining = TM_OR_CACHE_TTL_MS - elapsed;
+
+    // Remove warning elements and reset style if not in warning zone
+    let warningEl = document.getElementById('tm-or-cache-warning');
+
+    if (tmOpenRouterLastRequestTs === 0 || elapsed < TM_OR_CACHE_WARN_MS) {
+      // Not in warning zone — reset widget to normal
+      widget.style.background = 'rgba(0,0,0,0.80)';
+      widget.style.animation = '';
+      if (warningEl) warningEl.remove();
+      return;
+    }
+
+    if (remaining <= 0) {
+      // Cache expired
+      widget.style.background = '#cc3300';
+      widget.style.animation = '';
+      if (!warningEl) {
+        warningEl = document.createElement('div');
+        warningEl.id = 'tm-or-cache-warning';
+        warningEl.style.cssText = 'font-size:11px;font-weight:bold;color:#fff;padding:3px 0;text-align:center;';
+        widget.insertBefore(warningEl, widget.firstChild);
+      }
+      warningEl.textContent = '⚠️ OPENROUTER CACHE EXPIRED';
+      return;
+    }
+
+    // In warning zone (3min to 5min) — gradient from dark to orange
+    const warnProgress = (elapsed - TM_OR_CACHE_WARN_MS) / (TM_OR_CACHE_TTL_MS - TM_OR_CACHE_WARN_MS);
+    const clampedProgress = Math.min(Math.max(warnProgress, 0), 1);
+    // Pulse: oscillate opacity between 0.7 and 1.0
+    const pulse = 0.85 + 0.15 * Math.sin(Date.now() / 400);
+    const r = Math.round(0 + clampedProgress * 204); // 0 -> 204 (orange)
+    const g = Math.round(0 + clampedProgress * 102); // 0 -> 102
+    const b = Math.round(0);                          // stays 0
+    widget.style.background = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.80 * pulse) + ')';
+    widget.style.animation = '';
+
+    // Format remaining time
+    const remSec = Math.ceil(remaining / 1000);
+    const mins = Math.floor(remSec / 60);
+    const secs = remSec % 60;
+    const timeStr = mins + 'm ' + (secs < 10 ? '0' : '') + secs + 's';
+
+    if (!warningEl) {
+      warningEl = document.createElement('div');
+      warningEl.id = 'tm-or-cache-warning';
+      warningEl.style.cssText = 'font-size:11px;font-weight:bold;color:#fff;padding:3px 0;text-align:center;';
+      widget.insertBefore(warningEl, widget.firstChild);
+    }
+    warningEl.textContent = '⚠️ Send keepalive to OpenRouter. Time remaining: ' + timeStr;
+  }
+
   // DEBUG: Expose conversation state for console inspection
   // NOTE: These are best-effort debugging utilities, not part of TypingMind itself.
   //       They exist so a human can quickly export the latest payload(s) for agent analysis.
@@ -2762,6 +2838,9 @@
             if (ensureOpenRouterClaudeCacheControl(body)) {
               modified = true;
             }
+
+            // Reset cache TTL warning timer on every OpenRouter+Claude request
+            tmResetOpenRouterCacheTimer();
           }
 
           if (modified) {
