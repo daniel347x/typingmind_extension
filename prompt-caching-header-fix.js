@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.29
+// Version: 4.30
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.29';
+  const EXT_VERSION = '4.30';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -244,12 +244,23 @@
     }
   }
 
-  function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall) {
-    if (!tmCaptureEnabled()) return;
+  function tmUpdateCaptureRecord(captureId, patch) {
+    if (!captureId || !patch) return;
+    const ring = tmReadCaptureRing();
+    const idx = ring.findIndex(r => r && r.id === captureId);
+    if (idx < 0) return;
+    ring[idx] = { ...ring[idx], ...patch };
+    tmWriteCaptureRing(ring);
+  }
 
+  function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall) {
+    if (!tmCaptureEnabled()) return null;
+
+    const id = 'cap_' + Date.now() + '_' + Math.random().toString(16).slice(2);
     const headersNorm = tmMaybeRedactHeaders(tmNormalizeHeaders(options && options.headers));
 
     const record = {
+      id,
       ts: new Date().toISOString(),
       url: String(url || ''),
       method: (options && options.method) ? String(options.method) : 'POST',
@@ -261,7 +272,15 @@
       body: null,
       body_skeleton: null,
       body_chars_estimate: null,
-      stored_as_skeleton: false
+      stored_as_skeleton: false,
+
+      // Response capture (filled in later, best-effort)
+      response_status: null,
+      response_ok: null,
+      response_headers: null,
+      response_body_parse_error: null,
+      response_body: null,
+      response_body_chars: null
     };
 
     try {
@@ -294,6 +313,47 @@
       ring.shift();
     }
     tmWriteCaptureRing(ring);
+
+    return id;
+  }
+
+  function tmCaptureResponse(captureId, response) {
+    if (!tmCaptureEnabled() || !captureId || !response) return;
+
+    try {
+      const hdrs = tmMaybeRedactHeaders(tmNormalizeHeaders(response.headers));
+      tmUpdateCaptureRecord(captureId, {
+        response_status: response.status,
+        response_ok: response.ok,
+        response_headers: hdrs
+      });
+    } catch (e) {
+      // ignore
+    }
+
+    // Best-effort response body capture (can be large / streaming)
+    try {
+      const clone = response.clone();
+      clone.text().then(
+        function(text) {
+          const patch = { response_body_chars: (typeof text === 'string' ? text.length : null) };
+          try {
+            // Try JSON parse first
+            const parsed = JSON.parse(text);
+            patch.response_body = tmTruncateStringsDeep(parsed, TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+          } catch (e) {
+            // Store truncated text (1000 chars)
+            patch.response_body = tmTruncateStringsDeep(String(text || ''), TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS);
+          }
+          tmUpdateCaptureRecord(captureId, patch);
+        },
+        function(err) {
+          tmUpdateCaptureRecord(captureId, { response_body_parse_error: String(err && err.message ? err.message : err) });
+        }
+      );
+    } catch (e) {
+      tmUpdateCaptureRecord(captureId, { response_body_parse_error: String(e && e.message ? e.message : e) });
+    }
   }
 
   function tmExportPayloadCapturesToClipboard() {
@@ -888,6 +948,24 @@
             ev.stopPropagation();
             return;
           }
+
+          // Open payload capture modal (ring buffer summary + per-entry copy)
+          if (target.dataset.action === 'open-payload-capture-modal') {
+            openPayloadCaptureModal();
+            ev.stopPropagation();
+            return;
+          }
+
+          // Clear ALL GPT-5.1 tracked conversations
+          if (target.dataset.action === 'clear-gpt51-conversations') {
+            const ok = confirm('Clear ALL tracked GPT-5.1 conversations from this widget?');
+            if (ok) {
+              try { localStorage.removeItem('gpt51_conv_usage'); } catch (e) {}
+              renderGpt51UsageWidget();
+            }
+            ev.stopPropagation();
+            return;
+          }
           
           // TOGGLE GEMINI REPAIR (v4.24)
           if (target.dataset.action === 'toggle-gemini-repair') {
@@ -983,7 +1061,9 @@
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
 
       const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
       const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
@@ -1068,6 +1148,8 @@
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
+    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
     
     const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
     const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
@@ -1457,6 +1539,241 @@
   function closePayloadModal() {
     if (!payloadModalEl) return;
     payloadModalEl.style.display = 'none';
+  }
+
+  // ==================== PAYLOAD CAPTURE MODAL (RING BUFFER) ====================
+
+  let payloadCaptureModalEl = null;
+  let payloadCaptureModalInnerEl = null;
+
+  function escapeHtml(s) {
+    return String(s || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function ensurePayloadCaptureModal() {
+    if (payloadCaptureModalEl) return payloadCaptureModalEl;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'tm-payload-capture-modal-overlay';
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.zIndex = '100001';
+    overlay.style.background = 'rgba(0,0,0,0.55)';
+    overlay.style.display = 'none';
+
+    const panel = document.createElement('div');
+    panel.id = 'tm-payload-capture-modal';
+    panel.style.position = 'absolute';
+    panel.style.top = '50%';
+    panel.style.left = '50%';
+    panel.style.transform = 'translate(-50%, -50%)';
+    panel.style.width = '86vw';
+    panel.style.height = '86vh';
+    panel.style.background = 'rgba(15,15,20,0.96)';
+    panel.style.color = '#fff';
+    panel.style.borderRadius = '6px';
+    panel.style.boxShadow = '0 4px 16px rgba(0,0,0,0.6)';
+    panel.style.padding = '10px 12px';
+    panel.style.display = 'flex';
+    panel.style.flexDirection = 'column';
+    panel.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+    panel.style.fontSize = '12px';
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.alignItems = 'center';
+    header.style.justifyContent = 'space-between';
+    header.style.marginBottom = '6px';
+    header.innerHTML =
+      '<div style="font-weight:600;">Payload Capture Ring Buffer</div>' +
+      '<div style="font-size:11px;opacity:0.8;">' +
+      'Most recent first. Copy outbound/request + inbound/response pieces for debugging.' +
+      '</div>' +
+      '<button data-action="close-payload-capture-modal" ' +
+      'style="margin-left:8px;background:#444;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Close</button>';
+
+    const body = document.createElement('div');
+    body.id = 'tm-payload-capture-modal-body';
+    body.style.flex = '1';
+    body.style.overflow = 'auto';
+    body.style.marginTop = '4px';
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    payloadCaptureModalEl = overlay;
+    payloadCaptureModalInnerEl = body;
+
+    overlay.addEventListener('click', function(ev) {
+      const t = ev.target;
+      if (!t) return;
+
+      // Click outside panel closes
+      if (t === overlay) {
+        closePayloadCaptureModal();
+        return;
+      }
+
+      if (t.dataset && t.dataset.action === 'close-payload-capture-modal') {
+        closePayloadCaptureModal();
+        return;
+      }
+
+      if (t.dataset && t.dataset.action === 'copy-payload-capture') {
+        const capId = t.dataset.captureId;
+        const part = t.dataset.part;
+        if (!capId || !part) return;
+        copyPayloadCapturePart(capId, part);
+        return;
+      }
+    });
+
+    return overlay;
+  }
+
+  function getCaptureById(captureId) {
+    const ring = tmReadCaptureRing();
+    return ring.find(r => r && r.id === captureId) || null;
+  }
+
+  function copyTextToClipboard(text, label) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function() {
+          console.log('✅ [v' + EXT_VERSION + '] Copied: ' + (label || 'payload'));
+        },
+        function(err) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Clipboard write failed:', err);
+          alert('Clipboard write failed; see console.');
+        }
+      );
+      return;
+    }
+    alert('Clipboard API not available.');
+  }
+
+  function copyPayloadCapturePart(captureId, part) {
+    const cap = getCaptureById(captureId);
+    if (!cap) return;
+
+    const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+
+    let obj = null;
+    let label = part;
+
+    if (part === 'out_headers') {
+      obj = cap.headers;
+      label = 'Outbound headers';
+    } else if (part === 'out_payload') {
+      obj = {
+        url: cap.url,
+        method: cap.method,
+        protocol: cap.protocol,
+        vendorHint: cap.vendorHint,
+        convIdHint: cap.convIdHint,
+        body: reqBody
+      };
+      label = 'Outbound payload';
+    } else if (part === 'in_headers') {
+      obj = cap.response_headers;
+      label = 'Response headers';
+    } else if (part === 'in_payload') {
+      obj = {
+        status: cap.response_status,
+        ok: cap.response_ok,
+        body: cap.response_body
+      };
+      label = 'Response payload';
+    }
+
+    if (obj == null) return;
+    copyTextToClipboard(JSON.stringify(obj, null, 2), label);
+  }
+
+  function renderPayloadCaptureModal() {
+    if (!payloadCaptureModalInnerEl) return;
+
+    const ring = tmReadCaptureRing();
+    const items = ring.slice().reverse(); // most recent first
+
+    let html = '';
+
+    if (!items.length) {
+      html = '<div style="opacity:0.85;">No captured payloads yet.</div>';
+      payloadCaptureModalInnerEl.innerHTML = html;
+      return;
+    }
+
+    html += '<div style="font-size:11px;opacity:0.85;margin-bottom:8px;">' +
+            'Stored in localStorage key <code>' + escapeHtml(TM_PAYLOAD_CAPTURE_RING_KEY) + '</code>. ' +
+            'Each string is truncated to ' + TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS + ' chars. ' +
+            'Responses are best-effort (may be empty for streaming/opaque responses).' +
+            '</div>';
+
+    items.forEach((cap, idx) => {
+      if (!cap) return;
+      const ts = escapeHtml(cap.ts || '');
+      const url = escapeHtml(cap.url || '');
+      const protocol = escapeHtml(cap.protocol || 'unknown');
+      const capId = escapeHtml(cap.id || '');
+
+      // Attempt to show model
+      let model = '';
+      try {
+        const b = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+        model = (b && b.model) ? String(b.model) : '';
+      } catch (e) {}
+      model = escapeHtml(model);
+
+      const outBtnStyle = 'background:#245f36;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
+      const inBtnStyle  = 'background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
+
+      const hasResp = cap.response_status != null || cap.response_headers != null || cap.response_body != null;
+      const inDisabled = hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;';
+
+      html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
+      html += '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+      html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:65vw;">' +
+              '<span style="opacity:0.8;">#' + (idx + 1) + '</span> ' + protocol +
+              (model ? (' <span style="opacity:0.75;">(' + model + ')</span>') : '') +
+              '</div>';
+      html += '<div style="font-size:10px;opacity:0.85;white-space:nowrap;">' + ts + '</div>';
+      html += '</div>';
+
+      html += '<div style="font-size:11px;opacity:0.9;margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
+
+      html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
+      html += '<div style="margin-top:2px;">' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Outbound Headers</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Outbound Payload</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">Response Headers</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">Response Payload</button>' +
+              '</div>';
+
+      html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
+      html += '</div>';
+    });
+
+    payloadCaptureModalInnerEl.innerHTML = html;
+  }
+
+  function openPayloadCaptureModal() {
+    if (typeof document === 'undefined') return;
+    const overlay = ensurePayloadCaptureModal();
+    overlay.style.display = 'block';
+    renderPayloadCaptureModal();
+  }
+
+  function closePayloadCaptureModal() {
+    if (!payloadCaptureModalEl) return;
+    payloadCaptureModalEl.style.display = 'none';
   }
 
   // ==================== FETCH OVERRIDE ====================
@@ -2050,16 +2367,25 @@
     // Captures the FINAL outbound request payload (after any modifications above).
     // This makes it easy to debug provider URLs (OpenRouter vs direct), request protocol,
     // and prompt caching markers without using the Network tab.
+    let captureId = null;
     try {
-      tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall);
+      captureId = tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall);
     } catch (e) {
       // Never break requests due to capture
     }
 
     const fetchPromise = originalFetch(...args);
 
+    // Capture response headers/body (best-effort, does not affect the original response stream)
+    const fetchPromiseCaptured = captureId
+      ? fetchPromise.then(function(response) {
+          try { tmCaptureResponse(captureId, response); } catch (e) {}
+          return response;
+        })
+      : fetchPromise;
+
     if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
-      return fetchPromise.then(function(response) {
+      return fetchPromiseCaptured.then(function(response) {
         try {
           const clone = response.clone();
           clone.text().then(function(text) {
@@ -2099,7 +2425,7 @@
       });
     }
 
-    return fetchPromise;
+    return fetchPromiseCaptured;
   };
 
   // Initial render from any persisted usage in localStorage so widget appears on load
