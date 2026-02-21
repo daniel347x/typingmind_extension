@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.31
+// Version: 4.32
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.31';
+  const EXT_VERSION = '4.32';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1667,6 +1667,75 @@
     alert('Clipboard API not available.');
   }
 
+  function tmSummarizeCacheControl(bodyObj) {
+    // Returns {count, ttls: {...}, hasAny, paths_sample:[...]} for quick debugging.
+    const out = { count: 0, hasAny: false, ttls: {}, paths_sample: [] };
+    const maxPaths = 20;
+
+    function walk(x, path) {
+      if (x == null) return;
+      if (typeof x !== 'object') return;
+      if (Array.isArray(x)) {
+        for (let i = 0; i < x.length; i++) {
+          walk(x[i], path + '[' + i + ']');
+        }
+        return;
+      }
+      // object
+      if (Object.prototype.hasOwnProperty.call(x, 'cache_control')) {
+        out.count += 1;
+        out.hasAny = true;
+        if (out.paths_sample.length < maxPaths) out.paths_sample.push(path + '.cache_control');
+        try {
+          const cc = x.cache_control;
+          if (cc && typeof cc === 'object' && typeof cc.ttl === 'string') {
+            out.ttls[cc.ttl] = (out.ttls[cc.ttl] || 0) + 1;
+          } else {
+            out.ttls['(none)'] = (out.ttls['(none)'] || 0) + 1;
+          }
+        } catch (e) {}
+      }
+      Object.keys(x).forEach(k => {
+        walk(x[k], path ? (path + '.' + k) : k);
+      });
+    }
+
+    walk(bodyObj, 'body');
+    return out;
+  }
+
+  function tmBuildCaptureSummary(cap) {
+    if (!cap) return null;
+    const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+
+    let model = null;
+    let hasCacheControl = null;
+    let cacheControlSummary = null;
+
+    try {
+      if (reqBody && typeof reqBody === 'object') {
+        model = reqBody.model || null;
+        cacheControlSummary = tmSummarizeCacheControl(reqBody);
+        hasCacheControl = !!(cacheControlSummary && cacheControlSummary.hasAny);
+      }
+    } catch (e) {}
+
+    return {
+      ts: cap.ts,
+      url: cap.url,
+      method: cap.method,
+      protocol: cap.protocol,
+      vendorHint: cap.vendorHint,
+      convIdHint: cap.convIdHint,
+      model,
+      hasCacheControl,
+      cacheControlSummary,
+      response_status: cap.response_status,
+      response_ok: cap.response_ok,
+      response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null
+    };
+  }
+
   function copyPayloadCapturePart(captureId, part) {
     const cap = getCaptureById(captureId);
     if (!cap) return;
@@ -1689,6 +1758,26 @@
         body: reqBody
       };
       label = 'Outbound payload';
+    } else if (part === 'out_payload_skeleton') {
+      // Always generate a skeleton on demand for easy sharing.
+      let skeleton = null;
+      try {
+        skeleton = tmBuildHugeSkeleton(reqBody);
+      } catch (e) {
+        skeleton = { _tm_skeleton_error: String(e && e.message ? e.message : e) };
+      }
+      obj = {
+        url: cap.url,
+        method: cap.method,
+        protocol: cap.protocol,
+        vendorHint: cap.vendorHint,
+        convIdHint: cap.convIdHint,
+        body_skeleton: skeleton
+      };
+      label = 'Outbound payload (skeleton)';
+    } else if (part === 'summary') {
+      obj = tmBuildCaptureSummary(cap);
+      label = 'Capture summary';
     } else if (part === 'in_headers') {
       obj = cap.response_headers;
       label = 'Response headers';
@@ -1699,6 +1788,20 @@
         body: cap.response_body
       };
       label = 'Response payload';
+    } else if (part === 'in_payload_skeleton') {
+      // Response may be string or object. Skeleton == aggressively trimmed.
+      let sk = null;
+      try {
+        sk = tmTruncateStringsDeep(cap.response_body, 200);
+      } catch (e) {
+        sk = { _tm_skeleton_error: String(e && e.message ? e.message : e) };
+      }
+      obj = {
+        status: cap.response_status,
+        ok: cap.response_ok,
+        body_skeleton: sk
+      };
+      label = 'Response payload (skeleton)';
     }
 
     if (obj == null) return;
@@ -1759,10 +1862,13 @@
 
       html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
       html += '<div style="margin-top:2px;">' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:0;">Summary</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Outbound Headers</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Outbound Payload</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Outbound Skeleton</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">Response Headers</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">Response Payload</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">Response Skeleton</button>' +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
