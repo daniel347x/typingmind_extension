@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.46
+// Version: 4.47
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.46';
+  const EXT_VERSION = '4.47';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2496,6 +2496,26 @@
 
     var messages = body.messages;
     var changed = false;
+
+    // IMPORTANT: Anthropic/OpenRouter enforces max 4 cache_control blocks.
+    // To avoid drift/accumulation across turns, first strip ALL existing per-block
+    // cache_control markers, then re-inject exactly the 4 desired breakpoints.
+    var strippedAny = false;
+    for (var si = 0; si < messages.length; si++) {
+      var sm = messages[si];
+      if (!sm || !Array.isArray(sm.content)) continue;
+      for (var sj = 0; sj < sm.content.length; sj++) {
+        var sb = sm.content[sj];
+        if (sb && typeof sb === 'object' && sb.cache_control) {
+          delete sb.cache_control;
+          strippedAny = true;
+        }
+      }
+    }
+    if (strippedAny) {
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: stripped existing per-block cache_control markers before re-injection.');
+      changed = true;
+    }
 
     // 1) System message breakpoint
     var sysIdx = messages.findIndex(function(m) { return m && m.role === 'system'; });
