@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.45
+// Version: 4.46
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.45';
+  const EXT_VERSION = '4.46';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2447,17 +2447,28 @@
     }
 
     if (Array.isArray(msg.content)) {
-      // Find last text block and tag it.
+      // Find last text block and tag/normalize it.
       for (var i = msg.content.length - 1; i >= 0; i--) {
         var b = msg.content[i];
         if (!b || typeof b !== 'object') continue;
         if (b.type === 'text' && typeof b.text === 'string') {
-          if (!b.cache_control) {
+          if (!b.cache_control || typeof b.cache_control !== 'object') {
             b.cache_control = cc;
             console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected cache_control on ' + (label || 'message') + '.');
             return true;
           }
-          return false; // already has cache_control
+
+          // Normalize existing cache_control to avoid TTL mismatch errors (e.g., 5m vs 1h).
+          var prevType = b.cache_control.type;
+          var prevTtl = b.cache_control.ttl;
+          if (prevType !== 'ephemeral' || prevTtl !== '1h') {
+            b.cache_control.type = 'ephemeral';
+            b.cache_control.ttl = '1h';
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: normalized existing cache_control on ' + (label || 'message') + ' to ttl:1h (was type:' + prevType + ', ttl:' + prevTtl + ').');
+            return true;
+          }
+
+          return false; // already normalized
         }
       }
       // No text blocks: append minimal one.
@@ -2828,17 +2839,25 @@
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
 
           if (isClaude) {
-            // TEST (v4.34): Try top-level automatic cache_control first.
-            // If OpenRouter's /chat/completions rejects this for Claude, we'll see a 400 error
-            // and can fall back to block-level injection.
-            if (!body.cache_control) {
-              body.cache_control = { type: 'ephemeral' };
-              console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected TOP-LEVEL cache_control (automatic caching test)');
+            // Normalize top-level cache_control to ttl:1h.
+            // OpenRouter/Anthropic now rejects mixed TTLs between top-level and block-level
+            // cache_control (e.g., top-level 5m vs message block 1h).
+            if (!body.cache_control || typeof body.cache_control !== 'object') {
+              body.cache_control = { type: 'ephemeral', ttl: '1h' };
+              console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: injected TOP-LEVEL cache_control ttl:1h');
               modified = true;
+            } else {
+              var topPrevType = body.cache_control.type;
+              var topPrevTtl = body.cache_control.ttl;
+              if (topPrevType !== 'ephemeral' || topPrevTtl !== '1h') {
+                body.cache_control.type = 'ephemeral';
+                body.cache_control.ttl = '1h';
+                console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: normalized TOP-LEVEL cache_control to ttl:1h (was type:' + topPrevType + ', ttl:' + topPrevTtl + ')');
+                modified = true;
+              }
             }
 
-            // Also keep block-level injection as backup (in case top-level is ignored but accepted).
-            // This ensures at least tools+system are cached even if automatic doesn't work.
+            // Keep block-level breakpoints; normalize any existing breakpoint cache_control to ttl:1h.
             if (ensureOpenRouterClaudeCacheControl(body)) {
               modified = true;
             }
