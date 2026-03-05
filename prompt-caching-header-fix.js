@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.47
+// Version: 4.48
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.47';
+  const EXT_VERSION = '4.48';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2499,21 +2499,39 @@
 
     // IMPORTANT: Anthropic/OpenRouter enforces max 4 cache_control blocks.
     // To avoid drift/accumulation across turns, first strip ALL existing per-block
-    // cache_control markers, then re-inject exactly the 4 desired breakpoints.
-    var strippedAny = false;
+    // cache_control markers (deep, including nested tool_result content), then
+    // re-inject exactly the desired breakpoints.
+    function tmStripCacheControlDeep(x) {
+      if (!x || typeof x !== 'object') return 0;
+      var removed = 0;
+
+      if (Array.isArray(x)) {
+        for (var ai = 0; ai < x.length; ai++) {
+          removed += tmStripCacheControlDeep(x[ai]);
+        }
+        return removed;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(x, 'cache_control')) {
+        delete x.cache_control;
+        removed += 1;
+      }
+
+      for (var k in x) {
+        if (!Object.prototype.hasOwnProperty.call(x, k)) continue;
+        removed += tmStripCacheControlDeep(x[k]);
+      }
+      return removed;
+    }
+
+    var strippedCount = 0;
     for (var si = 0; si < messages.length; si++) {
       var sm = messages[si];
       if (!sm || !Array.isArray(sm.content)) continue;
-      for (var sj = 0; sj < sm.content.length; sj++) {
-        var sb = sm.content[sj];
-        if (sb && typeof sb === 'object' && sb.cache_control) {
-          delete sb.cache_control;
-          strippedAny = true;
-        }
-      }
+      strippedCount += tmStripCacheControlDeep(sm.content);
     }
-    if (strippedAny) {
-      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: stripped existing per-block cache_control markers before re-injection.');
+    if (strippedCount > 0) {
+      console.log('✅ [v' + EXT_VERSION + '] OpenRouter Claude: stripped ' + strippedCount + ' existing per-block cache_control markers before re-injection.');
       changed = true;
     }
 
