@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.48
+// Version: 4.49
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.48';
+  const EXT_VERSION = '4.49';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2551,15 +2551,17 @@
       }
     }
 
-    // Place breakpoints at: last, 2-back, 5-back, 10-back (from end of user messages)
-    // But we only have 3 remaining breakpoint slots (1 used by system).
-    // So use: last, 2-back, and whichever of 5-back or 10-back is available (prefer 10-back for wider coverage).
-    var offsets = [0, 2, 10]; // offsets from end of userIndices array (0 = last)
+    // OpenRouter/Anthropic now appears to enforce an effective total cap that collides
+    // with top-level cache_control + 4 block markers. To stay safely under limit, use
+    // only TWO user breakpoints (plus system): total 3 block markers.
+    // Priority: last (0), 2-back (2). Fallbacks: 10-back, then 5-back.
+    var offsetsPrimary = [0, 2];
+    var offsetsFallback = [10, 5];
     var placed = 0;
     var usedMsgIndices = new Set();
 
-    for (var oi = 0; oi < offsets.length && placed < 3; oi++) {
-      var off = offsets[oi];
+    for (var oi = 0; oi < offsetsPrimary.length && placed < 2; oi++) {
+      var off = offsetsPrimary[oi];
       var uiPos = userIndices.length - 1 - off;
       if (uiPos < 0) continue;
       var msgIdx = userIndices[uiPos];
@@ -2572,16 +2574,18 @@
       }
     }
 
-    // If we haven't placed 3 yet and 5-back is available and different from what we placed
-    if (placed < 3 && userIndices.length > 5) {
-      var fallbackPos = userIndices.length - 1 - 5;
-      if (fallbackPos >= 0) {
-        var fallbackIdx = userIndices[fallbackPos];
-        if (!usedMsgIndices.has(fallbackIdx)) {
-          if (tmInjectCacheControlOnMessage(messages[fallbackIdx], 'user[' + fallbackIdx + '] (offset -5 fallback)')) {
-            changed = true;
-          }
-        }
+    // If we still have only one user marker, try wider-history fallback positions.
+    for (var fi = 0; fi < offsetsFallback.length && placed < 2; fi++) {
+      var foff = offsetsFallback[fi];
+      var fuiPos = userIndices.length - 1 - foff;
+      if (fuiPos < 0) continue;
+      var fmsgIdx = userIndices[fuiPos];
+      if (usedMsgIndices.has(fmsgIdx)) continue;
+      usedMsgIndices.add(fmsgIdx);
+
+      if (tmInjectCacheControlOnMessage(messages[fmsgIdx], 'user[' + fmsgIdx + '] (offset -' + foff + ' fallback)')) {
+        changed = true;
+        placed++;
       }
     }
 
