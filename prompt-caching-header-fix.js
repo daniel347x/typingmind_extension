@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.50
+// Version: 4.51
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.50';
+  const EXT_VERSION = '4.51';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -39,7 +39,10 @@
 
   function tmIsGpt54Model(body) {
     const model = tmModelString(body);
-    return model === 'gpt-5.4' || model === 'openai/gpt-5.4';
+    return model === 'gpt-5.4'
+      || model === 'openai/gpt-5.4'
+      || model.startsWith('gpt-5.4-')
+      || model.startsWith('openai/gpt-5.4-');
   }
 
   function tmEnsureOpenRouterGpt54Reasoning(body) {
@@ -549,6 +552,8 @@
                   var parsed2 = JSON.parse(jsonStr);
                   // OpenRouter-style: usage in root of chunk
                   if (parsed2 && parsed2.usage) { lastUsage = parsed2.usage; }
+                  // OpenAI Responses-style: usage in response.completed -> response.usage
+                  if (parsed2 && parsed2.response && parsed2.response.usage) { lastUsage = parsed2.response.usage; }
                   // Anthropic-style: usage in message_start
                   if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
                     anthropicUsage = parsed2.message.usage;
