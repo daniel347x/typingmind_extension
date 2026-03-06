@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.51
+// Version: 4.52
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.51';
+  const EXT_VERSION = '4.52';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -67,11 +67,22 @@
   function tmEnsureOpenAIGpt54Reasoning(body) {
     if (!body || !tmIsGpt54Model(body)) return false;
 
-    const prev = body.reasoning_effort;
-    if (prev === 'xhigh') return false;
+    const prevReasoning = (body && typeof body.reasoning === 'object' && body.reasoning) ? body.reasoning : {};
+    const prevEffort = prevReasoning.effort;
 
-    body.reasoning_effort = 'xhigh';
-    console.log('✅ [v' + EXT_VERSION + '] OpenAI GPT-5.4: forced reasoning_effort=xhigh.');
+    // Responses API uses reasoning.effort, not reasoning_effort.
+    if (body.reasoning_effort !== undefined) {
+      delete body.reasoning_effort;
+    }
+
+    if (prevEffort === 'xhigh') return false;
+
+    body.reasoning = {
+      ...prevReasoning,
+      effort: 'xhigh'
+    };
+
+    console.log('✅ [v' + EXT_VERSION + '] OpenAI GPT-5.4: forced reasoning.effort=xhigh.');
     return true;
   }
 
