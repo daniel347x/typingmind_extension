@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.49
+// Version: 4.50
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.49';
+  const EXT_VERSION = '4.50';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -32,6 +32,45 @@
   };
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
+
+  function tmModelString(body) {
+    return String((body && body.model) || '').toLowerCase();
+  }
+
+  function tmIsGpt54Model(body) {
+    const model = tmModelString(body);
+    return model === 'gpt-5.4' || model === 'openai/gpt-5.4';
+  }
+
+  function tmEnsureOpenRouterGpt54Reasoning(body) {
+    if (!body || !tmIsGpt54Model(body)) return false;
+
+    const prev = body.reasoning;
+    const prevEffort = prev && typeof prev === 'object' ? prev.effort : undefined;
+    const prevExclude = prev && typeof prev === 'object' ? prev.exclude : undefined;
+
+    if (prevEffort === 'xhigh' && prevExclude !== true) return false;
+
+    body.reasoning = {
+      ...(prev && typeof prev === 'object' ? prev : {}),
+      effort: 'xhigh',
+      exclude: false
+    };
+
+    console.log('✅ [v' + EXT_VERSION + '] OpenRouter GPT-5.4: forced reasoning.effort=xhigh.');
+    return true;
+  }
+
+  function tmEnsureOpenAIGpt54Reasoning(body) {
+    if (!body || !tmIsGpt54Model(body)) return false;
+
+    const prev = body.reasoning_effort;
+    if (prev === 'xhigh') return false;
+
+    body.reasoning_effort = 'xhigh';
+    console.log('✅ [v' + EXT_VERSION + '] OpenAI GPT-5.4: forced reasoning_effort=xhigh.');
+    return true;
+  }
 
   // Last Anthropic request body (for export of user+assistant-only JSON)
   let lastAnthropicBodyForExport = null;
@@ -2652,6 +2691,12 @@
           const body = JSON.parse(options.body);
           let modified = false;
 
+          if (url.includes('openrouter.ai')) {
+            if (tmEnsureOpenRouterGpt54Reasoning(body)) modified = true;
+          } else if (/api\.openai\.com/i.test(url)) {
+            if (tmEnsureOpenAIGpt54Reasoning(body)) modified = true;
+          }
+
           // Capture latest Anthropic body for export tooling (deep clone)
           try {
             lastAnthropicBodyForExport = JSON.parse(JSON.stringify(body));
@@ -2880,6 +2925,10 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
 
+          if (tmEnsureOpenRouterGpt54Reasoning(body)) {
+            modified = true;
+          }
+
           if (isClaude) {
             // Normalize top-level cache_control to ttl:1h.
             // OpenRouter/Anthropic now rejects mixed TTLs between top-level and block-level
@@ -2932,13 +2981,19 @@
           }
 
           const model = body.model || '';
+
+          try {
+            lastGpt51BodyForExport = JSON.parse(JSON.stringify(body));
+          } catch (e) {
+            lastGpt51BodyForExport = null;
+            console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone OpenAI Responses body for export:', e);
+          }
+
+          if (tmEnsureOpenAIGpt54Reasoning(body)) {
+            modified = true;
+          }
+
           if (typeof model === 'string' && model.startsWith('gpt-5.1')) {
-            try {
-              lastGpt51BodyForExport = JSON.parse(JSON.stringify(body));
-            } catch (e) {
-              lastGpt51BodyForExport = null;
-              console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone GPT-5.1 body for export:', e);
-            }
             if (!body.prompt_cache_key) {
               body.prompt_cache_key = 'dan-dagger-gpt5.1-v1';
               modified = true;
