@@ -302,7 +302,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.149',
+  VERSION: '3.150',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -614,6 +614,12 @@
    * Paste email content from clipboard and normalize paragraph spacing
    * Handles Gmail copy-paste which often has excessive newlines
    */
+  // @beacon[
+  //   id=tm@0,
+  //   slice_labels=tm--general,
+  //   role=clipboard: paste email + normalize paragraphs,
+  //   kind=AST,
+  // ]
   async function pasteEmail() {
     try {
       const clipboardItems = await navigator.clipboard.read();
@@ -697,6 +703,12 @@
   /**
    * Paste rich text from clipboard and convert to markdown-style plain text
    */
+  // @beacon[
+  //   id=tm@1,
+  //   slice_labels=tm--general,
+  //   role=clipboard: paste markdown-style plain text,
+  //   kind=AST,
+  // ]
   async function pasteMarkdown() {
     try {
       const clipboardItems = await navigator.clipboard.read();
@@ -2360,6 +2372,12 @@
   }
   
   // ==================== HTML STRUCTURE ====================
+  // @beacon[
+  //   id=tm@2,
+  //   slice_labels=tm--general,
+  //   role=widget shell + DOM construction,
+  //   kind=AST,
+  // ]
   function createWidget() {
     // Create toggle button
     const toggleBtn = document.createElement('button');
@@ -2677,6 +2695,12 @@
   }
   
   // ==================== INITIALIZATION ====================
+  // @beacon[
+  //   id=tm@3,
+  //   slice_labels=tm--general,
+  //   role=widget init + settings restore,
+  //   kind=AST,
+  // ]
   function initializeWidget() {
     // Load saved transcription mode
     const savedMode = localStorage.getItem(CONFIG.TRANSCRIPTION_MODE_STORAGE);
@@ -2896,6 +2920,12 @@
   }
   
   // ==================== SIDEBAR VIEW WATCHER ====================
+  // @beacon[
+  //   id=tm@4,
+  //   slice_labels=tm--general,
+  //   role=TypingMind sidebar watcher,
+  //   kind=AST,
+  // ]
   function initializeSidebarWatcher() {
     // Watch for changes to sidebar content (detect view switches)
     const targetNode = document.body;
@@ -2932,6 +2962,12 @@
   let toolModalOverlay = null;
   let toolModalOpen = false;
 
+  // @beacon[
+  //   id=tm@5,
+  //   slice_labels=tm--general,
+  //   role=tool call inspector bootstrap,
+  //   kind=AST,
+  // ]
   function initializeToolCallInspector() {
     // Initial scan for existing tool call rows
     scanToolCallRows(document);
@@ -3462,6 +3498,12 @@
   }
   
   // ==================== UTILITY FUNCTIONS ====================
+  // @beacon[
+  //   id=tm@6,
+  //   slice_labels=tm--general,
+  //   role=panel open-close toggle,
+  //   kind=AST,
+  // ]
   function togglePanel() {
     const panel = document.getElementById('deepgram-panel');
     panel.classList.toggle('open');
@@ -3792,6 +3834,12 @@
     console.log('✓ Folder hover reserve calculator installed');
   }
 
+  // @beacon[
+  //   id=tm@7,
+  //   slice_labels=tm--general,
+  //   role=TypingMind layout width surgery,
+  //   kind=AST,
+  // ]
   function applyLayoutWidths() {
     const chatWidth = parseInt(document.getElementById('layout-chat-width-input')?.value) || CONFIG.DEFAULT_CHAT_WIDTH;
     const chatMargin = parseInt(document.getElementById('layout-chat-margin-input')?.value) || CONFIG.DEFAULT_CHAT_MARGIN;
@@ -4099,6 +4147,12 @@
     applyWidgetWidth();
   }
   
+  // @beacon[
+  //   id=tm@8,
+  //   slice_labels=tm--general,
+  //   role=apply transcript textarea height,
+  //   kind=AST,
+  // ]
   function applyTranscriptHeight() {
     const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
     
@@ -4134,6 +4188,12 @@
     applyLayoutWidths();
   }
   
+  // @beacon[
+  //   id=tm@9,
+  //   slice_labels=tm--general,
+  //   role=quick transcript height toggle,
+  //   kind=AST,
+  // ]
   function toggleTranscriptHeight() {
     const transcript = document.getElementById('deepgram-transcript');
     const keyterms = document.getElementById('deepgram-keyterms-input');
@@ -4191,6 +4251,12 @@
     updateInsertButtonState(); // Check if there's text to enable buttons
   }
   
+  // @beacon[
+  //   id=tm@10,
+  //   slice_labels=tm--general,
+  //   role=bottom action button state sync,
+  //   kind=AST,
+  // ]
   function updateInsertButtonState() {
     const transcript = document.getElementById('deepgram-transcript').value.trim();
     const insertBtn = document.getElementById('deepgram-insert-btn');
@@ -4234,6 +4300,12 @@
   }
   
   // ==================== RECORDING CONTROLS ====================
+  // @beacon[
+  //   id=tm@14,
+  //   slice_labels=tm--general,
+  //   role=recording toggle entrypoint,
+  //   kind=AST,
+  // ]
   function toggleRecording() {
     if (isRecording) {
       // Stop based on current mode
@@ -4252,6 +4324,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@15,
+  //   slice_labels=tm--general,
+  //   role=Deepgram live recording start,
+  //   kind=AST,
+  // ]
   function startDeepgramRecording() {
     const apiKey = localStorage.getItem(CONFIG.DEEPGRAM_API_KEY_STORAGE);
     if (!apiKey) {
@@ -4451,6 +4529,12 @@
 
   // ==================== WHISPER RECORDING FUNCTIONS ====================
   
+  // @beacon[
+  //   id=tm@16,
+  //   slice_labels=tm--general,
+  //   role=Whisper recording start,
+  //   kind=AST,
+  // ]
   async function startWhisperRecording() {
     const endpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE) || CONFIG.DEFAULT_LOCAL_ENDPOINT;
     const apiKey = localStorage.getItem(CONFIG.WHISPER_API_KEY_STORAGE);
@@ -4523,6 +4607,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@17,
+  //   slice_labels=tm--general,
+  //   role=Whisper stop + submit final segment,
+  //   kind=AST,
+  // ]
   function stopWhisperRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
@@ -4549,6 +4639,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@18,
+  //   slice_labels=tm--general,
+  //   role=Whisper cancel without submit,
+  //   kind=AST,
+  // ]
   function cancelWhisperRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       // Clear audio chunks FIRST
@@ -4593,6 +4689,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@19,
+  //   slice_labels=tm--general,
+  //   role=Whisper segment break + continue,
+  //   kind=AST,
+  // ]
   async function endSegmentAndContinue() {
     if (!isRecording) {
       // If not recording, start recording
@@ -4647,6 +4749,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@20,
+  //   slice_labels=tm--general,
+  //   role=Whisper chunk upload + response handling,
+  //   kind=AST,
+  // ]
   async function sendToWhisper(chunks) {
     const apiKey = localStorage.getItem(CONFIG.WHISPER_API_KEY_STORAGE);
     const endpoint = localStorage.getItem(CONFIG.WHISPER_ENDPOINT_STORAGE) || CONFIG.DEFAULT_LOCAL_ENDPOINT;
@@ -4768,6 +4876,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@21,
+  //   slice_labels=tm--general,
+  //   role=Whisper pending chunk status display,
+  //   kind=AST,
+  // ]
   function updateQueueStatus() {
     const queueEl = document.getElementById('deepgram-queue-status');
     if (!queueEl) return;
@@ -4783,6 +4897,12 @@
   
   // ==================== WHISPER FLASH CONTROL ====================
   
+  // @beacon[
+  //   id=tm@22,
+  //   slice_labels=tm--general,
+  //   role=Whisper recording flash start,
+  //   kind=AST,
+  // ]
   function startWhisperFlash() {
     const statusEl = document.getElementById('deepgram-status');
     if (!statusEl) return;
@@ -4828,6 +4948,12 @@
     console.log(ts(), '✅ Whisper flash started (continuous while recording)');
   }
   
+  // @beacon[
+  //   id=tm@23,
+  //   slice_labels=tm--general,
+  //   role=Whisper recording flash stop,
+  //   kind=AST,
+  // ]
   function stopWhisperFlash() {
     const statusEl = document.getElementById('deepgram-status');
     if (!statusEl) return;
@@ -4846,6 +4972,12 @@
   
   // ==================== RECORDING DURATION WARNING ====================
   
+  // @beacon[
+  //   id=tm@24,
+  //   slice_labels=tm--general,
+  //   role=recording duration warning timer,
+  //   kind=AST,
+  // ]
   function startRecordingDurationWarning() {
     recordingStartTime = Date.now();
     
@@ -4881,6 +5013,12 @@
     console.log(ts(), '⏱️ Recording duration warning started');
   }
   
+  // @beacon[
+  //   id=tm@25,
+  //   slice_labels=tm--general,
+  //   role=recording duration warning reset,
+  //   kind=AST,
+  // ]
   function stopRecordingDurationWarning() {
     if (recordingDurationTimer) {
       clearInterval(recordingDurationTimer);
@@ -4901,6 +5039,12 @@
   
   // ==================== CLICK BAR ====================
   
+  // @beacon[
+  //   id=tm@26,
+  //   slice_labels=tm--general,
+  //   role=click bar paragraph action,
+  //   kind=AST,
+  // ]
   function clickBarAction() {
     const transcriptEl = document.getElementById('deepgram-transcript');
     const currentText = transcriptEl.value;
@@ -4980,6 +5124,12 @@
     transcriptEl.scrollTop = transcriptEl.scrollHeight;
   }
   
+  // @beacon[
+  //   id=tm@27,
+  //   slice_labels=tm--general,
+  //   role=append paragraph break at transcript end,
+  //   kind=AST,
+  // ]
   function addParagraphBreak() {
     const transcriptEl = document.getElementById('deepgram-transcript');
     
@@ -5024,6 +5174,12 @@
   
   // ==================== TRANSCRIPT MANAGEMENT ====================
   
+  // @beacon[
+  //   id=tm@28,
+  //   slice_labels=tm--general,
+  //   role=append transcription into editor,
+  //   kind=AST,
+  // ]
   function appendTranscript(text) {
     // Reset click bar background in case it was left in a warning state
     const clickBar = document.getElementById('deepgram-click-bar');
@@ -5074,6 +5230,12 @@
     updateInsertButtonState();
   }
   
+  // @beacon[
+  //   id=tm@29,
+  //   slice_labels=tm--general,
+  //   role=scroll editor to cursor with padding,
+  //   kind=AST,
+  // ]
   function scrollToCursorPosition(element, cursorPos) {
     // Use a more reliable method: Let the browser handle cursor visibility
     // by temporarily blurring and refocusing, which triggers native scroll-to-cursor
@@ -5303,6 +5465,12 @@
     savedCursorPosition = null;
   }
   
+  // @beacon[
+  //   id=tm@30,
+  //   slice_labels=tm--general,
+  //   role=transcript copy button action,
+  //   kind=AST,
+  // ]
   async function copyTranscript() {
     const text = document.getElementById('deepgram-transcript').value.trim();
     if (!text) {
@@ -5328,6 +5496,12 @@
   
   // ==================== TYPINGMIND INTEGRATION ====================
   
+  // @beacon[
+  //   id=tm@31,
+  //   slice_labels=tm--general,
+  //   role=insert transcript into chat + submit,
+  //   kind=AST,
+  // ]
   function insertAndSubmit() {
     const text = document.getElementById('deepgram-transcript').value.trim();
     if (!text) {
@@ -5407,6 +5581,12 @@
     }, 200); // 200ms delay should be enough for insertion to complete
   }
   
+  // @beacon[
+  //   id=tm@32,
+  //   slice_labels=tm--general,
+  //   role=insert transcript into TypingMind input,
+  //   kind=AST,
+  // ]
   function insertToChat() {
     const text = document.getElementById('deepgram-transcript').value.trim();
     if (!text) {
@@ -5596,6 +5776,12 @@
   }
   
   // ==================== RESIZE FUNCTIONALITY ====================
+  // @beacon[
+  //   id=tm@11,
+  //   slice_labels=tm--general,
+  //   role=widget resize drag handling,
+  //   kind=AST,
+  // ]
   function initializeResize() {
     const resizeHandle = document.getElementById('deepgram-resize-handle');
     const contentContainer = document.getElementById('deepgram-content-container');
@@ -5664,6 +5850,12 @@
     console.log('✓ Transcription mode switched to:', transcriptionMode);
   }
   
+  // @beacon[
+  //   id=tm@12,
+  //   slice_labels=tm--general,
+  //   role=Deepgram vs Whisper UI sync,
+  //   kind=AST,
+  // ]
   function updateModeUI() {
     const modeLabel = document.getElementById('deepgram-mode-label');
     const modeDescription = document.getElementById('deepgram-mode-description');
@@ -5744,6 +5936,12 @@
     }
   }
   
+  // @beacon[
+  //   id=tm@13,
+  //   slice_labels=tm--general,
+  //   role=Whisper settings persistence,
+  //   kind=AST,
+  // ]
   function saveWhisperSettings() {
     const apiKey = document.getElementById('whisper-api-input').value.trim();
     const prompt = document.getElementById('whisper-prompt-input').value.trim();
@@ -5788,6 +5986,12 @@
   
   // ==================== TEAMS MESSAGE BREAK ====================
   
+  // @beacon[
+  //   id=tm@33,
+  //   slice_labels=tm--general,
+  //   role=Teams message break subsystem init,
+  //   kind=AST,
+  // ]
   function initializeTeamsMessageBreak() {
     // Load saved settings from localStorage
     const savedSpeakers = localStorage.getItem(CONFIG.TEAMS_SPEAKERS_STORAGE);
@@ -6204,6 +6408,12 @@
     console.log('✓ Teams popover hidden');
   }
   
+  // @beacon[
+  //   id=tm@34,
+  //   slice_labels=tm--general,
+  //   role=insert Teams speaker delimiter,
+  //   kind=AST,
+  // ]
   function insertTeamsMessageBreak() {
     // Get selected speaker
     const selectedBtn = document.querySelector('.teams-radio-button.selected');
@@ -6262,6 +6472,12 @@
   
   // ==================== DOCUMENT ANNOTATION ====================
   
+  // @beacon[
+  //   id=tm@35,
+  //   slice_labels=tm--general,
+  //   role=document annotation subsystem init,
+  //   kind=AST,
+  // ]
   function initializeDocAnnotation() {
     // Load or initialize default annotation types
     let annotationTypes = JSON.parse(localStorage.getItem(CONFIG.DOC_ANNOTATION_TYPES_STORAGE) || '[]');
@@ -6566,6 +6782,12 @@
       .replace(/>/g, '&gt;');
   }
   
+  // @beacon[
+  //   id=tm@36,
+  //   slice_labels=tm--general,
+  //   role=insert XML document annotation,
+  //   kind=AST,
+  // ]
   function insertDocAnnotation() {
     // Get selected type
     const selectedTypeBtn = document.querySelector('#doc-annotation-types-grid .doc-annotation-radio-button.selected');
@@ -6625,6 +6847,12 @@
   }
   
   // ==================== KEYBOARD SHORTCUTS ====================
+  // @beacon[
+  //   id=tm@37,
+  //   slice_labels=tm--general,
+  //   role=widget keyboard shortcut system,
+  //   kind=AST,
+  // ]
   function initializeKeyboardShortcuts() {
     document.addEventListener('keydown', (e) => {
       const activeElement = document.activeElement;
@@ -7156,6 +7384,12 @@
   window.addEventListener('beforeunload', cleanup);
   
   // ==================== MAIN INITIALIZATION ====================
+  // @beacon[
+  //   id=tm@38,
+  //   slice_labels=tm--general,
+  //   role=main widget bootstrap,
+  //   kind=AST,
+  // ]
   function init() {
     // Wait for DOM to be ready
     if (document.readyState === 'loading') {
