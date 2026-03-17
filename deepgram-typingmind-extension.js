@@ -302,7 +302,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.150',
+  VERSION: '3.151',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -349,7 +349,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 480
+    DEFAULT_TRANSCRIPT_HEIGHT: 950,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 950,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480
   };
   
   // ==================== STATE ====================
@@ -2394,14 +2396,14 @@
         <div class="deepgram-header">
           <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
-            <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" onclick="(function(btn){var top=document.getElementById('deepgram-top-section');if(!top)return;var hidden=top.style.display==='none';top.style.display=hidden?'':'none';btn.textContent=hidden?'⬆ Collapse':'⬇ Expand';btn.title=hidden?'Hide rarely-used controls above status panel':'Show rarely-used controls above status panel';if(hidden){var t=document.getElementById('deepgram-transcript');var h=document.getElementById('transcript-height-input');if(t){t.style.height='240px';}if(h){h.value='240';}}})(this);" title="Hide rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬆ Collapse</button>
+            <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
             <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
           </div>
         </div>
         
         <div class="deepgram-content">
-        <div id="deepgram-top-section">
+        <div id="deepgram-top-section" style="display: none;">
         <!-- API Key Section -->
         <div class="deepgram-section" id="deepgram-api-section">
           <label>Deepgram API Key</label>
@@ -2496,7 +2498,7 @@
               </label>
               <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Transcript textarea height">
                 <span>Text H:</span>
-                <input type="number" id="transcript-height-input" min="150" max="800" step="50" value="480" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
+                <input type="number" id="transcript-height-input" min="150" max="1200" step="50" value="950" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -2552,8 +2554,8 @@
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
             ⚡ Send
           </button>
-          <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled>
-            📋 Copy
+          <button id="deepgram-copy-btn" class="deepgram-btn deepgram-btn-success" disabled title="Ensure exactly two trailing newlines, then append ellipsis">
+            … Ellipsis
           </button>
           <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
             📄 Paste MD
@@ -2835,13 +2837,14 @@
     // Attach event listeners
     document.getElementById('deepgram-api-input').addEventListener('change', saveApiKey);
     document.getElementById('deepgram-keyterms-input').addEventListener('input', debounce(saveKeyterms, 1000));
+    document.getElementById('deepgram-top-toggle-btn').addEventListener('click', toggleTopSectionCollapsed);
     document.getElementById('deepgram-record-btn').addEventListener('click', () => {
       console.log(ts(), '🖱️ RECORD BUTTON CLICKED (mouse or programmatic)');
       toggleRecording();
     });
     document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
-    document.getElementById('deepgram-copy-btn').addEventListener('click', copyTranscript);
+    document.getElementById('deepgram-copy-btn').addEventListener('click', appendEllipsisTail);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
     document.getElementById('deepgram-paste-email-btn').addEventListener('click', pasteEmail);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
@@ -2893,6 +2896,9 @@
     
     // Initialize Document Annotation feature
     initializeDocAnnotation();
+    
+    // Default startup: hide the large top control block and give the transcript a tall working area
+    setTopSectionCollapsed(true);
     
     // Make functions global
     window.deepgramEditApiKey = editApiKey;
@@ -4164,6 +4170,50 @@
     console.log('✓ Transcript height applied:', transcriptHeight);
   }
   
+  // @beacon[
+  //   id=tm@39,
+  //   slice_labels=tm--general,
+  //   role=top controls collapsed state sync,
+  //   kind=AST,
+  // ]
+  function setTopSectionCollapsed(collapsed) {
+    const topSection = document.getElementById('deepgram-top-section');
+    const toggleBtn = document.getElementById('deepgram-top-toggle-btn');
+    const transcript = document.getElementById('deepgram-transcript');
+    const heightInput = document.getElementById('transcript-height-input');
+    
+    if (!topSection || !toggleBtn) return;
+    
+    topSection.style.display = collapsed ? 'none' : '';
+    toggleBtn.textContent = collapsed ? '⬇ Expand' : '⬆ Collapse';
+    toggleBtn.title = collapsed
+      ? 'Show rarely-used controls above status panel'
+      : 'Hide rarely-used controls above status panel';
+    
+    const targetHeight = collapsed
+      ? CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT
+      : CONFIG.DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT;
+    
+    if (heightInput) {
+      heightInput.value = String(targetHeight);
+    }
+    if (transcript) {
+      transcript.style.height = targetHeight + 'px';
+    }
+  }
+  
+  // @beacon[
+  //   id=tm@40,
+  //   slice_labels=tm--general,
+  //   role=top controls expand-collapse toggle,
+  //   kind=AST,
+  // ]
+  function toggleTopSectionCollapsed() {
+    const topSection = document.getElementById('deepgram-top-section');
+    const currentlyCollapsed = topSection?.style.display === 'none';
+    setTopSectionCollapsed(!currentlyCollapsed);
+  }
+  
   function onTranscriptHeightChange() {
     const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
     
@@ -4198,6 +4248,8 @@
     const transcript = document.getElementById('deepgram-transcript');
     const keyterms = document.getElementById('deepgram-keyterms-input');
     const btn = document.getElementById('deepgram-collapse-btn');
+    const heightInput = document.getElementById('transcript-height-input');
+    const topSection = document.getElementById('deepgram-top-section');
     
     // Get current height from computed style
     const computedStyle = window.getComputedStyle(transcript);
@@ -4206,11 +4258,22 @@
     if (currentHeight > 150) {
       // Collapse to 150px
       transcript.style.height = '150px';
+      if (heightInput) {
+        heightInput.value = '150';
+      }
       btn.textContent = 'Expand';
     } else {
-      // Expand back to 600px default AND reset keyterms to 60px
-      transcript.style.height = '600px';
-      keyterms.style.height = '60px';
+      // Expand back to the current mode's default working height
+      const expandedHeight = topSection?.style.display === 'none'
+        ? CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT
+        : CONFIG.DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT;
+      transcript.style.height = expandedHeight + 'px';
+      if (heightInput) {
+        heightInput.value = String(expandedHeight);
+      }
+      if (keyterms) {
+        keyterms.style.height = '60px';
+      }
       btn.textContent = 'Collapse';
     }
   }
@@ -5468,30 +5531,38 @@
   // @beacon[
   //   id=tm@30,
   //   slice_labels=tm--general,
-  //   role=transcript copy button action,
+  //   role=transcript trailing ellipsis button action,
   //   kind=AST,
   // ]
-  async function copyTranscript() {
-    const text = document.getElementById('deepgram-transcript').value.trim();
-    if (!text) {
-      alert('No transcript to copy!');
+  function appendEllipsisTail() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    if (!transcriptEl) return;
+    
+    const baseText = transcriptEl.value.replace(/[ \t\r\n]+$/g, '');
+    if (!baseText) {
+      alert('No transcript text to extend!');
       return;
     }
     
-    try {
-      await navigator.clipboard.writeText(text);
-      
-      const btn = document.getElementById('deepgram-copy-btn');
-      const originalText = btn.textContent;
-      btn.textContent = '✓ Copied!';
-      
-      setTimeout(() => {
-        btn.textContent = originalText;
-      }, 2000);
-    } catch (err) {
-      console.error('Copy failed:', err);
-      alert('Failed to copy. Please select and copy manually.');
-    }
+    const updatedText = `${baseText}\n\n...`;
+    transcriptEl.value = updatedText;
+    
+    const endPos = updatedText.length;
+    transcriptEl.focus();
+    transcriptEl.setSelectionRange(endPos, endPos);
+    scrollToCursorPosition(transcriptEl, endPos);
+    updateInsertButtonState();
+    resetAutoClipboardTimer();
+    
+    const btn = document.getElementById('deepgram-copy-btn');
+    if (!btn) return;
+    
+    const originalText = btn.textContent;
+    btn.textContent = '✓ Added';
+    
+    setTimeout(() => {
+      btn.textContent = originalText;
+    }, 1500);
   }
   
   // ==================== TYPINGMIND INTEGRATION ====================
