@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.52
+// Version: 4.53
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.52';
+  const EXT_VERSION = '4.53';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -47,6 +47,12 @@
 
   function tmEnsureOpenRouterGpt54Reasoning(body) {
     if (!body || !tmIsGpt54Model(body)) return false;
+
+    // Strip flat reasoning_effort (TypingMind may now send it); OpenRouter rejects
+    // when both reasoning_effort and reasoning.effort are present with different values.
+    if (body.reasoning_effort !== undefined) {
+      delete body.reasoning_effort;
+    }
 
     const prev = body.reasoning;
     const prevEffort = prev && typeof prev === 'object' ? prev.effort : undefined;
