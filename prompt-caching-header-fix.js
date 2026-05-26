@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.53
+// Version: 4.54
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.53';
+  const EXT_VERSION = '4.54';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -116,12 +116,25 @@
 
   function tmResetOpenRouterCacheTimer() {
     tmOpenRouterLastRequestTs = Date.now();
-    // Clear any existing warning state on the widget immediately
-    tmUpdateCacheWarningDisplay();
-    // Start interval if not already running
-    if (!tmOpenRouterCacheWarningInterval) {
-      tmOpenRouterCacheWarningInterval = setInterval(tmUpdateCacheWarningDisplay, 1000);
+
+    // Cache TTL warning UI disabled: the one-second visual countdown/gradient
+    // is not needed and can interact badly with other DOM observers/layout code.
+    // IMPORTANT: this does NOT affect cache_control injection; it only disables
+    // the visual OpenRouter cache-warning widget updates.
+    if (tmOpenRouterCacheWarningInterval) {
+      clearInterval(tmOpenRouterCacheWarningInterval);
+      tmOpenRouterCacheWarningInterval = null;
     }
+
+    try {
+      const widget = document.getElementById('gpt51-usage-widget');
+      const warningEl = document.getElementById('tm-or-cache-warning');
+      if (warningEl) warningEl.remove();
+      if (widget) {
+        widget.style.background = 'rgba(0,0,0,0.80)';
+        widget.style.animation = '';
+      }
+    } catch (e) {}
   }
 
   function tmUpdateCacheWarningDisplay() {
