@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.54
+// Version: 4.55
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.54';
+  const EXT_VERSION = '4.55';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2666,6 +2666,69 @@
     return changed;
   }
 
+  // ==================== OPENROUTER STICKY-ROUTING SESSION ID (v4.55) ====================
+  // OpenAI-family models (GPT-5.x) on OpenRouter cache AUTOMATICALLY on the OpenAI side,
+  // but only if consecutive turns are routed to the SAME upstream provider endpoint.
+  // Per OpenRouter docs: WITHOUT a session_id, sticky routing only activates AFTER a cache
+  // hit is first observed -- a chicken-and-egg deadlock that can keep cached_tokens AND
+  // cache_write_tokens pinned at 0 forever. Passing a stable top-level `session_id`
+  // activates sticky routing on the FIRST successful request, breaking the deadlock.
+  //
+  // session_id is a ROUTING HINT ONLY: it is NOT part of the cache-key hash and does NOT
+  // alter the prompt prefix, so it cannot destabilize system_tools_prefix_hash. Max 256 chars.
+  //
+  // Scope guard: the CALLER only invokes this for non-Claude OpenAI-family models, so Claude
+  // (which shares the OpenRouter chat-completions branch) is never touched.
+  function tmDeriveStableSessionId(body) {
+    // 1) Prefer the extension's existing conversation-id derivation when it yields something.
+    try {
+      var derived = deriveConversationIdFromBody(body);
+      if (derived && typeof derived === 'string') {
+        return ('tm-' + derived).slice(0, 256);
+      }
+    } catch (e) {}
+
+    // 2) Fallback: hash the first system message + first user message. These do NOT change as
+    //    a conversation grows (new turns append at the end), so the hash is STABLE across all
+    //    turns of one conversation and naturally DISTINCT between conversations -- exactly the
+    //    per-conversation stickiness OpenRouter wants. Mirrors OpenRouter's own internal
+    //    'hash first system + first non-system message' conversation identification.
+    try {
+      var msgs = Array.isArray(body && body.messages) ? body.messages
+               : (Array.isArray(body && body.input) ? body.input : []);
+
+      function firstText(role) {
+        for (var i = 0; i < msgs.length; i++) {
+          var m = msgs[i];
+          if (!m || m.role !== role) continue;
+          if (typeof m.content === 'string') return m.content;
+          if (Array.isArray(m.content)) {
+            var parts = [];
+            for (var j = 0; j < m.content.length; j++) {
+              var b = m.content[j];
+              if (b && (b.type === 'text' || b.type === 'input_text') && typeof b.text === 'string') {
+                parts.push(b.text);
+              }
+            }
+            return parts.join(' ');
+          }
+          return '';
+        }
+        return '';
+      }
+
+      var sysText = firstText('system');
+      var userText = firstText('user');
+      // Use a bounded slice of each so a huge system prompt doesn't dominate cost of hashing;
+      // stability only requires the SAME input each turn, which a fixed-length slice preserves.
+      var seed = (sysText.slice(0, 4000)) + '\u0000' + (userText.slice(0, 4000));
+      if (seed.replace(/\u0000/g, '').trim() === '') return null; // nothing stable to hash
+      return ('tm-or-' + tmFnv1a32(seed)).slice(0, 256);
+    } catch (e) {
+      return null;
+    }
+  }
+
   function repairOpenAIOrphanedToolCalls(body) {
     if (!body || !Array.isArray(body.input)) return false;
 
@@ -2959,6 +3022,7 @@
 
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
+          const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
 
           if (tmEnsureOpenRouterGpt54Reasoning(body)) {
             modified = true;
@@ -2990,6 +3054,23 @@
 
             // Reset cache TTL warning timer on every OpenRouter+Claude request
             tmResetOpenRouterCacheTimer();
+          } else if (isOpenAIFamily) {
+            // v4.55: OpenAI-family (GPT-5.x) prompt caching on OpenRouter is AUTOMATIC upstream,
+            // but requires SAME-PROVIDER sticky routing across turns to actually hit. Inject a
+            // stable top-level session_id to activate sticky routing from the first request
+            // (breaks the 'no stickiness until a cache hit, no cache hit without stickiness'
+            // deadlock). Does NOT inject any cache_control (that is Claude-only). Claude never
+            // reaches this arm (isClaude is true for it).
+            if (!body.session_id) {
+              var orSessionId = tmDeriveStableSessionId(body);
+              if (orSessionId) {
+                body.session_id = orSessionId;
+                modified = true;
+                console.log('✅ [v' + EXT_VERSION + '] OpenRouter OpenAI-family (' + model + '): injected session_id for sticky routing:', orSessionId);
+              } else {
+                console.warn('⚠️ [v' + EXT_VERSION + '] OpenRouter OpenAI-family (' + model + '): could not derive a stable session_id; sticky routing not set.');
+              }
+            }
           }
 
           if (modified) {
