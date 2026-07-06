@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.55
+// Version: 4.56
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.55';
+  const EXT_VERSION = '4.56';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1912,6 +1912,13 @@
         copyPayloadCapturePart(capId, part);
         return;
       }
+
+      // Click-to-copy for the enable/disable console commands shown in the empty-state notice.
+      if (t.dataset && t.dataset.action === 'copy-plain-text') {
+        const txt = t.dataset.copyText || t.textContent || '';
+        if (txt) copyTextToClipboard(txt, 'console command');
+        return;
+      }
     });
 
     return overlay;
@@ -2123,7 +2130,26 @@
     let html = '';
 
     if (!items.length) {
-      html = '<div style="opacity:0.85;">No captured payloads yet.</div>';
+      var enableCmd = "localStorage.setItem('" + TM_PAYLOAD_CAPTURE_ENABLED_KEY + "','true')";
+      var disableCmd = "localStorage.setItem('" + TM_PAYLOAD_CAPTURE_ENABLED_KEY + "','false')";
+      var cmdBoxStyle = 'display:block;width:100%;box-sizing:border-box;margin-top:4px;padding:6px 8px;' +
+                        'background:#111;color:#7CFC7C;border:1px solid #2a2a2a;border-radius:4px;' +
+                        'font-family:monospace;font-size:11px;white-space:pre-wrap;word-break:break-all;cursor:pointer;';
+      if (!tmCaptureEnabled()) {
+        // Capture is OFF -> nothing will ever accumulate. Surface the exact console commands,
+        // click-to-copy, so the human can re-enable without hunting for the incantation.
+        html = '<div style="opacity:0.9;line-height:1.5;">' +
+               '<div style="font-weight:600;color:#ffb454;margin-bottom:6px;">\u26a0\ufe0f Payload capture is currently DISABLED.</div>' +
+               'No payloads are being recorded (localStorage key <code>' + escapeHtml(TM_PAYLOAD_CAPTURE_ENABLED_KEY) + '</code> is set to <code>"false"</code>). ' +
+               'This setting persists across reloads. To start capturing, paste this into the DevTools Console (then send a message):' +
+               '<code data-action="copy-plain-text" data-copy-text="' + escapeHtml(enableCmd) + '" title="Click to copy" style="' + cmdBoxStyle + '">' + escapeHtml(enableCmd) + '</code>' +
+               '<div style="margin-top:8px;opacity:0.75;">To disable again later:</div>' +
+               '<code data-action="copy-plain-text" data-copy-text="' + escapeHtml(disableCmd) + '" title="Click to copy" style="' + cmdBoxStyle + 'color:#ff8c8c;">' + escapeHtml(disableCmd) + '</code>' +
+               '<div style="margin-top:8px;font-size:10px;opacity:0.7;">(No page refresh needed \u2014 the flag is read live on every request.)</div>' +
+               '</div>';
+      } else {
+        html = '<div style="opacity:0.85;">No captured payloads yet. Capture is <b style="color:#7CFC7C;">enabled</b> \u2014 send a message to record one.</div>';
+      }
       payloadCaptureModalInnerEl.innerHTML = html;
       return;
     }
