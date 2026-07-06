@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.57
+// Version: 4.58
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -23,7 +23,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.57';
+  const EXT_VERSION = '4.58';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2020,6 +2020,7 @@
     let hasCacheControl = null;
     let cacheControlSummary = null;
     let system_tools_prefix_hash = null;
+    let tools_canonical_hash = null;
 
     try {
       if (reqBody && typeof reqBody === 'object') {
@@ -2027,6 +2028,15 @@
         cacheControlSummary = tmSummarizeCacheControl(reqBody);
         hasCacheControl = !!(cacheControlSummary && cacheControlSummary.hasAny);
         system_tools_prefix_hash = tmComputeSystemToolsPrefixHash(reqBody);
+        // v4.58: hash of the KEY-SORTED tools array. This should be STABLE across turns once
+        // canonicalization is active (unless the tools genuinely change). Compare it turn-to-turn
+        // to confirm the ordering fix: raw system_tools_prefix_hash reflects what was SENT (now
+        // already canonicalized at send time), while this is an independent semantic check.
+        try {
+          if (Array.isArray(reqBody.tools) && reqBody.tools.length) {
+            tools_canonical_hash = tmFnv1a32(JSON.stringify(tmCanonicalizeKeysDeep(reqBody.tools)));
+          }
+        } catch (e2) {}
       }
     } catch (e) {}
 
@@ -2041,6 +2051,7 @@
       hasCacheControl,
       cacheControlSummary,
       system_tools_prefix_hash,
+      tools_canonical_hash,
       response_status: cap.response_status,
       response_ok: cap.response_ok,
       response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null,
@@ -2705,6 +2716,60 @@
     return changed;
   }
 
+  // ==================== TOOLS KEY CANONICALIZATION (v4.58) ====================
+  // TypingMind emits semantically-IDENTICAL tool schemas with NON-DETERMINISTIC object key
+  // ordering across turns (e.g. one turn serializes {path, dryRun}, the next {dryRun, path}).
+  // Prompt caching keys off the EXACT serialized prefix, and providers (OpenAI-family in
+  // particular) place the tool/function definitions near the FRONT of the cached prefix -- so a
+  // reordered key busts the cache on EVERY turn even though the tools are unchanged. This was
+  // the true root cause of GPT-5.x cached_tokens staying at 0 (and of Claude paying small but
+  // needless per-turn cache re-writes).
+  //
+  // FIX: recursively rewrite every OBJECT with its keys in sorted order, so semantically-equal
+  // tool schemas serialize BYTE-IDENTICALLY turn-to-turn. If a tool GENUINELY changes, the
+  // sorted forms still differ -> the cache correctly misses. So this removes ONLY the spurious
+  // ordering noise; it never masks a real change.
+  //
+  // CRITICAL: sort OBJECT KEYS only. NEVER reorder ARRAY elements -- array order is semantic
+  // (enum value order, required[] order, and the tools list order itself must be preserved).
+  function tmCanonicalizeKeysDeep(x) {
+    if (Array.isArray(x)) {
+      // Preserve array order; only canonicalize the contents of each element.
+      var arr = new Array(x.length);
+      for (var i = 0; i < x.length; i++) arr[i] = tmCanonicalizeKeysDeep(x[i]);
+      return arr;
+    }
+    if (x && typeof x === 'object') {
+      var out = {};
+      var keys = Object.keys(x).sort();
+      for (var j = 0; j < keys.length; j++) {
+        out[keys[j]] = tmCanonicalizeKeysDeep(x[keys[j]]);
+      }
+      return out;
+    }
+    return x;
+  }
+
+  // Canonicalize body.tools in place (key-sorted, array order preserved). Returns true if the
+  // serialized form actually changed (i.e., TypingMind had emitted non-sorted keys this turn).
+  // Applied UNIVERSALLY to all OpenRouter requests (both Claude and OpenAI-family) so the
+  // outbound tools block is byte-stable across turns for every model.
+  function tmStabilizeToolsOrdering(body) {
+    try {
+      if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
+      var before = JSON.stringify(body.tools);
+      var canon = tmCanonicalizeKeysDeep(body.tools);
+      var after = JSON.stringify(canon);
+      if (after === before) return false; // already canonical this turn; no change needed
+      body.tools = canon;
+      console.log('\u2705 [v' + EXT_VERSION + '] Canonicalized tools key ordering for stable prompt-cache prefix (' + body.tools.length + ' tools).');
+      return true;
+    } catch (e) {
+      console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] tmStabilizeToolsOrdering failed (leaving tools untouched):', e);
+      return false;
+    }
+  }
+
   // ==================== OPENROUTER STICKY-ROUTING SESSION ID (v4.55) ====================
   // OpenAI-family models (GPT-5.x) on OpenRouter cache AUTOMATICALLY on the OpenAI side,
   // but only if consecutive turns are routed to the SAME upstream provider endpoint.
@@ -3062,6 +3127,14 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
+
+          // v4.58: UNIVERSAL tools key canonicalization (all OpenRouter models). Must run BEFORE
+          // any per-model caching logic so the outbound tools block is byte-stable across turns
+          // regardless of TypingMind's non-deterministic key ordering. Root-cause fix for the
+          // GPT-5.x cache misses; also removes needless per-turn cache re-writes on Claude.
+          if (tmStabilizeToolsOrdering(body)) {
+            modified = true;
+          }
 
           if (tmEnsureOpenRouterGpt54Reasoning(body)) {
             modified = true;
