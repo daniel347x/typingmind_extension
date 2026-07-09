@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.160 Changes:
+ * - TWEAK: Chunk target size 9000 \u2192 3000 chars, so each Now-Playing chunk is only a few paragraphs
+ *   (easier to follow, faster first chunk, more granular position feedback).
+ * - TWEAK: When the Now Playing pane appears it now SHRINKS the main editor by the pane's measured
+ *   height (widget total height unchanged) instead of growing the whole widget; on stop the main
+ *   editor is restored to its exact saved height via applyTranscriptHeight().
+ *
  * v3.159 Changes:
  * - NEW: Dedicated read-only "Now Playing" pane at the TOP of the widget, shown ONLY during playback.
  *   It displays the current chunk's text (scrollable, ~1/3 height, user-resizable) with tiny lines
@@ -369,7 +376,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.159',
+  VERSION: '3.160',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -798,8 +805,10 @@
   let elevenModel = null;
   let elevenStopped = false;     // set true by stopReadAloud so in-flight fetches abort cleanly
 
-  // Max characters per TTS request. Multilingual v2 hard-caps at 10,000; we stay well under.
-  const ELEVEN_CHUNK_LIMIT = 9000;
+  // Target characters per chunk. The API hard-caps Multilingual v2 at 10,000, but we deliberately
+  // aim MUCH smaller (~3,000) so each Now-Playing chunk is only a few paragraphs \u2014 easier to follow,
+  // faster first-chunk generation, and more granular position feedback.
+  const ELEVEN_CHUNK_LIMIT = 3000;
 
   // Built-in starter voices offered in the dropdown (user can add their own).
   const ELEVEN_STARTER_VOICES = [
@@ -1063,15 +1072,48 @@
 
     ta.value = chunk.text;
     ta.scrollTop = 0;
+
+    // Show the pane, then shrink the MAIN transcript editor by the pane's height so the widget's
+    // total height stays the same (the pane takes space FROM the editor, not ADDED to the widget).
+    // Only do this once (on first appearance); subsequent chunks just update the pane content.
+    const wasHidden = (pane.style.display === 'none' || pane.style.display === '');
     pane.style.display = 'block';
+    if (wasHidden) elevenShrinkMainEditorForPane();
   }
 
   /**
-   * Hide the Now Playing pane (called when playback stops / finishes).
+   * Shrink the main transcript textarea by the Now Playing pane's rendered height, so the overall
+   * widget height is unchanged when the pane appears. Uses the pane's actual measured height
+   * (including its margin) \u2014 no fragile padding math. Restored exactly via applyTranscriptHeight().
+   */
+  function elevenShrinkMainEditorForPane() {
+    const pane = document.getElementById('deepgram-nowplaying');
+    const main = document.getElementById('deepgram-transcript');
+    if (!pane || !main) return;
+    try {
+      const paneRect = pane.getBoundingClientRect();
+      const paneStyle = window.getComputedStyle(pane);
+      const paneTotal = paneRect.height
+        + (parseFloat(paneStyle.marginTop) || 0)
+        + (parseFloat(paneStyle.marginBottom) || 0);
+      const mainH = main.getBoundingClientRect().height;
+      const newH = Math.max(120, Math.round(mainH - paneTotal)); // never collapse below 120px
+      main.style.height = newH + 'px';
+    } catch (e) { /* if measurement fails, leave heights alone */ }
+  }
+
+  /**
+   * Hide the Now Playing pane (called when playback stops / finishes) and restore the main
+   * transcript editor to its saved height exactly (via applyTranscriptHeight()).
    */
   function elevenHideNowPlaying() {
     const pane = document.getElementById('deepgram-nowplaying');
+    const wasVisible = pane && pane.style.display !== 'none' && pane.style.display !== '';
     if (pane) pane.style.display = 'none';
+    // Restore the main editor to its exact saved height (no off-by-N drift).
+    if (wasVisible && typeof applyTranscriptHeight === 'function') {
+      try { applyTranscriptHeight(); } catch (e) {}
+    }
   }
 
   /**
