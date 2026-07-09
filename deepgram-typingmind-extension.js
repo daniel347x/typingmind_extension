@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.154 Changes:
+ * - NEW (Step 1): Read Aloud now honors the transcript cursor/selection \u2014 highlight a range to read exactly that,
+ *   place the cursor to read from there to the end, or nothing selected reads the whole thing.
+ * - NEW: Tiny "\u25be status" toggle to hide/show the "Ready to Record / Whisper Standing By" block (persisted). Whisper is a backup now.
+ * - FIX: Voice dropdown forced to readable dark-on-white in dark mode (was dim-gray-on-white).
+ *
  * v3.153 Changes:
  * - NEW: Full ElevenLabs Read-Aloud control row (replaces the single Read Aloud button):
  *   ▶/⏸ play-pause-resume (resumes from exact spot), ⏹ stop, live speed slider (0.5-3x, persisted),
@@ -318,7 +324,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.153',
+  VERSION: '3.154',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -347,6 +353,7 @@
     ELEVENLABS_MODEL_STORAGE: 'elevenlabs_extension_model',
     ELEVENLABS_RATE_STORAGE: 'elevenlabs_extension_playback_rate',
     ELEVENLABS_VOICES_STORAGE: 'elevenlabs_extension_voices_list',
+    STATUS_BLOCK_HIDDEN_STORAGE: 'deepgram_status_block_hidden',
     ELEVENLABS_TTS_ENDPOINT: 'https://api.elevenlabs.io/v1/text-to-speech',
     // Default stock voice 'Rachel' so it works instantly; replace with your own voice ID via the prompt.
     DEFAULT_ELEVENLABS_VOICE_ID: '21m00Tcm4TlvDq8ikWAM',
@@ -834,11 +841,27 @@
     }
     if (elevenIsFetching) return; // ignore rapid double-clicks mid-fetch
 
-    // Gather the text from the transcript window.
+    // Gather the text from the transcript window, honoring cursor / selection:
+    //  \u2022 a highlighted range  \u2192 read exactly that range
+    //  \u2022 just a cursor (no range) \u2192 read from the cursor to the end
+    //  \u2022 nothing focused / cursor at 0 \u2192 read the whole thing
     const transcriptEl = document.getElementById('deepgram-transcript');
-    const text = (transcriptEl && transcriptEl.value ? transcriptEl.value : '').trim();
+    const fullText = (transcriptEl && transcriptEl.value ? transcriptEl.value : '');
+    let text = fullText;
+    if (transcriptEl && typeof transcriptEl.selectionStart === 'number') {
+      const selStart = transcriptEl.selectionStart;
+      const selEnd = transcriptEl.selectionEnd;
+      if (selEnd > selStart) {
+        // A real highlight \u2192 read exactly the selected text.
+        text = fullText.substring(selStart, selEnd);
+      } else if (selStart > 0) {
+        // Just a cursor placed mid-text \u2192 read from there to the end.
+        text = fullText.substring(selStart);
+      }
+    }
+    text = text.trim();
     if (!text) {
-      alert('Nothing to read \u2014 the transcript window is empty.');
+      alert('Nothing to read \u2014 the transcript window is empty (or the selection is blank).');
       return;
     }
 
@@ -986,6 +1009,28 @@
   function elevenClearApiKey() {
     localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
     alert('ElevenLabs API key cleared. Click \u25b6 Read Aloud to enter a new one.');
+  }
+
+  /**
+   * Apply the saved show/hide state of the transcription status block
+   * ("Ready to Record" / "Whisper Standing By"). Whisper is a rarely-used backup now.
+   */
+  function applyStatusBlockVisibility() {
+    const block = document.getElementById('deepgram-status-block');
+    const btn = document.getElementById('deepgram-status-toggle-btn');
+    if (!block || !btn) return;
+    const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
+    block.style.display = hidden ? 'none' : '';
+    btn.textContent = hidden ? '\u25b8 status' : '\u25be status';
+  }
+
+  /**
+   * Toggle (and persist) the transcription status block's visibility.
+   */
+  function toggleStatusBlock() {
+    const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
+    localStorage.setItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE, hidden ? '0' : '1');
+    applyStatusBlockVisibility();
   }
 
   /**
@@ -1799,6 +1844,13 @@
         background: #2d3548;
         color: #9ca3af;
         border-color: #374151;
+      }
+      
+      /* ElevenLabs voice dropdown: force readable dark-on-white in BOTH themes */
+      #deepgram-eleven-voice-select,
+      #deepgram-eleven-voice-select option {
+        color: #111 !important;
+        background-color: #fff !important;
       }
       
       [data-theme="dark"] .deepgram-info-summary {
@@ -2794,11 +2846,17 @@
 
         </div>
 
-        <!-- Status -->
-        <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
-        
-        <!-- Queue Status (Always Visible) -->
-        <div id="deepgram-queue-status">Whisper Standing By</div>
+        <!-- Transcription status block (Deepgram/Whisper) + tiny hide toggle -->
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button id="deepgram-status-toggle-btn" title="Show/hide the transcription status block" style="font-size:10px; padding:1px 6px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ status</button>
+        </div>
+        <div id="deepgram-status-block">
+          <!-- Status -->
+          <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
+          
+          <!-- Queue Status (Always Visible) -->
+          <div id="deepgram-queue-status">Whisper Standing By</div>
+        </div>
         
         <!-- Transcript -->
         <div class="deepgram-section" style="margin-bottom: 0;">
@@ -2860,7 +2918,7 @@
           <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:110px; vertical-align:middle;">
           <span id="deepgram-eleven-rate-label" style="font-size:11px; min-width:36px; display:inline-block;">1.50×</span>
           <span style="font-size:11px; opacity:0.8;">Voice</span>
-          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:180px;"></select>
+          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:180px; color:#111; background:#fff;"></select>
           <button id="deepgram-eleven-addvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a voice (name + ID)" style="min-width:30px;">➕</button>
           <button id="deepgram-eleven-delvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected voice from list" style="min-width:30px;">🗑️</button>
           <button id="deepgram-eleven-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored ElevenLabs API key" style="font-size:11px;">🔑 Key</button>
@@ -3152,6 +3210,10 @@
     document.getElementById('deepgram-eleven-addvoice-btn').addEventListener('click', elevenAddVoice);
     document.getElementById('deepgram-eleven-delvoice-btn').addEventListener('click', elevenRemoveVoice);
     document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
+    // Status-block hide/show toggle (Whisper is a rarely-used backup now)
+    document.getElementById('deepgram-status-toggle-btn').addEventListener('click', toggleStatusBlock);
+    // Apply saved status-block visibility on load
+    applyStatusBlockVisibility();
     document.getElementById('deepgram-eleven-voice-select').addEventListener('change', function() {
       localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, this.value);
     });
