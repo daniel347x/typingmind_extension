@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.165 Changes:
+ * - FIX: Chunk input back to 64px so its number-spinner arrows no longer overlap the digits;
+ *   reclaimed the width by trimming the speed slider (94\u219284px) and voice dropdown (145\u2192130px).
+ *
  * v3.164 Changes:
  * - FIX: "Jump to this in editor" now scrolls slightly PAST the estimate so the block sits comfortably
  *   in view (start ~1/6 down) instead of at the very top with the region off the bottom.
@@ -398,7 +402,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.164',
+  VERSION: '3.165',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3233,15 +3237,15 @@
           <button id="deepgram-eleven-play-btn" class="deepgram-btn deepgram-btn-info" title="Read the transcript window aloud" style="min-width:34px;">▶</button>
           <button id="deepgram-eleven-stop-btn" class="deepgram-btn deepgram-btn-secondary" title="Stop (reset to start)" style="min-width:34px;" disabled>⏹</button>
           <span style="font-size:11px; opacity:0.8;">Speed</span>
-          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:94px; vertical-align:middle;">
+          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:84px; vertical-align:middle;">
           <span id="deepgram-eleven-rate-label" style="font-size:11px; min-width:36px; display:inline-block;">1.50×</span>
           <span style="font-size:11px; opacity:0.8;">Voice</span>
-          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:145px; color:#111; background:#fff;"></select>
+          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:130px; color:#111; background:#fff;"></select>
           <button id="deepgram-eleven-addvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a voice (name + ID)" style="min-width:30px;">➕</button>
           <button id="deepgram-eleven-delvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected voice from list" style="min-width:30px;">🗑️</button>
           <button id="deepgram-eleven-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored ElevenLabs API key" style="font-size:11px;">🔑 Key</button>
           <span style="font-size:11px; opacity:0.8;">Chunk</span>
-          <input id="deepgram-eleven-chunk-input" type="number" min="300" max="9500" step="100" title="Target characters per chunk (300\u20139500). Applies to the NEXT playback." style="width:40px; font-size:11px; padding:2px 3px; border:1px solid #cbd5e0; border-radius:4px; color:#111; background:#fff;" />
+          <input id="deepgram-eleven-chunk-input" type="number" min="300" max="9500" step="100" title="Target characters per chunk (300\u20139500). Applies to the NEXT playback." style="width:64px; font-size:11px; padding:2px 4px; border:1px solid #cbd5e0; border-radius:4px; color:#111; background:#fff;" />
         </div>
         
         <!-- Info -->
