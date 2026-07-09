@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.166 Changes:
+ * - NEW: Exponential-backoff RETRY on chunk fetches (~30s budget) for TRANSIENT failures only
+ *   (network errors, HTTP 429, 5xx). Permanent errors (401/403/404/422) still fail fast. Aborts on Stop.
+ *   Fully contained in the fetch layer \u2014 playback/queue/UI unchanged. Pre-fetch failures fall back to
+ *   a fresh (retrying) fetch, with a final null-guard so playback never chokes on a missing blob.
+ *
  * v3.165 Changes:
  * - FIX: Chunk input back to 64px so its number-spinner arrows no longer overlap the digits;
  *   reclaimed the width by trimming the speed slider (94\u219284px) and voice dropdown (145\u2192130px).
@@ -402,7 +408,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.165',
+  VERSION: '3.166',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1055,10 +1061,10 @@
   }
 
   /**
-   * Fetch the TTS audio blob for a chunk index. Returns a Promise<Blob>.
-   * Errors are surfaced by rejecting; callers handle stop/alert.
+   * Single TTS fetch attempt for a chunk. Returns a Promise<Blob>; rejects with an Error whose
+   * .status carries the HTTP code (if any).
    */
-  function elevenFetchChunk(index) {
+  function elevenFetchChunkOnce(index) {
     const chunk = elevenChunks[index];
     return fetch(`${CONFIG.ELEVENLABS_TTS_ENDPOINT}/${encodeURIComponent(elevenVoiceId)}`, {
       method: 'POST',
@@ -1076,6 +1082,39 @@
       }
       return resp.blob();
     });
+  }
+
+  /**
+   * Fetch a chunk with EXPONENTIAL-BACKOFF RETRY (~30s budget) on TRANSIENT failures only.
+   * Same signature/name as before, so all callers are unchanged.
+   *  \u2022 RETRY on: network error (no .status) OR HTTP 429 (rate limit) OR 5xx (server).
+   *  \u2022 FAIL FAST on: 401 (bad key), 403, 404/422 (bad voice/model) \u2014 permanent, retrying is pointless.
+   *  \u2022 Aborts immediately if the user pressed Stop (elevenStopped) between attempts.
+   * Backoff delays: 0.5s, 1s, 2s, 4s, 8s (each capped so the total stays ~<=30s), then the last
+   * error is thrown \u2014 which flows into the existing per-chunk error handler (alert + stop).
+   */
+  async function elevenFetchChunk(index) {
+    const delays = [500, 1000, 2000, 4000, 8000]; // ~15.5s of waiting + attempt time \u2248 under 30s
+    let attempt = 0;
+    let lastErr = null;
+    while (attempt <= delays.length) {
+      if (elevenStopped) { const e = new Error('stopped'); e.aborted = true; throw e; }
+      try {
+        return await elevenFetchChunkOnce(index);
+      } catch (err) {
+        lastErr = err;
+        const status = err && err.status;
+        const transient = (status === undefined) || status === 429 || (status >= 500 && status <= 599);
+        // Permanent errors (401/403/404/422/etc.) \u2014 do NOT retry, surface immediately.
+        if (!transient) throw err;
+        if (attempt === delays.length) break; // out of retries
+        const wait = delays[attempt];
+        console.warn(ts(), `\u26a0\ufe0f Read Aloud chunk #${index} transient failure (${status || 'network'}); retry ${attempt + 1}/${delays.length} in ${wait}ms`);
+        await new Promise(r => setTimeout(r, wait));
+        attempt++;
+      }
+    }
+    throw lastErr || new Error('Read Aloud fetch failed');
   }
 
   /**
@@ -1209,11 +1248,14 @@
       let blob;
       if (elevenPrefetch && elevenPrefetch.index === index) {
         blob = await elevenPrefetch.promise;
+        // The pre-fetch swallows errors as null (see below); if it failed, fetch fresh (with retry).
+        if (!blob) blob = await elevenFetchChunk(index);
       } else {
         blob = await elevenFetchChunk(index);
       }
       elevenPrefetch = null;
       if (elevenStopped) return;
+      if (!blob) throw new Error('No audio returned for this chunk.');
 
       // Set up the audio element for this chunk.
       if (elevenAudioUrl) { try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {} }
