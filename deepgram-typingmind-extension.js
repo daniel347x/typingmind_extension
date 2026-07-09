@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.152 Changes:
+ * - NEW: Repurposed the "📧 Paste Email" button into a "🔊 Read Aloud" button.
+ *   It reads the ENTIRE transcript window aloud via the ElevenLabs TTS API using your own key.
+ *   Click = play (prompts once for API key + voice ID, stored in localStorage); click again = stop.
+ *   Defaults: model eleven_multilingual_v2, stock voice 'Rachel', playbackRate 1.5x (fast).
+ *   Override via localStorage keys: elevenlabs_extension_{api_key,voice_id,model,playback_rate}.
+ *   (Old pasteEmail() left in place but unwired.)
+ *
  * v3.148 Changes:
  * - FIX: Folder titles: remove fixed 180px reserve; absolute-position folder hover icon cluster; use padding-right reserve
  *   (non-hover ~gutter only; hover uses measured reserve).
@@ -302,7 +310,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.151',
+  VERSION: '3.152',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -324,6 +332,19 @@
     // NOTE: we run a tiny CORS proxy on :8002 that forwards to the Whisper server on :8000.
     DEFAULT_LOCAL_ENDPOINT: 'http://127.0.0.1:8002/v1/audio/transcriptions',
     DEFAULT_WHISPER_PROMPT: 'Technical terms: Databricks, LlamaIndex, MLOps, QC automation, HITL, Francesco, Jim Kane, Rob Smith, Constantine Cannon',
+    
+    // ElevenLabs Read-Aloud (TTS) settings
+    ELEVENLABS_API_KEY_STORAGE: 'elevenlabs_extension_api_key',
+    ELEVENLABS_VOICE_ID_STORAGE: 'elevenlabs_extension_voice_id',
+    ELEVENLABS_MODEL_STORAGE: 'elevenlabs_extension_model',
+    ELEVENLABS_RATE_STORAGE: 'elevenlabs_extension_playback_rate',
+    ELEVENLABS_TTS_ENDPOINT: 'https://api.elevenlabs.io/v1/text-to-speech',
+    // Default stock voice 'Rachel' so it works instantly; replace with your own voice ID via the prompt.
+    DEFAULT_ELEVENLABS_VOICE_ID: '21m00Tcm4TlvDq8ikWAM',
+    // Multilingual v2 = ElevenLabs' most consistent/lifelike model (best for read-aloud).
+    DEFAULT_ELEVENLABS_MODEL: 'eleven_multilingual_v2',
+    // Playback-speed multiplier (the API itself caps native speed at 1.2x; this speeds up the audio element).
+    DEFAULT_ELEVENLABS_RATE: 1.5,
     
     // Teams message break settings
     TEAMS_SPEAKERS_STORAGE: 'teams_message_speakers',
@@ -702,6 +723,152 @@
     }
   }
   
+  // ==================== ELEVENLABS READ-ALOUD (TTS) ====================
+  // Read-aloud state (module-scoped)
+  let elevenAudio = null;        // the currently-playing HTMLAudioElement
+  let elevenAudioUrl = null;     // object URL to revoke on stop/cleanup
+  let elevenIsFetching = false;  // guard against double-clicks during fetch
+
+  /**
+   * Read the ENTIRE transcript window aloud via the ElevenLabs TTS API.
+   * - Uses your own ElevenLabs API key (prompted once, stored in localStorage).
+   * - Voice + model + playback rate come from CONFIG defaults (overridable in localStorage).
+   * - Click while playing = STOP. Click while idle = fetch + play.
+   * Talks straight to the ElevenLabs API (no Chrome-extension middleman).
+   */
+  // @beacon[
+  //   id=tm@readaloud,
+  //   slice_labels=tm--general,
+  //   role=ElevenLabs read-aloud: speak the transcript window via TTS API,
+  //   kind=AST,
+  // ]
+  async function readAloud() {
+    const btn = document.getElementById('deepgram-paste-email-btn');
+
+    // If audio is currently playing, this click STOPS it.
+    if (elevenAudio) {
+      stopReadAloud();
+      return;
+    }
+    if (elevenIsFetching) return; // ignore rapid double-clicks mid-fetch
+
+    // Gather the text from the transcript window.
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    const text = (transcriptEl && transcriptEl.value ? transcriptEl.value : '').trim();
+    if (!text) {
+      alert('Nothing to read \u2014 the transcript window is empty.');
+      return;
+    }
+
+    // Resolve API key (prompt once if missing).
+    let apiKey = localStorage.getItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
+    if (!apiKey) {
+      apiKey = prompt('Paste your ElevenLabs API key (stored locally, used only to call ElevenLabs):');
+      if (apiKey) {
+        apiKey = apiKey.trim();
+        localStorage.setItem(CONFIG.ELEVENLABS_API_KEY_STORAGE, apiKey);
+      }
+    }
+    if (!apiKey) return; // user cancelled
+
+    // Resolve voice ID (prompt once if you want your own; defaults to a stock voice).
+    let voiceId = localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE);
+    if (!voiceId) {
+      const entered = prompt(
+        'ElevenLabs Voice ID to use.\n\n' +
+        'Find it at elevenlabs.io \u2192 Voices \u2192 (your voice) \u2192 "..." \u2192 Copy Voice ID.\n\n' +
+        'Leave blank to use the default stock voice (Rachel).'
+      );
+      voiceId = (entered && entered.trim()) ? entered.trim() : CONFIG.DEFAULT_ELEVENLABS_VOICE_ID;
+      localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, voiceId);
+    }
+
+    const model = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
+    const rate = parseFloat(localStorage.getItem(CONFIG.ELEVENLABS_RATE_STORAGE)) || CONFIG.DEFAULT_ELEVENLABS_RATE;
+
+    const originalLabel = btn ? btn.textContent : '';
+    elevenIsFetching = true;
+    if (btn) { btn.textContent = '\u23f3 Generating\u2026'; btn.disabled = true; }
+
+    try {
+      const resp = await fetch(
+        `${CONFIG.ELEVENLABS_TTS_ENDPOINT}/${encodeURIComponent(voiceId)}`,
+        {
+          method: 'POST',
+          headers: {
+            'xi-api-key': apiKey,
+            'Content-Type': 'application/json',
+            'Accept': 'audio/mpeg'
+          },
+          body: JSON.stringify({
+            text: text,
+            model_id: model,
+            // Native speed capped 0.7\u20131.2 by the API; we push near the top and
+            // then further speed up via playbackRate on the audio element below.
+            voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.2 }
+          })
+        }
+      );
+
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); detail = (j && j.detail && (j.detail.message || j.detail.status)) || JSON.stringify(j); } catch (e) {}
+        // 401 = bad/blocked key; 422 = bad voice/model; 404 = voice not in your library.
+        if (resp.status === 401) {
+          localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
+          alert('ElevenLabs rejected the API key (401). It has been cleared \u2014 click Read Aloud again to re-enter it.');
+        } else if (resp.status === 404 || resp.status === 422) {
+          alert('ElevenLabs could not use that voice/model (' + detail + ').\n\nMake sure the Voice ID is in your "My Voices" and the model is valid. Clearing the saved voice \u2014 you will be re-prompted next click.');
+          localStorage.removeItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE);
+        } else {
+          alert('ElevenLabs error: ' + detail);
+        }
+        return;
+      }
+
+      const blob = await resp.blob();
+      elevenAudioUrl = URL.createObjectURL(blob);
+      elevenAudio = new Audio(elevenAudioUrl);
+      elevenAudio.playbackRate = rate; // speed up playback (pitch preserved by the browser)
+
+      elevenAudio.addEventListener('ended', stopReadAloud);
+      elevenAudio.addEventListener('error', stopReadAloud);
+
+      if (btn) { btn.textContent = '\u23f9 Stop'; btn.disabled = false; }
+      await elevenAudio.play();
+    } catch (err) {
+      console.error('\u274c Read Aloud failed:', err);
+      alert('Read Aloud failed: ' + (err && err.message ? err.message : err));
+      stopReadAloud();
+    } finally {
+      elevenIsFetching = false;
+      // If play() never set the Stop label (e.g. error path), restore the original.
+      if (btn && !elevenAudio) { btn.textContent = originalLabel; btn.disabled = false; }
+    }
+  }
+
+  /**
+   * Stop any in-progress read-aloud playback and reset the button.
+   */
+  // @beacon[
+  //   id=tm@readaloudstop,
+  //   slice_labels=tm--general,
+  //   role=ElevenLabs read-aloud: stop playback + cleanup,
+  //   kind=AST,
+  // ]
+  function stopReadAloud() {
+    if (elevenAudio) {
+      try { elevenAudio.pause(); } catch (e) {}
+      elevenAudio = null;
+    }
+    if (elevenAudioUrl) {
+      try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {}
+      elevenAudioUrl = null;
+    }
+    const btn = document.getElementById('deepgram-paste-email-btn');
+    if (btn) { btn.textContent = '\ud83d\udd0a Read Aloud'; btn.disabled = false; }
+  }
+
   /**
    * Paste rich text from clipboard and convert to markdown-style plain text
    */
@@ -2560,8 +2727,8 @@
           <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
             📄 Paste MD
           </button>
-          <button id="deepgram-paste-email-btn" class="deepgram-btn deepgram-btn-info">
-            📧 Paste Email
+          <button id="deepgram-paste-email-btn" class="deepgram-btn deepgram-btn-info" title="Read the entire transcript window aloud using your ElevenLabs voice">
+            🔊 Read Aloud
           </button>
           <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
             🗑️ Clear
@@ -2846,7 +3013,7 @@
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', appendEllipsisTail);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
-    document.getElementById('deepgram-paste-email-btn').addEventListener('click', pasteEmail);
+    document.getElementById('deepgram-paste-email-btn').addEventListener('click', readAloud);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
     
     // Make cancel functions globally accessible (for debugging)
