@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.157 Changes:
+ * - FIX: Follow-along highlight now actually shows. Root cause: elevenHighlightChunk routed through
+ *   scrollToCursorPosition(), which (a) collapsed the range to a caret and (b) blurred the textarea
+ *   when it wasn't previously focused \u2014 and a textarea's selection is invisible while unfocused.
+ *   Now sets a real range, keeps focus (fine while listening), and scrolls via a direct non-blurring scrollTop.
+ * - DEBUG: console logs the chunk plan on start and each chunk as it begins playing (so chunking is visible).
+ *
  * v3.156 Changes:
  * - NEW: Long-text support via PARAGRAPH CHUNKING (stays on high-quality Multilingual v2, no length limit).
  *   Text is split at paragraph (blank-line) boundaries into <9000-char chunks (tiny paras merged; an
@@ -349,7 +356,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.156',
+  VERSION: '3.157',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -916,6 +923,8 @@
       alert('Nothing to read.');
       return;
     }
+    console.log(ts(), `\ud83d\udd0a Read Aloud: ${elevenChunks.length} chunk(s)`,
+      elevenChunks.map((c, i) => `#${i}: ${c.text.length} chars [${c.start}-${c.end}]`));
     elevenApiKey = apiKey;
     elevenVoiceId = voiceId;
     elevenModel = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
@@ -1015,17 +1024,33 @@
   }
 
   /**
-   * Highlight the given chunk's text range in the transcript window and scroll to it.
+   * Highlight the given chunk's text RANGE in the transcript window and scroll to it.
+   * NOTE: a <textarea>'s selection is only VISIBLE while it has focus, so we focus it and
+   * keep the focus (fine during playback since you're listening, not typing). We deliberately
+   * do NOT use scrollToCursorPosition() here \u2014 that helper collapses the selection to a caret
+   * AND blurs the textarea when it wasn't previously focused, which is exactly what hid the
+   * highlight. Instead we set a real range and scroll with a direct, non-blurring scrollTop.
    */
   function elevenHighlightChunk(index) {
     const el = document.getElementById('deepgram-transcript');
     const chunk = elevenChunks[index];
     if (!el || !chunk) return;
     try {
-      el.focus();
+      el.focus({ preventScroll: true });
+      // Real range selection (start != end) so the whole chunk is highlighted, not a caret.
       el.setSelectionRange(chunk.start, chunk.end);
-      // Best-effort scroll so the highlighted range is visible.
-      if (typeof scrollToCursorPosition === 'function') scrollToCursorPosition(el, chunk.start);
+
+      // Direct, non-blurring scroll so the highlighted range is comfortably in view.
+      const style = window.getComputedStyle(el);
+      const lineHeight = parseInt(style.lineHeight) || (parseInt(style.fontSize) * 1.6) || 20;
+      const linesBefore = el.value.substring(0, chunk.start).split('\n').length - 1;
+      const targetY = linesBefore * lineHeight;
+      const pad = lineHeight * 2; // keep ~2 lines of context above the chunk
+      const desired = Math.max(0, targetY - pad);
+      // Only scroll if the chunk start is out of view (avoid yanking the view around).
+      if (targetY < el.scrollTop || targetY > el.scrollTop + el.clientHeight - lineHeight * 2) {
+        el.scrollTop = desired;
+      }
     } catch (e) { /* selection may fail if element not focusable; ignore */ }
   }
 
@@ -1062,6 +1087,7 @@
       });
       elevenAudio.addEventListener('error', () => { stopReadAloud(); });
 
+      console.log(ts(), `\u25b6 Playing chunk #${index} of ${elevenChunks.length} (${elevenChunks[index].text.length} chars)`);
       elevenHighlightChunk(index);
       elevenSetTransportState('playing');
       elevenIsFetching = false;
