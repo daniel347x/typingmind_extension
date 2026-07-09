@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.164 Changes:
+ * - FIX: "Jump to this in editor" now scrolls slightly PAST the estimate so the block sits comfortably
+ *   in view (start ~1/6 down) instead of at the very top with the region off the bottom.
+ * - FIX: Read-Aloud ribbon no longer wraps \u2014 narrowed the chunk input (64\u219240px), voice dropdown
+ *   (180\u2192145px) and speed slider (110\u219294px).
+ *
  * v3.163 Changes:
  * - FIX: "Jump to this in editor" scroll now lands correctly on very long / wrapped text. Old code
  *   counted \\n newlines (wrong for soft-wrapped paragraphs \u2192 under-scrolled ~halfway); now scrolls
@@ -392,7 +398,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.163',
+  VERSION: '3.164',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1175,10 +1181,13 @@
       const denom = Math.max(1, el.value.length);
       const frac = chunk.start / denom;
       const scrollable = Math.max(0, el.scrollHeight - el.clientHeight);
-      const style = window.getComputedStyle(el);
-      const lineHeight = parseInt(style.lineHeight) || (parseInt(style.fontSize) * 1.6) || 20;
-      // Land the chunk a little below the top edge (~2 lines of context above it).
-      el.scrollTop = Math.max(0, Math.round(frac * scrollable) - lineHeight * 2);
+      // The proportional estimate can land a bit SHORT, leaving the selected block just off the
+      // BOTTOM (user then had to scroll further down). So scroll slightly PAST the estimate \u2014 i.e.
+      // add a small bias to scrollTop \u2014 which brings the block up into comfortable view with the
+      // start sitting ~1/6 down from the top. Bounded so it never overshoots on tiny viewports.
+      const bias = Math.min(el.clientHeight * 0.18, 120);
+      const target = Math.round(frac * scrollable) + bias;
+      el.scrollTop = Math.max(0, Math.min(scrollable, target));
     } catch (e) { /* ignore */ }
   }
 
@@ -3224,15 +3233,15 @@
           <button id="deepgram-eleven-play-btn" class="deepgram-btn deepgram-btn-info" title="Read the transcript window aloud" style="min-width:34px;">▶</button>
           <button id="deepgram-eleven-stop-btn" class="deepgram-btn deepgram-btn-secondary" title="Stop (reset to start)" style="min-width:34px;" disabled>⏹</button>
           <span style="font-size:11px; opacity:0.8;">Speed</span>
-          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:110px; vertical-align:middle;">
+          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:94px; vertical-align:middle;">
           <span id="deepgram-eleven-rate-label" style="font-size:11px; min-width:36px; display:inline-block;">1.50×</span>
           <span style="font-size:11px; opacity:0.8;">Voice</span>
-          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:180px; color:#111; background:#fff;"></select>
+          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:145px; color:#111; background:#fff;"></select>
           <button id="deepgram-eleven-addvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a voice (name + ID)" style="min-width:30px;">➕</button>
           <button id="deepgram-eleven-delvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected voice from list" style="min-width:30px;">🗑️</button>
           <button id="deepgram-eleven-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored ElevenLabs API key" style="font-size:11px;">🔑 Key</button>
           <span style="font-size:11px; opacity:0.8;">Chunk</span>
-          <input id="deepgram-eleven-chunk-input" type="number" min="300" max="9500" step="100" title="Target characters per chunk (300\u20139500). Applies to the NEXT playback." style="width:64px; font-size:11px; padding:2px 4px; border:1px solid #cbd5e0; border-radius:4px; color:#111; background:#fff;" />
+          <input id="deepgram-eleven-chunk-input" type="number" min="300" max="9500" step="100" title="Target characters per chunk (300\u20139500). Applies to the NEXT playback." style="width:40px; font-size:11px; padding:2px 3px; border:1px solid #cbd5e0; border-radius:4px; color:#111; background:#fff;" />
         </div>
         
         <!-- Info -->
