@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.162 Changes:
+ * - NEW: "📍 Jump to this in editor" button above the Now Playing pane. On click (explicit \u2014 safe,
+ *   never automatic) it focuses the main editor, selects the currently-playing chunk's exact range,
+ *   and scrolls it into view. Fastest way to jump to what's being read without any auto focus-steal.
+ *
  * v3.161 Changes:
  * - TWEAK: Chunk target size 3000 \u2192 1500 chars (chunks now a paragraph or two each).
  * - TWEAK: Now Playing pane default height 33vh \u2192 22vh (~1/3 shorter); still user-resizable per session.
@@ -380,7 +385,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.161',
+  VERSION: '3.162',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1118,6 +1123,27 @@
     if (wasVisible && typeof applyTranscriptHeight === 'function') {
       try { applyTranscriptHeight(); } catch (e) {}
     }
+  }
+
+  /**
+   * Jump to the currently-playing chunk in the MAIN transcript editor: focus it, select the chunk's
+   * exact range (start\u2192end offsets we already stored), and scroll it into view. This is SAFE because
+   * it only runs on an explicit button click \u2014 never automatically \u2014 so it can't steal focus mid-typing.
+   */
+  function elevenJumpToChunkInEditor() {
+    const el = document.getElementById('deepgram-transcript');
+    const chunk = (elevenChunkIndex >= 0) ? elevenChunks[elevenChunkIndex] : null;
+    if (!el || !chunk) return;
+    try {
+      el.focus({ preventScroll: true });
+      el.setSelectionRange(chunk.start, chunk.end);
+      // Direct, non-blurring scroll so the selected block is comfortably in view.
+      const style = window.getComputedStyle(el);
+      const lineHeight = parseInt(style.lineHeight) || (parseInt(style.fontSize) * 1.6) || 20;
+      const linesBefore = el.value.substring(0, chunk.start).split('\n').length - 1;
+      const targetY = linesBefore * lineHeight;
+      el.scrollTop = Math.max(0, targetY - lineHeight * 2); // ~2 lines of context above
+    } catch (e) { /* ignore */ }
   }
 
   /**
@@ -2985,6 +3011,7 @@
 
         <!-- 🔊 NOW PLAYING pane (read-only; shown only during Read Aloud playback) -->
         <div id="deepgram-nowplaying" style="display:none; margin-bottom:8px; border:1px solid #667eea; border-radius:6px; padding:6px; background:rgba(102,126,234,0.06);">
+          <button id="deepgram-nowplaying-jump-btn" title="Select &amp; scroll to this block in the main editor" style="font-size:11px; padding:2px 8px; margin-bottom:4px; cursor:pointer; background:transparent; border:1px solid #667eea; border-radius:4px; color:inherit;">📍 Jump to this in editor</button>
           <div id="deepgram-nowplaying-above" style="font-size:10px; opacity:0.7; margin-bottom:3px;">↑ — above</div>
           <textarea id="deepgram-nowplaying-text" readonly wrap="soft" style="width:100%; box-sizing:border-box; resize:vertical; min-height:90px; height:22vh; max-height:60vh; font-size:13px; line-height:1.5; padding:6px; border:1px solid rgba(102,126,234,0.4); border-radius:4px; background:#fff; color:#111;"></textarea>
           <div id="deepgram-nowplaying-below" style="font-size:10px; opacity:0.7; margin-top:3px;">↓ — below</div>
@@ -3456,6 +3483,7 @@
     document.getElementById('deepgram-eleven-addvoice-btn').addEventListener('click', elevenAddVoice);
     document.getElementById('deepgram-eleven-delvoice-btn').addEventListener('click', elevenRemoveVoice);
     document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
+    document.getElementById('deepgram-nowplaying-jump-btn').addEventListener('click', elevenJumpToChunkInEditor);
     // Status-block hide/show toggle (Whisper is a rarely-used backup now)
     document.getElementById('deepgram-status-toggle-btn').addEventListener('click', toggleStatusBlock);
     // Apply saved status-block visibility on load
