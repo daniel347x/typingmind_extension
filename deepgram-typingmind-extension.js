@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.163 Changes:
+ * - FIX: "Jump to this in editor" scroll now lands correctly on very long / wrapped text. Old code
+ *   counted \\n newlines (wrong for soft-wrapped paragraphs \u2192 under-scrolled ~halfway); now scrolls
+ *   PROPORTIONALLY by character offset against scrollHeight.
+ * - NEW: "Chunk" number input (300\u20139500, persisted) in the Read-Aloud row to control chunk size; applies
+ *   to the next playback. The Now Playing pane height now scales with chunk size (~20% taller at 1500).
+ *
  * v3.162 Changes:
  * - NEW: "📍 Jump to this in editor" button above the Now Playing pane. On click (explicit \u2014 safe,
  *   never automatic) it focuses the main editor, selects the currently-playing chunk's exact range,
@@ -385,7 +392,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.162',
+  VERSION: '3.163',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -414,6 +421,7 @@
     ELEVENLABS_MODEL_STORAGE: 'elevenlabs_extension_model',
     ELEVENLABS_RATE_STORAGE: 'elevenlabs_extension_playback_rate',
     ELEVENLABS_VOICES_STORAGE: 'elevenlabs_extension_voices_list',
+    ELEVENLABS_CHUNK_SIZE_STORAGE: 'elevenlabs_extension_chunk_size',
     STATUS_BLOCK_HIDDEN_STORAGE: 'deepgram_status_block_hidden',
     ELEVENLABS_TTS_ENDPOINT: 'https://api.elevenlabs.io/v1/text-to-speech',
     // Default stock voice 'Rachel' so it works instantly; replace with your own voice ID via the prompt.
@@ -815,9 +823,14 @@
   let elevenStopped = false;     // set true by stopReadAloud so in-flight fetches abort cleanly
 
   // Target characters per chunk. The API hard-caps Multilingual v2 at 10,000, but we deliberately
-  // aim MUCH smaller (~1,500) so each Now-Playing chunk is only a paragraph or two \u2014 easy to follow,
-  // fast first-chunk generation, and granular position feedback.
-  const ELEVEN_CHUNK_LIMIT = 1500;
+  // aim MUCH smaller (default ~1,500) so each Now-Playing chunk is only a paragraph or two \u2014 easy to
+  // follow, fast first-chunk generation, granular position feedback. User-adjustable via the little
+  // "Chunk" input in the Read-Aloud row (persisted in localStorage; clamped 300\u20139500).
+  const ELEVEN_CHUNK_LIMIT_DEFAULT = 1500;
+  function elevenGetChunkLimit() {
+    const v = parseInt(localStorage.getItem(CONFIG.ELEVENLABS_CHUNK_SIZE_STORAGE));
+    return (v && v >= 300 && v <= 9500) ? v : ELEVEN_CHUNK_LIMIT_DEFAULT;
+  }
 
   // Built-in starter voices offered in the dropdown (user can add their own).
   const ELEVEN_STARTER_VOICES = [
@@ -977,6 +990,7 @@
   function elevenBuildChunks(fullText, regionStart, regionEnd) {
     const region = fullText.substring(regionStart, regionEnd);
     const chunks = [];
+    const LIMIT = elevenGetChunkLimit(); // user-adjustable chunk target
     // Split into paragraphs, KEEPING offsets: match runs of blank lines as separators.
     const paraRe = /\n[ \t]*\n/g;
     let paras = [];
@@ -1000,18 +1014,18 @@
     let curS = null, curE = null;
     for (const p of paras) {
       const pLen = p.e - p.s;
-      if (pLen > ELEVEN_CHUNK_LIMIT) {
+      if (pLen > LIMIT) {
         // Flush any accumulation, then hard-split this big paragraph.
         if (curS !== null) { pushChunk(curS, curE); curS = curE = null; }
         let segStart = p.s;
         while (segStart < p.e) {
-          let segEnd = Math.min(segStart + ELEVEN_CHUNK_LIMIT, p.e);
+          let segEnd = Math.min(segStart + LIMIT, p.e);
           if (segEnd < p.e) {
             // back up to the last sentence end or space within the window
             const windowStr = region.substring(segStart, segEnd);
             let cut = Math.max(windowStr.lastIndexOf('. '), windowStr.lastIndexOf('.\n'),
                                windowStr.lastIndexOf('! '), windowStr.lastIndexOf('? '));
-            if (cut < ELEVEN_CHUNK_LIMIT * 0.5) cut = windowStr.lastIndexOf(' ');
+            if (cut < LIMIT * 0.5) cut = windowStr.lastIndexOf(' ');
             if (cut > 0) segEnd = segStart + cut + 1;
           }
           pushChunk(segStart, segEnd);
@@ -1019,7 +1033,7 @@
         }
       } else if (curS === null) {
         curS = p.s; curE = p.e;
-      } else if ((p.e - curS) <= ELEVEN_CHUNK_LIMIT) {
+      } else if ((p.e - curS) <= LIMIT) {
         curE = p.e; // merge this paragraph into the current chunk
       } else {
         pushChunk(curS, curE);
@@ -1126,6 +1140,21 @@
   }
 
   /**
+   * Tie the Now Playing pane's height to the chunk size. At the default 1500 the pane is ~20% taller
+   * than the old 22vh baseline (\u224826.4vh); other sizes scale linearly by (chunkSize / 1500), clamped
+   * to a sane 14\u201350vh so it can't get silly. Best-effort convenience \u2014 the user can still drag-resize.
+   */
+  function elevenApplyPaneHeightForChunk() {
+    const ta = document.getElementById('deepgram-nowplaying-text');
+    if (!ta) return;
+    const chunk = elevenGetChunkLimit();
+    const baseVh = 22 * 1.2;                 // ~20% taller than the old baseline, at size 1500
+    let vh = baseVh * (chunk / ELEVEN_CHUNK_LIMIT_DEFAULT);
+    vh = Math.max(14, Math.min(50, vh));     // clamp
+    ta.style.height = vh.toFixed(1) + 'vh';
+  }
+
+  /**
    * Jump to the currently-playing chunk in the MAIN transcript editor: focus it, select the chunk's
    * exact range (start\u2192end offsets we already stored), and scroll it into view. This is SAFE because
    * it only runs on an explicit button click \u2014 never automatically \u2014 so it can't steal focus mid-typing.
@@ -1137,12 +1166,19 @@
     try {
       el.focus({ preventScroll: true });
       el.setSelectionRange(chunk.start, chunk.end);
-      // Direct, non-blurring scroll so the selected block is comfortably in view.
+
+      // Scroll to the selection. NOTE: counting '\n' newlines is WRONG for a soft-wrapped
+      // textarea \u2014 a long unbroken paragraph is one newline-line but many visual rows, so
+      // newline math under-scrolls (the old ~halfway bug). Instead scroll PROPORTIONALLY by
+      // character offset against the full scrollable height, which is accurate under uniform
+      // wrapping regardless of paragraph length.
+      const denom = Math.max(1, el.value.length);
+      const frac = chunk.start / denom;
+      const scrollable = Math.max(0, el.scrollHeight - el.clientHeight);
       const style = window.getComputedStyle(el);
       const lineHeight = parseInt(style.lineHeight) || (parseInt(style.fontSize) * 1.6) || 20;
-      const linesBefore = el.value.substring(0, chunk.start).split('\n').length - 1;
-      const targetY = linesBefore * lineHeight;
-      el.scrollTop = Math.max(0, targetY - lineHeight * 2); // ~2 lines of context above
+      // Land the chunk a little below the top edge (~2 lines of context above it).
+      el.scrollTop = Math.max(0, Math.round(frac * scrollable) - lineHeight * 2);
     } catch (e) { /* ignore */ }
   }
 
@@ -3195,6 +3231,8 @@
           <button id="deepgram-eleven-addvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a voice (name + ID)" style="min-width:30px;">➕</button>
           <button id="deepgram-eleven-delvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected voice from list" style="min-width:30px;">🗑️</button>
           <button id="deepgram-eleven-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored ElevenLabs API key" style="font-size:11px;">🔑 Key</button>
+          <span style="font-size:11px; opacity:0.8;">Chunk</span>
+          <input id="deepgram-eleven-chunk-input" type="number" min="300" max="9500" step="100" title="Target characters per chunk (300\u20139500). Applies to the NEXT playback." style="width:64px; font-size:11px; padding:2px 4px; border:1px solid #cbd5e0; border-radius:4px; color:#111; background:#fff;" />
         </div>
         
         <!-- Info -->
@@ -3484,6 +3522,20 @@
     document.getElementById('deepgram-eleven-delvoice-btn').addEventListener('click', elevenRemoveVoice);
     document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
     document.getElementById('deepgram-nowplaying-jump-btn').addEventListener('click', elevenJumpToChunkInEditor);
+    // Chunk-size input: initialize from storage, persist + resize pane on change.
+    const chunkInput = document.getElementById('deepgram-eleven-chunk-input');
+    if (chunkInput) {
+      chunkInput.value = String(elevenGetChunkLimit());
+      chunkInput.addEventListener('change', function() {
+        let v = parseInt(this.value);
+        if (!v || v < 300) v = 300;
+        if (v > 9500) v = 9500;
+        this.value = String(v);
+        localStorage.setItem(CONFIG.ELEVENLABS_CHUNK_SIZE_STORAGE, String(v));
+        elevenApplyPaneHeightForChunk();
+      });
+      elevenApplyPaneHeightForChunk();
+    }
     // Status-block hide/show toggle (Whisper is a rarely-used backup now)
     document.getElementById('deepgram-status-toggle-btn').addEventListener('click', toggleStatusBlock);
     // Apply saved status-block visibility on load
