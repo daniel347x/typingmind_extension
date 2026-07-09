@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.156 Changes:
+ * - NEW: Long-text support via PARAGRAPH CHUNKING (stays on high-quality Multilingual v2, no length limit).
+ *   Text is split at paragraph (blank-line) boundaries into <9000-char chunks (tiny paras merged; an
+ *   over-limit paragraph is sub-split at sentence/space). Chunks play seamlessly back-to-back with the
+ *   NEXT chunk pre-fetched while the current plays (hides inter-chunk gaps).
+ * - NEW: Follow-along highlight \u2014 the currently-playing chunk/paragraph is highlighted (selected) in the
+ *   transcript window and scrolled into view, so you can see where playback is.
+ * - Honors cursor/selection start exactly as before; pause/resume/stop/speed all work across chunks.
+ * - REMOVED: the "Transcript" label above the editable window.
+ *
  * v3.155 Changes:
  * - FIX: Read Aloud bug where a selection would play, then the WHOLE transcript would play again.
  *   Root cause: the extension IIFE could run twice (e.g. after uninstall/reinstall without full reload),
@@ -339,7 +349,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.155',
+  VERSION: '3.156',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -756,8 +766,20 @@
   // ==================== ELEVENLABS READ-ALOUD (TTS) ====================
   // Read-aloud state (module-scoped)
   let elevenAudio = null;        // the currently-playing HTMLAudioElement
-  let elevenAudioUrl = null;     // object URL to revoke on stop/cleanup
-  let elevenIsFetching = false;  // guard against double-clicks during fetch
+  let elevenAudioUrl = null;     // object URL to revoke on stop/cleanup (current chunk)
+  let elevenIsFetching = false;  // guard against double-clicks during initial start
+
+  // Chunk-queue state (paragraph-based, with pre-fetch of the next chunk).
+  let elevenChunks = [];         // [{ text, start, end }] ranges are absolute offsets in the textarea
+  let elevenChunkIndex = -1;     // index of the chunk currently playing
+  let elevenPrefetch = null;     // { index, promise-> {blob} } pre-fetched next chunk
+  let elevenApiKey = null;       // resolved once per session-run
+  let elevenVoiceId = null;
+  let elevenModel = null;
+  let elevenStopped = false;     // set true by stopReadAloud so in-flight fetches abort cleanly
+
+  // Max characters per TTS request. Multilingual v2 hard-caps at 10,000; we stay well under.
+  const ELEVEN_CHUNK_LIMIT = 9000;
 
   // Built-in starter voices offered in the dropdown (user can add their own).
   const ELEVEN_STARTER_VOICES = [
@@ -854,28 +876,23 @@
       }
       return;
     }
-    if (elevenIsFetching) return; // ignore rapid double-clicks mid-fetch
+    if (elevenIsFetching) return; // ignore rapid double-clicks mid-start
 
-    // Gather the text from the transcript window, honoring cursor / selection:
+    // Gather text + its absolute offset in the textarea, honoring cursor / selection:
     //  \u2022 a highlighted range  \u2192 read exactly that range
     //  \u2022 just a cursor (no range) \u2192 read from the cursor to the end
     //  \u2022 nothing focused / cursor at 0 \u2192 read the whole thing
     const transcriptEl = document.getElementById('deepgram-transcript');
     const fullText = (transcriptEl && transcriptEl.value ? transcriptEl.value : '');
-    let text = fullText;
+    let regionStart = 0;
+    let regionEnd = fullText.length;
     if (transcriptEl && typeof transcriptEl.selectionStart === 'number') {
       const selStart = transcriptEl.selectionStart;
       const selEnd = transcriptEl.selectionEnd;
-      if (selEnd > selStart) {
-        // A real highlight \u2192 read exactly the selected text.
-        text = fullText.substring(selStart, selEnd);
-      } else if (selStart > 0) {
-        // Just a cursor placed mid-text \u2192 read from there to the end.
-        text = fullText.substring(selStart);
-      }
+      if (selEnd > selStart) { regionStart = selStart; regionEnd = selEnd; }
+      else if (selStart > 0) { regionStart = selStart; regionEnd = fullText.length; }
     }
-    text = text.trim();
-    if (!text) {
+    if (!fullText.substring(regionStart, regionEnd).trim()) {
       alert('Nothing to read \u2014 the transcript window is empty (or the selection is blank).');
       return;
     }
@@ -884,77 +901,188 @@
     let apiKey = localStorage.getItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
     if (!apiKey) {
       apiKey = prompt('Paste your ElevenLabs API key (stored locally, used only to call ElevenLabs):');
-      if (apiKey) {
-        apiKey = apiKey.trim();
-        localStorage.setItem(CONFIG.ELEVENLABS_API_KEY_STORAGE, apiKey);
-      }
+      if (apiKey) { apiKey = apiKey.trim(); localStorage.setItem(CONFIG.ELEVENLABS_API_KEY_STORAGE, apiKey); }
     }
     if (!apiKey) return; // user cancelled
 
-    // Resolve voice ID from the dropdown / storage (defaults to stock voice).
     const sel = document.getElementById('deepgram-eleven-voice-select');
-    let voiceId = (sel && sel.value) ? sel.value
+    const voiceId = (sel && sel.value) ? sel.value
       : (localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_VOICE_ID);
     localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, voiceId);
 
-    const model = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
-    const rate = elevenGetRate();
+    // Build the paragraph-based chunk queue for the chosen region.
+    elevenChunks = elevenBuildChunks(fullText, regionStart, regionEnd);
+    if (elevenChunks.length === 0) {
+      alert('Nothing to read.');
+      return;
+    }
+    elevenApiKey = apiKey;
+    elevenVoiceId = voiceId;
+    elevenModel = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
+    elevenStopped = false;
+    elevenPrefetch = null;
+    elevenChunkIndex = -1;
 
+    // Start the queue at chunk 0.
+    await elevenPlayChunk(0);
+  }
+
+  /**
+   * Split [regionStart, regionEnd) of fullText into a queue of chunks.
+   * Primary boundary = paragraph (blank line). Consecutive paragraphs are merged while
+   * under ELEVEN_CHUNK_LIMIT so tiny paragraphs group; a single over-limit paragraph is
+   * split further at sentence/space boundaries. Each chunk records its absolute
+   * {start,end} offsets in the textarea so the current chunk can be highlighted.
+   */
+  function elevenBuildChunks(fullText, regionStart, regionEnd) {
+    const region = fullText.substring(regionStart, regionEnd);
+    const chunks = [];
+    // Split into paragraphs, KEEPING offsets: match runs of blank lines as separators.
+    const paraRe = /\n[ \t]*\n/g;
+    let paras = [];
+    let last = 0, m;
+    while ((m = paraRe.exec(region)) !== null) {
+      paras.push({ s: last, e: m.index });
+      last = m.index + m[0].length;
+    }
+    paras.push({ s: last, e: region.length });
+    // Drop empty paragraphs.
+    paras = paras.filter(p => region.substring(p.s, p.e).trim().length > 0);
+
+    const pushChunk = (s, e) => {
+      // trim whitespace at the edges but keep offsets aligned to trimmed content
+      let ts = s, te = e;
+      while (ts < te && /\s/.test(region[ts])) ts++;
+      while (te > ts && /\s/.test(region[te - 1])) te--;
+      if (te > ts) chunks.push({ text: region.substring(ts, te), start: regionStart + ts, end: regionStart + te });
+    };
+
+    let curS = null, curE = null;
+    for (const p of paras) {
+      const pLen = p.e - p.s;
+      if (pLen > ELEVEN_CHUNK_LIMIT) {
+        // Flush any accumulation, then hard-split this big paragraph.
+        if (curS !== null) { pushChunk(curS, curE); curS = curE = null; }
+        let segStart = p.s;
+        while (segStart < p.e) {
+          let segEnd = Math.min(segStart + ELEVEN_CHUNK_LIMIT, p.e);
+          if (segEnd < p.e) {
+            // back up to the last sentence end or space within the window
+            const windowStr = region.substring(segStart, segEnd);
+            let cut = Math.max(windowStr.lastIndexOf('. '), windowStr.lastIndexOf('.\n'),
+                               windowStr.lastIndexOf('! '), windowStr.lastIndexOf('? '));
+            if (cut < ELEVEN_CHUNK_LIMIT * 0.5) cut = windowStr.lastIndexOf(' ');
+            if (cut > 0) segEnd = segStart + cut + 1;
+          }
+          pushChunk(segStart, segEnd);
+          segStart = segEnd;
+        }
+      } else if (curS === null) {
+        curS = p.s; curE = p.e;
+      } else if ((p.e - curS) <= ELEVEN_CHUNK_LIMIT) {
+        curE = p.e; // merge this paragraph into the current chunk
+      } else {
+        pushChunk(curS, curE);
+        curS = p.s; curE = p.e;
+      }
+    }
+    if (curS !== null) pushChunk(curS, curE);
+    return chunks;
+  }
+
+  /**
+   * Fetch the TTS audio blob for a chunk index. Returns a Promise<Blob>.
+   * Errors are surfaced by rejecting; callers handle stop/alert.
+   */
+  function elevenFetchChunk(index) {
+    const chunk = elevenChunks[index];
+    return fetch(`${CONFIG.ELEVENLABS_TTS_ENDPOINT}/${encodeURIComponent(elevenVoiceId)}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': elevenApiKey, 'Content-Type': 'application/json', 'Accept': 'audio/mpeg' },
+      body: JSON.stringify({
+        text: chunk.text,
+        model_id: elevenModel,
+        voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.2 }
+      })
+    }).then(async (resp) => {
+      if (!resp.ok) {
+        let detail = `HTTP ${resp.status}`;
+        try { const j = await resp.json(); detail = (j && j.detail && (j.detail.message || j.detail.status)) || JSON.stringify(j); } catch (e) {}
+        const err = new Error(detail); err.status = resp.status; throw err;
+      }
+      return resp.blob();
+    });
+  }
+
+  /**
+   * Highlight the given chunk's text range in the transcript window and scroll to it.
+   */
+  function elevenHighlightChunk(index) {
+    const el = document.getElementById('deepgram-transcript');
+    const chunk = elevenChunks[index];
+    if (!el || !chunk) return;
+    try {
+      el.focus();
+      el.setSelectionRange(chunk.start, chunk.end);
+      // Best-effort scroll so the highlighted range is visible.
+      if (typeof scrollToCursorPosition === 'function') scrollToCursorPosition(el, chunk.start);
+    } catch (e) { /* selection may fail if element not focusable; ignore */ }
+  }
+
+  /**
+   * Play chunk[index]: use a pre-fetched blob if available, else fetch now; highlight it;
+   * on end, kick off the next chunk. Pre-fetches the following chunk while this one plays.
+   */
+  async function elevenPlayChunk(index) {
+    if (elevenStopped || index >= elevenChunks.length) { stopReadAloud(); return; }
+    elevenChunkIndex = index;
     elevenIsFetching = true;
     elevenSetTransportState('loading');
 
     try {
-      const resp = await fetch(
-        `${CONFIG.ELEVENLABS_TTS_ENDPOINT}/${encodeURIComponent(voiceId)}`,
-        {
-          method: 'POST',
-          headers: {
-            'xi-api-key': apiKey,
-            'Content-Type': 'application/json',
-            'Accept': 'audio/mpeg'
-          },
-          body: JSON.stringify({
-            text: text,
-            model_id: model,
-            // Native speed capped 0.7\u20131.2 by the API; we push near the top and
-            // then further speed up via playbackRate on the audio element below.
-            voice_settings: { stability: 0.5, similarity_boost: 0.75, speed: 1.2 }
-          })
-        }
-      );
-
-      if (!resp.ok) {
-        let detail = `HTTP ${resp.status}`;
-        try { const j = await resp.json(); detail = (j && j.detail && (j.detail.message || j.detail.status)) || JSON.stringify(j); } catch (e) {}
-        // 401 = bad/blocked key; 422 = bad voice/model; 404 = voice not in your library.
-        if (resp.status === 401) {
-          localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
-          alert('ElevenLabs rejected the API key (401). It has been cleared \u2014 click \u25b6 again to re-enter it.');
-        } else if (resp.status === 404 || resp.status === 422) {
-          alert('ElevenLabs could not use that voice/model (' + detail + ').\n\nMake sure the Voice ID is in your "My Voices" and the model is valid.');
-        } else {
-          alert('ElevenLabs error: ' + detail);
-        }
-        elevenSetTransportState('idle');
-        return;
+      let blob;
+      if (elevenPrefetch && elevenPrefetch.index === index) {
+        blob = await elevenPrefetch.promise;
+      } else {
+        blob = await elevenFetchChunk(index);
       }
+      elevenPrefetch = null;
+      if (elevenStopped) return;
 
-      const blob = await resp.blob();
+      // Set up the audio element for this chunk.
+      if (elevenAudioUrl) { try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {} }
       elevenAudioUrl = URL.createObjectURL(blob);
       elevenAudio = new Audio(elevenAudioUrl);
-      elevenAudio.playbackRate = rate; // speed up playback (pitch preserved by the browser)
+      elevenAudio.playbackRate = elevenGetRate();
+      elevenAudio.addEventListener('ended', () => {
+        // Advance to the next chunk (or finish).
+        elevenAudio = null;
+        if (!elevenStopped) elevenPlayChunk(index + 1);
+        else stopReadAloud();
+      });
+      elevenAudio.addEventListener('error', () => { stopReadAloud(); });
 
-      elevenAudio.addEventListener('ended', stopReadAloud);
-      elevenAudio.addEventListener('error', stopReadAloud);
-
+      elevenHighlightChunk(index);
       elevenSetTransportState('playing');
-      await elevenAudio.play();
-    } catch (err) {
-      console.error('\u274c Read Aloud failed:', err);
-      alert('Read Aloud failed: ' + (err && err.message ? err.message : err));
-      stopReadAloud();
-    } finally {
       elevenIsFetching = false;
+      await elevenAudio.play();
+
+      // Pre-fetch the NEXT chunk while this one plays (hides inter-chunk gaps).
+      if (index + 1 < elevenChunks.length && !elevenStopped) {
+        elevenPrefetch = { index: index + 1, promise: elevenFetchChunk(index + 1).catch(() => null) };
+      }
+    } catch (err) {
+      elevenIsFetching = false;
+      console.error('\u274c Read Aloud chunk failed:', err);
+      if (err && err.status === 401) {
+        localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
+        alert('ElevenLabs rejected the API key (401). It has been cleared \u2014 click \u25b6 again to re-enter it.');
+      } else if (err && (err.status === 404 || err.status === 422)) {
+        alert('ElevenLabs could not use that voice/model (' + err.message + ').\n\nMake sure the Voice ID is in your "My Voices" and the model is valid.');
+      } else {
+        alert('Read Aloud failed: ' + (err && err.message ? err.message : err));
+      }
+      stopReadAloud();
     }
   }
 
@@ -968,6 +1096,7 @@
   //   kind=AST,
   // ]
   function stopReadAloud() {
+    elevenStopped = true;
     if (elevenAudio) {
       try { elevenAudio.pause(); } catch (e) {}
       elevenAudio = null;
@@ -976,6 +1105,10 @@
       try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {}
       elevenAudioUrl = null;
     }
+    elevenChunks = [];
+    elevenChunkIndex = -1;
+    elevenPrefetch = null;
+    elevenIsFetching = false;
     elevenSetTransportState('idle');
   }
 
@@ -2875,9 +3008,6 @@
         
         <!-- Transcript -->
         <div class="deepgram-section" style="margin-bottom: 0;">
-          <label>
-            <span>Transcript</span>
-          </label>
           
           <!-- Keyboard Event Indicators -->
           <div id="keyboard-indicators">
