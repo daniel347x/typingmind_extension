@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.161 Changes:
+ * - TWEAK: Chunk target size 3000 \u2192 1500 chars (chunks now a paragraph or two each).
+ * - TWEAK: Now Playing pane default height 33vh \u2192 22vh (~1/3 shorter); still user-resizable per session.
+ *
  * v3.160 Changes:
  * - TWEAK: Chunk target size 9000 \u2192 3000 chars, so each Now-Playing chunk is only a few paragraphs
  *   (easier to follow, faster first chunk, more granular position feedback).
@@ -376,7 +380,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.160',
+  VERSION: '3.161',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -806,9 +810,9 @@
   let elevenStopped = false;     // set true by stopReadAloud so in-flight fetches abort cleanly
 
   // Target characters per chunk. The API hard-caps Multilingual v2 at 10,000, but we deliberately
-  // aim MUCH smaller (~3,000) so each Now-Playing chunk is only a few paragraphs \u2014 easier to follow,
-  // faster first-chunk generation, and more granular position feedback.
-  const ELEVEN_CHUNK_LIMIT = 3000;
+  // aim MUCH smaller (~1,500) so each Now-Playing chunk is only a paragraph or two \u2014 easy to follow,
+  // fast first-chunk generation, and granular position feedback.
+  const ELEVEN_CHUNK_LIMIT = 1500;
 
   // Built-in starter voices offered in the dropdown (user can add their own).
   const ELEVEN_STARTER_VOICES = [
@@ -2982,7 +2986,7 @@
         <!-- 🔊 NOW PLAYING pane (read-only; shown only during Read Aloud playback) -->
         <div id="deepgram-nowplaying" style="display:none; margin-bottom:8px; border:1px solid #667eea; border-radius:6px; padding:6px; background:rgba(102,126,234,0.06);">
           <div id="deepgram-nowplaying-above" style="font-size:10px; opacity:0.7; margin-bottom:3px;">↑ — above</div>
-          <textarea id="deepgram-nowplaying-text" readonly wrap="soft" style="width:100%; box-sizing:border-box; resize:vertical; min-height:120px; height:33vh; max-height:60vh; font-size:13px; line-height:1.5; padding:6px; border:1px solid rgba(102,126,234,0.4); border-radius:4px; background:#fff; color:#111;"></textarea>
+          <textarea id="deepgram-nowplaying-text" readonly wrap="soft" style="width:100%; box-sizing:border-box; resize:vertical; min-height:90px; height:22vh; max-height:60vh; font-size:13px; line-height:1.5; padding:6px; border:1px solid rgba(102,126,234,0.4); border-radius:4px; background:#fff; color:#111;"></textarea>
           <div id="deepgram-nowplaying-below" style="font-size:10px; opacity:0.7; margin-top:3px;">↓ — below</div>
         </div>
 
