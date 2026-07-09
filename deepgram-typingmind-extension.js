@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.159 Changes:
+ * - NEW: Dedicated read-only "Now Playing" pane at the TOP of the widget, shown ONLY during playback.
+ *   It displays the current chunk's text (scrollable, ~1/3 height, user-resizable) with tiny lines
+ *   above/below giving rough char + ~line counts and % through, so you know roughly where you are.
+ * - REMOVED all main-editor auto-highlight/auto-scroll/focus-grab logic. The main transcript is now
+ *   fully yours during playback: type in TypingMind's chat box, scroll ahead, re-read \u2014 nothing is touched.
+ *
  * v3.158 Changes:
  * - FOCUS-SAFETY: Read Aloud highlight NO LONGER steals focus. It only highlights if the transcript
  *   textarea ALREADY has focus; if you've clicked away (e.g. to type in TypingMind's chat box), the
@@ -362,7 +369,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.158',
+  VERSION: '3.159',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1030,40 +1037,41 @@
   }
 
   /**
-   * Highlight the given chunk's text RANGE in the transcript window and scroll to it.
-   * NOTE: a <textarea>'s selection is only VISIBLE while it has focus, so we focus it and
-   * keep the focus (fine during playback since you're listening, not typing). We deliberately
-   * do NOT use scrollToCursorPosition() here \u2014 that helper collapses the selection to a caret
-   * AND blurs the textarea when it wasn't previously focused, which is exactly what hid the
-   * highlight. Instead we set a real range and scroll with a direct, non-blurring scrollTop.
+   * Show the currently-playing chunk in the dedicated read-only "Now Playing" pane at the top,
+   * with rough character counts above/below so you know roughly where in the whole text you are.
+   * This NEVER touches focus or the main editor \u2014 so you can type in TypingMind's chat box and
+   * freely scroll/read/edit the main transcript while playback continues.
    */
   function elevenHighlightChunk(index) {
-    const el = document.getElementById('deepgram-transcript');
+    const pane = document.getElementById('deepgram-nowplaying');
+    const ta = document.getElementById('deepgram-nowplaying-text');
+    const aboveEl = document.getElementById('deepgram-nowplaying-above');
+    const belowEl = document.getElementById('deepgram-nowplaying-below');
     const chunk = elevenChunks[index];
-    if (!el || !chunk) return;
-    // \u26a0\ufe0f FOCUS-SAFETY: only highlight if the transcript ALREADY has focus. If the user has
-    // clicked away (e.g. to type in TypingMind's chat box), we must NOT call .focus() here \u2014 that
-    // would yank focus away from wherever they're typing at every chunk boundary. Playback still
-    // continues; the highlight simply skips while they're focused elsewhere, and resumes the moment
-    // they click back into the transcript. (A textarea's selection is invisible without focus, so
-    // there is no way to show it without stealing focus \u2014 not worth breaking typing over.)
-    if (document.activeElement !== el) return;
-    try {
-      // Real range selection (start != end) so the whole chunk is highlighted, not a caret.
-      el.setSelectionRange(chunk.start, chunk.end);
+    if (!pane || !ta || !chunk) return;
 
-      // Direct, non-blurring scroll so the highlighted range is comfortably in view.
-      const style = window.getComputedStyle(el);
-      const lineHeight = parseInt(style.lineHeight) || (parseInt(style.fontSize) * 1.6) || 20;
-      const linesBefore = el.value.substring(0, chunk.start).split('\n').length - 1;
-      const targetY = linesBefore * lineHeight;
-      const pad = lineHeight * 2; // keep ~2 lines of context above the chunk
-      const desired = Math.max(0, targetY - pad);
-      // Only scroll if the chunk start is out of view (avoid yanking the view around).
-      if (targetY < el.scrollTop || targetY > el.scrollTop + el.clientHeight - lineHeight * 2) {
-        el.scrollTop = desired;
-      }
-    } catch (e) { /* selection may fail if element not focusable; ignore */ }
+    // Compute rough position within the FULL transcript (best-effort, not exact).
+    const full = (document.getElementById('deepgram-transcript') || {}).value || '';
+    const totalLen = full.length || 1;
+    const aboveChars = Math.max(0, chunk.start);
+    const belowChars = Math.max(0, full.length - chunk.end);
+    const roughLines = (s) => Math.round(s / 60); // ~60 chars/line, quick-and-dirty
+    const pct = Math.round((chunk.start / totalLen) * 100);
+
+    aboveEl.textContent = `\u2191 ${aboveChars.toLocaleString()} chars (~${roughLines(aboveChars)} lines) above  \u00b7  ~${pct}% through  \u00b7  chunk ${index + 1}/${elevenChunks.length}`;
+    belowEl.textContent = `\u2193 ${belowChars.toLocaleString()} chars (~${roughLines(belowChars)} lines) below`;
+
+    ta.value = chunk.text;
+    ta.scrollTop = 0;
+    pane.style.display = 'block';
+  }
+
+  /**
+   * Hide the Now Playing pane (called when playback stops / finishes).
+   */
+  function elevenHideNowPlaying() {
+    const pane = document.getElementById('deepgram-nowplaying');
+    if (pane) pane.style.display = 'none';
   }
 
   /**
@@ -1147,6 +1155,7 @@
     elevenChunkIndex = -1;
     elevenPrefetch = null;
     elevenIsFetching = false;
+    elevenHideNowPlaying();
     elevenSetTransportState('idle');
   }
 
@@ -2927,6 +2936,14 @@
         </div>
         
         <div class="deepgram-content">
+
+        <!-- 🔊 NOW PLAYING pane (read-only; shown only during Read Aloud playback) -->
+        <div id="deepgram-nowplaying" style="display:none; margin-bottom:8px; border:1px solid #667eea; border-radius:6px; padding:6px; background:rgba(102,126,234,0.06);">
+          <div id="deepgram-nowplaying-above" style="font-size:10px; opacity:0.7; margin-bottom:3px;">↑ — above</div>
+          <textarea id="deepgram-nowplaying-text" readonly wrap="soft" style="width:100%; box-sizing:border-box; resize:vertical; min-height:120px; height:33vh; max-height:60vh; font-size:13px; line-height:1.5; padding:6px; border:1px solid rgba(102,126,234,0.4); border-radius:4px; background:#fff; color:#111;"></textarea>
+          <div id="deepgram-nowplaying-below" style="font-size:10px; opacity:0.7; margin-top:3px;">↓ — below</div>
+        </div>
+
         <div id="deepgram-top-section" style="display: none;">
         <!-- API Key Section -->
         <div class="deepgram-section" id="deepgram-api-section">
