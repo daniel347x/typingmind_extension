@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.158 Changes:
+ * - FOCUS-SAFETY: Read Aloud highlight NO LONGER steals focus. It only highlights if the transcript
+ *   textarea ALREADY has focus; if you've clicked away (e.g. to type in TypingMind's chat box), the
+ *   highlight quietly skips instead of grabbing focus at every chunk boundary. Playback is unaffected.
+ *   (Consequence: while typing elsewhere you won't see the highlight \u2014 by design; typing freedom wins.)
+ *
  * v3.157 Changes:
  * - FIX: Follow-along highlight now actually shows. Root cause: elevenHighlightChunk routed through
  *   scrollToCursorPosition(), which (a) collapsed the range to a caret and (b) blurred the textarea
@@ -356,7 +362,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.157',
+  VERSION: '3.158',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1035,8 +1041,14 @@
     const el = document.getElementById('deepgram-transcript');
     const chunk = elevenChunks[index];
     if (!el || !chunk) return;
+    // \u26a0\ufe0f FOCUS-SAFETY: only highlight if the transcript ALREADY has focus. If the user has
+    // clicked away (e.g. to type in TypingMind's chat box), we must NOT call .focus() here \u2014 that
+    // would yank focus away from wherever they're typing at every chunk boundary. Playback still
+    // continues; the highlight simply skips while they're focused elsewhere, and resumes the moment
+    // they click back into the transcript. (A textarea's selection is invisible without focus, so
+    // there is no way to show it without stealing focus \u2014 not worth breaking typing over.)
+    if (document.activeElement !== el) return;
     try {
-      el.focus({ preventScroll: true });
       // Real range selection (start != end) so the whole chunk is highlighted, not a caret.
       el.setSelectionRange(chunk.start, chunk.end);
 
