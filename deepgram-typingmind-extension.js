@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.155 Changes:
+ * - FIX: Read Aloud bug where a selection would play, then the WHOLE transcript would play again.
+ *   Root cause: the extension IIFE could run twice (e.g. after uninstall/reinstall without full reload),
+ *   stacking duplicate click handlers on the \u25b6 button. Added a window.__deepgramExtensionLoaded
+ *   load-once guard so a second injection bails instead of double-wiring the controls.
+ *
  * v3.154 Changes:
  * - NEW (Step 1): Read Aloud now honors the transcript cursor/selection \u2014 highlight a range to read exactly that,
  *   place the cursor to read from there to the end, or nothing selected reads the whole thing.
@@ -309,6 +315,15 @@
 
 (function() {
   'use strict';
+  // Guard against the extension script being injected/evaluated more than once
+  // (e.g. after an uninstall/reinstall without a full reload). A second IIFE run
+  // would stack duplicate click handlers on buttons \u2014 which caused Read Aloud to
+  // play the selection, then play the whole transcript again. Bail if already loaded.
+  if (window.__deepgramExtensionLoaded) {
+    console.warn('\u26a0\ufe0f Deepgram Extension already loaded in this page \u2014 skipping duplicate init.');
+    return;
+  }
+  window.__deepgramExtensionLoaded = true;
   
   // ==================== TIMESTAMP HELPER ====================
   function ts() {
@@ -324,7 +339,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.154',
+  VERSION: '3.155',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
