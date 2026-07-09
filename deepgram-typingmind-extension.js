@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.153 Changes:
+ * - NEW: Full ElevenLabs Read-Aloud control row (replaces the single Read Aloud button):
+ *   ▶/⏸ play-pause-resume (resumes from exact spot), ⏹ stop, live speed slider (0.5-3x, persisted),
+ *   voice dropdown with a saved voice list (starter set: George/Arnold/Daniel/Josh/Rachel),
+ *   ➕ add voice (name+ID), 🗑️ remove voice, 🔑 clear-API-key.
+ *   Pause/resume means you never have to delete already-read text.
+ * - Old pasteEmail() made null-safe (its button is gone; still unwired).
+ *
  * v3.152 Changes:
  * - NEW: Repurposed the "📧 Paste Email" button into a "🔊 Read Aloud" button.
  *   It reads the ENTIRE transcript window aloud via the ElevenLabs TTS API using your own key.
@@ -310,7 +318,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.152',
+  VERSION: '3.153',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -338,6 +346,7 @@
     ELEVENLABS_VOICE_ID_STORAGE: 'elevenlabs_extension_voice_id',
     ELEVENLABS_MODEL_STORAGE: 'elevenlabs_extension_model',
     ELEVENLABS_RATE_STORAGE: 'elevenlabs_extension_playback_rate',
+    ELEVENLABS_VOICES_STORAGE: 'elevenlabs_extension_voices_list',
     ELEVENLABS_TTS_ENDPOINT: 'https://api.elevenlabs.io/v1/text-to-speech',
     // Default stock voice 'Rachel' so it works instantly; replace with your own voice ID via the prompt.
     DEFAULT_ELEVENLABS_VOICE_ID: '21m00Tcm4TlvDq8ikWAM',
@@ -700,14 +709,13 @@
           transcriptEl.setSelectionRange(newCursorPos, newCursorPos);
           transcriptEl.focus();
           
-          // Visual feedback
+          // Visual feedback (button removed in v3.153; guard against null)
           const btn = document.getElementById('deepgram-paste-email-btn');
-          const originalText = btn.textContent;
-          btn.textContent = '✓ Pasted!';
-          
-          setTimeout(() => {
-            btn.textContent = originalText;
-          }, 2000);
+          if (btn) {
+            const originalText = btn.textContent;
+            btn.textContent = '✓ Pasted!';
+            setTimeout(() => { btn.textContent = originalText; }, 2000);
+          }
           
           console.log('✅ Email pasted and normalized');
           return;
@@ -729,25 +737,99 @@
   let elevenAudioUrl = null;     // object URL to revoke on stop/cleanup
   let elevenIsFetching = false;  // guard against double-clicks during fetch
 
+  // Built-in starter voices offered in the dropdown (user can add their own).
+  const ELEVEN_STARTER_VOICES = [
+    { name: 'George (warm narrator)', id: 'JBFqnCBsd6RMkjVDRZzb' },
+    { name: 'Arnold (crisp/technical)', id: 'VR6AewLTigWG4xSOukaG' },
+    { name: 'Daniel (authoritative)', id: 'onwK4e9ZLuTAKqWW03F9' },
+    { name: 'Josh (deep/clear)', id: 'TxGEqnHWrfWFTfGW9XjX' },
+    { name: 'Rachel (clear female)', id: '21m00Tcm4TlvDq8ikWAM' }
+  ];
+
   /**
-   * Read the ENTIRE transcript window aloud via the ElevenLabs TTS API.
-   * - Uses your own ElevenLabs API key (prompted once, stored in localStorage).
-   * - Voice + model + playback rate come from CONFIG defaults (overridable in localStorage).
-   * - Click while playing = STOP. Click while idle = fetch + play.
+   * Return the saved voice list (merging starter voices on first run).
+   */
+  function elevenGetVoices() {
+    let list = [];
+    try { list = JSON.parse(localStorage.getItem(CONFIG.ELEVENLABS_VOICES_STORAGE) || '[]'); } catch (e) { list = []; }
+    if (!Array.isArray(list) || list.length === 0) {
+      list = ELEVEN_STARTER_VOICES.slice();
+      localStorage.setItem(CONFIG.ELEVENLABS_VOICES_STORAGE, JSON.stringify(list));
+    }
+    return list;
+  }
+
+  /**
+   * Persist the voice list and refresh the dropdown UI.
+   */
+  function elevenSaveVoices(list) {
+    localStorage.setItem(CONFIG.ELEVENLABS_VOICES_STORAGE, JSON.stringify(list));
+    elevenRefreshVoiceDropdown();
+  }
+
+  /**
+   * (Re)populate the voice <select> from the saved list, selecting the active voice.
+   */
+  function elevenRefreshVoiceDropdown() {
+    const sel = document.getElementById('deepgram-eleven-voice-select');
+    if (!sel) return;
+    const activeId = localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_VOICE_ID;
+    const list = elevenGetVoices();
+    sel.innerHTML = '';
+    list.forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v.id;
+      opt.textContent = v.name;
+      if (v.id === activeId) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  /**
+   * The current playback rate (from the slider / localStorage / default).
+   */
+  function elevenGetRate() {
+    return parseFloat(localStorage.getItem(CONFIG.ELEVENLABS_RATE_STORAGE)) || CONFIG.DEFAULT_ELEVENLABS_RATE;
+  }
+
+  /**
+   * Update the play/pause button label + state to reflect current audio state.
+   * states: 'idle' | 'loading' | 'playing' | 'paused'
+   */
+  function elevenSetTransportState(state) {
+    const playBtn = document.getElementById('deepgram-eleven-play-btn');
+    const stopBtn = document.getElementById('deepgram-eleven-stop-btn');
+    if (!playBtn) return;
+    if (state === 'loading') { playBtn.textContent = '\u23f3'; playBtn.disabled = true; playBtn.title = 'Generating audio\u2026'; }
+    else if (state === 'playing') { playBtn.textContent = '\u23f8'; playBtn.disabled = false; playBtn.title = 'Pause'; }
+    else if (state === 'paused') { playBtn.textContent = '\u25b6'; playBtn.disabled = false; playBtn.title = 'Resume'; }
+    else { playBtn.textContent = '\u25b6'; playBtn.disabled = false; playBtn.title = 'Read the transcript window aloud'; }
+    if (stopBtn) stopBtn.disabled = (state === 'idle' || state === 'loading');
+  }
+
+  /**
+   * Main play/pause toggle for read-aloud.
+   * - idle  \u2192 fetch TTS + play
+   * - playing \u2192 pause (keeps position \u2014 resume picks up exactly where it left off)
+   * - paused \u2192 resume
    * Talks straight to the ElevenLabs API (no Chrome-extension middleman).
    */
   // @beacon[
   //   id=tm@readaloud,
   //   slice_labels=tm--general,
-  //   role=ElevenLabs read-aloud: speak the transcript window via TTS API,
+  //   role=ElevenLabs read-aloud: play/pause/resume the transcript window via TTS API,
   //   kind=AST,
   // ]
   async function readAloud() {
-    const btn = document.getElementById('deepgram-paste-email-btn');
-
-    // If audio is currently playing, this click STOPS it.
+    // Toggle pause/resume if we already have audio loaded.
     if (elevenAudio) {
-      stopReadAloud();
+      if (elevenAudio.paused) {
+        elevenAudio.play();
+        elevenSetTransportState('playing');
+      } else {
+        elevenAudio.pause();
+        elevenSetTransportState('paused');
+      }
       return;
     }
     if (elevenIsFetching) return; // ignore rapid double-clicks mid-fetch
@@ -771,24 +853,17 @@
     }
     if (!apiKey) return; // user cancelled
 
-    // Resolve voice ID (prompt once if you want your own; defaults to a stock voice).
-    let voiceId = localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE);
-    if (!voiceId) {
-      const entered = prompt(
-        'ElevenLabs Voice ID to use.\n\n' +
-        'Find it at elevenlabs.io \u2192 Voices \u2192 (your voice) \u2192 "..." \u2192 Copy Voice ID.\n\n' +
-        'Leave blank to use the default stock voice (Rachel).'
-      );
-      voiceId = (entered && entered.trim()) ? entered.trim() : CONFIG.DEFAULT_ELEVENLABS_VOICE_ID;
-      localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, voiceId);
-    }
+    // Resolve voice ID from the dropdown / storage (defaults to stock voice).
+    const sel = document.getElementById('deepgram-eleven-voice-select');
+    let voiceId = (sel && sel.value) ? sel.value
+      : (localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_VOICE_ID);
+    localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, voiceId);
 
     const model = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
-    const rate = parseFloat(localStorage.getItem(CONFIG.ELEVENLABS_RATE_STORAGE)) || CONFIG.DEFAULT_ELEVENLABS_RATE;
+    const rate = elevenGetRate();
 
-    const originalLabel = btn ? btn.textContent : '';
     elevenIsFetching = true;
-    if (btn) { btn.textContent = '\u23f3 Generating\u2026'; btn.disabled = true; }
+    elevenSetTransportState('loading');
 
     try {
       const resp = await fetch(
@@ -816,13 +891,13 @@
         // 401 = bad/blocked key; 422 = bad voice/model; 404 = voice not in your library.
         if (resp.status === 401) {
           localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
-          alert('ElevenLabs rejected the API key (401). It has been cleared \u2014 click Read Aloud again to re-enter it.');
+          alert('ElevenLabs rejected the API key (401). It has been cleared \u2014 click \u25b6 again to re-enter it.');
         } else if (resp.status === 404 || resp.status === 422) {
-          alert('ElevenLabs could not use that voice/model (' + detail + ').\n\nMake sure the Voice ID is in your "My Voices" and the model is valid. Clearing the saved voice \u2014 you will be re-prompted next click.');
-          localStorage.removeItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE);
+          alert('ElevenLabs could not use that voice/model (' + detail + ').\n\nMake sure the Voice ID is in your "My Voices" and the model is valid.');
         } else {
           alert('ElevenLabs error: ' + detail);
         }
+        elevenSetTransportState('idle');
         return;
       }
 
@@ -834,7 +909,7 @@
       elevenAudio.addEventListener('ended', stopReadAloud);
       elevenAudio.addEventListener('error', stopReadAloud);
 
-      if (btn) { btn.textContent = '\u23f9 Stop'; btn.disabled = false; }
+      elevenSetTransportState('playing');
       await elevenAudio.play();
     } catch (err) {
       console.error('\u274c Read Aloud failed:', err);
@@ -842,13 +917,11 @@
       stopReadAloud();
     } finally {
       elevenIsFetching = false;
-      // If play() never set the Stop label (e.g. error path), restore the original.
-      if (btn && !elevenAudio) { btn.textContent = originalLabel; btn.disabled = false; }
     }
   }
 
   /**
-   * Stop any in-progress read-aloud playback and reset the button.
+   * Stop read-aloud playback entirely (full reset; next play re-fetches from the top).
    */
   // @beacon[
   //   id=tm@readaloudstop,
@@ -865,8 +938,54 @@
       try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {}
       elevenAudioUrl = null;
     }
-    const btn = document.getElementById('deepgram-paste-email-btn');
-    if (btn) { btn.textContent = '\ud83d\udd0a Read Aloud'; btn.disabled = false; }
+    elevenSetTransportState('idle');
+  }
+
+  /**
+   * Change playback speed live (also persists for next time).
+   */
+  function elevenSetRate(rate) {
+    rate = Math.max(0.5, Math.min(3, parseFloat(rate) || CONFIG.DEFAULT_ELEVENLABS_RATE));
+    localStorage.setItem(CONFIG.ELEVENLABS_RATE_STORAGE, String(rate));
+    if (elevenAudio) elevenAudio.playbackRate = rate;
+    const lbl = document.getElementById('deepgram-eleven-rate-label');
+    if (lbl) lbl.textContent = rate.toFixed(2) + '\u00d7';
+  }
+
+  /**
+   * Add a new voice (name + ID) to the saved list via prompts.
+   */
+  function elevenAddVoice() {
+    const name = prompt('Voice label (e.g. "My cloned voice"):');
+    if (!name || !name.trim()) return;
+    const id = prompt('Voice ID for "' + name.trim() + '"\n(elevenlabs.io \u2192 Voices \u2192 your voice \u2192 "..." \u2192 Copy Voice ID):');
+    if (!id || !id.trim()) return;
+    const list = elevenGetVoices();
+    list.push({ name: name.trim(), id: id.trim() });
+    elevenSaveVoices(list);
+    localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, id.trim());
+    elevenRefreshVoiceDropdown();
+  }
+
+  /**
+   * Remove the currently-selected voice from the saved list.
+   */
+  function elevenRemoveVoice() {
+    const sel = document.getElementById('deepgram-eleven-voice-select');
+    if (!sel || !sel.value) return;
+    let list = elevenGetVoices();
+    const removed = list.find(v => v.id === sel.value);
+    if (removed && !confirm('Remove "' + removed.name + '" from your voice list?')) return;
+    list = list.filter(v => v.id !== sel.value);
+    elevenSaveVoices(list);
+  }
+
+  /**
+   * Clear the stored ElevenLabs API key (so a new one can be entered on next play).
+   */
+  function elevenClearApiKey() {
+    localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
+    alert('ElevenLabs API key cleared. Click \u25b6 Read Aloud to enter a new one.');
   }
 
   /**
@@ -2727,12 +2846,24 @@
           <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
             📄 Paste MD
           </button>
-          <button id="deepgram-paste-email-btn" class="deepgram-btn deepgram-btn-info" title="Read the entire transcript window aloud using your ElevenLabs voice">
-            🔊 Read Aloud
-          </button>
           <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
             🗑️ Clear
           </button>
+        </div>
+
+        <!-- ElevenLabs Read-Aloud control row -->
+        <div id="deepgram-eleven-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
+          <span style="font-size:11px; opacity:0.8;">🔊 Read Aloud:</span>
+          <button id="deepgram-eleven-play-btn" class="deepgram-btn deepgram-btn-info" title="Read the transcript window aloud" style="min-width:34px;">▶</button>
+          <button id="deepgram-eleven-stop-btn" class="deepgram-btn deepgram-btn-secondary" title="Stop (reset to start)" style="min-width:34px;" disabled>⏹</button>
+          <span style="font-size:11px; opacity:0.8;">Speed</span>
+          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:110px; vertical-align:middle;">
+          <span id="deepgram-eleven-rate-label" style="font-size:11px; min-width:36px; display:inline-block;">1.50×</span>
+          <span style="font-size:11px; opacity:0.8;">Voice</span>
+          <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:180px;"></select>
+          <button id="deepgram-eleven-addvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a voice (name + ID)" style="min-width:30px;">➕</button>
+          <button id="deepgram-eleven-delvoice-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected voice from list" style="min-width:30px;">🗑️</button>
+          <button id="deepgram-eleven-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored ElevenLabs API key" style="font-size:11px;">🔑 Key</button>
         </div>
         
         <!-- Info -->
@@ -3013,8 +3144,23 @@
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', appendEllipsisTail);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
-    document.getElementById('deepgram-paste-email-btn').addEventListener('click', readAloud);
     document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
+
+    // ElevenLabs Read-Aloud controls
+    document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
+    document.getElementById('deepgram-eleven-stop-btn').addEventListener('click', stopReadAloud);
+    document.getElementById('deepgram-eleven-addvoice-btn').addEventListener('click', elevenAddVoice);
+    document.getElementById('deepgram-eleven-delvoice-btn').addEventListener('click', elevenRemoveVoice);
+    document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
+    document.getElementById('deepgram-eleven-voice-select').addEventListener('change', function() {
+      localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, this.value);
+    });
+    const elevenRateSlider = document.getElementById('deepgram-eleven-rate-slider');
+    elevenRateSlider.addEventListener('input', function() { elevenSetRate(this.value); });
+    // Initialize slider + label + voice dropdown from saved state
+    elevenRateSlider.value = String(elevenGetRate());
+    elevenSetRate(elevenGetRate());
+    elevenRefreshVoiceDropdown();
     
     // Make cancel functions globally accessible (for debugging)
     window.cancelWhisperRecording = cancelWhisperRecording;
