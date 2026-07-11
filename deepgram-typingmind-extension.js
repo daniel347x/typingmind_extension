@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.167 Changes:
+ * - HARDENING/DIAGNOSTIC (audio silence): explicitly set audio muted=false, volume=1; wrap play() to
+ *   catch a REJECTED play() (the classic 'plays visually but no sound' autoplay/device cause) and alert;
+ *   log blob size/type + post-play vol/muted/paused/duration/sinkId + audio-element errors to the console.
+ *
  * v3.166 Changes:
  * - NEW: Exponential-backoff RETRY on chunk fetches (~30s budget) for TRANSIENT failures only
  *   (network errors, HTTP 429, 5xx). Permanent errors (401/403/404/422) still fail fast. Aborts on Stop.
@@ -408,7 +413,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.166',
+  VERSION: '3.167',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1262,19 +1267,36 @@
       elevenAudioUrl = URL.createObjectURL(blob);
       elevenAudio = new Audio(elevenAudioUrl);
       elevenAudio.playbackRate = elevenGetRate();
+      // HARDENING: guarantee the element itself is audible (rules out our element as a mute cause).
+      elevenAudio.muted = false;
+      elevenAudio.volume = 1;
       elevenAudio.addEventListener('ended', () => {
         // Advance to the next chunk (or finish).
         elevenAudio = null;
         if (!elevenStopped) elevenPlayChunk(index + 1);
         else stopReadAloud();
       });
-      elevenAudio.addEventListener('error', () => { stopReadAloud(); });
+      elevenAudio.addEventListener('error', () => {
+        console.error(ts(), '\ud83d\udd0a audio element error:', elevenAudio && elevenAudio.error);
+        stopReadAloud();
+      });
 
       console.log(ts(), `\u25b6 Playing chunk #${index} of ${elevenChunks.length} (${elevenChunks[index].text.length} chars)`);
+      console.log(ts(), '\ud83d\udd0a blob size:', blob && blob.size, 'type:', blob && blob.type);
       elevenHighlightChunk(index);
       elevenSetTransportState('playing');
       elevenIsFetching = false;
-      await elevenAudio.play();
+      try {
+        await elevenAudio.play();
+        console.log(ts(), '\ud83d\udd0a play() OK \u2014 vol:', elevenAudio.volume, 'muted:', elevenAudio.muted,
+          'paused:', elevenAudio.paused, 'duration:', elevenAudio.duration, 'sinkId:', elevenAudio.sinkId);
+      } catch (playErr) {
+        // A rejected play() (e.g. autoplay policy) is the classic 'runs visually but no sound' cause.
+        console.error(ts(), '\ud83d\udd0a play() REJECTED:', playErr && playErr.name, playErr && playErr.message);
+        alert('Read Aloud could not start audio playback: ' + (playErr && playErr.message ? playErr.message : playErr)
+          + '\n\n(This is usually a browser autoplay/output-device issue, not the text generation.)');
+        stopReadAloud();
+      }
 
       // Pre-fetch the NEXT chunk while this one plays (hides inter-chunk gaps).
       if (index + 1 < elevenChunks.length && !elevenStopped) {
