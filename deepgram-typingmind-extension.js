@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.168 Changes:
+ * - FIX: Pasting text puts the cursor at the very END, which the cursor-aware start read as
+ *   "from end to end" = empty \u2192 "nothing to read". Now a cursor at the very end (or at position 0)
+ *   falls through to reading the WHOLE text; only a cursor genuinely MID-text reads from there on.
+ *
  * v3.167 Changes:
  * - HARDENING/DIAGNOSTIC (audio silence): explicitly set audio muted=false, volume=1; wrap play() to
  *   catch a REJECTED play() (the classic 'plays visually but no sound' autoplay/device cause) and alert;
@@ -413,7 +418,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.167',
+  VERSION: '3.168',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -961,8 +966,15 @@
     if (transcriptEl && typeof transcriptEl.selectionStart === 'number') {
       const selStart = transcriptEl.selectionStart;
       const selEnd = transcriptEl.selectionEnd;
-      if (selEnd > selStart) { regionStart = selStart; regionEnd = selEnd; }
-      else if (selStart > 0) { regionStart = selStart; regionEnd = fullText.length; }
+      if (selEnd > selStart) {
+        // A real highlight \u2192 read exactly that range.
+        regionStart = selStart; regionEnd = selEnd;
+      } else if (selStart > 0 && selStart < fullText.length) {
+        // Cursor placed genuinely MID-text \u2192 read from there to the end.
+        regionStart = selStart; regionEnd = fullText.length;
+      }
+      // Cursor at the very END (e.g. right after pasting) or at 0 \u2192 fall through to whole-text.
+      // This fixes the "nothing to read" bug when you paste (cursor lands at end) and hit play.
     }
     if (!fullText.substring(regionStart, regionEnd).trim()) {
       alert('Nothing to read \u2014 the transcript window is empty (or the selection is blank).');
