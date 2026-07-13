@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.176 Changes:
+ * - NEW: Refine now shows the MOST RECENT COST, right-justified on the context-name row. OpenRouter
+ *   reports an exact dollar cost (usage.cost) so it's shown as $x.xxxx; Anthropic returns no cost
+ *   field, so it's ESTIMATED from token usage via an editable per-MTok pricing table
+ *   (CONFIG.REFINE_ANTHROPIC_PRICING, keyed opus/sonnet/haiku) and shown as ~$x.xxxx.
+ *
  * v3.175 Changes:
  * - TWEAK (Context modal): the full-name row now shows a live CHARACTER COUNT of the selected
  *   slot's text, right-justified on the same line. Updates as you type and when you switch slots
@@ -477,7 +483,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.175',
+  VERSION: '3.176',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -537,6 +543,14 @@
     // Starter model lists (editable in the UI; type any model string via ➕).
     DEFAULT_ANTHROPIC_MODELS: ['claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-4-7', 'claude-haiku-4-5'],
     DEFAULT_OPENROUTER_MODELS: ['anthropic/claude-opus-4.8', 'anthropic/claude-sonnet-5', 'anthropic/claude-3.5-haiku'],
+    // Anthropic-direct responses do NOT include a dollar cost (OpenRouter does, via usage.cost), so we
+    // estimate it from token counts using this per-MTok table, keyed by a substring of the model id.
+    // [inputPerMTok, outputPerMTok, cacheReadPerMTok]. Edit as Anthropic pricing changes.
+    REFINE_ANTHROPIC_PRICING: {
+      opus:   [5, 25, 0.5],
+      sonnet: [3, 15, 0.3],
+      haiku:  [1, 5, 0.1],
+    },
     
     // Teams message break settings
     TEAMS_SPEAKERS_STORAGE: 'teams_message_speakers',
@@ -1644,6 +1658,44 @@
     if (lbl) lbl.textContent = refineGetActiveContextName();
   }
 
+  /**
+   * Estimate the dollar cost of an Anthropic-direct response from its token usage (Anthropic does
+   * not return a cost field; OpenRouter does). Uses CONFIG.REFINE_ANTHROPIC_PRICING keyed by an
+   * 'opus'/'sonnet'/'haiku' substring of the model id. Returns a number, or null if not estimable.
+   */
+  function refineEstimateAnthropicCost(model, usage) {
+    if (!usage) return null;
+    const table = CONFIG.REFINE_ANTHROPIC_PRICING || {};
+    const m = String(model || '').toLowerCase();
+    let rates = null;
+    for (const key in table) { if (m.indexOf(key) !== -1) { rates = table[key]; break; } }
+    if (!rates) return null;
+    const inPer = rates[0], outPer = rates[1], cacheReadPer = rates[2];
+    const inTok = usage.input_tokens || 0;
+    const outTok = usage.output_tokens || 0;
+    const cacheRead = usage.cache_read_input_tokens || 0;
+    const cacheWrite = usage.cache_creation_input_tokens || 0;
+    // cache writes are billed ~1.25x input; approximate with input rate if not separately tabled.
+    const cost = (inTok * inPer + outTok * outPer + cacheRead * cacheReadPer + cacheWrite * inPer) / 1e6;
+    return cost;
+  }
+
+  /** Update the 'most recent cost' label on the Refine context row. */
+  function refineUpdateCostLabel(cost, estimated) {
+    const el = document.getElementById('deepgram-refine-cost-label');
+    if (!el) return;
+    if (cost === null || cost === undefined || isNaN(cost)) {
+      el.textContent = '';
+      return;
+    }
+    // Show enough precision for sub-cent costs.
+    const dollars = cost < 0.01 ? cost.toFixed(5) : cost.toFixed(4);
+    el.textContent = 'most recent cost: ' + (estimated ? '~$' : '$') + dollars;
+    el.title = estimated
+      ? 'Estimated from token usage (Anthropic returns no cost field)'
+      : 'Reported directly by OpenRouter (usage.cost)';
+  }
+
   /** (Re)populate the provider + model dropdowns from saved state. */
   function refineRefreshProviderDropdown() {
     const sel = document.getElementById('deepgram-refine-provider-select');
@@ -1947,6 +1999,9 @@
               { role: 'system', content: systemPrompt },
               { role: 'user', content: userContent },
             ],
+            // Ask OpenRouter to include cost/usage accounting in the (non-streaming) response body
+            // so usage.cost is populated; without this flag OpenRouter omits the cost.
+            usage: { include: true },
           }),
         });
         if (!resp.ok) {
@@ -1957,7 +2012,9 @@
         const j = await resp.json();
         const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
         if (!txt) throw new Error('Empty response from OpenRouter.');
-        return txt;
+        // OpenRouter reports an authoritative dollar cost directly in usage.cost (non-streaming).
+        const orCost = j && j.usage && (typeof j.usage.cost === 'number') ? j.usage.cost : null;
+        return { text: txt, cost: orCost, estimated: false };
       }
       // Anthropic (direct) — may be intercepted/blocked by TypingMind's fetch hook; see note above.
       const resp = await fetch(CONFIG.ANTHROPIC_MESSAGES_ENDPOINT, {
@@ -1987,7 +2044,9 @@
       const j = await resp.json();
       const txt = j && j.content && j.content[0] && j.content[0].text;
       if (!txt) throw new Error('Empty response from Anthropic.');
-      return txt;
+      // Anthropic returns token usage but NO dollar cost — estimate it from the pricing table.
+      const aCost = refineEstimateAnthropicCost(model, j && j.usage);
+      return { text: txt, cost: aCost, estimated: true };
     } catch (err) {
       // Normalize an abort into a clearer message; leave .status untouched so retry logic still sees it.
       if (err && err.name === 'AbortError') {
@@ -2075,8 +2134,10 @@
     updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '…', 'info');
 
     try {
-      let cleaned = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent);
-      cleaned = cleaned.replace(/\s+$/, '');
+      const result = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent);
+      let cleaned = (result && result.text ? result.text : '').replace(/\s+$/, '');
+      // Show the most-recent cost on the Refine context row (exact for OpenRouter, estimated for Anthropic).
+      refineUpdateCostLabel(result ? result.cost : null, result ? result.estimated : false);
       const newFull = full.substring(0, selStart) + cleaned + full.substring(selEnd);
       transcriptEl.value = newFull;
       const newCursor = selStart + cleaned.length;
@@ -4021,10 +4082,13 @@
           </button>
         </div>
 
-        <!-- ✨ Refine: thin active-context-name row (left-justified; holds a long name without wrapping the buttons) -->
-        <div style="margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-          <span style="opacity:0.6;">✨ context:</span>
-          <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
+        <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
+        <div style="display:flex; align-items:baseline; gap:8px; margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9;">
+          <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+            <span style="opacity:0.6;">✨ context:</span>
+            <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
+          </span>
+          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
