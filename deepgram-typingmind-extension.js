@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.172 Changes:
+ * - NEW: Refine now has 10 NAMED CONTEXT SLOTS for parallel sessions. The 📝 Context modal shows a
+ *   ribbon of 10 squares at top; single-click a square to make it ACTIVE and load its context (✎ to
+ *   rename). ✨ Refine always sends the ACTIVE slot. The active slot's name is pinned in green to the
+ *   right of the 📝 Context button so you can see which session is active without opening the modal.
+ *   Your existing single context is auto-migrated into slot 1. (Storage: refine_contexts array +
+ *   refine_active_context index.)
+ *
  * v3.171 Changes:
  * - FIX (real root cause of the Refine hang): the sibling Payload extension
  *   (prompt-caching-header-fix.js) was intercepting Refine's api.anthropic.com call and injecting
@@ -452,7 +460,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.171',
+  VERSION: '3.172',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -500,7 +508,10 @@
     REFINE_ANTHROPIC_MODELS_STORAGE: 'refine_anthropic_models_list', // editable list (JSON)
     REFINE_OPENROUTER_MODELS_STORAGE: 'refine_openrouter_models_list',
     REFINE_SYSTEM_PROMPT_STORAGE: 'refine_system_prompt',       // permanent editable system prompt
-    REFINE_CONTEXT_STORAGE: 'refine_context',                   // editable prior-chat-turn context
+    REFINE_CONTEXT_STORAGE: 'refine_context',                   // LEGACY single-context (auto-migrated into slot 0)
+    REFINE_CONTEXTS_STORAGE: 'refine_contexts',                  // JSON array of {name, text} — 10 parallel-session slots
+    REFINE_ACTIVE_CONTEXT_STORAGE: 'refine_active_context',      // active slot index (0-based)
+    REFINE_CONTEXT_SLOTS: 10,                                    // number of parallel-session context slots
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -1556,8 +1567,64 @@
     const saved = localStorage.getItem(CONFIG.REFINE_SYSTEM_PROMPT_STORAGE);
     return (saved !== null && saved !== undefined) ? saved : REFINE_DEFAULT_SYSTEM_PROMPT;
   }
+  // ===== Parallel-session CONTEXT SLOTS (10 named context buffers) =====
+  /**
+   * Return the array of context slots [{name, text}, ...] of length REFINE_CONTEXT_SLOTS.
+   * Auto-migrates the legacy single refine_context into slot 0 on first run, and always
+   * normalizes the array to the configured length (padding/truncating as needed).
+   */
+  function refineGetContexts() {
+    const n = CONFIG.REFINE_CONTEXT_SLOTS;
+    let list = null;
+    try {
+      const raw = localStorage.getItem(CONFIG.REFINE_CONTEXTS_STORAGE);
+      if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) list = arr; }
+    } catch (e) {}
+    if (!list) {
+      // First run: migrate any legacy single-context value into slot 0.
+      list = [];
+      const legacy = localStorage.getItem(CONFIG.REFINE_CONTEXT_STORAGE);
+      if (legacy) list.push({ name: 'Session 1', text: legacy });
+    }
+    // Normalize to exactly n slots with well-formed {name, text}.
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const s = list[i] || {};
+      out.push({
+        name: (s && typeof s.name === 'string' && s.name.trim()) ? s.name : String(i + 1),
+        text: (s && typeof s.text === 'string') ? s.text : '',
+      });
+    }
+    return out;
+  }
+  function refineSaveContexts(list) {
+    localStorage.setItem(CONFIG.REFINE_CONTEXTS_STORAGE, JSON.stringify(list));
+  }
+  function refineGetActiveContextIndex() {
+    let i = parseInt(localStorage.getItem(CONFIG.REFINE_ACTIVE_CONTEXT_STORAGE), 10);
+    if (isNaN(i) || i < 0 || i >= CONFIG.REFINE_CONTEXT_SLOTS) i = 0;
+    return i;
+  }
+  function refineSetActiveContextIndex(i) {
+    if (i < 0 || i >= CONFIG.REFINE_CONTEXT_SLOTS) return;
+    localStorage.setItem(CONFIG.REFINE_ACTIVE_CONTEXT_STORAGE, String(i));
+    refineUpdateContextButtonLabel();
+  }
+  /** The active slot's context text — this is what Refine actually sends. */
   function refineGetContext() {
-    return localStorage.getItem(CONFIG.REFINE_CONTEXT_STORAGE) || '';
+    const list = refineGetContexts();
+    const i = refineGetActiveContextIndex();
+    return (list[i] && list[i].text) || '';
+  }
+  function refineGetActiveContextName() {
+    const list = refineGetContexts();
+    const i = refineGetActiveContextIndex();
+    return (list[i] && list[i].name) || String(i + 1);
+  }
+  /** Pin the active slot's name to the right of the main 📝 Context button. */
+  function refineUpdateContextButtonLabel() {
+    const lbl = document.getElementById('deepgram-refine-active-context-label');
+    if (lbl) lbl.textContent = refineGetActiveContextName();
   }
 
   /** (Re)populate the provider + model dropdowns from saved state. */
@@ -1650,13 +1717,105 @@
    * Edit the CONTEXT block (prior chat-turn / topic material) in a modal textarea.
    */
   function refineEditContext() {
-    refineOpenTextModal({
-      title: '📝 Refine — context (prior chat turns / topic)',
-      subtitle: 'Paste relevant material so the model knows what you actually mean. Reused every Refine until you change it.',
-      value: refineGetContext(),
-      allowRestoreDefault: false,
-      onSave: (v) => { localStorage.setItem(CONFIG.REFINE_CONTEXT_STORAGE, v); },
-    });
+    const existing = document.getElementById('deepgram-refine-modal-overlay');
+    if (existing) existing.remove();
+
+    const slots = refineGetContexts();          // working copy [{name,text}]
+    let editingIndex = refineGetActiveContextIndex();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'deepgram-refine-modal-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:2147483646; display:flex; align-items:center; justify-content:center;';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(860px,94vw); max-height:88vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box;';
+
+    const h = document.createElement('div');
+    h.textContent = '📝 Refine — parallel-session context slots';
+    h.style.cssText = 'font-size:15px; font-weight:600; margin-bottom:4px;';
+    const sub = document.createElement('div');
+    sub.innerHTML = 'Pick a slot (single-click) to make it ACTIVE and load its context below. Click ✎ to rename a slot. The ACTIVE slot is what ✨ Refine sends. Save writes to the slot you are editing.';
+    sub.style.cssText = 'font-size:12px; opacity:0.7; margin-bottom:10px;';
+
+    // ----- Ribbon of slot squares -----
+    const ribbon = document.createElement('div');
+    ribbon.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;';
+
+    const ta = document.createElement('textarea');
+    ta.style.cssText = 'flex:1 1 auto; min-height:300px; width:100%; box-sizing:border-box; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
+
+    const editingHdr = document.createElement('div');
+    editingHdr.style.cssText = 'font-size:12px; opacity:0.85; margin:2px 0 6px;';
+
+    // Commit the textarea's current text into the working copy for the slot being edited.
+    const stashCurrentText = () => { if (slots[editingIndex]) slots[editingIndex].text = ta.value; };
+    const activeIdx = () => refineGetActiveContextIndex();
+
+    function paintRibbon() {
+      ribbon.innerHTML = '';
+      slots.forEach((slot, i) => {
+        const sq = document.createElement('div');
+        const isActive = (i === activeIdx());
+        const isEditing = (i === editingIndex);
+        sq.style.cssText = 'position:relative; min-width:74px; max-width:120px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
+          + 'border:2px solid ' + (isEditing ? '#4da3ff' : (isActive ? '#2b7a2b' : '#444')) + '; '
+          + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
+          + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        sq.title = 'Slot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename';
+        const hasText = slot.text && slot.text.trim();
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
+        nameSpan.style.cssText = 'display:inline-block; max-width:84px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;';
+        const pen = document.createElement('span');
+        pen.textContent = ' ✎';
+        pen.style.cssText = 'opacity:0.6; margin-left:2px;';
+        pen.onclick = (e) => {
+          e.stopPropagation();
+          const nm = prompt('Name for slot ' + (i + 1) + ':', slot.name);
+          if (nm && nm.trim()) { slot.name = nm.trim(); refineSaveContexts(slots); if (i === activeIdx()) refineUpdateContextButtonLabel(); paintRibbon(); }
+        };
+        sq.appendChild(nameSpan);
+        sq.appendChild(pen);
+        sq.onclick = () => {
+          // Switching slots: stash the text of the slot we were editing (unsaved edits persist in the
+          // working copy), then make the clicked slot ACTIVE and load it into the textarea.
+          stashCurrentText();
+          editingIndex = i;
+          refineSetActiveContextIndex(i);   // single-click activates (option A)
+          ta.value = slots[i].text || '';
+          editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
+          paintRibbon();
+          ta.focus();
+        };
+        ribbon.appendChild(sq);
+      });
+    }
+    // tiny local escaper for the header (avoid depending on other helpers)
+    function escapeAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+    // Initialize on the active slot.
+    ta.value = slots[editingIndex].text || '';
+    editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[editingIndex].name) + '</b> (slot ' + (editingIndex + 1) + ')';
+    paintRibbon();
+
+    // ----- Buttons -----
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;';
+    const mkBtn = (label, bg) => { const b = document.createElement('button'); b.textContent = label; b.style.cssText = 'padding:7px 14px; border-radius:6px; border:none; cursor:pointer; font-size:13px; color:#fff; background:' + bg + ';'; return b; };
+    const closeModal = () => overlay.remove();
+    const cancel = mkBtn('Close', '#555');
+    cancel.onclick = closeModal;
+    const save = mkBtn('💾 Save all', '#2b7a2b');
+    save.onclick = () => { stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); closeModal(); };
+    btnRow.appendChild(cancel);
+    btnRow.appendChild(save);
+
+    box.appendChild(h); box.appendChild(sub); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(ta); box.appendChild(btnRow);
+    overlay.appendChild(box);
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', function esc(e){ if(e.key==='Escape'){ closeModal(); document.removeEventListener('keydown', esc);} });
+    document.body.appendChild(overlay);
+    ta.focus();
   }
 
   /** A simple reusable text-editing modal (used by both the prompt and context editors). */
@@ -3830,7 +3989,8 @@
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; max-width:200px; color:#111; background:#fff;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:30px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:30px;">🗑️</button>
-          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context (prior chat turns / topic)" style="font-size:11px;">📝 Context</button>
+          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends." style="font-size:11px;">📝 Context</button>
+          <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-size:11px; font-weight:600; color:#2e9b2e; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:middle;"></span>
           <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px;">📜 Prompt</button>
           <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px;">🔑 Key</button>
         </div>
@@ -4141,6 +4301,7 @@
     document.getElementById('deepgram-refine-prompt-btn').addEventListener('click', refineEditSystemPrompt);
     document.getElementById('deepgram-refine-clearkey-btn').addEventListener('click', refineClearApiKey);
     refineRefreshProviderDropdown();
+    refineUpdateContextButtonLabel();
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
