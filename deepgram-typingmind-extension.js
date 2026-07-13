@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.171 Changes:
+ * - FIX (real root cause of the Refine hang): the sibling Payload extension
+ *   (prompt-caching-header-fix.js) was intercepting Refine's api.anthropic.com call and injecting
+ *   prompt-caching markers meant for TypingMind conversation payloads, corrupting it. Refine now
+ *   sends header  x-tm-passthrough: 1  on BOTH provider calls; the Payload extension (v4.59+) sees
+ *   that marker and passes the request through untouched. Anthropic-direct works again.
+ * - Reverted the v3.170 OpenRouter-nudge error text to a generic network/timeout message now that the
+ *   interception is fixed at the source (kept the AbortController timeout + always-re-enable button).
+ *
  * v3.170 Changes:
  * - FIX (Refine hang): direct Anthropic calls are intercepted by TypingMind's window.fetch hook
  *   (adds prompt-caching beta header + "sanitizes" body — the [v3.0] logs), breaking CORS → a
@@ -443,7 +452,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.170',
+  VERSION: '3.171',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1729,6 +1738,10 @@
             'Content-Type': 'application/json',
             'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
             'X-Title': 'TypingMind Transcription Refine',
+            // Tell the sibling Payload extension (prompt-caching-header-fix.js) to leave this
+            // request ALONE — it is not a TypingMind conversation payload. See that extension's
+            // v4.59 passthrough guard.
+            'x-tm-passthrough': '1',
           },
           body: JSON.stringify({
             model: model,
@@ -1757,6 +1770,9 @@
           'anthropic-version': CONFIG.ANTHROPIC_VERSION,
           'anthropic-dangerous-direct-browser-access': 'true',
           'Content-Type': 'application/json',
+          // Tell the sibling Payload extension (prompt-caching-header-fix.js) to leave this request
+          // ALONE — it is not a TypingMind conversation payload. See that extension's v4.59 guard.
+          'x-tm-passthrough': '1',
         },
         body: JSON.stringify({
           model: model,
@@ -1879,11 +1895,14 @@
         const meta = refineProviderMeta(provider);
         localStorage.removeItem(meta.keyStorage);
         alert('Refine failed: your ' + meta.label + ' API key was rejected (' + status + '). It has been cleared — try again to re-enter it.');
-      } else if (err && (err.wasAbort || err.status === undefined)) {
-        // Network/CORS/interception (or timeout). In TypingMind, direct Anthropic calls are hooked; nudge to OpenRouter.
-        const usingAnthropic = (provider === 'anthropic');
-        alert('Refine failed: the request was blocked or timed out (likely CORS / TypingMind\'s fetch interception).'
-          + (usingAnthropic ? '\n\n→ Fix: switch the Provider dropdown to "OpenRouter" (it is not intercepted) and try again. You can still use Claude models there (e.g. anthropic/claude-sonnet-5).' : '\n\nCheck your network / that the model string is valid for OpenRouter.'));
+      } else if (err && err.wasAbort) {
+        alert('Refine timed out (no response within 2 minutes). Try again, or try a faster model.');
+      } else if (err && err.status === undefined) {
+        // Bare network error. With the Payload extension's v4.59 passthrough guard in place this should
+        // be rare; if it recurs it is a genuine network/CORS issue or the sibling extension is stale.
+        alert('Refine failed: network error (no response). Check your connection.'
+          + '\n\nIf this persists, make sure the Payload extension is at v4.59+ (it must honor the'
+          + ' x-tm-passthrough header), or switch the Provider dropdown to try the other provider.');
       } else {
         alert('Refine failed: ' + (err && err.message ? err.message : err));
       }

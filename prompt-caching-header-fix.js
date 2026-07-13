@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.58
+// Version: 4.59
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,10 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.59: PASSTHROUGH GUARD. Requests carrying header  x-tm-passthrough: 1  bypass this interceptor
+//     entirely (no repairs, no prompt-caching header injection, no payload capture) and go straight to
+//     the original fetch. Lets sibling extensions (e.g. the Whisper widget's "✨ Refine" Claude/OpenRouter
+//     calls) coexist without having their non-conversation payloads corrupted.
 //   - v4.8 (Nov 17, 2025): Move tool-call popup width control into Deepgram/Whisper widget; keep this extension focused on payloads only
 //   - v4.6 (Nov 16, 2025): Render GPT-5.1 Conversations widget on load using persisted localStorage stats (no message required)
 //   - v4.5 (Nov 16, 2025): Expose active extension version in GPT-5.1 widget title to confirm deployment state
@@ -23,7 +27,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.58';
+  const EXT_VERSION = '4.59';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2884,6 +2888,38 @@
     const [url, options = {}] = args;
     let convIdForThisCall = null;
     let vendorForThisCall = null;
+
+    // ==================== PASSTHROUGH GUARD (cooperate with sibling extensions) ====================
+    // Some of Dan's OTHER extensions (e.g. the Whisper Transcription widget's "✨ Refine" feature)
+    // make their OWN direct calls to api.anthropic.com / openrouter.ai that are NOT TypingMind
+    // conversation payloads. This interceptor's repairs + prompt-caching header injection + payload
+    // capture are meant ONLY for TypingMind's conversation traffic; applying them to a sibling
+    // extension's request corrupts it (broke Refine with a CORS/network error). Any such request
+    // opts OUT by sending the marker header  x-tm-passthrough: 1  (case-insensitive). When present,
+    // we call the ORIGINAL fetch verbatim: no body parse, no repairs, no header changes, no capture.
+    try {
+      const h = options && options.headers;
+      let passthrough = false;
+      if (h) {
+        if (typeof h.get === 'function') {
+          // Headers instance
+          passthrough = !!(h.get('x-tm-passthrough') || h.get('X-TM-Passthrough'));
+        } else if (typeof h === 'object') {
+          // plain object / array-of-pairs
+          for (const k in h) {
+            if (Object.prototype.hasOwnProperty.call(h, k) && String(k).toLowerCase() === 'x-tm-passthrough') {
+              if (h[k]) { passthrough = true; }
+              break;
+            }
+          }
+        }
+      }
+      if (passthrough) {
+        return originalFetch.apply(this, args);
+      }
+    } catch (e) {
+      // If anything goes wrong detecting the marker, fall through to normal handling (fail-safe).
+    }
 
     // ==================== ANTHROPIC BRANCH ====================
     if (url.includes('api.anthropic.com')) {
