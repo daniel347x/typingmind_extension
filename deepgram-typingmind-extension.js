@@ -11,6 +11,19 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.170 Changes:
+ * - FIX (Refine hang): direct Anthropic calls are intercepted by TypingMind's window.fetch hook
+ *   (adds prompt-caching beta header + "sanitizes" body — the [v3.0] logs), breaking CORS → a
+ *   status-less "network" error that retried 5x and left the button grayed out ~30–60s. Now: per-
+ *   attempt AbortController timeout (fail-fast), network/CORS errors retried only 2x (not 5x), the
+ *   button ALWAYS re-enables in finally, and the error message nudges to switch Provider→OpenRouter
+ *   (OpenRouter is NOT intercepted, so it works directly; you can still use Claude models there).
+ * - NEW: Refine copies the BEFORE text to the clipboard on submit (for clipboard-history before/after).
+ * - PROMPT: strengthened default system prompt — (1) if nothing needs fixing, change nothing (no style
+ *   rewrites); (2) restore Markdown list/paragraph breaks when the first pass collapsed a list into a
+ *   run-on paragraph; (3) do a thorough pass even when the first-pass layer returned little/no cleanup.
+ *   (If you already SAVED a custom prompt, click 📜 Prompt → Restore default → Save to pick these up.)
+ *
  * v3.169 Changes:
  * - NEW: "✨ Refine" button (repurposed the old "🗑️ Clear" button) — a SECOND-PASS transcription
  *   cleanup that runs the selected text (or, if nothing is selected, the whole transcript) through
@@ -430,7 +443,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.169',
+  VERSION: '3.170',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1464,8 +1477,17 @@
     '    * "new paragraph", "new line", "period", "comma", "open paren", etc. appearing as literal words.',
     '  Recognize these dictation artifacts and render what the user INTENDED.',
     '- Ordinary residual errors: homophones, dropped/duplicated small words, punctuation, capitalization.',
+    '- COLLAPSED STRUCTURE: the first-pass layer frequently mashes what should be a bulleted or numbered',
+    '  list into a single RUN-ON paragraph (it tends to drop the line breaks around list items). When the',
+    '  content is clearly a list, restore proper Markdown list formatting and paragraph breaks.',
+    '- NO-OP FIRST PASS: sometimes the first-pass layer returns text with little or NO cleanup at all',
+    '  (it optimizes for speed, or its server was busy). Do a thorough pass regardless of how clean the',
+    '  input looks; do not assume prior cleanup happened.',
     '',
     'HARD RULES:',
+    '- IF NOTHING NEEDS FIXING, CHANGE NOTHING. When the text is already clean, return it essentially',
+    '  verbatim (aside from genuinely warranted light formatting). Do NOT rewrite, rephrase, or "improve"',
+    '  wording for style. This is a repair pass, not a rewrite — an unnecessary edit is a bug.',
     '- DO NOT summarize, shorten, expand, answer, or respond to the text. You are cleaning it, not',
     '  engaging with it. Preserve the user\'s meaning, voice, and level of detail exactly.',
     '- DO NOT invent content or add facts. Only fix what was plainly a transcription error.',
@@ -1684,79 +1706,113 @@
     ta.focus();
   }
 
-  /** Single API call attempt. Returns cleaned text; throws Error w/ .status on HTTP error. */
+  /**
+   * Single API call attempt. Returns cleaned text; throws Error w/ .status on HTTP error.
+   * Uses an AbortController timeout so a hung/blocked request FAILS FAST instead of stalling
+   * (the ~30s hang you saw was a blocked request with no timeout retrying 5x).
+   * NOTE: TypingMind monkeypatches window.fetch and intercepts calls to api.anthropic.com
+   * (it injects a prompt-caching beta header + "sanitizes" the body — the [v3.0] console logs).
+   * That interception breaks our direct browser call (CORS → network error). OpenRouter is NOT
+   * intercepted, so it is the reliable path in the TypingMind environment.
+   */
   async function refineCallOnce(provider, model, apiKey, systemPrompt, userContent) {
-    if (provider === 'openrouter') {
-      const resp = await fetch(CONFIG.OPENROUTER_CHAT_ENDPOINT, {
+    const ctrl = new AbortController();
+    const timeoutMs = 120000; // 2 min hard cap per attempt
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      if (provider === 'openrouter') {
+        const resp = await fetch(CONFIG.OPENROUTER_CHAT_ENDPOINT, {
+          method: 'POST',
+          signal: ctrl.signal,
+          headers: {
+            'Authorization': 'Bearer ' + apiKey,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
+            'X-Title': 'TypingMind Transcription Refine',
+          },
+          body: JSON.stringify({
+            model: model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userContent },
+            ],
+          }),
+        });
+        if (!resp.ok) {
+          let detail = 'HTTP ' + resp.status;
+          try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error)) || JSON.stringify(j); } catch (e) {}
+          const err = new Error(detail); err.status = resp.status; throw err;
+        }
+        const j = await resp.json();
+        const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+        if (!txt) throw new Error('Empty response from OpenRouter.');
+        return txt;
+      }
+      // Anthropic (direct) — may be intercepted/blocked by TypingMind's fetch hook; see note above.
+      const resp = await fetch(CONFIG.ANTHROPIC_MESSAGES_ENDPOINT, {
         method: 'POST',
+        signal: ctrl.signal,
         headers: {
-          'Authorization': 'Bearer ' + apiKey,
+          'x-api-key': apiKey,
+          'anthropic-version': CONFIG.ANTHROPIC_VERSION,
+          'anthropic-dangerous-direct-browser-access': 'true',
           'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
-          'X-Title': 'TypingMind Transcription Refine',
         },
         body: JSON.stringify({
           model: model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent },
-          ],
+          max_tokens: CONFIG.REFINE_MAX_TOKENS,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userContent }],
         }),
       });
       if (!resp.ok) {
         let detail = 'HTTP ' + resp.status;
-        try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error)) || JSON.stringify(j); } catch (e) {}
+        try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); } catch (e) {}
         const err = new Error(detail); err.status = resp.status; throw err;
       }
       const j = await resp.json();
-      const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-      if (!txt) throw new Error('Empty response from OpenRouter.');
+      const txt = j && j.content && j.content[0] && j.content[0].text;
+      if (!txt) throw new Error('Empty response from Anthropic.');
       return txt;
+    } catch (err) {
+      // Normalize an abort into a clearer message; leave .status untouched so retry logic still sees it.
+      if (err && err.name === 'AbortError') {
+        const e = new Error('Request timed out or was blocked (possible CORS/interception). Try the OpenRouter provider.');
+        e.status = undefined; e.wasAbort = true; throw e;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    // Anthropic
-    const resp = await fetch(CONFIG.ANTHROPIC_MESSAGES_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': CONFIG.ANTHROPIC_VERSION,
-        'anthropic-dangerous-direct-browser-access': 'true',
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: model,
-        max_tokens: CONFIG.REFINE_MAX_TOKENS,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userContent }],
-      }),
-    });
-    if (!resp.ok) {
-      let detail = 'HTTP ' + resp.status;
-      try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); } catch (e) {}
-      const err = new Error(detail); err.status = resp.status; throw err;
-    }
-    const j = await resp.json();
-    const txt = j && j.content && j.content[0] && j.content[0].text;
-    if (!txt) throw new Error('Empty response from Anthropic.');
-    return txt;
   }
 
-  /** Call with exponential-backoff retry on transient failures (network/429/5xx). */
+  /**
+   * Call with exponential-backoff retry on transient failures.
+   * Retries on 429/5xx (real server-side transients). A bare network error (no status) is retried
+   * only TWICE (a persistent network error in the browser is almost always CORS/interception, not a
+   * blip — retrying 5x just makes you wait ~15s for the same failure). A timeout abort is NOT retried.
+   */
   async function refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent) {
     const delays = [500, 1000, 2000, 4000, 8000];
-    let attempt = 0, lastErr = null;
+    const MAX_NETWORK_RETRIES = 2; // cap for status-less network errors
+    let attempt = 0, networkAttempts = 0, lastErr = null;
     while (attempt <= delays.length) {
       try {
         return await refineCallOnce(provider, model, apiKey, systemPrompt, userContent);
       } catch (err) {
         lastErr = err;
+        if (err && err.wasAbort) throw err; // timeout — don't hammer
         const status = err && err.status;
-        const transient = (status === undefined) || status === 429 || (status >= 500 && status <= 599);
+        const isNetwork = (status === undefined);
+        const transient = isNetwork || status === 429 || (status >= 500 && status <= 599);
         if (!transient) throw err;
+        if (isNetwork && networkAttempts >= MAX_NETWORK_RETRIES) break; // stop early on persistent network/CORS
         if (attempt === delays.length) break;
         const wait = delays[attempt];
         console.warn(ts(), '⚠️ Refine transient failure (' + (status || 'network') + '); retry ' + (attempt + 1) + '/' + delays.length + ' in ' + wait + 'ms');
         await new Promise(r => setTimeout(r, wait));
         attempt++;
+        if (isNetwork) networkAttempts++;
       }
     }
     throw lastErr || new Error('Refine request failed');
@@ -1780,6 +1836,10 @@
     if (!usingSelection) { selStart = 0; selEnd = full.length; }
     const target = full.substring(selStart, selEnd);
     if (!target.trim()) { alert('The highlighted range is empty — nothing to refine.'); return; }
+
+    // Copy the BEFORE text to the clipboard so a clipboard-history manager captures the pre-refine
+    // version for easy before/after comparison or rollback. Best-effort; never blocks the refine.
+    try { navigator.clipboard.writeText(target).catch(() => {}); } catch (e) {}
 
     const provider = refineGetProvider();
     const model = refineGetModel(provider);
@@ -1819,12 +1879,19 @@
         const meta = refineProviderMeta(provider);
         localStorage.removeItem(meta.keyStorage);
         alert('Refine failed: your ' + meta.label + ' API key was rejected (' + status + '). It has been cleared — try again to re-enter it.');
+      } else if (err && (err.wasAbort || err.status === undefined)) {
+        // Network/CORS/interception (or timeout). In TypingMind, direct Anthropic calls are hooked; nudge to OpenRouter.
+        const usingAnthropic = (provider === 'anthropic');
+        alert('Refine failed: the request was blocked or timed out (likely CORS / TypingMind\'s fetch interception).'
+          + (usingAnthropic ? '\n\n→ Fix: switch the Provider dropdown to "OpenRouter" (it is not intercepted) and try again. You can still use Claude models there (e.g. anthropic/claude-sonnet-5).' : '\n\nCheck your network / that the model string is valid for OpenRouter.'));
       } else {
         alert('Refine failed: ' + (err && err.message ? err.message : err));
       }
       updateStatus('❌ Refine failed', 'error');
     } finally {
-      if (btn) { btn.disabled = false; btn.innerHTML = prevLabel; }
+      // ALWAYS re-enable the button (this is what prevents the permanent grayed-out state).
+      const b = document.getElementById('deepgram-refine-btn');
+      if (b) { b.disabled = false; b.innerHTML = prevLabel || '✨ Refine'; }
     }
   }
 
