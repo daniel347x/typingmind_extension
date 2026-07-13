@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.181 Changes:
+ * - TWEAK: the 'most recent cost' amount is now bold green (#2e9b2e, matching the session name),
+ *   same font size (dropped the muted opacity).
+ *
  * v3.180 Changes:
  * - FIX: corrected the default OpenRouter Haiku model id — anthropic/claude-3.5-haiku is RETIRED on
  *   OpenRouter (caused 'model not found'); the current slug is anthropic/claude-haiku-4.5. NOTE: this
@@ -518,7 +522,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.180',
+  VERSION: '3.181',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4175,7 +4179,7 @@
             <span style="opacity:0.6;">✨ context:</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
           </span>
-          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-weight:600; color:#2e9b2e; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
