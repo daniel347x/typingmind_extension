@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.179 Changes:
+ * - NEW: repurposed the never-used "💬 Insert" button (leftmost on the button row, position UNCHANGED)
+ *   into "📎 Refine: Append". One click reads the clipboard and appends it to the END of the ACTIVE
+ *   context slot — separated by a '---' section break (one blank line above & below) — then saves the
+ *   slot, with NO modal. Guarantees exactly one spaced '---' between blocks (never doubles), and adds
+ *   no leading break when the slot is empty. Built for rapid, repeated capture of conversation turns
+ *   into a session's context. (The button is now always-enabled; insertToChat remains on its keyboard
+ *   shortcut for anyone who still wants the old Insert.)
+ *
  * v3.178 Changes:
  * - CHANGE (statelessness): replaced the v3.177 global-flag coordination (window.__refineDirectFetch)
  *   with a STATELESS URL SENTINEL — Refine appends ?tm_passthrough=1 to the endpoint URL, and the
@@ -500,7 +509,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.178',
+  VERSION: '3.179',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2188,6 +2197,56 @@
       // ALWAYS re-enable the button (this is what prevents the permanent grayed-out state).
       const b = document.getElementById('deepgram-refine-btn');
       if (b) { b.disabled = false; b.innerHTML = prevLabel || '✨ Refine'; }
+    }
+  }
+
+  /**
+   * 📎 Refine: Append (repurposed old Insert button). Reads the clipboard and appends it to the END
+   * of the ACTIVE context slot, separated by a '---' section break (one blank line above and below),
+   * then saves the slot — no modal needed. Idempotent about the break: it guarantees exactly one
+   * properly-spaced '---' between the prior content and the new clipboard text (never doubles it),
+   * and adds no leading break when the slot is currently empty. Built for rapid, repeated capture of
+   * conversation turns into a session's context.
+   */
+  async function refineAppendFromClipboard() {
+    const btn = document.getElementById('deepgram-insert-btn');
+    const prevLabel = btn ? btn.innerHTML : null;
+    let clip = '';
+    try {
+      clip = await navigator.clipboard.readText();
+    } catch (e) {
+      alert('Refine: Append could not read the clipboard.\n\n' + (e && e.message ? e.message : e)
+        + '\n\n(The browser may need clipboard permission, or focus in the page.)');
+      return;
+    }
+    if (!clip || !clip.trim()) { updateStatus('📎 Nothing on the clipboard to append', 'error'); return; }
+
+    const slots = refineGetContexts();
+    const i = refineGetActiveContextIndex();
+    const existing = (slots[i] && slots[i].text) || '';
+
+    // Build the new context: <existing> [\n\n---\n\n] <clip>, guaranteeing exactly one spaced break.
+    let base = existing.replace(/\s+$/, '');   // trim trailing whitespace
+    let combined;
+    if (!base) {
+      combined = clip.replace(/\s+$/, '');
+    } else if (/\n---\s*$/.test(base) || /^---\s*$/.test(base)) {
+      // Already ends in a '---' break — don't add a second one; just space + append.
+      combined = base + '\n\n' + clip.replace(/\s+$/, '');
+    } else {
+      combined = base + '\n\n---\n\n' + clip.replace(/\s+$/, '');
+    }
+
+    slots[i].text = combined;
+    refineSaveContexts(slots);
+    refineUpdateContextButtonLabel();
+
+    // Brief visual confirmation on the button, then restore its label.
+    const added = clip.trim().length;
+    updateStatus('📎 Appended ' + added.toLocaleString() + ' chars to “' + refineGetActiveContextName() + '” (now ' + combined.length.toLocaleString() + ')', 'success');
+    if (btn) {
+      btn.innerHTML = '✓ Appended';
+      setTimeout(function(){ const b = document.getElementById('deepgram-insert-btn'); if (b) b.innerHTML = prevLabel || '📎 Refine: Append'; }, 1200);
     }
   }
 
@@ -4083,8 +4142,8 @@
         </div>
         
         <div class="deepgram-buttons">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-success" disabled>
-            💬 Insert
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+            📎 Refine: Append
           </button>
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
             ⚡ Send
@@ -4417,7 +4476,9 @@
       console.log(ts(), '🖱️ RECORD BUTTON CLICKED (mouse or programmatic)');
       toggleRecording();
     });
-    document.getElementById('deepgram-insert-btn').addEventListener('click', insertToChat);
+    // Repurposed: the old "Insert" button is now "📎 Refine: Append" — append clipboard to the active
+    // context slot. (insertToChat is still wired to its keyboard shortcut for anyone who wants it.)
+    document.getElementById('deepgram-insert-btn').addEventListener('click', refineAppendFromClipboard);
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', appendEllipsisTail);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
@@ -5947,7 +6008,9 @@
     const copyBtn = document.getElementById('deepgram-copy-btn');
     
     // Enable if there's any text, disable if empty
-    insertBtn.disabled = !transcript;
+    // NOTE: the old Insert button (#deepgram-insert-btn) is now "📎 Refine: Append" and must stay
+    // ALWAYS enabled (appending clipboard to context does not depend on transcript text). So we no
+    // longer disable insertBtn here; only Send + Ellipsis follow transcript state.
     sendBtn.disabled = !transcript;
     copyBtn.disabled = !transcript;
   }
