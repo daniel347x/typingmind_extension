@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.177 Changes:
+ * - FIX (OpenRouter CORS): the x-tm-passthrough REQUEST HEADER tripped OpenRouter's CORS preflight
+ *   (it doesn't allowlist the custom header), so OpenRouter Refine failed with 'Failed to fetch'
+ *   while Anthropic (which allows arbitrary custom headers) worked. Switched extension coordination
+ *   to a GLOBAL FLAG (window.__refineDirectFetch) set synchronously around the fetch and removed the
+ *   header from both provider calls. Nothing is added to the wire now → zero CORS surface; OpenRouter
+ *   works. Requires the Payload extension v4.60+ (which reads the flag).
+ *
  * v3.176 Changes:
  * - NEW: Refine now shows the MOST RECENT COST, right-justified on the context-name row. OpenRouter
  *   reports an exact dollar cost (usage.cost) so it's shown as $x.xxxx; Anthropic returns no cost
@@ -483,7 +491,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.176',
+  VERSION: '3.177',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1978,6 +1986,11 @@
     const ctrl = new AbortController();
     const timeoutMs = 120000; // 2 min hard cap per attempt
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // Coordinate with the sibling Payload extension WITHOUT a wire header (a custom header trips
+    // OpenRouter's CORS preflight). We set a global flag that the Payload extension's fetch hook
+    // reads SYNCHRONOUSLY at call time; it then passes our request through untouched. Nothing is
+    // added to the actual HTTP request, so there is zero CORS surface for either provider.
+    window.__refineDirectFetch = true;
     try {
       if (provider === 'openrouter') {
         const resp = await fetch(CONFIG.OPENROUTER_CHAT_ENDPOINT, {
@@ -1988,10 +2001,6 @@
             'Content-Type': 'application/json',
             'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
             'X-Title': 'TypingMind Transcription Refine',
-            // Tell the sibling Payload extension (prompt-caching-header-fix.js) to leave this
-            // request ALONE — it is not a TypingMind conversation payload. See that extension's
-            // v4.59 passthrough guard.
-            'x-tm-passthrough': '1',
           },
           body: JSON.stringify({
             model: model,
@@ -2025,9 +2034,6 @@
           'anthropic-version': CONFIG.ANTHROPIC_VERSION,
           'anthropic-dangerous-direct-browser-access': 'true',
           'Content-Type': 'application/json',
-          // Tell the sibling Payload extension (prompt-caching-header-fix.js) to leave this request
-          // ALONE — it is not a TypingMind conversation payload. See that extension's v4.59 guard.
-          'x-tm-passthrough': '1',
         },
         body: JSON.stringify({
           model: model,
@@ -2056,6 +2062,7 @@
       throw err;
     } finally {
       clearTimeout(timer);
+      window.__refineDirectFetch = false;
     }
   }
 
