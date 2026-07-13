@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.169 Changes:
+ * - NEW: "✨ Refine" button (repurposed the old "🗑️ Clear" button) — a SECOND-PASS transcription
+ *   cleanup that runs the selected text (or, if nothing is selected, the whole transcript) through
+ *   Claude (Anthropic) or OpenRouter, using a permanent editable SYSTEM PROMPT plus an editable
+ *   CONTEXT block (prior chat-turn material) so the model can fix egregious mis-transcriptions that
+ *   Wispr Flow's local cleanup can't (unrelated-word swaps, spoken commands leaking as literal text
+ *   like the word "quote", spelled-out words, etc.). Returns Markdown; replaces the text in place.
+ * - NEW: Refine control row with Provider dropdown (Anthropic | OpenRouter), an editable per-provider
+ *   Model dropdown (➕ add / 🗑️ remove, type any model string), 📝 Context editor, 📜 Prompt editor,
+ *   and 🔑 clear-key. All persisted in localStorage. Anthropic uses the browser-direct opt-in header.
+ * - Backoff retry on transient (429/5xx/network) failures; fail-fast on 401/403/404/422.
+ *
  * v3.168 Changes:
  * - FIX: Pasting text puts the cursor at the very END, which the cursor-aware start read as
  *   "from end to end" = empty \u2192 "nothing to read". Now a cursor at the very end (or at position 0)
@@ -418,7 +430,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.168',
+  VERSION: '3.169',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -456,6 +468,25 @@
     DEFAULT_ELEVENLABS_MODEL: 'eleven_multilingual_v2',
     // Playback-speed multiplier (the API itself caps native speed at 1.2x; this speeds up the audio element).
     DEFAULT_ELEVENLABS_RATE: 1.5,
+
+    // ===== Refine (second-pass transcription cleanup via Claude / OpenRouter) =====
+    REFINE_PROVIDER_STORAGE: 'refine_provider',                 // 'anthropic' | 'openrouter'
+    REFINE_ANTHROPIC_KEY_STORAGE: 'refine_anthropic_api_key',
+    REFINE_OPENROUTER_KEY_STORAGE: 'refine_openrouter_api_key',
+    REFINE_ANTHROPIC_MODEL_STORAGE: 'refine_anthropic_model',   // selected model string
+    REFINE_OPENROUTER_MODEL_STORAGE: 'refine_openrouter_model',
+    REFINE_ANTHROPIC_MODELS_STORAGE: 'refine_anthropic_models_list', // editable list (JSON)
+    REFINE_OPENROUTER_MODELS_STORAGE: 'refine_openrouter_models_list',
+    REFINE_SYSTEM_PROMPT_STORAGE: 'refine_system_prompt',       // permanent editable system prompt
+    REFINE_CONTEXT_STORAGE: 'refine_context',                   // editable prior-chat-turn context
+    ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
+    ANTHROPIC_VERSION: '2023-06-01',
+    OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
+    REFINE_MAX_TOKENS: 8192,
+    DEFAULT_REFINE_PROVIDER: 'anthropic',
+    // Starter model lists (editable in the UI; type any model string via ➕).
+    DEFAULT_ANTHROPIC_MODELS: ['claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-4-7', 'claude-haiku-4-5'],
+    DEFAULT_OPENROUTER_MODELS: ['anthropic/claude-opus-4.8', 'anthropic/claude-sonnet-5', 'anthropic/claude-3.5-haiku'],
     
     // Teams message break settings
     TEAMS_SPEAKERS_STORAGE: 'teams_message_speakers',
@@ -1401,6 +1432,400 @@
   function elevenClearApiKey() {
     localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
     alert('ElevenLabs API key cleared. Click \u25b6 Read Aloud to enter a new one.');
+  }
+
+  // ==================== REFINE (2nd-pass transcription cleanup) ====================
+  /**
+   * The PERMANENT default system prompt. Editable/overridable by the user via the 📜 Prompt modal
+   * (persisted to localStorage). This default is used only when nothing has been saved yet.
+   */
+  const REFINE_DEFAULT_SYSTEM_PROMPT = [
+    'You are a meticulous second-pass cleanup editor for VOICE-DICTATED text.',
+    '',
+    'BACKGROUND YOU MUST INTERNALIZE:',
+    '- The user dictates by voice and does a lot of open-ended BRAINSTORMING. The text uses a lot of',
+    '  unique, technical, and personal vocabulary (project names, people, invented terms, jargon).',
+    '- The text has ALREADY passed through a good first-pass cleanup layer (Wispr Flow), so it will',
+    '  usually look quite clean. But that layer only sees two or three paragraphs of local context at a',
+    '  time, so it CANNOT know what the user was actually referring to across a longer discussion.',
+    '- You WILL be given a CONTEXT block (material from prior chat turns / the current topic). Treat that',
+    '  context as the ground truth for WHAT THE USER ACTUALLY MEANS, and use it to disambiguate and to',
+    '  repair mis-transcriptions that only make sense once you know the topic.',
+    '',
+    'THE KINDS OF ERRORS YOU MUST FIX (these are the whole point):',
+    '- EGREGIOUS mis-transcriptions: a word rendered as a COMPLETELY UNRELATED real word (or as junk).',
+    '  The first-pass layer occasionally rewrites a word into a meaningless or unrelated word. When the',
+    '  intended word is obvious from context, take a confident EDUCATED GUESS and fix it.',
+    '- SPOKEN COMMANDS THAT LEAKED IN AS LITERAL TEXT. The user is speaking out loud, so dictation',
+    '  commands sometimes come through as raw words instead of being applied. Examples (non-exhaustive):',
+    '    * the literal word "quote" (or "unquote", "end quote") that was meant to produce quotation marks;',
+    '    * spelled-out letters meant to spell a word (e.g. "w h a t" / "what-w-h-a-t" meant to be the word',
+    '      "what"), which may arrive mangled or split;',
+    '    * "new paragraph", "new line", "period", "comma", "open paren", etc. appearing as literal words.',
+    '  Recognize these dictation artifacts and render what the user INTENDED.',
+    '- Ordinary residual errors: homophones, dropped/duplicated small words, punctuation, capitalization.',
+    '',
+    'HARD RULES:',
+    '- DO NOT summarize, shorten, expand, answer, or respond to the text. You are cleaning it, not',
+    '  engaging with it. Preserve the user\'s meaning, voice, and level of detail exactly.',
+    '- DO NOT invent content or add facts. Only fix what was plainly a transcription error.',
+    '- When genuinely unsure what a garbled span was meant to be, prefer the reading best supported by the',
+    '  CONTEXT; if still unclear, leave the user\'s wording rather than guessing wildly.',
+    '- OUTPUT MARKDOWN. Light formatting is welcome where it genuinely helps readability (bold, italics,',
+    '  bullet lists, numbered lists) — improving on the first-pass formatting is good — but do not',
+    '  over-format or restructure the substance.',
+    '- Output ONLY the cleaned text itself. No preamble, no explanation, no code fences around the whole',
+    '  thing, no notes about what you changed.',
+  ].join('\n');
+
+  function refineGetProvider() {
+    return localStorage.getItem(CONFIG.REFINE_PROVIDER_STORAGE) || CONFIG.DEFAULT_REFINE_PROVIDER;
+  }
+  function refineProviderMeta(provider) {
+    if (provider === 'openrouter') {
+      return {
+        keyStorage: CONFIG.REFINE_OPENROUTER_KEY_STORAGE,
+        modelStorage: CONFIG.REFINE_OPENROUTER_MODEL_STORAGE,
+        modelsStorage: CONFIG.REFINE_OPENROUTER_MODELS_STORAGE,
+        defaultModels: CONFIG.DEFAULT_OPENROUTER_MODELS,
+        label: 'OpenRouter',
+        keyHint: 'openrouter.ai → Keys',
+      };
+    }
+    return {
+      keyStorage: CONFIG.REFINE_ANTHROPIC_KEY_STORAGE,
+      modelStorage: CONFIG.REFINE_ANTHROPIC_MODEL_STORAGE,
+      modelsStorage: CONFIG.REFINE_ANTHROPIC_MODELS_STORAGE,
+      defaultModels: CONFIG.DEFAULT_ANTHROPIC_MODELS,
+      label: 'Anthropic (Claude)',
+      keyHint: 'console.anthropic.com → API Keys',
+    };
+  }
+  function refineGetModels(provider) {
+    const meta = refineProviderMeta(provider);
+    try {
+      const raw = localStorage.getItem(meta.modelsStorage);
+      if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr) && arr.length) return arr; }
+    } catch (e) {}
+    return meta.defaultModels.slice();
+  }
+  function refineSaveModels(provider, list) {
+    const meta = refineProviderMeta(provider);
+    localStorage.setItem(meta.modelsStorage, JSON.stringify(list));
+    refineRefreshModelDropdown();
+  }
+  function refineGetModel(provider) {
+    const meta = refineProviderMeta(provider);
+    const saved = localStorage.getItem(meta.modelStorage);
+    const models = refineGetModels(provider);
+    if (saved && models.includes(saved)) return saved;
+    return models[0] || '';
+  }
+  function refineGetSystemPrompt() {
+    const saved = localStorage.getItem(CONFIG.REFINE_SYSTEM_PROMPT_STORAGE);
+    return (saved !== null && saved !== undefined) ? saved : REFINE_DEFAULT_SYSTEM_PROMPT;
+  }
+  function refineGetContext() {
+    return localStorage.getItem(CONFIG.REFINE_CONTEXT_STORAGE) || '';
+  }
+
+  /** (Re)populate the provider + model dropdowns from saved state. */
+  function refineRefreshProviderDropdown() {
+    const sel = document.getElementById('deepgram-refine-provider-select');
+    if (!sel) return;
+    sel.value = refineGetProvider();
+    refineRefreshModelDropdown();
+  }
+  function refineRefreshModelDropdown() {
+    const sel = document.getElementById('deepgram-refine-model-select');
+    if (!sel) return;
+    const provider = refineGetProvider();
+    const models = refineGetModels(provider);
+    const active = refineGetModel(provider);
+    sel.innerHTML = '';
+    models.forEach(m => {
+      const opt = document.createElement('option');
+      opt.value = m; opt.textContent = m;
+      if (m === active) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  function refineOnProviderChange() {
+    const sel = document.getElementById('deepgram-refine-provider-select');
+    if (!sel) return;
+    localStorage.setItem(CONFIG.REFINE_PROVIDER_STORAGE, sel.value);
+    refineRefreshModelDropdown();
+  }
+  function refineOnModelChange() {
+    const sel = document.getElementById('deepgram-refine-model-select');
+    if (!sel) return;
+    const meta = refineProviderMeta(refineGetProvider());
+    localStorage.setItem(meta.modelStorage, sel.value);
+  }
+  function refineAddModel() {
+    const provider = refineGetProvider();
+    const meta = refineProviderMeta(provider);
+    const id = prompt('Add a ' + meta.label + ' model string\n(e.g. ' + (meta.defaultModels[0] || '') + '):');
+    if (!id || !id.trim()) return;
+    const list = refineGetModels(provider);
+    if (!list.includes(id.trim())) list.push(id.trim());
+    localStorage.setItem(meta.modelStorage, id.trim());
+    refineSaveModels(provider, list);
+  }
+  function refineRemoveModel() {
+    const provider = refineGetProvider();
+    const sel = document.getElementById('deepgram-refine-model-select');
+    if (!sel || !sel.value) return;
+    if (!confirm('Remove model "' + sel.value + '" from your ' + refineProviderMeta(provider).label + ' list?')) return;
+    let list = refineGetModels(provider);
+    list = list.filter(m => m !== sel.value);
+    refineSaveModels(provider, list);
+  }
+  function refineClearApiKey() {
+    const provider = refineGetProvider();
+    const meta = refineProviderMeta(provider);
+    localStorage.removeItem(meta.keyStorage);
+    alert(meta.label + ' API key cleared. You\'ll be prompted for it next time you Refine.');
+  }
+
+  /** Get (prompting once and storing if absent) the API key for the current provider. */
+  function refineEnsureApiKey(provider) {
+    const meta = refineProviderMeta(provider);
+    let key = localStorage.getItem(meta.keyStorage);
+    if (!key) {
+      key = prompt('Enter your ' + meta.label + ' API key\n(' + meta.keyHint + '):');
+      if (!key || !key.trim()) return null;
+      key = key.trim();
+      localStorage.setItem(meta.keyStorage, key);
+    }
+    return key;
+  }
+
+  /**
+   * Edit the permanent SYSTEM PROMPT in a modal textarea (with a "Restore default" option).
+   */
+  function refineEditSystemPrompt() {
+    refineOpenTextModal({
+      title: '📜 Refine — permanent system prompt',
+      subtitle: 'Instructions the cleanup model always follows. Persists across sessions.',
+      value: refineGetSystemPrompt(),
+      allowRestoreDefault: true,
+      onSave: (v) => { localStorage.setItem(CONFIG.REFINE_SYSTEM_PROMPT_STORAGE, v); },
+      onRestoreDefault: () => REFINE_DEFAULT_SYSTEM_PROMPT,
+    });
+  }
+  /**
+   * Edit the CONTEXT block (prior chat-turn / topic material) in a modal textarea.
+   */
+  function refineEditContext() {
+    refineOpenTextModal({
+      title: '📝 Refine — context (prior chat turns / topic)',
+      subtitle: 'Paste relevant material so the model knows what you actually mean. Reused every Refine until you change it.',
+      value: refineGetContext(),
+      allowRestoreDefault: false,
+      onSave: (v) => { localStorage.setItem(CONFIG.REFINE_CONTEXT_STORAGE, v); },
+    });
+  }
+
+  /** A simple reusable text-editing modal (used by both the prompt and context editors). */
+  function refineOpenTextModal(opts) {
+    // Remove any existing instance first.
+    const existing = document.getElementById('deepgram-refine-modal-overlay');
+    if (existing) existing.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'deepgram-refine-modal-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:2147483646; display:flex; align-items:center; justify-content:center;';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(820px,92vw); max-height:86vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box;';
+
+    const h = document.createElement('div');
+    h.textContent = opts.title;
+    h.style.cssText = 'font-size:15px; font-weight:600; margin-bottom:4px;';
+    const sub = document.createElement('div');
+    sub.textContent = opts.subtitle || '';
+    sub.style.cssText = 'font-size:12px; opacity:0.7; margin-bottom:10px;';
+
+    const ta = document.createElement('textarea');
+    ta.value = opts.value || '';
+    ta.style.cssText = 'flex:1 1 auto; min-height:320px; width:100%; box-sizing:border-box; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;';
+
+    const mkBtn = (label, bg) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'padding:7px 14px; border-radius:6px; border:none; cursor:pointer; font-size:13px; color:#fff; background:' + bg + ';';
+      return b;
+    };
+    const closeModal = () => overlay.remove();
+
+    if (opts.allowRestoreDefault) {
+      const restore = mkBtn('Restore default', '#8a6d3b');
+      restore.onclick = () => { if (confirm('Replace the current text with the built-in default?')) ta.value = opts.onRestoreDefault(); };
+      btnRow.appendChild(restore);
+    }
+    const cancel = mkBtn('Cancel', '#555');
+    cancel.onclick = closeModal;
+    const save = mkBtn('💾 Save', '#2b7a2b');
+    save.onclick = () => { opts.onSave(ta.value); closeModal(); };
+
+    btnRow.appendChild(cancel);
+    btnRow.appendChild(save);
+
+    box.appendChild(h); box.appendChild(sub); box.appendChild(ta); box.appendChild(btnRow);
+    overlay.appendChild(box);
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', function esc(e){ if(e.key==='Escape'){ closeModal(); document.removeEventListener('keydown', esc);} });
+    document.body.appendChild(overlay);
+    ta.focus();
+  }
+
+  /** Single API call attempt. Returns cleaned text; throws Error w/ .status on HTTP error. */
+  async function refineCallOnce(provider, model, apiKey, systemPrompt, userContent) {
+    if (provider === 'openrouter') {
+      const resp = await fetch(CONFIG.OPENROUTER_CHAT_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + apiKey,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
+          'X-Title': 'TypingMind Transcription Refine',
+        },
+        body: JSON.stringify({
+          model: model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent },
+          ],
+        }),
+      });
+      if (!resp.ok) {
+        let detail = 'HTTP ' + resp.status;
+        try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error)) || JSON.stringify(j); } catch (e) {}
+        const err = new Error(detail); err.status = resp.status; throw err;
+      }
+      const j = await resp.json();
+      const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
+      if (!txt) throw new Error('Empty response from OpenRouter.');
+      return txt;
+    }
+    // Anthropic
+    const resp = await fetch(CONFIG.ANTHROPIC_MESSAGES_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': CONFIG.ANTHROPIC_VERSION,
+        'anthropic-dangerous-direct-browser-access': 'true',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: model,
+        max_tokens: CONFIG.REFINE_MAX_TOKENS,
+        system: systemPrompt,
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    });
+    if (!resp.ok) {
+      let detail = 'HTTP ' + resp.status;
+      try { const j = await resp.json(); detail = (j && j.error && (j.error.message || j.error.type)) || JSON.stringify(j); } catch (e) {}
+      const err = new Error(detail); err.status = resp.status; throw err;
+    }
+    const j = await resp.json();
+    const txt = j && j.content && j.content[0] && j.content[0].text;
+    if (!txt) throw new Error('Empty response from Anthropic.');
+    return txt;
+  }
+
+  /** Call with exponential-backoff retry on transient failures (network/429/5xx). */
+  async function refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent) {
+    const delays = [500, 1000, 2000, 4000, 8000];
+    let attempt = 0, lastErr = null;
+    while (attempt <= delays.length) {
+      try {
+        return await refineCallOnce(provider, model, apiKey, systemPrompt, userContent);
+      } catch (err) {
+        lastErr = err;
+        const status = err && err.status;
+        const transient = (status === undefined) || status === 429 || (status >= 500 && status <= 599);
+        if (!transient) throw err;
+        if (attempt === delays.length) break;
+        const wait = delays[attempt];
+        console.warn(ts(), '⚠️ Refine transient failure (' + (status || 'network') + '); retry ' + (attempt + 1) + '/' + delays.length + ' in ' + wait + 'ms');
+        await new Promise(r => setTimeout(r, wait));
+        attempt++;
+      }
+    }
+    throw lastErr || new Error('Refine request failed');
+  }
+
+  /**
+   * MAIN Refine action (the ✨ Refine button). Cleans the current SELECTION, or the WHOLE transcript
+   * if there is no selection (or a zero-length cursor), and replaces it in place with the model's
+   * Markdown output.
+   */
+  async function refineTranscription() {
+    const transcriptEl = document.getElementById('deepgram-transcript');
+    if (!transcriptEl) return;
+    const full = transcriptEl.value;
+    if (!full || !full.trim()) { alert('Nothing to refine — the transcript is empty.'); return; }
+
+    // Selection if present & non-empty; otherwise the whole thing.
+    let selStart = transcriptEl.selectionStart;
+    let selEnd = transcriptEl.selectionEnd;
+    let usingSelection = (selStart != null && selEnd != null && selEnd > selStart);
+    if (!usingSelection) { selStart = 0; selEnd = full.length; }
+    const target = full.substring(selStart, selEnd);
+    if (!target.trim()) { alert('The highlighted range is empty — nothing to refine.'); return; }
+
+    const provider = refineGetProvider();
+    const model = refineGetModel(provider);
+    if (!model) { alert('No model selected. Add one with ➕ in the Refine row.'); return; }
+    const apiKey = refineEnsureApiKey(provider);
+    if (!apiKey) return;
+
+    const systemPrompt = refineGetSystemPrompt();
+    const context = refineGetContext();
+    const userContent =
+      (context.trim()
+        ? 'CONTEXT (prior chat turns / current topic — use this to understand what the user means; do NOT clean or echo this):\n<context>\n' + context + '\n</context>\n\n'
+        : '') +
+      'TRANSCRIPTION TO CLEAN (return the cleaned Markdown of ONLY this text):\n<transcription>\n' + target + '\n</transcription>';
+
+    const btn = document.getElementById('deepgram-refine-btn');
+    const prevLabel = btn ? btn.innerHTML : null;
+    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Refining…'; }
+    updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '…', 'info');
+
+    try {
+      let cleaned = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent);
+      cleaned = cleaned.replace(/\s+$/, '');
+      const newFull = full.substring(0, selStart) + cleaned + full.substring(selEnd);
+      transcriptEl.value = newFull;
+      const newCursor = selStart + cleaned.length;
+      transcriptEl.focus();
+      transcriptEl.setSelectionRange(selStart, newCursor);
+      try { scrollToCursorPosition(transcriptEl, newCursor); } catch (e) {}
+      try { updateInsertButtonState(); } catch (e) {}
+      try { resetAutoClipboardTimer(); } catch (e) {}
+      updateStatus('✨ Refined ✓', 'success');
+    } catch (err) {
+      console.error('❌ Refine failed:', err);
+      const status = err && err.status;
+      if (status === 401 || status === 403) {
+        const meta = refineProviderMeta(provider);
+        localStorage.removeItem(meta.keyStorage);
+        alert('Refine failed: your ' + meta.label + ' API key was rejected (' + status + '). It has been cleared — try again to re-enter it.');
+      } else {
+        alert('Refine failed: ' + (err && err.message ? err.message : err));
+      }
+      updateStatus('❌ Refine failed', 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = prevLabel; }
+    }
   }
 
   /**
@@ -3302,9 +3727,26 @@
           <button id="deepgram-paste-btn" class="deepgram-btn deepgram-btn-info">
             📄 Paste MD
           </button>
-          <button id="deepgram-clear-btn" class="deepgram-btn deepgram-btn-secondary">
-            🗑️ Clear
+          <button id="deepgram-refine-btn" class="deepgram-btn deepgram-btn-info" title="Second-pass cleanup of the highlighted text (or the whole transcript) via Claude / OpenRouter">
+            ✨ Refine
           </button>
+        </div>
+
+        <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
+        <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
+          <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
+          <span style="font-size:11px; opacity:0.8;">Provider</span>
+          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff;">
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openrouter">OpenRouter</option>
+          </select>
+          <span style="font-size:11px; opacity:0.8;">Model</span>
+          <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; max-width:200px; color:#111; background:#fff;"></select>
+          <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:30px;">➕</button>
+          <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:30px;">🗑️</button>
+          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context (prior chat turns / topic)" style="font-size:11px;">📝 Context</button>
+          <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px;">📜 Prompt</button>
+          <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px;">🔑 Key</button>
         </div>
 
         <!-- ElevenLabs Read-Aloud control row -->
@@ -3602,7 +4044,17 @@
     document.getElementById('deepgram-send-btn').addEventListener('click', insertAndSubmit);
     document.getElementById('deepgram-copy-btn').addEventListener('click', appendEllipsisTail);
     document.getElementById('deepgram-paste-btn').addEventListener('click', pasteMarkdown);
-    document.getElementById('deepgram-clear-btn').addEventListener('click', clearTranscript);
+
+    // ✨ Refine controls (2nd-pass cleanup via Claude / OpenRouter)
+    document.getElementById('deepgram-refine-btn').addEventListener('click', refineTranscription);
+    document.getElementById('deepgram-refine-provider-select').addEventListener('change', refineOnProviderChange);
+    document.getElementById('deepgram-refine-model-select').addEventListener('change', refineOnModelChange);
+    document.getElementById('deepgram-refine-addmodel-btn').addEventListener('click', refineAddModel);
+    document.getElementById('deepgram-refine-delmodel-btn').addEventListener('click', refineRemoveModel);
+    document.getElementById('deepgram-refine-context-btn').addEventListener('click', refineEditContext);
+    document.getElementById('deepgram-refine-prompt-btn').addEventListener('click', refineEditSystemPrompt);
+    document.getElementById('deepgram-refine-clearkey-btn').addEventListener('click', refineClearApiKey);
+    refineRefreshProviderDropdown();
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
