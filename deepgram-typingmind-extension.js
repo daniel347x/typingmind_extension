@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.175 Changes:
+ * - TWEAK (Context modal): the full-name row now shows a live CHARACTER COUNT of the selected
+ *   slot's text, right-justified on the same line. Updates as you type and when you switch slots
+ *   (reflects unsaved edits). Handy when packing conversation history into a slot.
+ *
  * v3.174 Changes:
  * - TWEAK (Refine layout): the active context-slot name no longer sits IN the Refine button row
  *   (a long name wrapped the buttons). It now has its own thin, left-justified row directly ABOVE
@@ -472,7 +477,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.174',
+  VERSION: '3.175',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1751,7 +1756,14 @@
 
     // ----- Thin row showing the FULL name of the selected slot (squares are truncated) -----
     const fullNameRow = document.createElement('div');
-    fullNameRow.style.cssText = 'font-size:12px; line-height:1.3; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    fullNameRow.style.cssText = 'display:flex; align-items:baseline; gap:8px; font-size:12px; line-height:1.3; margin-bottom:6px;';
+    const fullNameLeft = document.createElement('span');
+    fullNameLeft.style.cssText = 'flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+    const charCountRight = document.createElement('span');
+    charCountRight.style.cssText = 'flex:0 0 auto; opacity:0.6; font-variant-numeric:tabular-nums;';
+    charCountRight.title = 'Character count of this slot\'s saved text';
+    fullNameRow.appendChild(fullNameLeft);
+    fullNameRow.appendChild(charCountRight);
 
     // ----- Ribbon of slot squares -----
     const ribbon = document.createElement('div');
@@ -1810,7 +1822,14 @@
     // tiny local escaper for the header (avoid depending on other helpers)
     function escapeAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
     // Update the thin full-name row to show the slot currently being edited.
-    function paintFullName(){ fullNameRow.innerHTML = '<span style="opacity:0.6;">slot ' + (editingIndex + 1) + ':</span> <b>' + escapeAttr(slots[editingIndex].name) + '</b>'; }
+    function paintFullName(){
+      fullNameLeft.innerHTML = '<span style="opacity:0.6;">slot ' + (editingIndex + 1) + ':</span> <b>' + escapeAttr(slots[editingIndex].name) + '</b>';
+      // Live count reflects what's in the textarea right now (unsaved edits included).
+      const n = (ta.value || '').length;
+      charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's');
+    }
+    // Keep the count live as the user types.
+    ta.addEventListener('input', function(){ const n = (ta.value || '').length; charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's'); });
 
     // Initialize on the active slot.
     ta.value = slots[editingIndex].text || '';
