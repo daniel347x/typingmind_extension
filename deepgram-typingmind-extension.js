@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.173 Changes:
+ * - TWEAK: The legacy "Start Recording" button (unused since Wispr Flow) now rides with the status
+ *   expander — visible only when the status block is expanded, hidden (space reclaimed) when the
+ *   status section is collapsed. Reclaims space without fully removing the feature.
+ *
  * v3.172 Changes:
  * - NEW: Refine now has 10 NAMED CONTEXT SLOTS for parallel sessions. The 📝 Context modal shows a
  *   ribbon of 10 squares at top; single-click a square to make it ACTIVE and load its context (✎ to
@@ -460,7 +465,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.172',
+  VERSION: '3.173',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2084,6 +2089,10 @@
     const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
     block.style.display = hidden ? 'none' : '';
     btn.textContent = hidden ? '\u25b8 status' : '\u25be status';
+    // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
+    // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
+    const recordRow = document.getElementById('deepgram-record-row');
+    if (recordRow) recordRow.style.display = hidden ? 'none' : '';
   }
 
   /**
@@ -3951,8 +3960,9 @@
           </div>
         </div>
         
-        <!-- Buttons -->
-        <div class="deepgram-buttons">
+        <!-- Buttons: Start Recording (legacy; Wispr Flow replaced it). Visibility tied to the
+             status expander — shown only when the status block is expanded. See applyStatusBlockVisibility(). -->
+        <div id="deepgram-record-row" class="deepgram-buttons">
           <button id="deepgram-record-btn" class="deepgram-btn deepgram-btn-primary" disabled>
             <span id="deepgram-record-icon">🎤</span>
             <span id="deepgram-record-text">Start Recording</span>
