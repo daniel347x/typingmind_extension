@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.180 Changes:
+ * - FIX: corrected the default OpenRouter Haiku model id — anthropic/claude-3.5-haiku is RETIRED on
+ *   OpenRouter (caused 'model not found'); the current slug is anthropic/claude-haiku-4.5. NOTE: this
+ *   fixes the SEEDED default only; an existing saved model list keeps the old entry — use ➕ to add
+ *   'anthropic/claude-haiku-4.5' (and 🗑️ the stale one).
+ * - FIX (button height): the longer '📎 Refine: Append' label wrapped to two lines and grew the whole
+ *   button row. Added white-space:nowrap and trimmed button padding (16px→10px) so labels stay on
+ *   one line at the row's normal height.
+ *
  * v3.179 Changes:
  * - NEW: repurposed the never-used "💬 Insert" button (leftmost on the button row, position UNCHANGED)
  *   into "📎 Refine: Append". One click reads the clipboard and appends it to the END of the ACTIVE
@@ -509,7 +518,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.179',
+  VERSION: '3.180',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -568,7 +577,7 @@
     DEFAULT_REFINE_PROVIDER: 'anthropic',
     // Starter model lists (editable in the UI; type any model string via ➕).
     DEFAULT_ANTHROPIC_MODELS: ['claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-4-7', 'claude-haiku-4-5'],
-    DEFAULT_OPENROUTER_MODELS: ['anthropic/claude-opus-4.8', 'anthropic/claude-sonnet-5', 'anthropic/claude-3.5-haiku'],
+    DEFAULT_OPENROUTER_MODELS: ['anthropic/claude-opus-4.8', 'anthropic/claude-sonnet-5', 'anthropic/claude-haiku-4.5'],
     // Anthropic-direct responses do NOT include a dollar cost (OpenRouter does, via usage.cost), so we
     // estimate it from token counts using this per-MTok table, keyed by a substring of the model id.
     // [inputPerMTok, outputPerMTok, cacheReadPerMTok]. Edit as Anthropic pricing changes.
@@ -2875,7 +2884,7 @@
       
       .deepgram-btn {
         flex: 1;
-        padding: 6px 16px;
+        padding: 6px 10px;
         border: none;
         border-radius: 8px;
         font-size: 14px;
@@ -2886,6 +2895,7 @@
         align-items: center;
         justify-content: center;
         gap: 6px;
+        white-space: nowrap;
       }
       
       .deepgram-btn-primary {
