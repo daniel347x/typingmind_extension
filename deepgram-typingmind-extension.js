@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.182 Changes:
+ * - TWEAK: only the cost AMOUNT is bold green now; the 'most recent cost:' prefix keeps the row's
+ *   default (muted) color.
+ * - PROMPT: default system prompt now calls out MISPLACED SENTENCE BOUNDARIES as a very common
+ *   dictation error — a phrase that belongs at the end of one sentence getting stuck at the start of
+ *   the next (jarring topic shift), instructing a best-effort re-placement of the boundary (move the
+ *   phrase to the previous/next sentence) while preserving the exact words. (If you SAVED a custom
+ *   prompt, do 📜 Prompt → Restore default → Save to pick this up.)
+ *
  * v3.181 Changes:
  * - TWEAK: the 'most recent cost' amount is now bold green (#2e9b2e, matching the session name),
  *   same font size (dropped the muted opacity).
@@ -522,7 +531,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.181',
+  VERSION: '3.182',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1567,6 +1576,15 @@
     '    * "new paragraph", "new line", "period", "comma", "open paren", etc. appearing as literal words.',
     '  Recognize these dictation artifacts and render what the user INTENDED.',
     '- Ordinary residual errors: homophones, dropped/duplicated small words, punctuation, capitalization.',
+    '- MISPLACED SENTENCE BOUNDARIES (VERY COMMON — watch for this closely): a phrase that truly belongs',
+    '  at the END of one sentence often gets attached to the BEGINNING of the next (or vice versa),',
+    '  producing a sentence that starts with a jarring, out-of-place fragment and a preceding sentence',
+    '  that ends too early. When you see an abrupt topic shift at the start of a sentence, or a trailing',
+    '  fragment that reads more naturally as the lead-in to the following sentence, MOVE the phrase across',
+    '  the boundary so each sentence reads coherently. Make a best effort to detect these and re-place the',
+    '  boundary wherever it semantically makes sense — shifting a phrase to the previous sentence or to the',
+    '  next — while preserving the exact words the user said (this is re-punctuation / re-grouping, NOT',
+    '  rewording).',
     '- COLLAPSED STRUCTURE: the first-pass layer frequently mashes what should be a bulleted or numbered',
     '  list into a single RUN-ON paragraph (it tends to drop the line breaks around list items). When the',
     '  content is clearly a list, restore proper Markdown list formatting and paragraph breaks.',
@@ -1729,7 +1747,9 @@
     }
     // Show enough precision for sub-cent costs.
     const dollars = cost < 0.01 ? cost.toFixed(5) : cost.toFixed(4);
-    el.textContent = 'most recent cost: ' + (estimated ? '~$' : '$') + dollars;
+    // Only the AMOUNT is bold green; the 'most recent cost:' prefix keeps the row's default color.
+    const amount = (estimated ? '~$' : '$') + dollars;
+    el.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e;">' + amount + '</span>';
     el.title = estimated
       ? 'Estimated from token usage (Anthropic returns no cost field)'
       : 'Reported directly by OpenRouter (usage.cost)';
@@ -4179,7 +4199,7 @@
             <span style="opacity:0.6;">✨ context:</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
           </span>
-          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-weight:600; color:#2e9b2e; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
