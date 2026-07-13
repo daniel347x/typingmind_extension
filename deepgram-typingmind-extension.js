@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.178 Changes:
+ * - CHANGE (statelessness): replaced the v3.177 global-flag coordination (window.__refineDirectFetch)
+ *   with a STATELESS URL SENTINEL — Refine appends ?tm_passthrough=1 to the endpoint URL, and the
+ *   Payload extension (v4.61+) reads it off that request's own URL. A shared global flag was racy
+ *   across parallel streaming sessions (another conversation's fetch during the await window could
+ *   read the flag and wrongly bypass the payload fixes); the URL marker rides on the request itself,
+ *   so it can't bleed across sessions. Still avoids the OpenRouter CORS-preflight issue (query params,
+ *   unlike custom headers, need no Access-Control-Allow-Headers grant).
+ *
  * v3.177 Changes:
  * - FIX (OpenRouter CORS): the x-tm-passthrough REQUEST HEADER tripped OpenRouter's CORS preflight
  *   (it doesn't allowlist the custom header), so OpenRouter Refine failed with 'Failed to fetch'
@@ -491,7 +500,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.177',
+  VERSION: '3.178',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1986,14 +1995,17 @@
     const ctrl = new AbortController();
     const timeoutMs = 120000; // 2 min hard cap per attempt
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    // Coordinate with the sibling Payload extension WITHOUT a wire header (a custom header trips
-    // OpenRouter's CORS preflight). We set a global flag that the Payload extension's fetch hook
-    // reads SYNCHRONOUSLY at call time; it then passes our request through untouched. Nothing is
-    // added to the actual HTTP request, so there is zero CORS surface for either provider.
-    window.__refineDirectFetch = true;
+    // Coordinate with the sibling Payload extension via a STATELESS URL SENTINEL (tm_passthrough=1)
+    // appended to the endpoint URL below. The Payload extension's fetch hook reads it off THIS
+    // request's own URL and passes the request through untouched. A URL query param (unlike a custom
+    // request HEADER) does NOT need to be in Access-Control-Allow-Headers, so it does not trip
+    // OpenRouter's CORS preflight. And because the marker rides on the request itself (not shared
+    // global state), it is immune to races across parallel streaming sessions.
+    const orUrl = CONFIG.OPENROUTER_CHAT_ENDPOINT + '?tm_passthrough=1';
+    const anthropicUrl = CONFIG.ANTHROPIC_MESSAGES_ENDPOINT + '?tm_passthrough=1';
     try {
       if (provider === 'openrouter') {
-        const resp = await fetch(CONFIG.OPENROUTER_CHAT_ENDPOINT, {
+        const resp = await fetch(orUrl, {
           method: 'POST',
           signal: ctrl.signal,
           headers: {
@@ -2026,7 +2038,7 @@
         return { text: txt, cost: orCost, estimated: false };
       }
       // Anthropic (direct) — may be intercepted/blocked by TypingMind's fetch hook; see note above.
-      const resp = await fetch(CONFIG.ANTHROPIC_MESSAGES_ENDPOINT, {
+      const resp = await fetch(anthropicUrl, {
         method: 'POST',
         signal: ctrl.signal,
         headers: {
@@ -2062,7 +2074,6 @@
       throw err;
     } finally {
       clearTimeout(timer);
-      window.__refineDirectFetch = false;
     }
   }
 

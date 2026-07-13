@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.60
+// Version: 4.61
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,10 +7,12 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
-//   - v4.60: PASSTHROUGH GUARD now also honors the global flag  window.__refineDirectFetch === true
-//     (checked FIRST, before the header). Preferred over the header because a custom request header
-//     trips OpenRouter's CORS preflight; the flag adds nothing to the wire so OpenRouter works. The
-//     x-tm-passthrough header check is retained as a harmless fallback.
+//   - v4.61: PASSTHROUGH GUARD now keys off a STATELESS URL SENTINEL  tm_passthrough=1  in the request
+//     URL (replacing the v4.60 global flag, which was racy across parallel streaming sessions). A URL
+//     query param needs no Access-Control-Allow-Headers grant (so it avoids OpenRouter's CORS preflight
+//     rejection) AND rides on the request itself (so it can't bleed across concurrent sessions). The
+//     x-tm-passthrough header check remains as a harmless fallback.
+//   - v4.60: (superseded by v4.61) global-flag  window.__refineDirectFetch  passthrough — racy, replaced.
 //   - v4.59: PASSTHROUGH GUARD. Requests carrying header  x-tm-passthrough: 1  bypass this interceptor
 //     entirely (no repairs, no prompt-caching header injection, no payload capture) and go straight to
 //     the original fetch. Lets sibling extensions (e.g. the Whisper widget's "✨ Refine" Claude/OpenRouter
@@ -31,7 +33,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.60';
+  const EXT_VERSION = '4.61';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2899,15 +2901,16 @@
     // conversation payloads. This interceptor's repairs + prompt-caching header injection + payload
     // capture are meant ONLY for TypingMind's conversation traffic; applying them to a sibling
     // extension's request corrupts it (broke Refine with a CORS/network error). Any such request
-    // opts OUT via the global flag  window.__refineDirectFetch  (set synchronously around its own
-    // fetch), OR the legacy marker header  x-tm-passthrough: 1 . When either is present we call the
-    // ORIGINAL fetch verbatim: no body parse, no repairs, no header changes, no capture.
-    // NOTE: the global-flag path is PREFERRED because a custom request header trips OpenRouter's CORS
-    // preflight (the header must be in Access-Control-Allow-Headers, which OpenRouter does not grant);
-    // the flag adds nothing to the wire, so it works for every provider. The header check is retained
-    // only as a harmless fallback.
+    // opts OUT via a STATELESS URL SENTINEL  tm_passthrough=1  in the request URL, OR the legacy
+    // marker header  x-tm-passthrough: 1 . When either is present we call the ORIGINAL fetch verbatim:
+    // no body parse, no repairs, no header changes, no capture.
+    // NOTE: the URL-sentinel path is PREFERRED for two reasons: (1) a custom request HEADER trips
+    // OpenRouter's CORS preflight (the header must be in Access-Control-Allow-Headers, which OpenRouter
+    // does not grant), whereas a query param does not; and (2) the marker rides on the request itself,
+    // so — unlike a shared global flag — it is immune to races across parallel streaming sessions. The
+    // header check is retained only as a harmless fallback.
     try {
-      if (window.__refineDirectFetch === true) {
+      if (typeof url === 'string' && url.indexOf('tm_passthrough=1') !== -1) {
         return originalFetch.apply(this, args);
       }
       const h = options && options.headers;
