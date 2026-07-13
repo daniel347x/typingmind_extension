@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.174 Changes:
+ * - TWEAK (Refine layout): the active context-slot name no longer sits IN the Refine button row
+ *   (a long name wrapped the buttons). It now has its own thin, left-justified row directly ABOVE
+ *   the Refine control row, so the name can be long without disturbing the buttons.
+ * - TWEAK (Context modal): added a thin left-justified row above the 10 squares showing the FULL
+ *   name of the selected slot, and shortened each square (~half width) so the squares never wrap.
+ *
  * v3.173 Changes:
  * - TWEAK: The legacy "Start Recording" button (unused since Wispr Flow) now rides with the status
  *   expander — visible only when the status block is expanded, hidden (space reclaimed) when the
@@ -465,7 +472,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.173',
+  VERSION: '3.174',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1742,6 +1749,10 @@
     sub.innerHTML = 'Pick a slot (single-click) to make it ACTIVE and load its context below. Click ✎ to rename a slot. The ACTIVE slot is what ✨ Refine sends. Save writes to the slot you are editing.';
     sub.style.cssText = 'font-size:12px; opacity:0.7; margin-bottom:10px;';
 
+    // ----- Thin row showing the FULL name of the selected slot (squares are truncated) -----
+    const fullNameRow = document.createElement('div');
+    fullNameRow.style.cssText = 'font-size:12px; line-height:1.3; margin-bottom:6px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+
     // ----- Ribbon of slot squares -----
     const ribbon = document.createElement('div');
     ribbon.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;';
@@ -1762,7 +1773,7 @@
         const sq = document.createElement('div');
         const isActive = (i === activeIdx());
         const isEditing = (i === editingIndex);
-        sq.style.cssText = 'position:relative; min-width:74px; max-width:120px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
+        sq.style.cssText = 'position:relative; min-width:44px; max-width:64px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
           + 'border:2px solid ' + (isEditing ? '#4da3ff' : (isActive ? '#2b7a2b' : '#444')) + '; '
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
@@ -1770,14 +1781,14 @@
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
-        nameSpan.style.cssText = 'display:inline-block; max-width:84px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;';
+        nameSpan.style.cssText = 'display:inline-block; max-width:38px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;';
         const pen = document.createElement('span');
         pen.textContent = ' ✎';
         pen.style.cssText = 'opacity:0.6; margin-left:2px;';
         pen.onclick = (e) => {
           e.stopPropagation();
           const nm = prompt('Name for slot ' + (i + 1) + ':', slot.name);
-          if (nm && nm.trim()) { slot.name = nm.trim(); refineSaveContexts(slots); if (i === activeIdx()) refineUpdateContextButtonLabel(); paintRibbon(); }
+          if (nm && nm.trim()) { slot.name = nm.trim(); refineSaveContexts(slots); if (i === activeIdx()) refineUpdateContextButtonLabel(); if (i === editingIndex) paintFullName(); paintRibbon(); }
         };
         sq.appendChild(nameSpan);
         sq.appendChild(pen);
@@ -1789,6 +1800,7 @@
           refineSetActiveContextIndex(i);   // single-click activates (option A)
           ta.value = slots[i].text || '';
           editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
+          paintFullName();
           paintRibbon();
           ta.focus();
         };
@@ -1797,10 +1809,13 @@
     }
     // tiny local escaper for the header (avoid depending on other helpers)
     function escapeAttr(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    // Update the thin full-name row to show the slot currently being edited.
+    function paintFullName(){ fullNameRow.innerHTML = '<span style="opacity:0.6;">slot ' + (editingIndex + 1) + ':</span> <b>' + escapeAttr(slots[editingIndex].name) + '</b>'; }
 
     // Initialize on the active slot.
     ta.value = slots[editingIndex].text || '';
     editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[editingIndex].name) + '</b> (slot ' + (editingIndex + 1) + ')';
+    paintFullName();
     paintRibbon();
 
     // ----- Buttons -----
@@ -1815,7 +1830,7 @@
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(ta); box.appendChild(btnRow);
+    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(ta); box.appendChild(btnRow);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
     document.addEventListener('keydown', function esc(e){ if(e.key==='Escape'){ closeModal(); document.removeEventListener('keydown', esc);} });
@@ -3987,8 +4002,14 @@
           </button>
         </div>
 
+        <!-- ✨ Refine: thin active-context-name row (left-justified; holds a long name without wrapping the buttons) -->
+        <div style="margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+          <span style="opacity:0.6;">✨ context:</span>
+          <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
+        </div>
+
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
-        <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
+        <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
           <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
           <span style="font-size:11px; opacity:0.8;">Provider</span>
           <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff;">
@@ -3999,8 +4020,7 @@
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; max-width:200px; color:#111; background:#fff;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:30px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:30px;">🗑️</button>
-          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends." style="font-size:11px;">📝 Context</button>
-          <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-size:11px; font-weight:600; color:#2e9b2e; max-width:130px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:middle;"></span>
+          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px;">📝 Context</button>
           <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px;">📜 Prompt</button>
           <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px;">🔑 Key</button>
         </div>
