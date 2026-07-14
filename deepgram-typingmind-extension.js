@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.188 Changes:
+ * - NEW: a running TOTAL COST readout to the right of 'most recent cost'. Same prefix font, but the
+ *   amount is YELLOW (vs the green most-recent amount), same larger size. Every completed refine adds
+ *   its cost to the total; it's persisted to localStorage so it survives reloads (a daily tally). A
+ *   tiny ↺ reset button to its right zeroes it. Best-effort sum (includes Anthropic estimates).
+ *
  * v3.187 Changes:
  * - TWEAK: the yellow last-line preview now adds a TRAILING ellipsis too, but only when the last line
  *   was actually cut off at the 128-char limit (no trailing ellipsis when the whole line fit).
@@ -573,7 +579,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.187',
+  VERSION: '3.188',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -629,6 +635,7 @@
     REFINE_ACTIVE_CONTEXT_STORAGE: 'refine_active_context',      // active slot index (0-based)
     REFINE_CONTEXT_SLOTS: 10,                                    // number of parallel-session context slots
     REFINE_TAIL_PREVIEW_CHARS: 128,                              // chars of the active slot's last line to preview (yellow row)
+    REFINE_TOTAL_COST_STORAGE: 'refine_total_cost',              // running accumulated cost (persisted; user-resettable)
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -1887,7 +1894,7 @@
     return cost;
   }
 
-  /** Update the 'most recent cost' label on the Refine context row. */
+  /** Update the 'most recent cost' label on the Refine context row, and ADD it to the running total. */
   function refineUpdateCostLabel(cost, estimated) {
     const el = document.getElementById('deepgram-refine-cost-label');
     if (!el) return;
@@ -1903,6 +1910,32 @@
     el.title = estimated
       ? 'Estimated from token usage (Anthropic returns no cost field)'
       : 'Reported directly by OpenRouter (usage.cost)';
+    // Accumulate into the persisted running total, then refresh the total display.
+    refineAddToTotalCost(cost);
+  }
+
+  /** The persisted running total (a best-effort daily tally the user resets at will). */
+  function refineGetTotalCost() {
+    const v = parseFloat(localStorage.getItem(CONFIG.REFINE_TOTAL_COST_STORAGE));
+    return (isNaN(v) || v < 0) ? 0 : v;
+  }
+  function refineAddToTotalCost(cost) {
+    const next = refineGetTotalCost() + (parseFloat(cost) || 0);
+    localStorage.setItem(CONFIG.REFINE_TOTAL_COST_STORAGE, String(next));
+    refineUpdateTotalCostLabel();
+  }
+  function refineResetTotalCost() {
+    localStorage.setItem(CONFIG.REFINE_TOTAL_COST_STORAGE, '0');
+    refineUpdateTotalCostLabel();
+  }
+  /** Render the running total (yellow amount, same larger font as most-recent). */
+  function refineUpdateTotalCostLabel() {
+    const el = document.getElementById('deepgram-refine-total-cost-label');
+    if (!el) return;
+    const total = refineGetTotalCost();
+    const dollars = total < 0.01 ? total.toFixed(5) : total.toFixed(4);
+    el.innerHTML = 'total cost: <span style="font-weight:600; color:#e6c200; font-size:15px;">$' + dollars + '</span>';
+    el.title = 'Running total of all refines (best-effort; includes Anthropic estimates). Click ↺ to reset.';
   }
 
   /** (Re)populate the provider + model dropdowns from saved state. */
@@ -4451,6 +4484,8 @@
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <button id="deepgram-refine-total-reset-btn" title="Reset the running total to $0" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
         </div>
 
         <!-- ✨ Refine: tail preview of the active context slot's last line (confirm-what-you-appended) -->
@@ -4780,8 +4815,11 @@
     document.getElementById('deepgram-refine-context-btn').addEventListener('click', refineEditContext);
     document.getElementById('deepgram-refine-prompt-btn').addEventListener('click', refineEditSystemPrompt);
     document.getElementById('deepgram-refine-clearkey-btn').addEventListener('click', refineClearApiKey);
+    const refineTotalResetBtn = document.getElementById('deepgram-refine-total-reset-btn');
+    if (refineTotalResetBtn) refineTotalResetBtn.addEventListener('click', refineResetTotalCost);
     refineRefreshProviderDropdown();
     refineUpdateContextButtonLabel();
+    refineUpdateTotalCostLabel();
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
