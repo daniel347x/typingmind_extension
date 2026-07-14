@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.185 Changes:
+ * - TWEAK: the green cost AMOUNT is now a larger font (15px vs the row's 11px) to stand out; the
+ *   'most recent cost:' prefix is unchanged. Row shares a common baseline (align-items:baseline), so
+ *   the bigger number sits on the same baseline and just grows the row height slightly.
+ *
  * v3.184 Changes:
  * - NEW: the 📜 Prompt modal is now a MULTI-PART prompt editor. A dropdown selects which prompt part to
  *   view/edit — System prompt, Context preamble (before <context>), Transcription preamble (before
@@ -557,7 +562,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.184',
+  VERSION: '3.185',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1853,7 +1858,7 @@
     const dollars = cost < 0.01 ? cost.toFixed(5) : cost.toFixed(4);
     // Only the AMOUNT is bold green; the 'most recent cost:' prefix keeps the row's default color.
     const amount = (estimated ? '~$' : '$') + dollars;
-    el.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e;">' + amount + '</span>';
+    el.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e; font-size:15px;">' + amount + '</span>';
     el.title = estimated
       ? 'Estimated from token usage (Anthropic returns no cost field)'
       : 'Reported directly by OpenRouter (usage.cost)';
