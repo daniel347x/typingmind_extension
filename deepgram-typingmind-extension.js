@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.187 Changes:
+ * - TWEAK: the yellow last-line preview now adds a TRAILING ellipsis too, but only when the last line
+ *   was actually cut off at the 128-char limit (no trailing ellipsis when the whole line fit).
+ *
  * v3.186 Changes:
  * - NEW: a small YELLOW one-line row beneath the context/cost row previews the START of the active
  *   slot's LAST saved line (ellipsis + first REFINE_TAIL_PREVIEW_CHARS=128 chars), so you can confirm
@@ -569,7 +573,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.186',
+  VERSION: '3.187',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1855,7 +1859,10 @@
     if (!lines.length) { el.textContent = ''; return; }
     const lastLine = lines[lines.length - 1];
     const n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
-    el.textContent = '…' + lastLine.slice(0, n);
+    // Leading ellipsis: there is preceding content. Trailing ellipsis: ONLY when the last line was
+    // actually cut off at the char limit (omit it when the whole line fit).
+    const trailing = lastLine.length > n ? '…' : '';
+    el.textContent = '…' + lastLine.slice(0, n) + trailing;
   }
 
   /**
