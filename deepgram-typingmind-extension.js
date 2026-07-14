@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.186 Changes:
+ * - NEW: a small YELLOW one-line row beneath the context/cost row previews the START of the active
+ *   slot's LAST saved line (ellipsis + first REFINE_TAIL_PREVIEW_CHARS=128 chars), so you can confirm
+ *   at a glance whether your latest 📎 Append landed. Simple line parsing: strips trailing whitespace,
+ *   ignores a trailing --- section break, takes the last real content line. Updates on append, slot
+ *   switch, save, and load. (128 is a hardcoded constant for now; can become a user option later.)
+ *
  * v3.185 Changes:
  * - TWEAK: the green cost AMOUNT is now a larger font (15px vs the row's 11px) to stand out; the
  *   'most recent cost:' prefix is unchanged. Row shares a common baseline (align-items:baseline), so
@@ -562,7 +569,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.185',
+  VERSION: '3.186',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -617,6 +624,7 @@
     REFINE_CONTEXTS_STORAGE: 'refine_contexts',                  // JSON array of {name, text} — 10 parallel-session slots
     REFINE_ACTIVE_CONTEXT_STORAGE: 'refine_active_context',      // active slot index (0-based)
     REFINE_CONTEXT_SLOTS: 10,                                    // number of parallel-session context slots
+    REFINE_TAIL_PREVIEW_CHARS: 128,                              // chars of the active slot's last line to preview (yellow row)
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -1822,6 +1830,32 @@
   function refineUpdateContextButtonLabel() {
     const lbl = document.getElementById('deepgram-refine-active-context-label');
     if (lbl) lbl.textContent = refineGetActiveContextName();
+    refineUpdateTailPreview();
+  }
+
+  /**
+   * Update the small yellow row showing the START of the active slot's LAST line — a quick 'did I
+   * already append that?' confirmation. Deliberately simple line parsing: take the saved text, strip
+   * trailing whitespace, drop a trailing '---' section-break line if present, then take the last line
+   * and show its first REFINE_TAIL_PREVIEW_CHARS chars, prefixed with an ellipsis (there is at least
+   * one non-whitespace body of text preceding it).
+   */
+  function refineUpdateTailPreview() {
+    const el = document.getElementById('deepgram-refine-tail-label');
+    if (!el) return;
+    const text = refineGetContext();
+    if (!text || !text.trim()) { el.textContent = ''; return; }
+    let s = text.replace(/\s+$/, '');            // trim trailing whitespace
+    let lines = s.split('\n');
+    // Drop a trailing pure '---' section-break line (and any now-trailing blank lines) so we preview
+    // real content, not the divider.
+    while (lines.length && (/^\s*-{3,}\s*$/.test(lines[lines.length - 1]) || lines[lines.length - 1].trim() === '')) {
+      lines.pop();
+    }
+    if (!lines.length) { el.textContent = ''; return; }
+    const lastLine = lines[lines.length - 1];
+    const n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
+    el.textContent = '…' + lastLine.slice(0, n);
   }
 
   /**
@@ -4411,6 +4445,9 @@
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
+
+        <!-- ✨ Refine: tail preview of the active context slot's last line (confirm-what-you-appended) -->
+        <div id="deepgram-refine-tail-label" title="Start of the LAST line currently saved in the active context slot" style="margin-top:2px; font-size:10px; line-height:1.3; color:#e6c200; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
