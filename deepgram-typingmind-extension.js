@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.196 Changes:
+ * - 📖 Dictionary is now FILE-based (better for long lists): the "Copy agent instructions" prompt now
+ *   tells the agent to WRITE the protect-list to a file (C:/Users/danie/wispr_dictionary_protect_list.json)
+ *   and print only that path — no pasting a big JSON blob into chat (saves tokens, removes any
+ *   mis-transcription risk). The Paste-JSON modal gained a 📂 Import from file button (native OS file
+ *   picker) that loads + saves the list. Manual paste/edit still works but is no longer recommended.
+ *
  * v3.195 Changes:
  * - UI: tightened the Refine control row so it fits on ONE line (it was wrapping the Dictionary/Key
  *   buttons to a second row): provider dropdown narrowed (labels shortened + width cap), and reduced
@@ -2503,7 +2510,40 @@
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(ta); box.appendChild(btnRow);
+    let importRow = null;
+    if (opts.importButton) {
+      importRow = document.createElement('div');
+      importRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:8px;';
+      const ib = document.createElement('button');
+      ib.textContent = opts.importButton.label || '📂 Import from file';
+      ib.style.cssText = 'padding:6px 12px; border-radius:6px; border:none; cursor:pointer; font-size:12px; color:#fff; background:#2f6f8f;';
+      const ihint = document.createElement('span');
+      ihint.textContent = opts.importButton.hint || '';
+      ihint.style.cssText = 'font-size:11px; opacity:0.6;';
+      const fileInput = document.createElement('input');
+      fileInput.type = 'file';
+      fileInput.accept = opts.importButton.accept || '.json,.txt';
+      fileInput.style.display = 'none';
+      fileInput.addEventListener('change', function () {
+        const f = fileInput.files && fileInput.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = function () {
+          const text = String(reader.result || '');
+          ta.value = text;
+          try { ta.focus(); ta.select(); } catch (e) {}
+          if (typeof opts.importButton.onLoaded === 'function') opts.importButton.onLoaded(text, ta);
+        };
+        reader.onerror = function () { alert('Could not read that file.'); };
+        reader.readAsText(f);
+        fileInput.value = '';
+      });
+      ib.onclick = function () { fileInput.click(); };
+      importRow.appendChild(ib); importRow.appendChild(ihint); importRow.appendChild(fileInput);
+    }
+    box.appendChild(h); box.appendChild(sub);
+    if (importRow) box.appendChild(importRow);
+    box.appendChild(ta); box.appendChild(btnRow);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
     // ESC closes WITHOUT saving (capture phase + stopPropagation so nothing swallows the key first).
@@ -2649,7 +2689,7 @@
   // exactly, never revert them" block — so the model never juggles the whole list, only the few present.
   const REFINE_DICTIONARY_AGENT_INSTRUCTIONS = [
     'I need you to regenerate the Wispr Flow dictionary "protect list" for my TypingMind Refine',
-    '(transcription-cleanup) widget.',
+    '(transcription-cleanup) widget, and WRITE IT TO A FILE (do not print the list to the console).',
     '',
     'WHY THIS EXISTS:',
     '- I dictate by voice. Wispr Flow applies my personal dictionary (canonical spellings/casing plus',
@@ -2660,10 +2700,11 @@
     '  dictionary canonical forms that are present, and tells the model: these specific terms are already',
     '  correct, reproduce them exactly, never revert them.',
     '- The widget needs the flat list of canonical forms as a JSON array. Wispr Flow has no export button,',
-    '  so you read it directly from its local SQLite database (READ-ONLY).',
+    '  so you read it directly from its local SQLite database (READ-ONLY) and save the array to a file.',
     '',
     'WHAT TO DO (on the Windows machine, via WSL): pipe this script to "wsl python3". It opens the ~10GB',
-    'live DB read-only and immutable, so it never locks or modifies anything:',
+    'live DB read-only and immutable (never locks or modifies anything), writes the JSON array to a file,',
+    'and prints ONLY that file path:',
     '',
     'import sqlite3, json',
     'p = "file:/mnt/c/Users/danie/AppData/Roaming/Wispr Flow/flow.sqlite?mode=ro&immutable=1"',
@@ -2675,14 +2716,18 @@
     '    if r["isDeleted"] or r["isSnippet"]: continue',
     '    t = (r["replacement"] or "").strip() or (r["phrase"] or "").strip()',
     '    if t: protect.add(t)',
-    'print(json.dumps(sorted(protect, key=lambda s: s.lower()), ensure_ascii=False, indent=0))',
+    'out = "/mnt/c/Users/danie/wispr_dictionary_protect_list.json"',
+    'with open(out, "w", encoding="utf-8") as f:',
+    '    json.dump(sorted(protect, key=lambda s: s.lower()), f, ensure_ascii=False, indent=0)',
+    'print("Wrote " + str(len(protect)) + " terms to: C:/Users/danie/wispr_dictionary_protect_list.json")',
     '',
     'RULES:',
     '- The table is "Dictionary". Skip rows where isDeleted=1 or isSnippet=1.',
     '- For each remaining row: if "replacement" is non-empty use it (the canonical TARGET already in my',
     '  text); otherwise use "phrase" (a plain canonical term).',
-    '- Output ONLY a single JSON array of unique strings, inside a ```json code block, nothing else.',
-    '- I will copy that block and paste it into the widget under: 📖 Dictionary -> Paste dictionary JSON.',
+    '- Do NOT print the list to the console. Just write the file and report the printed file path to me.',
+    '- I will load it via the widget button: 📖 Dictionary -> 📂 Import from file (recommended). No need to',
+    '  paste any JSON into chat.',
   ].join('\n');
 
   function refineParseDictionaryInput(v) {
@@ -2771,21 +2816,29 @@
   }
   function refinePasteDictionary() {
     const cur = localStorage.getItem(CONFIG.REFINE_DICTIONARY_STORAGE) || '';
+    const commit = function (val) {
+      const terms = refineParseDictionaryInput(val);
+      if (!terms.length) {
+        localStorage.removeItem(CONFIG.REFINE_DICTIONARY_STORAGE);
+        updateStatus('📖 Dictionary cleared (nothing usable parsed)', 'info');
+        return 0;
+      }
+      localStorage.setItem(CONFIG.REFINE_DICTIONARY_STORAGE, JSON.stringify(terms));
+      updateStatus('📖 Dictionary saved: ' + terms.length + ' protected terms', 'success');
+      return terms.length;
+    };
     refineOpenTextModal({
       title: '📖 Dictionary — protect-list JSON',
-      subtitle: 'Shows the CURRENT saved JSON, fully selected — backspace to clear then paste, or edit in place. Stored on THIS machine only; scanned before each Refine to protect your canonical terms.',
+      subtitle: 'RECOMMENDED: click 📂 Import from file and pick the .json the agent wrote. The field below shows the CURRENT saved JSON (fully selected); you can also paste/edit a JSON array by hand. Stored on THIS machine only; scanned before each Refine.',
       value: cur,
       allowRestoreDefault: false,
-      onSave: function (val) {
-        const terms = refineParseDictionaryInput(val);
-        if (!terms.length) {
-          localStorage.removeItem(CONFIG.REFINE_DICTIONARY_STORAGE);
-          updateStatus('📖 Dictionary cleared (nothing usable parsed)', 'info');
-          return;
-        }
-        localStorage.setItem(CONFIG.REFINE_DICTIONARY_STORAGE, JSON.stringify(terms));
-        updateStatus('📖 Dictionary saved: ' + terms.length + ' protected terms', 'success');
-      }
+      importButton: {
+        label: '📂 Import from file',
+        hint: 'pick the .json the agent wrote (recommended over pasting)',
+        accept: '.json,.txt,application/json,text/plain',
+        onLoaded: function (text) { commit(text); }
+      },
+      onSave: function (val) { commit(val); }
     });
     // Pre-select the whole textarea so you can immediately backspace/paste (or edit in place).
     try {
