@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.65
+// Version: 4.66
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,9 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.66: Also render the two-family repair badge PER-ROW in the payload-capture modal, so you can
+//     scan the ring buffer and spot exactly which individual payloads triggered repairs (same R/T +
+//     family bright/dim as the header). Extracted a shared tmRenderRepairBlocks() helper used by both.
 //   - v4.65: Add the OpenAI-family repair block (T n = orphaned tool_call repair count) beside the
 //     Anthropic R a/b/c/d block, and drive a FAMILY highlight: the most-recent payload's family is
 //     full-bright while the other family's block is DIMMED (not-applicable). So the header now reports
@@ -62,7 +65,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.65';
+  const EXT_VERSION = '4.66';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1308,6 +1311,37 @@
   // (v4.63) Build the always-visible widget header: version + repair tally (orange) + most-recent cache
   // report (green 'cache' label, BLUE = cache-read/saved, RED = cache-creation/expensive). Repurposes the
   // old useless "GPT-5.1 Conversations" title. Reflects the MOST RECENT payload across sessions (may jump).
+  // (v4.66) Render the two-family repair badge (R a/b/c/d + T n) for a SINGLE payload's tally.
+  // family='anthropic' brightens R and dims T; family='openai' brightens T and dims R; null dims both.
+  // Used by the per-row payload-capture modal ribbon (header keeps its own equivalent inline copy).
+  function tmRenderRepairBlocks(tally) {
+    var rt = tally || null;
+    var family = (rt && rt.family) ? rt.family : null;
+    var out = [];
+    var rvals = rt
+      ? [rt.toolResultName || 0, rt.historicToolInputs || 0, rt.emptyMessageContent || 0, rt.missingToolResults || 0]
+      : [0, 0, 0, 0];
+    var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
+    var rActive = (family === 'anthropic');
+    var rTitle = 'Anthropic repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
+    var rStyle = 'color:#ff9d3d;' + (rActive ? '' : 'opacity:0.3;');
+    if (rActive && rsum > 0) {
+      out.push('<span title="' + rTitle + '" style="' + rStyle + 'font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
+    } else {
+      out.push('<span title="' + rTitle + '" style="' + rStyle + '">R ' + rvals.join('/') + '</span>');
+    }
+    var tVal = rt ? (rt.orphanedToolCalls || 0) : 0;
+    var tActive = (family === 'openai');
+    var tTitle = 'OpenAI repairs: orphaned tool_call (injected missing preceding output_text)';
+    var tStyle = 'color:#ff9d3d;' + (tActive ? '' : 'opacity:0.3;');
+    if (tActive && tVal > 0) {
+      out.push('<span title="' + tTitle + '" style="' + tStyle + 'font-weight:bold;">\u26a0 T ' + tVal + '</span>');
+    } else {
+      out.push('<span title="' + tTitle + '" style="' + tStyle + '">T ' + tVal + '</span>');
+    }
+    return out.join(' ');
+  }
+
   function tmBuildWidgetStatusLine() {
     var st = tmMostRecentPayloadStatus || {};
     var rt = st.repairTally || null;
@@ -2291,6 +2325,9 @@
               '</div>';
       html += '<div style="font-size:10px;opacity:0.85;margin-top:2px;color:#8cf;">' + ts + '</div>';
       html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
+
+      // (v4.66) Per-row repair ribbon — scan down the modal to see which individual payloads triggered repairs.
+      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + '</div>';
 
       html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
       html += '<div style="margin-top:2px;">' +
