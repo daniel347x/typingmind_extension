@@ -640,7 +640,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.196',
+  VERSION: '3.197',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1432,6 +1432,9 @@
     const wasHidden = (pane.style.display === 'none' || pane.style.display === '');
     pane.style.display = 'block';
     if (wasHidden) elevenShrinkMainEditorForPane();
+
+    // Live-mirror the current chunk into the detach modal's duplicate pane, if it is open.
+    elevenMirrorToDetachModal(index);
   }
 
   /**
@@ -1489,8 +1492,10 @@
    * exact range (start\u2192end offsets we already stored), and scroll it into view. This is SAFE because
    * it only runs on an explicit button click \u2014 never automatically \u2014 so it can't steal focus mid-typing.
    */
-  function elevenJumpToChunkInEditor() {
-    const el = document.getElementById('deepgram-transcript');
+  function elevenJumpToChunkInEditor(elArg) {
+    // elArg may be an Event object (when used directly as a click handler) -> guard on tagName so
+    // only a REAL element overrides the default (main transcript) target.
+    const el = (elArg && elArg.tagName) ? elArg : document.getElementById('deepgram-transcript');
     const chunk = (elevenChunkIndex >= 0) ? elevenChunks[elevenChunkIndex] : null;
     if (!el || !chunk) return;
     try {
@@ -1619,6 +1624,7 @@
     elevenDetached = false;
     elevenSourceText = '';
     elevenApplyDetachUI();
+    elevenCloseDetachModal();
     elevenHideNowPlaying();
     elevenSetTransportState('idle');
   }
@@ -1632,7 +1638,16 @@
    */
   function elevenApplyDetachUI() {
     const jumpBtn = document.getElementById('deepgram-nowplaying-jump-btn');
-    if (jumpBtn) jumpBtn.style.display = elevenDetached ? 'none' : '';
+    if (jumpBtn) {
+      // Detached: the main editor is decoupled from playback, so jumping to the current chunk THERE
+      // is meaningless. Keep the button VISIBLE but DISABLED (do not hide it).
+      jumpBtn.disabled = elevenDetached;
+      jumpBtn.style.opacity = elevenDetached ? '0.4' : '';
+      jumpBtn.style.cursor = elevenDetached ? 'not-allowed' : 'pointer';
+      jumpBtn.title = elevenDetached
+        ? 'Disabled while detached - use the red Read Aloud (detached) label to open the navigation modal'
+        : 'Select & scroll to this block in the main editor';
+    }
     const label = document.getElementById('deepgram-eleven-label');
     if (!label) return;
     if (elevenDetached) {
@@ -1662,6 +1677,223 @@
     elevenDetached = true;                             // elevenSourceText already holds the snapshot
     elevenApplyDetachUI();
     if (elevenChunkIndex >= 0) elevenHighlightChunk(elevenChunkIndex); // refresh %/lines vs snapshot
+  }
+
+  /**
+   * Resolve the region to read from a textarea, honoring caret/selection (SAME rules as the main box):
+   *   - a highlighted range               -> read exactly that range
+   *   - a cursor placed MID-text          -> read from there to the end
+   *   - nothing / cursor at 0 / at very end -> read the whole thing
+   * Returns { fullText, regionStart, regionEnd } with offsets ABSOLUTE into fullText. Shared by the
+   * detach modal's Play button (source = the modal's read-only copy of A).
+   */
+  function elevenResolveRegion(el) {
+    const fullText = (el && el.value ? el.value : '');
+    let regionStart = 0;
+    let regionEnd = fullText.length;
+    if (el && typeof el.selectionStart === 'number') {
+      const selStart = el.selectionStart;
+      const selEnd = el.selectionEnd;
+      if (selEnd > selStart) { regionStart = selStart; regionEnd = selEnd; }
+      else if (selStart > 0 && selStart < fullText.length) { regionStart = selStart; regionEnd = fullText.length; }
+    }
+    return { fullText: fullText, regionStart: regionStart, regionEnd: regionEnd };
+  }
+
+  /**
+   * Scroll a textarea so a character OFFSET sits comfortably in view (proportional by char offset
+   * against scrollable height - accurate under soft-wrap - with a small downward bias). Mirrors the
+   * scroll math inside elevenJumpToChunkInEditor; used to reveal the caret when the modal opens.
+   */
+  function elevenScrollElToOffset(el, offset) {
+    try {
+      const denom = Math.max(1, el.value.length);
+      const frac = offset / denom;
+      const scrollable = Math.max(0, el.scrollHeight - el.clientHeight);
+      const bias = Math.min(el.clientHeight * 0.18, 120);
+      const target = Math.round(frac * scrollable) + bias;
+      el.scrollTop = Math.max(0, Math.min(scrollable, target));
+    } catch (e) { /* ignore */ }
+  }
+
+  /**
+   * Stop + release the CURRENT audio element and pending fetches WITHOUT resetting the detach state
+   * (elevenDetached / elevenSourceText) or hiding the Now-Playing panes. Used when the detach modal
+   * starts a NEW region while playback is still running.
+   */
+  function elevenSoftStopAudio() {
+    elevenStopped = true;
+    if (elevenAudio) { try { elevenAudio.pause(); } catch (e) {} elevenAudio = null; }
+    if (elevenAudioUrl) { try { URL.revokeObjectURL(elevenAudioUrl); } catch (e) {} elevenAudioUrl = null; }
+    elevenPrefetch = null;
+    elevenIsFetching = false;
+  }
+
+  /**
+   * Start reading [regionStart,regionEnd) of fullText. MODAL-only start path.
+   * INVARIANT: never touches elevenDetached or elevenSourceText (A). It only soft-stops the current
+   * audio and (re)builds the chunk queue for the new region - a window into A. Because the modal
+   * passes the WHOLE A body as fullText, chunk {start,end} stay in A's coordinate system, so the
+   * %/position display and the 'jump to current' button remain correct against A.
+   */
+  async function elevenStartRegion(fullText, regionStart, regionEnd) {
+    elevenSoftStopAudio();
+    let apiKey = localStorage.getItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
+    if (!apiKey) {
+      apiKey = prompt('Paste your ElevenLabs API key (stored locally, used only to call ElevenLabs):');
+      if (apiKey) { apiKey = apiKey.trim(); localStorage.setItem(CONFIG.ELEVENLABS_API_KEY_STORAGE, apiKey); }
+    }
+    if (!apiKey) return false;
+    const sel = document.getElementById('deepgram-eleven-voice-select');
+    const voiceId = (sel && sel.value) ? sel.value
+      : (localStorage.getItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_VOICE_ID);
+    localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, voiceId);
+    elevenChunks = elevenBuildChunks(fullText, regionStart, regionEnd);
+    if (elevenChunks.length === 0) { alert('Nothing to read.'); return false; }
+    elevenApiKey = apiKey;
+    elevenVoiceId = voiceId;
+    elevenModel = localStorage.getItem(CONFIG.ELEVENLABS_MODEL_STORAGE) || CONFIG.DEFAULT_ELEVENLABS_MODEL;
+    elevenStopped = false;
+    elevenPrefetch = null;
+    elevenChunkIndex = -1;
+    await elevenPlayChunk(0);
+    return true;
+  }
+
+  /**
+   * Live-mirror the current chunk into the detach modal's duplicate Now-Playing pane, if open.
+   * Recomputes the position strings independently so elevenHighlightChunk stays byte-for-byte as-is.
+   * No-op (returns immediately) whenever the modal is not open - so it costs nothing in normal use.
+   */
+  function elevenMirrorToDetachModal(index) {
+    const ta = document.getElementById('deepgram-detach-nowplaying-text');
+    if (!ta) return; // modal not open
+    const chunk = elevenChunks[index];
+    if (!chunk) return;
+    const aboveEl = document.getElementById('deepgram-detach-nowplaying-above');
+    const belowEl = document.getElementById('deepgram-detach-nowplaying-below');
+    const full = elevenDetached ? elevenSourceText
+      : ((document.getElementById('deepgram-transcript') || {}).value || '');
+    const totalLen = full.length || 1;
+    const aboveChars = Math.max(0, chunk.start);
+    const belowChars = Math.max(0, full.length - chunk.end);
+    const roughLines = (s) => Math.round(s / 60);
+    const pct = Math.round((chunk.start / totalLen) * 100);
+    if (aboveEl) aboveEl.textContent = `\u2191 ${aboveChars.toLocaleString()} chars (~${roughLines(aboveChars)} lines) above  \u00b7  ~${pct}% through  \u00b7  chunk ${index + 1}/${elevenChunks.length}`;
+    if (belowEl) belowEl.textContent = `\u2193 ${belowChars.toLocaleString()} chars (~${roughLines(belowChars)} lines) below`;
+    ta.value = chunk.text;
+    ta.scrollTop = 0;
+  }
+
+  function elevenCloseDetachModal() {
+    const m = document.getElementById('deepgram-detach-modal-overlay');
+    if (m) m.remove();
+  }
+
+  /**
+   * The label click dispatcher. Not detached -> the click DETACHES (option A: only while playing).
+   * Already detached -> open the navigation modal (see/scrub where playback is).
+   */
+  function elevenLabelClick() {
+    if (elevenDetached) elevenOpenDetachModal();
+    else elevenToggleDetach();
+  }
+
+  /**
+   * The DETACH NAVIGATION modal. Lets you see WHERE playback is and pick a new start point WITHOUT
+   * touching the live edit box.
+   *   - Bottom half = a READONLY copy of the detached source A (elevenSourceText). Select a range, or
+   *     place the caret to read from there to the end (same rules as the main box).
+   *   - Top half = a live duplicate of the Now-Playing pane (current chunk + %/position + a Jump
+   *     button that selects/scrolls the CURRENT chunk within this modal's A copy).
+   *   - Play starts the chosen region (A is never overwritten; chunk offsets stay in A's coord
+   *     system), then closes. Cancel / Esc close doing nothing. Playback keeps running throughout.
+   */
+  function elevenOpenDetachModal() {
+    if (!elevenDetached) return;
+    elevenCloseDetachModal();
+    const A = elevenSourceText || '';
+    const curChunk = (elevenChunkIndex >= 0) ? elevenChunks[elevenChunkIndex] : null;
+    const caretAt = curChunk ? curChunk.start : 0;
+
+    const overlay = document.createElement('div');
+    overlay.id = 'deepgram-detach-modal-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:2147483646; display:flex; align-items:center; justify-content:center;';
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(820px,92vw); max-height:88vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box;';
+    const h = document.createElement('div');
+    h.textContent = '\ud83d\udd0a Read Aloud \u2014 detached navigation';
+    h.style.cssText = 'font-size:15px; font-weight:600; margin-bottom:6px; color:#e2571e;';
+    const sub = document.createElement('div');
+    sub.textContent = 'Select text below (or place the cursor) and press Play to read from there. Playback keeps running until you do. This never changes your edit box.';
+    sub.style.cssText = 'font-size:12px; opacity:0.75; margin-bottom:10px;';
+
+    const npWrap = document.createElement('div');
+    npWrap.id = 'deepgram-detach-nowplaying';
+    npWrap.style.cssText = 'border:1px solid #667eea; border-radius:6px; padding:6px; margin-bottom:10px; background:rgba(102,126,234,0.10);';
+    const npJump = document.createElement('button');
+    npJump.id = 'deepgram-detach-nowplaying-jump-btn';
+    npJump.textContent = '\ud83d\udccd Jump to current in the text below';
+    npJump.style.cssText = 'font-size:11px; padding:2px 8px; margin-bottom:4px; cursor:pointer; background:transparent; border:1px solid #667eea; border-radius:4px; color:inherit;';
+    const npAbove = document.createElement('div');
+    npAbove.id = 'deepgram-detach-nowplaying-above';
+    npAbove.style.cssText = 'font-size:10px; opacity:0.7; margin-bottom:3px;';
+    const npText = document.createElement('textarea');
+    npText.id = 'deepgram-detach-nowplaying-text';
+    npText.readOnly = true;
+    npText.setAttribute('wrap', 'soft');
+    npText.style.cssText = 'width:100%; box-sizing:border-box; resize:vertical; min-height:70px; height:16vh; max-height:40vh; font-size:13px; line-height:1.5; padding:6px; border:1px solid rgba(102,126,234,0.4); border-radius:4px; background:#fff; color:#111;';
+    const npBelow = document.createElement('div');
+    npBelow.id = 'deepgram-detach-nowplaying-below';
+    npBelow.style.cssText = 'font-size:10px; opacity:0.7; margin-top:3px;';
+    npWrap.appendChild(npJump); npWrap.appendChild(npAbove); npWrap.appendChild(npText); npWrap.appendChild(npBelow);
+
+    const srcLabel = document.createElement('div');
+    srcLabel.textContent = 'Full text being read (read-only - select a range or place the cursor):';
+    srcLabel.style.cssText = 'font-size:11px; opacity:0.7; margin-bottom:4px;';
+    const src = document.createElement('textarea');
+    src.id = 'deepgram-detach-source';
+    src.readOnly = true;
+    src.setAttribute('wrap', 'soft');
+    src.value = A;
+    src.style.cssText = 'flex:1 1 auto; min-height:220px; width:100%; box-sizing:border-box; resize:vertical; font-size:13px; line-height:1.5; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;';
+    const mkBtn = (label, bg) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.style.cssText = 'padding:7px 14px; border-radius:6px; border:none; cursor:pointer; font-size:13px; color:#fff; background:' + bg + ';';
+      return b;
+    };
+    function esc(e){ if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeModal(); } }
+    const closeModal = () => { overlay.remove(); document.removeEventListener('keydown', esc, true); };
+    const cancel = mkBtn('Cancel', '#555');
+    cancel.onclick = closeModal;
+    const play = mkBtn('\u25b6 Play from here', '#2b7a2b');
+    play.onclick = async () => {
+      const region = elevenResolveRegion(src);
+      if (!region.fullText.substring(region.regionStart, region.regionEnd).trim()) {
+        alert('Nothing to read - the selection is blank.');
+        return;
+      }
+      closeModal();
+      await elevenStartRegion(region.fullText, region.regionStart, region.regionEnd);
+    };
+    btnRow.appendChild(cancel); btnRow.appendChild(play);
+    npJump.addEventListener('click', () => elevenJumpToChunkInEditor(src));
+
+    box.appendChild(h); box.appendChild(sub); box.appendChild(npWrap);
+    box.appendChild(srcLabel); box.appendChild(src); box.appendChild(btnRow);
+    overlay.appendChild(box);
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+    document.addEventListener('keydown', esc, true);
+    document.body.appendChild(overlay);
+
+    // Populate the top pane immediately with the current chunk (then it live-updates as playback advances).
+    if (curChunk) elevenMirrorToDetachModal(elevenChunkIndex);
+    // Default the caret to the START of the current chunk and scroll it into view.
+    try { src.focus(); src.setSelectionRange(caretAt, caretAt); elevenScrollElToOffset(src, caretAt); } catch (e) {}
   }
 
   /**
@@ -5301,7 +5533,7 @@
     document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
     document.getElementById('deepgram-nowplaying-jump-btn').addEventListener('click', elevenJumpToChunkInEditor);
     const elevenLabelEl = document.getElementById('deepgram-eleven-label');
-    if (elevenLabelEl) elevenLabelEl.addEventListener('click', elevenToggleDetach);
+    if (elevenLabelEl) elevenLabelEl.addEventListener('click', elevenLabelClick);
     // Chunk-size input: initialize from storage, persist + resize pane on change.
     const chunkInput = document.getElementById('deepgram-eleven-chunk-input');
     if (chunkInput) {
