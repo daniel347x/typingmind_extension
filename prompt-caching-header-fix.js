@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.67
+// Version: 4.68
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,11 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.68: Alert-fatigue fix for the repair badge. Slot 2 (historic empty tool_use.input) is common and
+//     harmless (no-arg tool calls like GLIMPSE serialize input as {}), so it ALONE no longer turns the R
+//     block orange or raises the ⚠. The badge is a calm slate (#9aa4b2) by default and only goes orange +
+//     bold + ⚠ when a genuinely notable repair fired: R slots 1/3/4 (tool_result.name / empty content /
+//     missing tool_result) or T (orphaned tool_call). So orange now reliably means 'look at this'.
 //   - v4.67: HOTFIX for a regression exposed by v4.62 (running repairs on the proxy path for the first
 //     time). repairAnthropicMissingToolResults only checked the IMMEDIATELY-following message for an
 //     existing tool_result, so on TypingMind's already-well-formed proxy (native /v1/messages) payloads
@@ -74,7 +79,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.67';
+  const EXT_VERSION = '4.68';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1333,8 +1338,11 @@
     var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
     var rActive = (family === 'anthropic');
     var rTitle = 'Anthropic repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
-    var rStyle = 'color:#ff9d3d;' + (rActive ? '' : 'opacity:0.3;');
-    if (rActive && rsum > 0) {
+    // slot 2 (historicToolInputs) is benign/common (no-arg tool calls like GLIMPSE), so it ALONE never
+    // raises the alarm; only slots 1/3/4 do. Calm slate when no real alarm; orange only when it matters.
+    var rAlarm = rvals[0] + rvals[2] + rvals[3];
+    var rStyle = 'color:' + ((rActive && rAlarm > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (rActive ? '' : 'opacity:0.3;');
+    if (rActive && rAlarm > 0) {
       out.push('<span title="' + rTitle + '" style="' + rStyle + 'font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
     } else {
       out.push('<span title="' + rTitle + '" style="' + rStyle + '">R ' + rvals.join('/') + '</span>');
@@ -1342,7 +1350,7 @@
     var tVal = rt ? (rt.orphanedToolCalls || 0) : 0;
     var tActive = (family === 'openai');
     var tTitle = 'OpenAI repairs: orphaned tool_call (injected missing preceding output_text)';
-    var tStyle = 'color:#ff9d3d;' + (tActive ? '' : 'opacity:0.3;');
+    var tStyle = 'color:' + ((tActive && tVal > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (tActive ? '' : 'opacity:0.3;');
     if (tActive && tVal > 0) {
       out.push('<span title="' + tTitle + '" style="' + tStyle + 'font-weight:bold;">\u26a0 T ' + tVal + '</span>');
     } else {
@@ -1366,8 +1374,11 @@
     var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
     var rActive = (family === 'anthropic');
     var rTitle = 'Anthropic repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
-    var rStyle = 'color:#ff9d3d;' + (rActive ? '' : 'opacity:0.3;');
-    if (rActive && rsum > 0) {
+    // slot 2 (historicToolInputs) is benign/common (no-arg tool calls like GLIMPSE), so it ALONE never
+    // raises the alarm; only slots 1/3/4 do. Calm slate when no real alarm; orange only when it matters.
+    var rAlarm = rvals[0] + rvals[2] + rvals[3];
+    var rStyle = 'color:' + ((rActive && rAlarm > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (rActive ? '' : 'opacity:0.3;');
+    if (rActive && rAlarm > 0) {
       parts.push('<span title="' + rTitle + '" style="' + rStyle + 'font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
     } else {
       parts.push('<span title="' + rTitle + '" style="' + rStyle + '">R ' + rvals.join('/') + '</span>');
@@ -1378,7 +1389,7 @@
     var tVal = rt ? (rt.orphanedToolCalls || 0) : 0;
     var tActive = (family === 'openai');
     var tTitle = 'OpenAI repairs: orphaned tool_call (injected missing preceding output_text)';
-    var tStyle = 'color:#ff9d3d;' + (tActive ? '' : 'opacity:0.3;');
+    var tStyle = 'color:' + ((tActive && tVal > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (tActive ? '' : 'opacity:0.3;');
     if (tActive && tVal > 0) {
       parts.push('<span title="' + tTitle + '" style="' + tStyle + 'font-weight:bold;">\u26a0 T ' + tVal + '</span>');
     } else {
