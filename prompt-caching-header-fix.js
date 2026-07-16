@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.61
+// Version: 4.62
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,16 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.62: (a) NEW TypingMind cors-proxy branch — resolves the real upstream from the x-target-endpoint
+//     header (TypingMind proxies OpenRouter's native Anthropic /v1/messages via www.typingmind.com/api/cors-proxy)
+//     and applies CRASH-PREVENTION REPAIRS ONLY (empty content, missing tool_result, historic empty
+//     tool_use.input, stray tool_result.name). Deliberately injects NO cache_control / anthropic-beta:
+//     prompt caching on this path already works via TypingMind + the native endpoint (confirmed live by
+//     cache_read_input_tokens ~184K on a warm turn). (b) Payload-capture Summary now reports repair_tally
+//     (per-repair counts) and the noise filter EXEMPTS typingmind.com/api/cors-proxy so proxied LLM
+//     traffic is captured. (c) Removed obsolete GPT-5.4 reasoning-effort forcing (TypingMind now exposes
+//     the reasoning control natively; forcing reasoning.effort=xhigh is dead weight and would DOWNGRADE a
+//     higher native tier like GPT-5.5 'max').
 //   - v4.61: PASSTHROUGH GUARD now keys off a STATELESS URL SENTINEL  tm_passthrough=1  in the request
 //     URL (replacing the v4.60 global flag, which was racy across parallel streaming sessions). A URL
 //     query param needs no Access-Control-Allow-Headers grant (so it avoids OpenRouter's CORS preflight
@@ -33,7 +43,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.61';
+  const EXT_VERSION = '4.62';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -43,64 +53,10 @@
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
 
-  function tmModelString(body) {
-    return String((body && body.model) || '').toLowerCase();
-  }
-
-  function tmIsGpt54Model(body) {
-    const model = tmModelString(body);
-    return model === 'gpt-5.4'
-      || model === 'openai/gpt-5.4'
-      || model.startsWith('gpt-5.4-')
-      || model.startsWith('openai/gpt-5.4-');
-  }
-
-  function tmEnsureOpenRouterGpt54Reasoning(body) {
-    if (!body || !tmIsGpt54Model(body)) return false;
-
-    // Strip flat reasoning_effort (TypingMind may now send it); OpenRouter rejects
-    // when both reasoning_effort and reasoning.effort are present with different values.
-    if (body.reasoning_effort !== undefined) {
-      delete body.reasoning_effort;
-    }
-
-    const prev = body.reasoning;
-    const prevEffort = prev && typeof prev === 'object' ? prev.effort : undefined;
-    const prevExclude = prev && typeof prev === 'object' ? prev.exclude : undefined;
-
-    if (prevEffort === 'xhigh' && prevExclude !== true) return false;
-
-    body.reasoning = {
-      ...(prev && typeof prev === 'object' ? prev : {}),
-      effort: 'xhigh',
-      exclude: false
-    };
-
-    console.log('✅ [v' + EXT_VERSION + '] OpenRouter GPT-5.4: forced reasoning.effort=xhigh.');
-    return true;
-  }
-
-  function tmEnsureOpenAIGpt54Reasoning(body) {
-    if (!body || !tmIsGpt54Model(body)) return false;
-
-    const prevReasoning = (body && typeof body.reasoning === 'object' && body.reasoning) ? body.reasoning : {};
-    const prevEffort = prevReasoning.effort;
-
-    // Responses API uses reasoning.effort, not reasoning_effort.
-    if (body.reasoning_effort !== undefined) {
-      delete body.reasoning_effort;
-    }
-
-    if (prevEffort === 'xhigh') return false;
-
-    body.reasoning = {
-      ...prevReasoning,
-      effort: 'xhigh'
-    };
-
-    console.log('✅ [v' + EXT_VERSION + '] OpenAI GPT-5.4: forced reasoning.effort=xhigh.');
-    return true;
-  }
+  // (v4.62) Removed obsolete GPT-5.4 reasoning-effort helpers (tmModelString / tmIsGpt54Model /
+  // tmEnsureOpenRouterGpt54Reasoning / tmEnsureOpenAIGpt54Reasoning). TypingMind now exposes the
+  // reasoning-effort control natively, so forcing reasoning.effort=xhigh is dead weight — and on a
+  // model with a higher native tier (e.g. GPT-5.5 'max') it would actively DOWNGRADE the request.
 
   // Last Anthropic request body (for export of user+assistant-only JSON)
   let lastAnthropicBodyForExport = null;
@@ -441,13 +397,17 @@
     tmWriteCaptureRing(ring);
   }
 
-  function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall) {
+  function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall) {
     if (!tmCaptureEnabled()) return null;
 
-    // Ignore TypingMind internal sync/telemetry calls and localhost traffic (noise)
+    // Ignore TypingMind internal sync/telemetry calls and localhost traffic (noise).
+    // EXCEPTION (v4.62): TypingMind's cors-proxy carries REAL LLM traffic (x-target-endpoint) even
+    // though the host is typingmind.com — we WANT to capture those. Only genuine TM telemetry is noise.
     try {
       const u = String(url || '').toLowerCase();
-      if (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel')) {
+      const isTmCorsProxy = u.includes('typingmind.com/api/cors-proxy');
+      if (!isTmCorsProxy &&
+          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel'))) {
         return null;
       }
     } catch (e) {}
@@ -464,6 +424,7 @@
       method: (options && options.method) ? String(options.method) : 'POST',
       vendorHint: vendorForThisCall || null,
       convIdHint: convIdForThisCall || null,
+      repair_tally: repairTallyForThisCall || null,
       headers: headersNorm,
       body_parse_error: null,
       protocol: 'unknown',
@@ -2057,6 +2018,7 @@
       protocol: cap.protocol,
       vendorHint: cap.vendorHint,
       convIdHint: cap.convIdHint,
+      repair_tally: cap.repair_tally || null,
       model,
       hasCacheControl,
       cacheControlSummary,
@@ -2260,8 +2222,8 @@
   // ==================== FETCH OVERRIDE ====================
 
   function repairHistoricAnthropicToolInputs(body) {
-    if (!Array.isArray(body.messages) || body.messages.length < 2) return false;
-    let changed = false;
+    if (!Array.isArray(body.messages) || body.messages.length < 2) return 0;
+    let changed = 0;
     const lastIndex = body.messages.length - 1;
 
     for (let i = 0; i < lastIndex; i++) {
@@ -2281,7 +2243,7 @@
         if (isEmpty) {
           block.input = { __tm_repaired_empty_input: true };
           console.log(`🩹 [v${EXT_VERSION}] Repaired empty tool_use.input on historic message ${i}, block ${blockIdx}, tool: ${block.name}`);
-          changed = true;
+          changed++;
         }
       });
     }
@@ -2290,8 +2252,8 @@
   }
 
   function repairAnthropicEmptyMessageContent(body) {
-    if (!Array.isArray(body.messages) || body.messages.length === 0) return false;
-    let changed = false;
+    if (!Array.isArray(body.messages) || body.messages.length === 0) return 0;
+    let changed = 0;
 
     body.messages.forEach((msg, msgIdx) => {
       if (!msg) return;
@@ -2304,7 +2266,7 @@
         if (c.trim() === '') {
           msg.content = `[tm_repaired_empty_${msg.role}_message]`;
           console.log(`🩹 [v${EXT_VERSION}] Repaired empty ${msg.role} string content on message ${msgIdx}`);
-          changed = true;
+          changed++;
         }
         return;
       }
@@ -2314,7 +2276,7 @@
         if (c.length === 0) {
           msg.content = [{ type: 'text', text: `[tm_repaired_empty_${msg.role}_content]` }];
           console.log(`🩹 [v${EXT_VERSION}] Repaired empty ${msg.role} content array on message ${msgIdx}`);
-          changed = true;
+          changed++;
         }
         return;
       }
@@ -2323,7 +2285,7 @@
       if (c == null) {
         msg.content = [{ type: 'text', text: `[tm_repaired_empty_${msg.role}_content]` }];
         console.log(`🩹 [v${EXT_VERSION}] Repaired missing ${msg.role} content on message ${msgIdx}`);
-        changed = true;
+        changed++;
       }
     });
 
@@ -2500,9 +2462,9 @@
   }
 
   function repairAnthropicMissingToolResults(body) {
-    if (!body || !Array.isArray(body.messages)) return false;
+    if (!body || !Array.isArray(body.messages)) return 0;
 
-    let changed = false;
+    let changed = 0;
     const messages = body.messages;
 
     for (let i = 0; i < messages.length; i++) {
@@ -2533,7 +2495,7 @@
           content: stubContent
         });
         console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result message after assistant message ${i} for ${toolUseIds.length} tool_use(s)`);
-        changed = true;
+        changed++;
         continue;
       }
 
@@ -2558,7 +2520,7 @@
             content: [{ type: 'text', text: '✓' }]
           });
           console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result for tool_use_id: ${id} in message ${i + 1}`);
-          changed = true;
+          changed++;
         }
       });
     }
@@ -2888,12 +2850,31 @@
     return changed;
   }
 
+  // Read a single request header value from either a Headers instance or a plain object / array-of-pairs.
+  function tmReadRequestHeader(options, name) {
+    try {
+      const h = options && options.headers;
+      if (!h) return null;
+      const want = String(name).toLowerCase();
+      if (typeof h.get === 'function') {
+        return h.get(name) || h.get(want) || null;
+      }
+      for (const k in h) {
+        if (Object.prototype.hasOwnProperty.call(h, k) && String(k).toLowerCase() === want) {
+          return h[k];
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
     const [url, options = {}] = args;
     let convIdForThisCall = null;
     let vendorForThisCall = null;
+    let repairTallyForThisCall = null;
 
     // ==================== PASSTHROUGH GUARD (cooperate with sibling extensions) ====================
     // Some of Dan's OTHER extensions (e.g. the Whisper Transcription widget's "✨ Refine" feature)
@@ -2943,12 +2924,6 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
-
-          if (url.includes('openrouter.ai')) {
-            if (tmEnsureOpenRouterGpt54Reasoning(body)) modified = true;
-          } else if (/api\.openai\.com/i.test(url)) {
-            if (tmEnsureOpenAIGpt54Reasoning(body)) modified = true;
-          }
 
           // Capture latest Anthropic body for export tooling (deep clone)
           try {
@@ -3187,10 +3162,6 @@
             modified = true;
           }
 
-          if (tmEnsureOpenRouterGpt54Reasoning(body)) {
-            modified = true;
-          }
-
           if (isClaude) {
             // Normalize top-level cache_control to ttl:1h.
             // OpenRouter/Anthropic now rejects mixed TTLs between top-level and block-level
@@ -3268,10 +3239,6 @@
             console.warn('⚠️ [v' + EXT_VERSION + '] Failed to clone OpenAI Responses body for export:', e);
           }
 
-          if (tmEnsureOpenAIGpt54Reasoning(body)) {
-            modified = true;
-          }
-
           if (typeof model === 'string' && model.startsWith('gpt-5.1')) {
             if (!body.prompt_cache_key) {
               body.prompt_cache_key = 'dan-dagger-gpt5.1-v1';
@@ -3300,6 +3267,74 @@
       }
     }
 
+    // ==================== TYPINGMIND CORS-PROXY BRANCH (crash-prevention repairs ONLY; NO prompt-caching) ====================
+    // TypingMind routes some providers (notably OpenRouter's native Anthropic /v1/messages endpoint) through
+    // its own CORS proxy: the fetch URL is https://www.typingmind.com/api/cors-proxy and the REAL upstream
+    // endpoint is carried in the request header  x-target-endpoint . None of the URL-keyed branches above can
+    // see that traffic, so on the proxied path the extension was fully dormant.
+    //
+    // ⚠️ DELIBERATELY NO PROMPT-CACHING HERE. Caching on this path ALREADY works without us (TypingMind + the
+    // native /v1/messages endpoint set cache_control themselves — confirmed live via cache_read_input_tokens
+    // ~184K on a warm turn). Injecting our own cache_control/anthropic-beta would be redundant and risks the
+    // provider 'too many cache_control blocks' cap. We ONLY apply the crash-prevention body repairs, which had
+    // no coverage on this (primary, daily-driver) path.
+    else if (typeof url === 'string' && url.includes('typingmind.com/api/cors-proxy')) {
+      const tmProxyTarget = tmReadRequestHeader(options, 'x-target-endpoint');
+      const tgtLower = String(tmProxyTarget || '').toLowerCase();
+      // Anthropic-native "messages" shape (OpenRouter Anthropic skin OR direct Anthropic), routed via proxy.
+      const proxyIsAnthropicMessages = tgtLower.includes('/v1/messages') || tgtLower.includes('api.anthropic.com');
+      if (proxyIsAnthropicMessages) {
+        vendorForThisCall = 'tm-proxy-anthropic';
+        try {
+          if (options.body) {
+            const body = JSON.parse(options.body);
+            let modified = false;
+            const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
+
+            // Strip stray tool_result.name (MCP adds name:"STDOUT"; Anthropic rejects it).
+            if (Array.isArray(body.messages)) {
+              body.messages.forEach((msg) => {
+                if (msg && Array.isArray(msg.content)) {
+                  msg.content.forEach((block) => {
+                    if (block && block.type === 'tool_result' && Array.isArray(block.content)) {
+                      block.content.forEach((rc) => {
+                        if (rc && rc.type === 'text' && rc.name !== undefined) {
+                          delete rc.name;
+                          tally.toolResultName++;
+                          modified = true;
+                        }
+                      });
+                    }
+                  });
+                }
+              });
+            }
+
+            // Crash-prevention repairs (each returns a COUNT of items repaired as of v4.62).
+            tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
+            tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
+            tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
+            if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+
+            const convId = deriveConversationIdFromBody(body);
+            if (convId) {
+              convIdForThisCall = convId;
+              notePayloadConversation(vendorForThisCall, convId, body.model);
+            }
+
+            repairTallyForThisCall = tally;
+
+            if (modified) {
+              options.body = JSON.stringify(body);
+              console.log('✅ [v' + EXT_VERSION + '] TypingMind proxy → ' + tmProxyTarget + ': applied crash-prevention repairs only (no cache changes):', tally);
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify TypingMind proxy request:', e);
+        }
+      }
+    }
+
 
     // ==================== PAYLOAD CAPTURE (always-on, ring buffer) ====================
     // Captures the FINAL outbound request payload (after any modifications above).
@@ -3307,7 +3342,7 @@
     // and prompt caching markers without using the Network tab.
     let captureId = null;
     try {
-      captureId = tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall);
+      captureId = tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall);
     } catch (e) {
       // Never break requests due to capture
     }
