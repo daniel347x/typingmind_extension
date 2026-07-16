@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.192 Changes:
+ * - SAFETY FIX (Context slots): renaming a slot via its ✎ pen now ALSO makes that slot ACTIVE and
+ *   loads it into the editor (mirrors clicking the square). Previously the ✎ pen renamed a slot
+ *   WITHOUT activating it, so you could rename an old slot, then select-all-delete or retype and
+ *   unknowingly clobber a DIFFERENT active slot. Now the slot you just named is always the active,
+ *   loaded one — what you edit is what you think you are editing.
+ *
  * v3.191 Changes:
  * - NEW: quick session-switcher on the main widget. Hover (~0.5s) or click the "✨ context:" label
  *   and a list of all session slots pops up ABOVE it; click one to make it the active slot — no need
@@ -601,7 +608,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.191',
+  VERSION: '3.192',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2296,7 +2303,21 @@
         pen.onclick = (e) => {
           e.stopPropagation();
           const nm = prompt('Name for slot ' + (i + 1) + ':', slot.name);
-          if (nm && nm.trim()) { slot.name = nm.trim(); refineSaveContexts(slots); if (i === activeIdx()) refineUpdateContextButtonLabel(); if (i === editingIndex) paintFullName(); paintRibbon(); }
+          if (nm && nm.trim()) {
+            slot.name = nm.trim();
+            // SAFETY: renaming a slot ALSO activates + loads it (mirrors clicking the square), so the
+            // slot you just named is the one that is ACTIVE and shown in the textarea. Without this you
+            // could rename an old slot but keep editing/deleting a DIFFERENT active slot by mistake.
+            stashCurrentText();               // preserve unsaved edits of the slot we were on
+            editingIndex = i;
+            refineSetActiveContextIndex(i);   // makes it active + updates the main-widget label
+            ta.value = slots[i].text || '';
+            editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
+            refineSaveContexts(slots);
+            paintFullName();
+            paintRibbon();
+            ta.focus();
+          }
         };
         sq.appendChild(nameSpan);
         sq.appendChild(pen);
