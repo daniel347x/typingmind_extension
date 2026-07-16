@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.68
+// Version: 4.69
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,10 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.69: The per-row payload-capture modal ribbon now also shows the cache report (blue = reused/saved,
+//     red = newly-created) to the RIGHT of the repair tally — same font/colors as the always-visible header
+//     — so you can scan cache read/write across the most recent turns at a glance. Extracted a shared
+//     tmRenderCacheReport() helper used by both the header and the modal rows.
 //   - v4.68: Alert-fatigue fix for the repair badge. Slot 2 (historic empty tool_use.input) is common and
 //     harmless (no-arg tool calls like GLIMPSE serialize input as {}), so it ALONE no longer turns the R
 //     block orange or raises the ⚠. The badge is a calm slate (#9aa4b2) by default and only goes orange +
@@ -79,7 +83,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.68';
+  const EXT_VERSION = '4.69';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1359,6 +1363,23 @@
     return out.join(' ');
   }
 
+  // (v4.69) Render the prompt-cache report (blue = tokens reused/saved, red = newly-created/expensive) for
+  // a payload's usage. Shared by the always-visible header AND the per-row payload-capture modal ribbon.
+  function tmRenderCacheReport(au, oru) {
+    if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
+      return '<span style="color:#7dd67d;">cache</span> ' +
+        '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
+        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>';
+    }
+    if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens != null) {
+      var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
+      return '<span style="color:#7dd67d;">cache</span> ' +
+        '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
+        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>';
+    }
+    return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>';
+  }
+
   function tmBuildWidgetStatusLine() {
     var st = tmMostRecentPayloadStatus || {};
     var rt = st.repairTally || null;
@@ -1398,22 +1419,7 @@
 
     var au = st.anthropicUsage;
     var oru = st.orUsage;
-    if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
-      parts.push(
-        '<span style="color:#7dd67d;">cache</span> ' +
-        '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
-        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>'
-      );
-    } else if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens != null) {
-      var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
-      parts.push(
-        '<span style="color:#7dd67d;">cache</span> ' +
-        '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
-        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>'
-      );
-    } else {
-      parts.push('<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>');
-    }
+    parts.push(tmRenderCacheReport(au, oru));
 
     return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
   }
@@ -2346,8 +2352,8 @@
       html += '<div style="font-size:10px;opacity:0.85;margin-top:2px;color:#8cf;">' + ts + '</div>';
       html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
-      // (v4.66) Per-row repair ribbon — scan down the modal to see which individual payloads triggered repairs.
-      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + '</div>';
+      // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
+      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage) + '</div>';
 
       html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
       html += '<div style="margin-top:2px;">' +
