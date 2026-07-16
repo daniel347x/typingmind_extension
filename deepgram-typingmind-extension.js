@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.190 Changes:
+ * - TWEAK: in the 📝 Context slot-picker modal, each slot square's hover tooltip now LEADS with the
+ *   slot's FULL name on its own first line (the square itself only shows ~8 chars), so you can read a
+ *   slot's name on hover without having to click into it.
+ *
  * v3.189 Changes:
  * - REFINE PROMPT OVERHAUL: reworked the default cleanup SYSTEM prompt for RAW voice transcription
  *   (Wispr Flow's first-pass auto-cleanup is now OFF). Flipped from a timid "repair pass — change
@@ -590,7 +595,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.189',
+  VERSION: '3.190',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2199,7 +2204,7 @@
           + 'border:2px solid ' + (isEditing ? '#4da3ff' : (isActive ? '#2b7a2b' : '#444')) + '; '
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-        sq.title = 'Slot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename';
+        sq.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename';
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
