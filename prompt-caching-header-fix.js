@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.63
+// Version: 4.64
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,14 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.64: Extend the repair-tally badge to the STANDARD (non-proxy) Anthropic-native branches too:
+//     direct api.anthropic.com and the OpenRouter /v1/messages skin now build the same per-call tally
+//     (previously only the cors-proxy branch did), so the header badge is populated regardless of which
+//     Anthropic path a payload took. NOTE: the 4 counted repairs are Anthropic-messages-shaped
+//     (tool_result.name strip / historic empty tool_use.input / empty content / missing tool_result);
+//     the OpenRouter OpenAI-compat path (/api/v1/chat/completions) has a different body shape so these do
+//     NOT apply there, and Gemini thoughtSignature + OpenAI orphaned-tool-call repairs are separate and
+//     intentionally not part of this tally.
 //   - v4.63: Repurpose the always-visible widget header (top line) into a live status readout for the
 //     MOST RECENT payload: version + repair-tally badge (orange, R a/b/c/d; bold+⚠ if any>0) + cache
 //     report (green 'cache' label, BLUE cache-read/saved, RED cache-creation/expensive). Replaces the
@@ -49,7 +57,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.63';
+  const EXT_VERSION = '4.64';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2997,6 +3005,7 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
+          const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
 
           // Capture latest Anthropic body for export tooling (deep clone)
           try {
@@ -3038,6 +3047,7 @@
                       if (resultContent.type === 'text' && resultContent.name !== undefined) {
                         console.log(`🔧 [v3.0] Removing "name":"${resultContent.name}" from tool_result (msg ${msgIdx}, block ${blockIdx}, content ${contentIdx})`);
                         delete resultContent.name;
+                        tally.toolResultName++;
                         modified = true;
                       }
                     });
@@ -3047,16 +3057,15 @@
             });
           }
 
-          if (repairHistoricAnthropicToolInputs(body)) {
-            modified = true;
-          }
-          if (repairAnthropicEmptyMessageContent(body)) {
-            modified = true;
-          }
+          tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
+          if (tally.historicToolInputs) modified = true;
+          tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
+          if (tally.emptyMessageContent) modified = true;
           // 🩹 FIX: Inject missing tool_result blocks (v4.28)
-          if (repairAnthropicMissingToolResults(body)) {
-            modified = true;
-          }
+          tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
+          if (tally.missingToolResults) modified = true;
+
+          repairTallyForThisCall = tally;
 
           const convId = deriveConversationIdFromBody(body);
           if (convId && vendorForThisCall) {
@@ -3183,6 +3192,7 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
+          const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
 
           // Inject top-level automatic cache_control with 1h TTL
           if (!body.cache_control) {
@@ -3201,9 +3211,11 @@
           }
 
           // Repair tools/content issues (same as direct Anthropic)
-          if (repairHistoricAnthropicToolInputs(body)) modified = true;
-          if (repairAnthropicEmptyMessageContent(body)) modified = true;
-          if (repairAnthropicMissingToolResults(body)) modified = true;
+          tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
+          tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
+          tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
+          if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+          repairTallyForThisCall = tally;
 
           if (modified) {
             options.body = JSON.stringify(body);
