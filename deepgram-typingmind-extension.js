@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.195 Changes:
+ * - UI: tightened the Refine control row so it fits on ONE line (it was wrapping the Dictionary/Key
+ *   buttons to a second row): provider dropdown narrowed (labels shortened + width cap), and reduced
+ *   padding on the ➕/🗑️ model buttons and the rarely-clicked 📜 Prompt / 📖 Dictionary / 🔑 Key buttons
+ *   (📝 Context left comfortable since it is the frequently-used one). Cosmetic only.
+ * - 📖 Dictionary -> Paste JSON now PRE-SELECTS the current saved JSON in the modal (it already prefilled
+ *   it; now it is fully selected) so you can backspace-and-paste or edit in place immediately.
+ *
  * v3.194 Changes:
  * - REFINE dictionary protect-list: the injected PROTECTED TERMS block now (a) explains WHY those terms
  *   are there — a semi-smart personal auto-correct dictionary applied them before the text reached the
@@ -625,7 +633,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.194',
+  VERSION: '3.195',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2715,7 +2723,7 @@
     const cur = localStorage.getItem(CONFIG.REFINE_DICTIONARY_STORAGE) || '';
     refineOpenTextModal({
       title: '📖 Dictionary — protect-list JSON',
-      subtitle: 'Paste the JSON array the agent produced. Stored on THIS machine only; scanned before each Refine to protect your canonical terms from being reverted.',
+      subtitle: 'Shows the CURRENT saved JSON, fully selected — backspace to clear then paste, or edit in place. Stored on THIS machine only; scanned before each Refine to protect your canonical terms.',
       value: cur,
       allowRestoreDefault: false,
       onSave: function (val) {
@@ -2729,6 +2737,12 @@
         updateStatus('📖 Dictionary saved: ' + terms.length + ' protected terms', 'success');
       }
     });
+    // Pre-select the whole textarea so you can immediately backspace/paste (or edit in place).
+    try {
+      const ov = document.getElementById('deepgram-refine-modal-overlay');
+      const t = ov && ov.querySelector('textarea');
+      if (t) { t.focus(); t.select(); }
+    } catch (e) {}
   }
   function refineShowDictionaryMenu() {
     const existing = document.getElementById('deepgram-refine-dict-menu');
@@ -4846,18 +4860,18 @@
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
           <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
           <span style="font-size:11px; opacity:0.8;">Provider</span>
-          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff;">
-            <option value="anthropic">Anthropic (Claude)</option>
+          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; max-width:110px;">
+            <option value="anthropic">Anthropic</option>
             <option value="openrouter">OpenRouter</option>
           </select>
           <span style="font-size:11px; opacity:0.8;">Model</span>
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; max-width:200px; color:#111; background:#fff;"></select>
-          <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:30px;">➕</button>
-          <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:30px;">🗑️</button>
+          <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:0; padding:3px 6px;">➕</button>
+          <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:0; padding:3px 6px;">🗑️</button>
           <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px;">📝 Context</button>
-          <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px;">📜 Prompt</button>
-          <button id="deepgram-refine-dict-btn" class="deepgram-btn deepgram-btn-secondary" title="Custom dictionary: protect your Wispr Flow canonical terms from being reverted by Refine (menu: copy agent instructions / paste JSON)" style="font-size:11px;">📖 Dictionary</button>
-          <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px;">🔑 Key</button>
+          <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px; padding:3px 7px;">📜 Prompt</button>
+          <button id="deepgram-refine-dict-btn" class="deepgram-btn deepgram-btn-secondary" title="Custom dictionary: protect your Wispr Flow canonical terms from being reverted by Refine (menu: copy agent instructions / paste JSON)" style="font-size:11px; padding:3px 7px;">📖 Dictionary</button>
+          <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px; padding:3px 7px;">🔑 Key</button>
         </div>
 
         <!-- ElevenLabs Read-Aloud control row -->
