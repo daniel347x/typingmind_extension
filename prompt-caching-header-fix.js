@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.62
+// Version: 4.63
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,12 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.63: Repurpose the always-visible widget header (top line) into a live status readout for the
+//     MOST RECENT payload: version + repair-tally badge (orange, R a/b/c/d; bold+⚠ if any>0) + cache
+//     report (green 'cache' label, BLUE cache-read/saved, RED cache-creation/expensive). Replaces the
+//     stale hard-coded 'GPT-5.1 Conversations' title so a glance confirms caching is landing and flags
+//     any crash-repairs without opening the modal. Updates async on each response (may 'jump' across
+//     concurrent sessions — intentional; not mapped to individual sessions).
 //   - v4.62: (a) NEW TypingMind cors-proxy branch — resolves the real upstream from the x-target-endpoint
 //     header (TypingMind proxies OpenRouter's native Anthropic /v1/messages via www.typingmind.com/api/cors-proxy)
 //     and applies CRASH-PREVENTION REPAIRS ONLY (empty content, missing tool_result, historic empty
@@ -43,7 +49,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.62';
+  const EXT_VERSION = '4.63';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -69,6 +75,10 @@
 
   // Last GPT-5.1 request body (for export of user+assistant-only JSON)
   let lastGpt51BodyForExport = null;
+
+  // (v4.63) Most-recent-payload status for the always-visible widget header: repair tally + cache usage.
+  // Reflects whichever payload most recently RECEIVED a response, across all sessions (it may 'jump').
+  let tmMostRecentPayloadStatus = { ts: 0, repairTally: null, anthropicUsage: null, orUsage: null };
 
   console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
   
@@ -572,6 +582,18 @@
             } catch (usageErr) {}
           }
           tmUpdateCaptureRecord(captureId, patch);
+
+          // (v4.63) Feed the always-visible widget header with this (most-recent) payload's status.
+          try {
+            var capRec = getCaptureById(captureId);
+            tmMostRecentPayloadStatus = {
+              ts: Date.now(),
+              repairTally: (capRec && capRec.repair_tally) || null,
+              anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
+              orUsage: patch.response_usage || (capRec && capRec.response_usage) || null
+            };
+            renderGpt51UsageWidget();
+          } catch (e) {}
         },
         function(err) {
           tmUpdateCaptureRecord(captureId, { response_body_parse_error: String(err && err.message ? err.message : err) });
@@ -1261,6 +1283,57 @@
     return el;
   }
 
+  // (v4.63) Compact token formatter for the header badge (184301 -> "184.3k").
+  function tmFmtTok(n) {
+    if (n == null || isNaN(Number(n))) return '0';
+    n = Number(n);
+    if (n >= 1000000) return (n / 1000000).toFixed(1) + 'm';
+    if (n >= 1000) return (n / 1000).toFixed(1) + 'k';
+    return String(n);
+  }
+
+  // (v4.63) Build the always-visible widget header: version + repair tally (orange) + most-recent cache
+  // report (green 'cache' label, BLUE = cache-read/saved, RED = cache-creation/expensive). Repurposes the
+  // old useless "GPT-5.1 Conversations" title. Reflects the MOST RECENT payload across sessions (may jump).
+  function tmBuildWidgetStatusLine() {
+    var st = tmMostRecentPayloadStatus || {};
+    var parts = [];
+    parts.push('<span style="opacity:0.7;">v' + EXT_VERSION + '</span>');
+
+    var rt = st.repairTally;
+    var rvals = rt
+      ? [rt.toolResultName || 0, rt.historicToolInputs || 0, rt.emptyMessageContent || 0, rt.missingToolResults || 0]
+      : [0, 0, 0, 0];
+    var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
+    var rTitle = 'repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
+    if (rsum > 0) {
+      parts.push('<span title="' + rTitle + '" style="color:#ff9d3d;font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
+    } else {
+      parts.push('<span title="' + rTitle + '" style="color:#ff9d3d;">R ' + rvals.join('/') + '</span>');
+    }
+
+    var au = st.anthropicUsage;
+    var oru = st.orUsage;
+    if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
+      parts.push(
+        '<span style="color:#7dd67d;">cache</span> ' +
+        '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
+        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>'
+      );
+    } else if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens != null) {
+      var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
+      parts.push(
+        '<span style="color:#7dd67d;">cache</span> ' +
+        '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
+        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>'
+      );
+    } else {
+      parts.push('<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>');
+    }
+
+    return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
+  }
+
   function renderGpt51UsageWidget() {
     if (typeof document === 'undefined') return;
     const el = ensureGpt51UsageWidget();
@@ -1275,9 +1348,9 @@
     const lines = [];
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
-      '<div style="display:flex;justify-content:space-between;align-items:center;font-weight:bold;font-size:10px;margin-bottom:2px;">' +
-        '<span>GPT-5.1 Conversations (v' + EXT_VERSION + ')</span>' +
-        '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;margin-left:6px;">' + toggleIcon + '</span>' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
+        '<span style="font-weight:normal;line-height:1.5;">' + tmBuildWidgetStatusLine() + '</span>' +
+        '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;margin-left:6px;font-weight:bold;">' + toggleIcon + '</span>' +
       '</div>'
     );
 
