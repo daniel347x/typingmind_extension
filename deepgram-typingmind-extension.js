@@ -633,7 +633,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.195',
+  VERSION: '3.196',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1098,6 +1098,8 @@
   let elevenVoiceId = null;
   let elevenModel = null;
   let elevenStopped = false;     // set true by stopReadAloud so in-flight fetches abort cleanly
+  let elevenDetached = false;    // ONE-WAY detach: read from a snapshot, freeing the live edit box
+  let elevenSourceText = '';     // snapshot of the full text the chunks were built from (for %/position math when detached)
 
   // Target characters per chunk. The API hard-caps Multilingual v2 at 10,000, but we deliberately
   // aim MUCH smaller (default ~1,500) so each Now-Playing chunk is only a paragraph or two \u2014 easy to
@@ -1259,6 +1261,9 @@
     elevenStopped = false;
     elevenPrefetch = null;
     elevenChunkIndex = -1;
+    elevenDetached = false;          // a fresh \u25b6 always reads the LIVE box (implicit reattach)
+    elevenSourceText = fullText;     // snapshot for detached %/position math
+    elevenApplyDetachUI();
 
     // Start the queue at chunk 0.
     await elevenPlayChunk(0);
@@ -1400,7 +1405,8 @@
     if (!pane || !ta || !chunk) return;
 
     // Compute rough position within the FULL transcript (best-effort, not exact).
-    const full = (document.getElementById('deepgram-transcript') || {}).value || '';
+    const full = elevenDetached ? elevenSourceText
+      : ((document.getElementById('deepgram-transcript') || {}).value || '');
     const totalLen = full.length || 1;
     const aboveChars = Math.max(0, chunk.start);
     const belowChars = Math.max(0, full.length - chunk.end);
@@ -1603,8 +1609,52 @@
     elevenChunkIndex = -1;
     elevenPrefetch = null;
     elevenIsFetching = false;
+    elevenDetached = false;
+    elevenSourceText = '';
+    elevenApplyDetachUI();
     elevenHideNowPlaying();
     elevenSetTransportState('idle');
+  }
+
+  /**
+   * Apply the current attach/detach state to the UI: recolor + (one-line vs two-line) the
+   * "Read Aloud" label, and show/hide the "Jump to this in editor" button (meaningless once
+   * detached). Everything stays inside the SINGLE label flex-item, so the control row's height
+   * never changes \u2014 the buttons are ~29px tall; two tight 11/10px lines are ~23px, so they fit
+   * within the existing row height with vertical room to spare.
+   */
+  function elevenApplyDetachUI() {
+    const jumpBtn = document.getElementById('deepgram-nowplaying-jump-btn');
+    if (jumpBtn) jumpBtn.style.display = elevenDetached ? 'none' : '';
+    const label = document.getElementById('deepgram-eleven-label');
+    if (!label) return;
+    if (elevenDetached) {
+      // Two stacked lines, left-justified, red-orange. No colon (we're already reading aloud).
+      label.innerHTML = '<span>\ud83d\udd0a Read Aloud</span><span style="font-size:10px;">(detached)</span>';
+      label.style.color = '#e2571e';
+      label.style.opacity = '1';
+    } else {
+      label.innerHTML = '\ud83d\udd0a Read Aloud:';
+      label.style.color = '';
+      label.style.opacity = '0.8';
+    }
+  }
+
+  /**
+   * ONE-WAY detach (option A: only while a reading is active). Snaps the read-aloud engine off the
+   * live edit box so the box is free for normal composing/submitting; playback continues from the
+   * snapshot (elevenSourceText) captured at play time. There is no reattach button \u2014 press \u25b6 from a
+   * stopped state and readAloud() rebuilds from the live box (which clears elevenDetached).
+   */
+  function elevenToggleDetach() {
+    if (elevenDetached) return;                       // one-way; already detached
+    if (!(elevenChunks && elevenChunks.length)) {     // nothing playing \u2192 nothing to detach
+      alert('Detach applies while Read Aloud is playing.\n\nPress \u25b6 to start a reading, then click "\ud83d\udd0a Read Aloud" to detach it from the edit box so you can keep typing.');
+      return;
+    }
+    elevenDetached = true;                             // elevenSourceText already holds the snapshot
+    elevenApplyDetachUI();
+    if (elevenChunkIndex >= 0) elevenHighlightChunk(elevenChunkIndex); // refresh %/lines vs snapshot
   }
 
   /**
@@ -4876,7 +4926,7 @@
 
         <!-- ElevenLabs Read-Aloud control row -->
         <div id="deepgram-eleven-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:6px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
-          <span style="font-size:11px; opacity:0.8;">🔊 Read Aloud:</span>
+          <span id="deepgram-eleven-label" title="Click to DETACH (frees the edit box; the current reading keeps going from a snapshot). Press ▶ from a stopped state to reattach." style="font-size:11px; opacity:0.8; display:inline-flex; flex-direction:column; justify-content:center; align-items:flex-start; line-height:1.1; cursor:pointer; user-select:none;">🔊 Read Aloud:</span>
           <button id="deepgram-eleven-play-btn" class="deepgram-btn deepgram-btn-info" title="Read the transcript window aloud" style="min-width:34px;">▶</button>
           <button id="deepgram-eleven-stop-btn" class="deepgram-btn deepgram-btn-secondary" title="Stop (reset to start)" style="min-width:34px;" disabled>⏹</button>
           <span style="font-size:11px; opacity:0.8;">Speed</span>
@@ -5197,6 +5247,8 @@
     document.getElementById('deepgram-eleven-delvoice-btn').addEventListener('click', elevenRemoveVoice);
     document.getElementById('deepgram-eleven-clearkey-btn').addEventListener('click', elevenClearApiKey);
     document.getElementById('deepgram-nowplaying-jump-btn').addEventListener('click', elevenJumpToChunkInEditor);
+    const elevenLabelEl = document.getElementById('deepgram-eleven-label');
+    if (elevenLabelEl) elevenLabelEl.addEventListener('click', elevenToggleDetach);
     // Chunk-size input: initialize from storage, persist + resize pane on change.
     const chunkInput = document.getElementById('deepgram-eleven-chunk-input');
     if (chunkInput) {
