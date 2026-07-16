@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.66
+// Version: 4.67
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,15 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.67: HOTFIX for a regression exposed by v4.62 (running repairs on the proxy path for the first
+//     time). repairAnthropicMissingToolResults only checked the IMMEDIATELY-following message for an
+//     existing tool_result, so on TypingMind's already-well-formed proxy (native /v1/messages) payloads
+//     it could inject a SECOND tool_result for an id that already had one -> Anthropic 400 'each tool_use
+//     must have a single result. Found multiple tool_result blocks with id ...'. FIX: build a GLOBAL set
+//     of every tool_use_id that already has a result ANYWHERE in the payload and only inject for ids that
+//     are truly missing everywhere (marking each satisfied as we go), so a duplicate is now structurally
+//     impossible. On a valid payload nothing is truly missing -> the repair is a no-op. (Latent bug; also
+//     protected the direct-Anthropic + /v1/messages-skin branches.)
 //   - v4.66: Also render the two-family repair badge PER-ROW in the payload-capture modal, so you can
 //     scan the ring buffer and spot exactly which individual payloads triggered repairs (same R/T +
 //     family bright/dim as the header). Extracted a shared tmRenderRepairBlocks() helper used by both.
@@ -65,7 +74,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.66';
+  const EXT_VERSION = '4.67';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2607,6 +2616,24 @@
     let changed = 0;
     const messages = body.messages;
 
+    // (v4.67) GLOBAL guard: an id is only "missing" if it has NO tool_result ANYWHERE in the payload.
+    // Checking only the immediately-following message (the old behavior) could inject a SECOND result
+    // for an id whose result lived elsewhere (or was already present in a well-formed proxy payload),
+    // which Anthropic rejects with "each tool_use must have a single result. Found multiple tool_result
+    // blocks with id ...". Building this set up-front (and updating it as we inject) makes a duplicate
+    // structurally impossible; on a valid payload nothing is truly missing, so this is a no-op.
+    const globalResultIds = new Set();
+    for (let gi = 0; gi < messages.length; gi++) {
+      const gm = messages[gi];
+      if (gm && Array.isArray(gm.content)) {
+        gm.content.forEach(block => {
+          if (block && block.type === 'tool_result' && block.tool_use_id) {
+            globalResultIds.add(block.tool_use_id);
+          }
+        });
+      }
+    }
+
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i];
       if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
@@ -2621,11 +2648,15 @@
 
       if (toolUseIds.length === 0) continue;
 
+      // Only ids with NO result anywhere are genuinely missing (deduped).
+      const trulyMissing = [...new Set(toolUseIds)].filter(id => !globalResultIds.has(id));
+      if (trulyMissing.length === 0) continue;
+
       // Check the next message for corresponding tool_results
       const nextMsg = messages[i + 1];
       if (!nextMsg || nextMsg.role !== 'user') {
-        // No following user message at all - inject stub for all tool_uses
-        const stubContent = toolUseIds.map(id => ({
+        // No following user message at all - inject a stub message for the genuinely-missing tool_uses
+        const stubContent = trulyMissing.map(id => ({
           type: 'tool_result',
           tool_use_id: id,
           content: [{ type: 'text', text: '✓' }]
@@ -2634,34 +2665,26 @@
           role: 'user',
           content: stubContent
         });
-        console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result message after assistant message ${i} for ${toolUseIds.length} tool_use(s)`);
-        changed++;
+        trulyMissing.forEach(id => globalResultIds.add(id));
+        console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result message after assistant message ${i} for ${trulyMissing.length} tool_use(s)`);
+        changed += trulyMissing.length;
         continue;
       }
 
-      // Next message exists - check which tool_results are present
+      // Next message exists - append stubs ONLY for the genuinely-missing ids
       if (!Array.isArray(nextMsg.content)) {
         nextMsg.content = [];
       }
 
-      const existingResultIds = new Set();
-      nextMsg.content.forEach(block => {
-        if (block && block.type === 'tool_result' && block.tool_use_id) {
-          existingResultIds.add(block.tool_use_id);
-        }
-      });
-
-      // Inject stubs for missing tool_results
-      toolUseIds.forEach(id => {
-        if (!existingResultIds.has(id)) {
-          nextMsg.content.push({
-            type: 'tool_result',
-            tool_use_id: id,
-            content: [{ type: 'text', text: '✓' }]
-          });
-          console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result for tool_use_id: ${id} in message ${i + 1}`);
-          changed++;
-        }
+      trulyMissing.forEach(id => {
+        nextMsg.content.push({
+          type: 'tool_result',
+          tool_use_id: id,
+          content: [{ type: 'text', text: '✓' }]
+        });
+        globalResultIds.add(id);
+        console.log(`🩹 [v${EXT_VERSION}] Injected missing tool_result for tool_use_id: ${id} in message ${i + 1}`);
+        changed++;
       });
     }
 
