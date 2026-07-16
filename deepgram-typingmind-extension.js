@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.194 Changes:
+ * - REFINE dictionary protect-list: the injected PROTECTED TERMS block now (a) explains WHY those terms
+ *   are there — a semi-smart personal auto-correct dictionary applied them before the text reached the
+ *   model — and (b) adds a high-confidence ESCAPE HATCH: the model may revert a listed term ONLY if it is
+ *   very confident from context that the dictionary MISFIRED, biasing heavily toward keeping them. Gives
+ *   provenance + a safe way to catch genuine dictionary mis-corrections (e.g. collar->caller) without
+ *   reopening the reversion problem for deliberate terms like GLIMPSE.
+ *
  * v3.193 Changes:
  * - NEW: 📖 Dictionary button on the Refine row — protects your Wispr Flow canonical vocabulary from being
  *   reverted by the cleanup model (e.g. GLIMPSE getting lowercased). Two submenu options: (1) Copy agent
@@ -617,7 +625,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.193',
+  VERSION: '3.194',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2672,10 +2680,15 @@
     if (!present.length) return '';
     const lines = present.map(function (t) { return '- ' + t; }).join('\n');
     return [
-      '===== PROTECTED TERMS (already-correct custom vocabulary present in the text below) =====',
-      'The terms listed here already appear in their intended, correct form in the transcription below.',
-      'Reproduce EACH exactly as written: never change its casing, spelling, or punctuation, never split',
-      'or join it, and never "correct" it into an ordinary word or phrase. These forms are deliberate.',
+      '===== PROTECTED TERMS (custom vocabulary already applied to the text below) =====',
+      'These terms were applied by a personal auto-correct dictionary — a semi-smart, pre-established list',
+      'of custom words/phrases set up by the user — BEFORE this text reached you. They are almost always the',
+      'intended, deliberate forms. DEFAULT: reproduce each EXACTLY as written — keep its casing, spelling,',
+      'and punctuation, do not split or join it, and do not "correct" it into an ordinary word or phrase.',
+      'ESCAPE HATCH: that dictionary is far less intelligent than you, so it occasionally MISFIRES (applies',
+      'a custom term where the surrounding context clearly shows an ordinary word was meant). If — and ONLY',
+      'if — you have VERY HIGH confidence from context that a specific listed term was such a misfire, you',
+      'may change it back; otherwise keep it. Bias heavily toward keeping these.',
       lines,
       ''
     ].join('\n') + '\n';
