@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.191 Changes:
+ * - NEW: quick session-switcher on the main widget. Hover (~0.5s) or click the "✨ context:" label
+ *   and a list of all session slots pops up ABOVE it; click one to make it the active slot — no need
+ *   to open the full Context modal. Active slot is highlighted (✓), empty slots dimmed. Closes on
+ *   mouse-leave, outside-click, or Escape. (Full modal still on the 📝 Context button for edit/rename.)
+ *
  * v3.190 Changes:
  * - TWEAK: in the 📝 Context slot-picker modal, each slot square's hover tooltip now LEADS with the
  *   slot's FULL name on its own first line (the square itself only shows ~8 chars), so you can read a
@@ -595,7 +601,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.190',
+  VERSION: '3.191',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1884,6 +1890,81 @@
     const lbl = document.getElementById('deepgram-refine-active-context-label');
     if (lbl) lbl.textContent = refineGetActiveContextName();
     refineUpdateTailPreview();
+  }
+
+  /**
+   * Quick session-switcher opened from the "✨ context:" label on the MAIN widget (no full modal).
+   * Opens on hover (~500ms) or click; lists all slots in a popup ABOVE the label; click a row to make
+   * that slot ACTIVE. Closes on mouse-leave, outside-click, or Escape. The full 📝 Context modal (edit
+   * text / rename) is unchanged and still lives on the separate 📝 Context button.
+   */
+  function refineInstallContextQuickSwitch() {
+    const trigger = document.getElementById('deepgram-refine-context-switch');
+    if (!trigger || trigger.__quickSwitchWired) return;
+    trigger.__quickSwitchWired = true;
+
+    let popup = null, hoverTimer = null, hideTimer = null;
+    const HOVER_OPEN_MS = 500, HIDE_MS = 300;
+
+    const scheduleHide = () => { clearTimeout(hideTimer); hideTimer = setTimeout(closePopup, HIDE_MS); };
+
+    function closePopup() {
+      clearTimeout(hoverTimer); clearTimeout(hideTimer); hoverTimer = hideTimer = null;
+      if (popup) { popup.remove(); popup = null; }
+      document.removeEventListener('mousedown', onDocDown, true);
+      document.removeEventListener('keydown', onEsc, true);
+    }
+    function onDocDown(e){ if (popup && !popup.contains(e.target) && e.target !== trigger) closePopup(); }
+    function onEsc(e){ if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closePopup(); } }
+
+    function openPopup() {
+      if (popup) return;
+      const slots = refineGetContexts();
+      const activeIdx = refineGetActiveContextIndex();
+      popup = document.createElement('div');
+      popup.id = 'deepgram-refine-context-switch-popup';
+      popup.style.cssText = 'position:fixed; z-index:2147483646; min-width:200px; max-width:340px; max-height:60vh; overflow-y:auto; '
+        + 'background:#1e1e1e; color:#eee; border:1px solid #555; border-radius:8px; box-shadow:0 8px 30px rgba(0,0,0,0.6); '
+        + 'padding:6px; font-size:12px; line-height:1.35;';
+      const hdr = document.createElement('div');
+      hdr.textContent = 'Switch active session';
+      hdr.style.cssText = 'font-size:11px; opacity:0.6; padding:2px 6px 6px;';
+      popup.appendChild(hdr);
+      slots.forEach((slot, i) => {
+        const isActive = (i === activeIdx);
+        const hasText = slot.text && slot.text.trim();
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; align-items:baseline; gap:6px; padding:5px 8px; border-radius:5px; cursor:pointer; '
+          + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
+          + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
+        row.onmouseenter = () => { if (!isActive) row.style.background = 'rgba(255,255,255,0.08)'; };
+        row.onmouseleave = () => { row.style.background = isActive ? 'rgba(43,122,43,0.35)' : 'transparent'; };
+        const num = document.createElement('span');
+        num.textContent = (i + 1) + '.';
+        num.style.cssText = 'flex:0 0 auto; opacity:0.5; font-variant-numeric:tabular-nums;';
+        const nm = document.createElement('span');
+        nm.textContent = slot.name + (hasText ? '' : ' ·');
+        nm.style.cssText = 'flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; '
+          + (isActive ? 'font-weight:700; color:#2e9b2e;' : (hasText ? '' : 'opacity:0.55;'));
+        row.appendChild(num); row.appendChild(nm);
+        if (isActive) { const chk = document.createElement('span'); chk.textContent = '✓'; chk.style.cssText = 'flex:0 0 auto; color:#2e9b2e;'; row.appendChild(chk); }
+        row.onclick = () => { refineSetActiveContextIndex(i); closePopup(); };
+        popup.appendChild(row);
+      });
+      document.body.appendChild(popup);
+      // Anchor ABOVE the trigger, left-aligned, growing upward (clamped into the viewport).
+      const r = trigger.getBoundingClientRect();
+      popup.style.left = Math.max(6, Math.min(r.left, window.innerWidth - popup.offsetWidth - 6)) + 'px';
+      popup.style.bottom = (window.innerHeight - r.top + 6) + 'px';
+      popup.addEventListener('mouseenter', () => clearTimeout(hideTimer));
+      popup.addEventListener('mouseleave', scheduleHide);
+      document.addEventListener('mousedown', onDocDown, true);
+      document.addEventListener('keydown', onEsc, true);
+    }
+
+    trigger.addEventListener('mouseenter', () => { clearTimeout(hideTimer); hoverTimer = setTimeout(openPopup, HOVER_OPEN_MS); });
+    trigger.addEventListener('mouseleave', () => { clearTimeout(hoverTimer); scheduleHide(); });
+    trigger.addEventListener('click', (e) => { e.stopPropagation(); clearTimeout(hoverTimer); if (popup) closePopup(); else openPopup(); });
   }
 
   /**
@@ -4522,7 +4603,7 @@
         <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
         <div style="display:flex; align-items:baseline; gap:8px; margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9;">
           <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <span style="opacity:0.6;">✨ context:</span>
+            <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="opacity:0.6; cursor:pointer;">✨ context: ▾</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
@@ -4862,6 +4943,7 @@
     refineRefreshProviderDropdown();
     refineUpdateContextButtonLabel();
     refineUpdateTotalCostLabel();
+    refineInstallContextQuickSwitch();
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
