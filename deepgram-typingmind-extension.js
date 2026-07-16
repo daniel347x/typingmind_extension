@@ -11,11 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
- * v3.197 Changes:
+ * v3.198 Changes:
  * - UI FIX: the Refine Provider dropdown was clipping its text ("OpenRoute" missing the R) — v3.195 set a
  *   max-width with no explicit width, so the select sized to its widest option and then cropped the
  *   rendered label. Gave BOTH the Provider and Model dropdowns an explicit width (no clipping) and made
  *   each ~10% narrower, which also reclaims the space that was pushing 🔑 Key onto a second row.
+ *   (NOTE: v3.197 was taken by a parallel session working on the Read-Aloud feature; this is 3.198.)
  *
  * v3.196 Changes:
  * - 📖 Dictionary is now FILE-based (better for long lists): the "Copy agent instructions" prompt now
@@ -646,7 +647,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.197',
+  VERSION: '3.198',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
