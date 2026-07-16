@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.64
+// Version: 4.65
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,11 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.65: Add the OpenAI-family repair block (T n = orphaned tool_call repair count) beside the
+//     Anthropic R a/b/c/d block, and drive a FAMILY highlight: the most-recent payload's family is
+//     full-bright while the other family's block is DIMMED (not-applicable). So the header now reports
+//     BOTH repair families regardless of transport/endpoint (Anthropic vs OpenAI); the OpenRouter
+//     OpenAI-compat and OpenAI Responses branches now tag their family too. (Gemini repairs excluded.)
 //   - v4.64: Extend the repair-tally badge to the STANDARD (non-proxy) Anthropic-native branches too:
 //     direct api.anthropic.com and the OpenRouter /v1/messages skin now build the same per-call tally
 //     (previously only the cors-proxy branch did), so the header badge is populated regardless of which
@@ -57,7 +62,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.64';
+  const EXT_VERSION = '4.65';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1305,19 +1310,36 @@
   // old useless "GPT-5.1 Conversations" title. Reflects the MOST RECENT payload across sessions (may jump).
   function tmBuildWidgetStatusLine() {
     var st = tmMostRecentPayloadStatus || {};
+    var rt = st.repairTally || null;
+    var family = (rt && rt.family) ? rt.family : null;   // 'anthropic' | 'openai' | null
     var parts = [];
     parts.push('<span style="opacity:0.7;">v' + EXT_VERSION + '</span>');
 
-    var rt = st.repairTally;
+    // Anthropic-family repair block: R a/b/c/d. Full-bright when the most-recent payload was Anthropic
+    // family; dimmed (not applicable) otherwise. Bold + ⚠ only when active AND non-zero.
     var rvals = rt
       ? [rt.toolResultName || 0, rt.historicToolInputs || 0, rt.emptyMessageContent || 0, rt.missingToolResults || 0]
       : [0, 0, 0, 0];
     var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
-    var rTitle = 'repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
-    if (rsum > 0) {
-      parts.push('<span title="' + rTitle + '" style="color:#ff9d3d;font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
+    var rActive = (family === 'anthropic');
+    var rTitle = 'Anthropic repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
+    var rStyle = 'color:#ff9d3d;' + (rActive ? '' : 'opacity:0.3;');
+    if (rActive && rsum > 0) {
+      parts.push('<span title="' + rTitle + '" style="' + rStyle + 'font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
     } else {
-      parts.push('<span title="' + rTitle + '" style="color:#ff9d3d;">R ' + rvals.join('/') + '</span>');
+      parts.push('<span title="' + rTitle + '" style="' + rStyle + '">R ' + rvals.join('/') + '</span>');
+    }
+
+    // OpenAI-family repair block: T n (orphaned tool_call repair). Full-bright when the most-recent
+    // payload was OpenAI family; dimmed otherwise.
+    var tVal = rt ? (rt.orphanedToolCalls || 0) : 0;
+    var tActive = (family === 'openai');
+    var tTitle = 'OpenAI repairs: orphaned tool_call (injected missing preceding output_text)';
+    var tStyle = 'color:#ff9d3d;' + (tActive ? '' : 'opacity:0.3;');
+    if (tActive && tVal > 0) {
+      parts.push('<span title="' + tTitle + '" style="' + tStyle + 'font-weight:bold;">\u26a0 T ' + tVal + '</span>');
+    } else {
+      parts.push('<span title="' + tTitle + '" style="' + tStyle + '">T ' + tVal + '</span>');
     }
 
     var au = st.anthropicUsage;
@@ -2887,9 +2909,9 @@
   }
 
   function repairOpenAIOrphanedToolCalls(body) {
-    if (!body || !Array.isArray(body.input)) return false;
+    if (!body || !Array.isArray(body.input)) return 0;
 
-    let changed = false;
+    let changed = 0;
     const messages = body.input;
 
     for (let i = 0; i < messages.length; i++) {
@@ -2923,7 +2945,7 @@
           console.log(
             `🩹 [v${EXT_VERSION}] Repaired orphaned tool call in message ${i}: inserted dummy output_text before function_call`
           );
-          changed = true;
+          changed++;
         }
       }
     }
@@ -3005,7 +3027,7 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
-          const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
+          const tally = { family: 'anthropic', toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
 
           // Capture latest Anthropic body for export tooling (deep clone)
           try {
@@ -3192,7 +3214,7 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
-          const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
+          const tally = { family: 'anthropic', toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
 
           // Inject top-level automatic cache_control with 1h TTL
           if (!body.cache_control) {
@@ -3246,6 +3268,10 @@
           if (tmStabilizeToolsOrdering(body)) {
             modified = true;
           }
+
+          // (v4.65) Tag the FAMILY for the header badge. No shape-specific repairs run on the OpenAI-compat
+          // body here (R repairs are Anthropic-messages-only; T repair is Responses-only), so counts stay 0.
+          repairTallyForThisCall = { family: (isClaude ? 'anthropic' : (isOpenAIFamily ? 'openai' : null)), toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
 
           if (isClaude) {
             // Normalize top-level cache_control to ttl:1h.
@@ -3338,9 +3364,9 @@
           }
 
           // 🩹 FIX: Ensure every function_call has a preceding output_text (v4.27)
-          if (repairOpenAIOrphanedToolCalls(body)) {
-            modified = true;
-          }
+          var orphanedCount = repairOpenAIOrphanedToolCalls(body) || 0;
+          if (orphanedCount) modified = true;
+          repairTallyForThisCall = { family: 'openai', toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: orphanedCount };
 
           if (modified) {
             options.body = JSON.stringify(body);
@@ -3374,7 +3400,7 @@
           if (options.body) {
             const body = JSON.parse(options.body);
             let modified = false;
-            const tally = { toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0 };
+            const tally = { family: 'anthropic', toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
 
             // Strip stray tool_result.name (MCP adds name:"STDOUT"; Anthropic rejects it).
             if (Array.isArray(body.messages)) {
