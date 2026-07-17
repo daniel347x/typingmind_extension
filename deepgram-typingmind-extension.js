@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.207 Changes:
+ * - Refine context slots now show TWO concentric staleness color RINGS — identically on the 📝 Context
+ *   modal ribbon squares AND the quick-switcher popup rows (one shared refineSlotRingColors() so they
+ *   never drift). INNER ring = RELATIVE rank by actual time-delta among the 10 slots (bright green =
+ *   newest → dim gray = oldest; clustered edit-times get near-identical colors). OUTER ring = ABSOLUTE
+ *   age (bright blue = just now → dim gray-blue = ancient), piecewise-linear with continuous knees at
+ *   1 day and 1 week (>1 month floors). 'never' slots pin the oldest/dimmest end. So the oldest session
+ *   to recycle is obvious at a glance without hovering. Active slot now shown via background tint + a
+ *   small soft-green ✓ in the upper-right corner (freeing both rings for the gradients); the slot being
+ *   edited gets a blue accent outline.
+ *
  * v3.206 Changes:
  * - Refine context slots now record a per-slot 'lastUpdated' timestamp, stamped whenever a slot's TEXT
  *   changes (📎 Append, or an edited Save in the 📝 Context modal — NOT a mere view/switch or a rename).
@@ -702,7 +713,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.206',
+  VERSION: '3.207',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2269,6 +2280,79 @@
       return new Date(t).toLocaleString();
     }
   }
+
+  // ===== Slot staleness color gradients (two independent rings) =====
+  //
+  // Every slot square (in the Context modal ribbon) and every quick-switcher row shows TWO concentric
+  // colored rings, computed identically by refineSlotRingColors() so the two surfaces never drift:
+  //
+  //   INNER ring  = RELATIVE rank among the 10 slots. Newest = bright green, oldest = dim gray. The
+  //                 position is set by the ACTUAL time delta normalized between the newest and oldest
+  //                 slot (NOT an even 1..10 rank), so tightly-clustered edit times get near-identical
+  //                 colors and a lone stale slot drops to gray. 'never' (lastUpdated 0) = oldest.
+  //   OUTER ring  = ABSOLUTE age. Bright blue (just now) -> dim gray-blue (ancient). Piecewise-linear
+  //                 in age with knees at 1 DAY and 1 WEEK: age 0 -> brightness 1.0; 1 day -> 0.66;
+  //                 1 week -> 0.33; >= ~1 month -> floor 0.0. Continuous at the knees. 'never' = floor.
+  //
+  // Helper: linear interpolate two #rrggbb colors by t in [0,1].
+  function refineLerpColor(hexA, hexB, t) {
+    t = Math.max(0, Math.min(1, t));
+    const pa = [parseInt(hexA.slice(1,3),16), parseInt(hexA.slice(3,5),16), parseInt(hexA.slice(5,7),16)];
+    const pb = [parseInt(hexB.slice(1,3),16), parseInt(hexB.slice(3,5),16), parseInt(hexB.slice(5,7),16)];
+    const c = pa.map((v, i) => Math.round(v + (pb[i] - v) * t));
+    return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+  }
+
+  // Map an absolute age (ms) to a brightness in [0,1] via the 1-day / 1-week knees (continuous).
+  function refineAbsoluteBrightness(ageMs) {
+    if (!isFinite(ageMs) || ageMs < 0) return 0;
+    const DAY = 86400000, WEEK = 7 * DAY, MONTH = 30 * DAY;
+    if (ageMs <= DAY)   return 1.0 - (ageMs / DAY) * (1.0 - 0.66);          // [1.00 .. 0.66] over 0..1d
+    if (ageMs <= WEEK)  return 0.66 - ((ageMs - DAY) / (WEEK - DAY)) * (0.66 - 0.33); // [0.66 .. 0.33] over 1d..1w
+    if (ageMs <= MONTH) return 0.33 - ((ageMs - WEEK) / (MONTH - WEEK)) * 0.33;       // [0.33 .. 0.00] over 1w..1mo
+    return 0.0;
+  }
+
+  // Compute { inner, outer } ring colors for ONE slot, given the full set of slot timestamps.
+  //  - timestamps: array of lastUpdated values for all slots (0 / missing = never).
+  //  - t: this slot's lastUpdated (0 / missing = never).
+  // Colors:
+  //  inner (relative, green->gray):  bright #28e05a  ->  dim #555555
+  //  outer (absolute, blue->grayblue): bright #2f6fe0 ->  dim #3a4a5a
+  function refineSlotRingColors(t, timestamps) {
+    const now = Date.now();
+    const norm = (x) => (typeof x === 'number' && isFinite(x) && x > 0) ? x : 0; // 0 = never
+    const mine = norm(t);
+
+    // --- INNER: relative rank by delta between newest and oldest of the set ---
+    const vals = timestamps.map(norm);
+    const newest = Math.max.apply(null, vals.concat([0]));   // most-recent lastUpdated (0 if all never)
+    // oldest = smallest, but treat 'never'(0) as older than any real time by flooring to 0.
+    const realVals = vals.filter(v => v > 0);
+    const hasNever = vals.some(v => v === 0);
+    let oldest;
+    if (hasNever) oldest = 0;                                 // a 'never' slot pins the oldest end
+    else oldest = realVals.length ? Math.min.apply(null, realVals) : 0;
+    let frac;
+    if (newest <= 0) {
+      frac = 1;                                               // all never -> everyone at the gray/oldest end
+    } else if (newest === oldest) {
+      frac = 0;                                               // all identical -> everyone bright green
+    } else if (mine <= 0) {
+      frac = 1;                                               // this slot is 'never' -> oldest end
+    } else {
+      frac = (newest - mine) / (newest - oldest);             // 0 at newest, 1 at oldest
+    }
+    const inner = refineLerpColor('#28e05a', '#555555', frac);
+
+    // --- OUTER: absolute age brightness ---
+    const ageMs = (mine > 0) ? (now - mine) : Infinity;       // never -> infinitely old -> floor
+    const b = refineAbsoluteBrightness(ageMs);
+    const outer = refineLerpColor('#3a4a5a', '#2f6fe0', b);   // b=0 dim gray-blue .. b=1 bright blue
+
+    return { inner: inner, outer: outer };
+  }
+
   function refineGetActiveContextIndex() {
     let i = parseInt(localStorage.getItem(CONFIG.REFINE_ACTIVE_CONTEXT_STORAGE), 10);
     if (isNaN(i) || i < 0 || i >= CONFIG.REFINE_CONTEXT_SLOTS) i = 0;
@@ -2335,12 +2419,20 @@
       hdr.textContent = 'Switch active session';
       hdr.style.cssText = 'font-size:11px; opacity:0.6; padding:2px 6px 6px;';
       popup.appendChild(hdr);
+      // Timestamps of all slots, computed ONCE so every row's rings share one gradient scale
+      // IDENTICAL to the Context-modal ribbon squares (same helper, same colors).
+      const allTs = slots.map(s => (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0);
       slots.forEach((slot, i) => {
         const isActive = (i === activeIdx);
         const hasText = slot.text && slot.text.trim();
+        const rings = refineSlotRingColors(slot.lastUpdated, allTs);
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex; align-items:baseline; gap:6px; padding:5px 8px; border-radius:5px; cursor:pointer; '
+        // Two staleness rings, same as the ribbon squares: OUTER border = absolute-age blue;
+        // INNER (inset box-shadow) = relative green. Extra left/right padding gives the rings room.
+        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:5px 12px; margin:2px 0; border-radius:6px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
+          + 'border:2px solid ' + rings.outer + '; '
+          + 'box-shadow: inset 0 0 0 2px ' + rings.inner + '; '
           + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
         // Tooltip leads with the full slot name (squares/rows are truncated) + last-updated time.
         row.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
@@ -2691,15 +2783,31 @@
 
     function paintRibbon() {
       ribbon.innerHTML = '';
+      // Timestamps of all slots, computed ONCE so every square's rings share one gradient scale.
+      const allTs = slots.map(s => (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0);
       slots.forEach((slot, i) => {
         const sq = document.createElement('div');
         const isActive = (i === activeIdx());
         const isEditing = (i === editingIndex);
+        // Two staleness rings: OUTER border = absolute-age blue; INNER (inset box-shadow) = relative green.
+        const rings = refineSlotRingColors(slot.lastUpdated, allTs);
+        // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
+        // slot you're editing is still obvious without stealing the absolute-age ring.
+        const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
         sq.style.cssText = 'position:relative; min-width:44px; max-width:64px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
-          + 'border:2px solid ' + (isEditing ? '#4da3ff' : (isActive ? '#2b7a2b' : '#444')) + '; '
+          + 'border:2px solid ' + rings.outer + '; '
+          + 'box-shadow: inset 0 0 0 2px ' + rings.inner + '; '
+          + editOutline
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
         sq.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename' + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
+        // ACTIVE slot: a small check mark in the upper-right corner, in a softer green than the gradient.
+        if (isActive) {
+          const chk = document.createElement('span');
+          chk.textContent = '✓';
+          chk.style.cssText = 'position:absolute; top:1px; right:3px; font-size:10px; line-height:1; color:#7CFC9E; text-shadow:0 0 2px rgba(0,0,0,0.7); pointer-events:none;';
+          sq.appendChild(chk);
+        }
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
