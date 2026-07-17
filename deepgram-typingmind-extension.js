@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.204 Changes:
+ * - Transcript expand/collapse height delta changed 460 -> 480 (expanded box is now 480px shorter than
+ *   the full/collapsed height; e.g. 940 collapsed => 460 expanded).
+ *
  * v3.203 Changes:
  * - FIX residual ~20px height mismatch: a STALE saved transcript height in localStorage (left over from
  *   the earlier version churn) was overriding the clean 940 default, so the collapsed/expanded pair was
@@ -687,7 +691,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.203',
+  VERSION: '3.204',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -791,7 +795,7 @@
     DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
-    TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 460
+    TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 480
   };
   
   // ==================== STATE ====================
