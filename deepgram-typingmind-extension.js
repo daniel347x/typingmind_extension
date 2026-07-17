@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.208 Changes:
+ * - 📖 Dictionary agent-instructions: the embedded script now PRINTS the output path in WINDOWS form
+ *   (C:\\Users\\danie\\...) instead of forward slashes, so when the agent faithfully echoes the printed
+ *   line you get a path the Windows file picker accepts. (The file is still WRITTEN via the WSL /mnt/c
+ *   path; only the human-facing printed path changed.) NOTE: 3.206/3.207 were the parallel Read-Aloud/
+ *   context-slot session.
+ *
  * v3.207 Changes:
  * - Refine context slots now show TWO concentric staleness color RINGS — identically on the 📝 Context
  *   modal ribbon squares AND the quick-switcher popup rows (one shared refineSlotRingColors() so they
@@ -713,7 +720,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.207',
+  VERSION: '3.208',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3151,13 +3158,13 @@
     'out = "/mnt/c/Users/danie/wispr_dictionary_protect_list.json"',
     'with open(out, "w", encoding="utf-8") as f:',
     '    json.dump(sorted(protect, key=lambda s: s.lower()), f, ensure_ascii=False, indent=0)',
-    'print("Wrote " + str(len(protect)) + " terms to: C:/Users/danie/wispr_dictionary_protect_list.json")',
+    'print("Wrote " + str(len(protect)) + " terms to (Windows path): " + r"C:\\Users\\danie\\wispr_dictionary_protect_list.json")',
     '',
     'RULES:',
     '- The table is "Dictionary". Skip rows where isDeleted=1 or isSnippet=1.',
     '- For each remaining row: if "replacement" is non-empty use it (the canonical TARGET already in my',
     '  text); otherwise use "phrase" (a plain canonical term).',
-    '- Do NOT print the list to the console. Just write the file and report the printed file path to me.',
+    '- Do NOT print the list to the console. Just write the file and report the printed WINDOWS file path to me VERBATIM (backslashes, e.g. C:\\Users\\danie\\... — do NOT convert it to forward slashes).',
     '- I will load it via the widget button: 📖 Dictionary -> 📂 Import from file (recommended). No need to',
     '  paste any JSON into chat.',
   ].join('\n');
