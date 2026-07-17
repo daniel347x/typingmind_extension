@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.202 Changes:
+ * - FIX the transcript-height control confusion: there were TWO heights (a collapsed one and a separate
+ *   expanded one) and the Expand/Collapse toggle FORCED fixed CONFIG constants, clobbering any value you
+ *   typed — which is why edits 'snapped back' and why the field showed 480 while expanded. Now the ONE
+ *   height field always edits the FULL (collapsed) box height, persists it, and the toggle honors the
+ *   saved value instead of overwriting it. Editing it shifts BOTH modes by the same amount (expanded
+ *   stays a fixed 460px shorter than collapsed), so one control cleanly governs both. No new control.
+ *
  * v3.201 Changes:
  * - FIX: the title still reverted to "Whisper/Deepgram Transcription" because updateModeUI() rewrites the
  *   header on every mode switch/load — both branches now say "Transcription Control".
@@ -673,7 +681,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.201',
+  VERSION: '3.202',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -774,7 +782,10 @@
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
     DEFAULT_TRANSCRIPT_HEIGHT: 940,
     DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 940,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480,
+    // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
+    // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
+    TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 460
   };
   
   // ==================== STATE ====================
@@ -6920,6 +6931,17 @@
   //   role=top controls collapsed state sync,
   //   kind=AST,
   // ]
+  // The ONE source of truth for the box height is the COLLAPSED (full) height, saved in localStorage
+  // (falling back to the CONFIG default). The EXPANDED height is always DELTA px shorter. These helpers
+  // keep the single height field, the two view modes, and persistence consistent.
+  function getSavedCollapsedTranscriptHeight() {
+    const saved = parseInt(localStorage.getItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE), 10);
+    return (!isNaN(saved) && saved > 0) ? saved : CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT;
+  }
+  function expandedHeightFor(collapsedHeight) {
+    return Math.max(150, collapsedHeight - CONFIG.TRANSCRIPT_EXPAND_COLLAPSE_DELTA);
+  }
+
   function setTopSectionCollapsed(collapsed) {
     const topSection = document.getElementById('deepgram-top-section');
     const toggleBtn = document.getElementById('deepgram-top-toggle-btn');
@@ -6934,15 +6956,17 @@
       ? 'Show rarely-used controls above status panel'
       : 'Hide rarely-used controls above status panel';
     
-    const targetHeight = collapsed
-      ? CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT
-      : CONFIG.DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT;
+    // Honor the SAVED (collapsed/full) height rather than forcing a constant; the expanded view is
+    // simply DELTA px shorter. The height field ALWAYS shows the collapsed/full value so it never
+    // displays the transient shrunk number.
+    const collapsedHeight = getSavedCollapsedTranscriptHeight();
+    const appliedHeight = collapsed ? collapsedHeight : expandedHeightFor(collapsedHeight);
     
     if (heightInput) {
-      heightInput.value = String(targetHeight);
+      heightInput.value = String(collapsedHeight);
     }
     if (transcript) {
-      transcript.style.height = targetHeight + 'px';
+      transcript.style.height = appliedHeight + 'px';
     }
   }
   
@@ -6959,13 +6983,17 @@
   }
   
   function onTranscriptHeightChange() {
-    const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
-    
-    // Save to localStorage
-    localStorage.setItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE, transcriptHeight);
-    
-    // Apply changes immediately
-    applyTranscriptHeight();
+    // The typed number is the COLLAPSED (full) height — the one source of truth. Persist it, then apply
+    // to whichever view is currently showing: collapsed => the typed value; expanded => DELTA shorter.
+    // This shifts BOTH modes by the same amount and never snaps back on a toggle.
+    const collapsedHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT;
+    localStorage.setItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE, collapsedHeight);
+    const topSection = document.getElementById('deepgram-top-section');
+    const isExpanded = topSection && topSection.style.display !== 'none';
+    const transcript = document.getElementById('deepgram-transcript');
+    if (transcript) {
+      transcript.style.height = (isExpanded ? expandedHeightFor(collapsedHeight) : collapsedHeight) + 'px';
+    }
   }
   
   function onLayoutWidthChange() {
