@@ -720,7 +720,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.208',
+  VERSION: '3.209',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2480,6 +2480,52 @@
    * and show its first REFINE_TAIL_PREVIEW_CHARS chars, prefixed with an ellipsis (there is at least
    * one non-whitespace body of text preceding it).
    */
+  /**
+   * Prune a context slot's text to roughly its LATER half by cutting everything above a section
+   * break at/after the midpoint. A section break is a line that is just '---' (three-or-more hyphens),
+   * exactly the divider refineAppendFromClipboard writes between captured turns.
+   *
+   * Best-effort algorithm (edge cases are deliberately kept simple — see the widget doc):
+   *   1. Find the midpoint character offset (total length / 2).
+   *   2. Walk FORWARD from the line containing the midpoint to the FIRST section-break line; cut
+   *      everything up to and including it (plus any immediately-following blank lines).
+   *   3. If there is no break below the midpoint, walk BACKWARD to the nearest break above it and cut
+   *      through that instead.
+   *   4. If there is NO section break anywhere, leave the text unchanged (nothing sensible to cut).
+   * Returns { text, changed, removed } — removed = chars deleted.
+   */
+  function refinePruneSlotToHalf(text) {
+    const orig = (typeof text === 'string') ? text : '';
+    if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
+    const isBreak = (line) => /^\s*-{3,}\s*$/.test(line);
+    const lines = orig.split('\n');
+    if (lines.length < 2) return { text: orig, changed: false, removed: 0 };
+
+    // Cumulative char offset at the START of each line (offset of line i in the original string).
+    const lineStart = [];
+    let acc = 0;
+    for (let i = 0; i < lines.length; i++) { lineStart.push(acc); acc += lines[i].length + 1; /* +1 for '\n' */ }
+    const midpoint = Math.floor(orig.length / 2);
+    // Index of the line that contains the midpoint offset.
+    let midLine = 0;
+    for (let i = 0; i < lines.length; i++) { if (lineStart[i] <= midpoint) midLine = i; else break; }
+
+    // 1) Walk FORWARD from midLine for the first section-break line.
+    let cutLine = -1;
+    for (let i = midLine; i < lines.length; i++) { if (isBreak(lines[i])) { cutLine = i; break; } }
+    // 2) Fallback: walk BACKWARD from midLine for the nearest break above.
+    if (cutLine === -1) { for (let i = midLine - 1; i >= 0; i--) { if (isBreak(lines[i])) { cutLine = i; break; } } }
+    // 3) No break anywhere -> leave unchanged.
+    if (cutLine === -1) return { text: orig, changed: false, removed: 0 };
+
+    // Keep everything AFTER the break line; also skip any blank lines immediately following the break.
+    let keepFrom = cutLine + 1;
+    while (keepFrom < lines.length && lines[keepFrom].trim() === '') keepFrom++;
+    const kept = lines.slice(keepFrom).join('\n');
+    if (kept === orig) return { text: orig, changed: false, removed: 0 };
+    return { text: kept, changed: true, removed: orig.length - kept.length };
+  }
+
   function refineUpdateTailPreview() {
     const el = document.getElementById('deepgram-refine-tail-label');
     if (!el) return;
@@ -2815,6 +2861,36 @@
           chk.style.cssText = 'position:absolute; top:1px; right:3px; font-size:10px; line-height:1; color:#7CFC9E; text-shadow:0 0 2px rgba(0,0,0,0.7); pointer-events:none;';
           sq.appendChild(chk);
         }
+        // ✂½ prune-to-half button in the UPPER-LEFT corner (mirrors the ✓ in the upper-right). Cuts
+        // everything above the first section break at/after this slot's midpoint. Operates on the LIVE
+        // textarea value when this is the slot being edited, else on the stored slot text.
+        const prune = document.createElement('span');
+        prune.textContent = '✂½';
+        prune.title = 'Prune this slot to ~half: delete everything above the first \'---\' section break at/after the midpoint';
+        prune.style.cssText = 'position:absolute; top:0px; left:2px; font-size:10px; line-height:1; color:#ffb3b3; text-shadow:0 0 2px rgba(0,0,0,0.8); cursor:pointer; z-index:2;';
+        prune.onclick = (e) => {
+          e.stopPropagation();
+          // Source text: the live textarea if we're editing THIS slot; otherwise the stored slot text.
+          const isEditingThis = (i === editingIndex);
+          const before = isEditingThis ? ta.value : (slots[i].text || '');
+          const res = refinePruneSlotToHalf(before);
+          if (!res.changed) {
+            updateStatus('✂½ Slot “' + slot.name + '”: no section break to prune at', 'error');
+            return;
+          }
+          if (!confirm('Prune slot “' + slot.name + '” to ~half?\n\nThis will DELETE the ' + res.removed.toLocaleString()
+            + ' chars above the first section break at/after the midpoint (keeping ' + res.text.length.toLocaleString()
+            + ' chars). Saved immediately.')) return;
+          slots[i].text = res.text;
+          refineTouchSlot(slots, i);
+          if (isEditingThis) ta.value = res.text;   // reflect in the open editor
+          refineSaveContexts(slots);
+          refineUpdateContextButtonLabel();
+          paintFullName();
+          paintRibbon();
+          updateStatus('✂½ Pruned “' + slot.name + '”: removed ' + res.removed.toLocaleString() + ' chars (now ' + res.text.length.toLocaleString() + ')', 'success');
+        };
+        sq.appendChild(prune);
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
