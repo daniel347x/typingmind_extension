@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.203 Changes:
+ * - FIX residual ~20px height mismatch: a STALE saved transcript height in localStorage (left over from
+ *   the earlier version churn) was overriding the clean 940 default, so the collapsed/expanded pair was
+ *   offset. Added a one-time migration that clears that stale key ONCE so the height resets to the clean
+ *   940 default (expanded = 940-460 = 480). Anything you set AFTER this is honored normally.
+ *
  * v3.202 Changes:
  * - FIX the transcript-height control confusion: there were TWO heights (a collapsed one and a separate
  *   expanded one) and the Expand/Collapse toggle FORCED fixed CONFIG constants, clobbering any value you
@@ -681,7 +687,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.202',
+  VERSION: '3.203',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5516,6 +5522,14 @@
       document.getElementById('layout-sidebar-width-input').value = savedSidebarWidth;
     }
     
+    // ONE-TIME migration: clear any stale saved transcript height left over from the pre-3.203 version
+    // churn so the box resets to the clean CONFIG default (940 collapsed / 480 expanded). Runs exactly
+    // once (guarded by a flag); a height you set AFTER 3.203 is saved normally and never cleared again.
+    if (localStorage.getItem('transcript_height_reset_v3203') !== '1') {
+      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
+      localStorage.setItem('transcript_height_reset_v3203', '1');
+    }
+
     // Load saved widget dimensions
     const savedWidgetWidth = localStorage.getItem(CONFIG.WIDGET_WIDTH_STORAGE);
     const savedTranscriptHeight = localStorage.getItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
