@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.206 Changes:
+ * - Refine context slots now record a per-slot 'lastUpdated' timestamp, stamped whenever a slot's TEXT
+ *   changes (📎 Append, or an edited Save in the 📝 Context modal — NOT a mere view/switch or a rename).
+ *   Both the Context-modal ribbon-square tooltip AND the quick-switcher popup row tooltip now end with
+ *   '– last updated <human-readable date/time>' (shows 'never' for untouched/legacy slots), so you can
+ *   see at a glance which session is oldest and recycle it. Storage back-compat: old slots load as
+ *   'never' until next edited.
+ *
  * v3.205 Changes:
  * - Transcript expand/collapse height delta 480 -> 490 (final nudge; expanded = full height - 490).
  *
@@ -694,7 +702,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.205',
+  VERSION: '3.206',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2236,12 +2244,30 @@
       out.push({
         name: (s && typeof s.name === 'string' && s.name.trim()) ? s.name : String(i + 1),
         text: (s && typeof s.text === 'string') ? s.text : '',
+        // Epoch ms of the last time this slot's TEXT was updated (0 = never / legacy slot).
+        lastUpdated: (s && typeof s.lastUpdated === 'number' && isFinite(s.lastUpdated)) ? s.lastUpdated : 0,
       });
     }
     return out;
   }
   function refineSaveContexts(list) {
     localStorage.setItem(CONFIG.REFINE_CONTEXTS_STORAGE, JSON.stringify(list));
+  }
+  // Stamp a slot's lastUpdated to now (call whenever a slot's TEXT changes). Safe if slot missing.
+  function refineTouchSlot(list, i) {
+    if (list && list[i]) list[i].lastUpdated = Date.now();
+  }
+  // Human-readable 'last updated' string for a tooltip. Returns 'never' when unset/legacy.
+  function refineFmtLastUpdated(t) {
+    if (!t || typeof t !== 'number' || !isFinite(t)) return 'never';
+    try {
+      return new Date(t).toLocaleString(undefined, {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit'
+      });
+    } catch (e) {
+      return new Date(t).toLocaleString();
+    }
   }
   function refineGetActiveContextIndex() {
     let i = parseInt(localStorage.getItem(CONFIG.REFINE_ACTIVE_CONTEXT_STORAGE), 10);
@@ -2316,6 +2342,8 @@
         row.style.cssText = 'display:flex; align-items:baseline; gap:6px; padding:5px 8px; border-radius:5px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
           + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
+        // Tooltip leads with the full slot name (squares/rows are truncated) + last-updated time.
+        row.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
         row.onmouseenter = () => { if (!isActive) row.style.background = 'rgba(255,255,255,0.08)'; };
         row.onmouseleave = () => { row.style.background = isActive ? 'rgba(43,122,43,0.35)' : 'transparent'; };
         const num = document.createElement('span');
@@ -2651,7 +2679,14 @@
     editingHdr.style.cssText = 'font-size:12px; opacity:0.85; margin:2px 0 6px;';
 
     // Commit the textarea's current text into the working copy for the slot being edited.
-    const stashCurrentText = () => { if (slots[editingIndex]) slots[editingIndex].text = ta.value; };
+    // Stamp lastUpdated ONLY when the text actually changed, so merely viewing/switching a slot
+    // (which also calls stashCurrentText) never bumps its last-updated time.
+    const stashCurrentText = () => {
+      if (slots[editingIndex] && slots[editingIndex].text !== ta.value) {
+        slots[editingIndex].text = ta.value;
+        refineTouchSlot(slots, editingIndex);
+      }
+    };
     const activeIdx = () => refineGetActiveContextIndex();
 
     function paintRibbon() {
@@ -2664,7 +2699,7 @@
           + 'border:2px solid ' + (isEditing ? '#4da3ff' : (isActive ? '#2b7a2b' : '#444')) + '; '
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-        sq.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename';
+        sq.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\nClick to activate + edit; ✎ to rename' + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
@@ -3304,6 +3339,7 @@
     }
 
     slots[i].text = combined;
+    refineTouchSlot(slots, i);   // clipboard append changed the slot's text -> stamp last-updated
     refineSaveContexts(slots);
     refineUpdateContextButtonLabel();
 
