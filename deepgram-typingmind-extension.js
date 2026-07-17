@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.199 Changes:
+ * - UI FIX (again, correctly this time): the Provider/Model dropdowns were still cropping their text
+ *   because a FIXED pixel width on a <select> leaves the text area = width minus the reserved
+ *   dropdown-arrow zone, so short widths clip the label (the 'white space' on the right is the arrow's
+ *   reserved room, which text can't use). Switched both to width:auto (size to content, never clips)
+ *   with a generous max-width cap that won't engage for these short labels — still narrow, no cropping.
+ *
  * v3.198 Changes:
  * - UI FIX: the Refine Provider dropdown was clipping its text ("OpenRoute" missing the R) — v3.195 set a
  *   max-width with no explicit width, so the select sized to its widest option and then cropped the
@@ -647,7 +654,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.198',
+  VERSION: '3.199',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5202,12 +5209,12 @@
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
           <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
           <span style="font-size:11px; opacity:0.8;">Provider</span>
-          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; width:96px;">
+          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; width:auto; max-width:130px;">
             <option value="anthropic">Anthropic</option>
             <option value="openrouter">OpenRouter</option>
           </select>
           <span style="font-size:11px; opacity:0.8;">Model</span>
-          <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:180px; color:#111; background:#fff;"></select>
+          <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:220px; color:#111; background:#fff;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:0; padding:3px 6px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:0; padding:3px 6px;">🗑️</button>
           <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px;">📝 Context</button>
