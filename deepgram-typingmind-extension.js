@@ -720,7 +720,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.209',
+  VERSION: '3.210',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2453,8 +2453,42 @@
         nm.style.cssText = 'flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; '
           + (isActive ? 'font-weight:700; color:#2e9b2e;' : (hasText ? '' : 'opacity:0.55;'));
         row.appendChild(num); row.appendChild(nm);
-        if (isActive) { const chk = document.createElement('span'); chk.textContent = '✓'; chk.style.cssText = 'flex:0 0 auto; color:#2e9b2e;'; row.appendChild(chk); }
-        row.onclick = () => { refineSetActiveContextIndex(i); closePopup(); };
+        // Clicking the number or name SELECTS the slot (the row is no longer a single click target,
+        // so the ✂½ button and char count to the right are independently clickable/readable).
+        const selectSlot = (e) => { if (e) e.stopPropagation(); refineSetActiveContextIndex(i); closePopup(); };
+        num.style.cursor = 'pointer'; num.onclick = selectSlot;
+        nm.style.cursor = 'pointer'; nm.onclick = selectSlot;
+        if (isActive) { const chk = document.createElement('span'); chk.textContent = '✓'; chk.style.cssText = 'flex:0 0 auto; color:#2e9b2e;'; chk.onclick = selectSlot; chk.style.cursor = 'pointer'; row.appendChild(chk); }
+        // ✂½ prune-to-half button (same behavior as the Context-modal ribbon). Cuts everything above the
+        // first '---' section break at/after this slot's midpoint. stopPropagation so it never selects.
+        const prune = document.createElement('span');
+        prune.textContent = '✂½';
+        prune.title = 'Prune this slot to ~half: delete everything above the first \'---\' section break at/after the midpoint';
+        prune.style.cssText = 'flex:0 0 auto; cursor:pointer; color:#ffb3b3; padding:0 2px;';
+        prune.onclick = (e) => {
+          e.stopPropagation();
+          const cur = refineGetContexts();   // re-read fresh (avoid acting on a stale closure copy)
+          const res = refinePruneSlotToHalf((cur[i] && cur[i].text) || '');
+          if (!res.changed) { updateStatus('✂½ Slot “' + slot.name + '”: no section break to prune at', 'error'); return; }
+          if (!confirm('Prune slot “' + slot.name + '” to ~half?\n\nThis will DELETE the ' + res.removed.toLocaleString()
+            + ' chars above the first section break at/after the midpoint (keeping ' + res.text.length.toLocaleString()
+            + ' chars). Saved immediately.')) return;
+          cur[i].text = res.text;
+          refineTouchSlot(cur, i);
+          refineSaveContexts(cur);
+          refineUpdateContextButtonLabel();
+          updateStatus('✂½ Pruned “' + slot.name + '”: removed ' + res.removed.toLocaleString() + ' chars (now ' + res.text.length.toLocaleString() + ')', 'success');
+          // Rebuild the popup so this row's char count + staleness rings refresh.
+          closePopup(); openPopup();
+        };
+        row.appendChild(prune);
+        // Char count of this slot's saved text, far right.
+        const cnt = document.createElement('span');
+        const clen = (slot.text || '').length;
+        cnt.textContent = clen.toLocaleString();
+        cnt.title = clen.toLocaleString() + ' char' + (clen === 1 ? '' : 's') + ' saved in this slot';
+        cnt.style.cssText = 'flex:0 0 auto; opacity:0.6; font-variant-numeric:tabular-nums; min-width:44px; text-align:right;';
+        row.appendChild(cnt);
         popup.appendChild(row);
       });
       document.body.appendChild(popup);
