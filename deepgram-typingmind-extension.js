@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.200 Changes:
+ * - Renamed the widget title to "Transcription Control" (was "Deepgram/Whisper Transcription").
+ * - Moved the status-block expander OUT of its own full-width row and INTO the title bar, just left of
+ *   the ⬇ Expand button, and relabeled it "Whisper Model Status" (it toggles the rarely-used deprecated
+ *   Whisper status block). Reclaims a whole row. When expanded, the status block still appears in its
+ *   original spot below the header (not directly under the button) — acceptable since it is rarely used.
+ * - Trimmed the default transcript-box height ~30px (950 -> 920) so it stops loading a touch too tall on
+ *   refresh. NOTE: a previously-saved height in localStorage overrides this default — clear/reset it if
+ *   the box still loads at the old height.
+ *
  * v3.199 Changes:
  * - UI FIX (again, correctly this time): the Provider/Model dropdowns were still cropping their text
  *   because a FIXED pixel width on a <select> leaves the text area = width minus the reserved
@@ -654,7 +664,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.199',
+  VERSION: '3.200',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -753,8 +763,8 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 950,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 950,
+    DEFAULT_TRANSCRIPT_HEIGHT: 920,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 920,
     DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480
   };
   
@@ -3291,7 +3301,7 @@
     if (!block || !btn) return;
     const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
     block.style.display = hidden ? 'none' : '';
-    btn.textContent = hidden ? '\u25b8 status' : '\u25be status';
+    btn.textContent = (hidden ? '\u25b8' : '\u25be') + ' Whisper Model Status';
     // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
     // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
     const recordRow = document.getElementById('deepgram-record-row');
@@ -5007,8 +5017,9 @@
     panel.innerHTML = `
       <div id="deepgram-content-container">
         <div class="deepgram-header">
-          <h2 id="deepgram-header-title">🎙️ Deepgram Transcription <span class="deepgram-version" id="deepgram-version"></span></h2>
+          <h2 id="deepgram-header-title">🎙️ Transcription Control <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="deepgram-status-toggle-btn" title="Show/hide the rarely-used (deprecated) Whisper model status block" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Whisper Model Status</button>
             <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
             <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
@@ -5120,7 +5131,7 @@
               </label>
               <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Transcript textarea height">
                 <span>Text H:</span>
-                <input type="number" id="transcript-height-input" min="150" max="1200" step="50" value="950" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
+                <input type="number" id="transcript-height-input" min="150" max="1200" step="50" value="920" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -5130,10 +5141,7 @@
 
         </div>
 
-        <!-- Transcription status block (Deepgram/Whisper) + tiny hide toggle -->
-        <div style="display:flex; align-items:center; gap:6px;">
-          <button id="deepgram-status-toggle-btn" title="Show/hide the transcription status block" style="font-size:10px; padding:1px 6px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ status</button>
-        </div>
+        <!-- Transcription status block (Deepgram/Whisper) — toggled by the button in the title bar -->
         <div id="deepgram-status-block">
           <!-- Status -->
           <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
