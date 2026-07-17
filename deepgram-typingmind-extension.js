@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.201 Changes:
+ * - FIX: the title still reverted to "Whisper/Deepgram Transcription" because updateModeUI() rewrites the
+ *   header on every mode switch/load — both branches now say "Transcription Control".
+ * - Default transcript-box height 920 -> 940 (a bit more room is available now that the status toggle
+ *   moved into the title bar).
+ * - Made the transcript-box height field (in the ⬇ Expand panel) more visible + clearly labeled
+ *   "Box height (px)" (it was a tiny 9px unlabeled input that was easy to miss; it always worked — edits
+ *   apply live and persist — it was just hard to find).
+ *
  * v3.200 Changes:
  * - Renamed the widget title to "Transcription Control" (was "Deepgram/Whisper Transcription").
  * - Moved the status-block expander OUT of its own full-width row and INTO the title bar, just left of
@@ -664,7 +673,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.200',
+  VERSION: '3.201',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -763,8 +772,8 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 920,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 920,
+    DEFAULT_TRANSCRIPT_HEIGHT: 940,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 940,
     DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480
   };
   
@@ -5129,9 +5138,9 @@
                 <span>Widget W:</span>
                 <input type="number" id="widget-width-input" min="600" max="2000" step="50" value="1155" style="width: 60px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
               </label>
-              <label style="display: flex; align-items: center; gap: 4px; font-size: 9px; color: #666;" title="Transcript textarea height">
-                <span>Text H:</span>
-                <input type="number" id="transcript-height-input" min="150" max="1200" step="50" value="920" style="width: 55px; padding: 2px 4px; border: 1px solid #cbd5e0; border-radius: 4px; font-size: 9px;" />
+              <label style="display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #444;" title="Height of the main transcript edit box, in pixels (applies live & is remembered)">
+                <span>📏 Box height (px):</span>
+                <input type="number" id="transcript-height-input" min="150" max="1200" step="10" value="940" style="width: 68px; padding: 3px 5px; border: 1px solid #667eea; border-radius: 4px; font-size: 12px;" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -8684,7 +8693,7 @@
       // Update header title
       if (headerTitle) {
         const versionSpan = headerTitle.querySelector('.deepgram-version');
-        headerTitle.innerHTML = `🎙️ Whisper Transcription <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
+        headerTitle.innerHTML = `🎙️ Transcription Control <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
       }
       
       // Show Whisper settings, hide Deepgram keyterms and API saved box
@@ -8706,7 +8715,7 @@
       // Update header title
       if (headerTitle) {
         const versionSpan = headerTitle.querySelector('.deepgram-version');
-        headerTitle.innerHTML = `🎙️ Deepgram Transcription <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
+        headerTitle.innerHTML = `🎙️ Transcription Control <span class="deepgram-version">${versionSpan ? versionSpan.textContent : ''}</span>`;
       }
       
       // Show Deepgram keyterms and API saved box, hide Whisper settings
