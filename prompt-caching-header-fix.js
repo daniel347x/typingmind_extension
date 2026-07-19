@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.70
+// Version: 4.71
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,11 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.71: Added inference cost badge to the shared tmRenderCacheReport() helper — now appended in gray
+//     (#9aa4b2, non-colorized to avoid clashing with the blue cache-read / red cache-write indicators)
+//     to ALL three return paths, so it surfaces in BOTH the always-visible widget header AND the per-row
+//     payload-capture modal ribbon. Reads cost from whichever usage object carries it (Anthropic
+//     response_anthropic_usage.cost or OpenRouter response_usage.cost). Format: $X.XXX (3 decimals).
 //   - v4.70: PROXY-PATH CACHING REGRESSION FIX. TypingMind's cors-proxy branch (v4.62) deliberately did
 //     NOT inject prompt-caching, on the (then-true) assumption that TypingMind + the native /v1/messages
 //     endpoint set cache_control themselves. That assumption is now FALSE: live proxy-path captures show
@@ -92,7 +97,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.70';
+  const EXT_VERSION = '4.71';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1375,18 +1380,27 @@
   // (v4.69) Render the prompt-cache report (blue = tokens reused/saved, red = newly-created/expensive) for
   // a payload's usage. Shared by the always-visible header AND the per-row payload-capture modal ribbon.
   function tmRenderCacheReport(au, oru) {
+    // (v4.71) Extract inference cost for the gray cost badge (appended to all return paths so it
+    // surfaces in BOTH the always-visible widget header AND the per-row payload-capture modal).
+    var costVal = 0;
+    if (au && au.cost != null) { costVal = au.cost; }
+    else if (oru && oru.cost != null) { costVal = oru.cost; }
+    var costStr = (costVal > 0)
+      ? ' <span title="inference cost" style="color:#9aa4b2;">$' + costVal.toFixed(3) + '</span>'
+      : '';
+
     if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
-        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>';
+        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>' + costStr;
     }
     if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens != null) {
       var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
-        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>';
+        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>' + costStr;
     }
-    return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>';
+    return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costStr;
   }
 
   function tmBuildWidgetStatusLine() {
