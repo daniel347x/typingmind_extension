@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.69
+// Version: 4.70
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,15 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.70: PROXY-PATH CACHING REGRESSION FIX. TypingMind's cors-proxy branch (v4.62) deliberately did
+//     NOT inject prompt-caching, on the (then-true) assumption that TypingMind + the native /v1/messages
+//     endpoint set cache_control themselves. That assumption is now FALSE: live proxy-path captures show
+//     cache_read_input_tokens == 0, so the full ~350K-token prefix is re-billed at full price EVERY turn
+//     ($1-2 sessions ballooning to $10-30). FIX: in the proxyIsAnthropicMessages block, mirror the
+//     OpenRouter Anthropic Skin branch — inject top-level cache_control {ephemeral, 1h} + the
+//     prompt-caching beta header — but ONLY when the body does not already carry cache_control (so if
+//     TypingMind ever resumes native injection we neither fight it nor trip the provider 'too many
+//     cache_control blocks' cap). Self-healing either way.
 //   - v4.69: The per-row payload-capture modal ribbon now also shows the cache report (blue = reused/saved,
 //     red = newly-created) to the RIGHT of the repair tally — same font/colors as the always-visible header
 //     — so you can scan cache read/write across the most recent turns at a glance. Extracted a shared
@@ -83,7 +92,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.69';
+  const EXT_VERSION = '4.70';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3503,6 +3512,36 @@
             tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
             tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
             if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+
+            // ==================== PROMPT CACHING ON THE PROXY PATH (v4.70) ====================
+            // REGRESSION FIX: v4.62 deliberately skipped caching here on the assumption that TypingMind +
+            // the native /v1/messages endpoint injected cache_control themselves. That assumption is now
+            // FALSE — live captures on the proxy path show cache_read_input_tokens == 0 (nothing is being
+            // cached), which re-bills the full ~350K-token prefix at full price EVERY turn ($10-30 sessions).
+            //
+            // This proxied traffic is the Anthropic-native "messages" shape (same as the OpenRouter Anthropic
+            // Skin branch), so we mirror that branch's cap-safe treatment: top-level cache_control {ephemeral,
+            // 1h} + the prompt-caching beta header. We inject ONLY when the body doesn't already carry
+            // cache_control markers, so if TypingMind ever resumes native injection we neither fight it nor
+            // risk the provider 'too many cache_control blocks' cap. Self-healing either way.
+            var proxyHasCacheControl = !!(body && body.cache_control);
+            if (!proxyHasCacheControl && Array.isArray(body.messages)) {
+              body.cache_control = { type: 'ephemeral', ttl: '1h' };
+              modified = true;
+              console.log('✅ [v' + EXT_VERSION + '] TypingMind proxy → Anthropic: injected TOP-LEVEL cache_control ttl:1h (proxy-path caching regression fix)');
+
+              options.headers = options.headers || {};
+              var proxyBeta = (typeof options.headers['anthropic-beta'] === 'string') ? options.headers['anthropic-beta'] : '';
+              if (!proxyBeta.includes('prompt-caching-2024-07-31')) {
+                options.headers['anthropic-beta'] = proxyBeta ? proxyBeta + ',prompt-caching-2024-07-31' : 'prompt-caching-2024-07-31';
+                console.log('✅ [v' + EXT_VERSION + '] TypingMind proxy → Anthropic: injected prompt-caching beta header');
+              }
+
+              // Reset the OpenRouter/Claude cache TTL warning timer so the widget reflects the warm window.
+              try { tmResetOpenRouterCacheTimer(); } catch (e) {}
+            } else if (proxyHasCacheControl) {
+              console.log('✅ [v' + EXT_VERSION + '] TypingMind proxy → Anthropic: body already carries cache_control — leaving caching untouched (native injection active).');
+            }
 
             const convId = deriveConversationIdFromBody(body);
             if (convId) {
