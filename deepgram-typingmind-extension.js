@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.211 Changes:
+ * - NEW: Refine is now cancelable. While a Refine request is in-flight, the ✨ Refine button stays
+ *   clickable and changes to ⏹ Cancel Refine; clicking it aborts the active API request/retry chain
+ *   immediately, restores the button, and shows a brief “Refine canceled” status instead of forcing you
+ *   to wait for the 2-minute timeout.
+ *
  * v3.208 Changes:
  * - 📖 Dictionary agent-instructions: the embedded script now PRINTS the output path in WINDOWS form
  *   (C:\\Users\\danie\\...) instead of forward slashes, so when the agent faithfully echoes the printed
@@ -720,7 +726,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.210',
+  VERSION: '3.211',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -866,6 +872,9 @@
   // Document annotation state
   let docAnnotationPopoverVisible = false;
   let docAnnotationSavedSelection = null;
+
+  // Refine request cancellation state (click ✨ Refine again while in-flight to abort immediately)
+  let refineAbortController = null;
 
   // Sidebar conversation title sizing
   // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
@@ -3112,10 +3121,10 @@
    * That interception breaks our direct browser call (CORS → network error). OpenRouter is NOT
    * intercepted, so it is the reliable path in the TypingMind environment.
    */
-  async function refineCallOnce(provider, model, apiKey, systemPrompt, userContent) {
-    const ctrl = new AbortController();
+  async function refineCallOnce(provider, model, apiKey, systemPrompt, userContent, abortController) {
+    const ctrl = abortController || new AbortController();
     const timeoutMs = 120000; // 2 min hard cap per attempt
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const timer = setTimeout(() => { ctrl.__refineAbortReason = 'timeout'; ctrl.abort(); }, timeoutMs);
     // Coordinate with the sibling Payload extension via a STATELESS URL SENTINEL (tm_passthrough=1)
     // appended to the endpoint URL below. The Payload extension's fetch hook reads it off THIS
     // request's own URL and passes the request through untouched. A URL query param (unlike a custom
@@ -3189,6 +3198,10 @@
     } catch (err) {
       // Normalize an abort into a clearer message; leave .status untouched so retry logic still sees it.
       if (err && err.name === 'AbortError') {
+        if (ctrl.__refineAbortReason === 'user') {
+          const e = new Error('Refine canceled.');
+          e.status = undefined; e.userCanceled = true; throw e;
+        }
         const e = new Error('Request timed out or was blocked (possible CORS/interception). Try the OpenRouter provider.');
         e.status = undefined; e.wasAbort = true; throw e;
       }
@@ -3198,21 +3211,43 @@
     }
   }
 
+  function refineAbortableDelay(ms, abortController) {
+    return new Promise(function(resolve, reject) {
+      if (abortController && abortController.signal && abortController.signal.aborted) {
+        const e = new Error('Refine canceled.'); e.userCanceled = true; reject(e); return;
+      }
+      const t = setTimeout(cleanupAndResolve, ms);
+      function cleanupAndResolve() {
+        cleanup(); resolve();
+      }
+      function onAbort() {
+        cleanup();
+        const e = new Error('Refine canceled.'); e.userCanceled = true; reject(e);
+      }
+      function cleanup() {
+        clearTimeout(t);
+        if (abortController && abortController.signal) abortController.signal.removeEventListener('abort', onAbort);
+      }
+      if (abortController && abortController.signal) abortController.signal.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
   /**
    * Call with exponential-backoff retry on transient failures.
    * Retries on 429/5xx (real server-side transients). A bare network error (no status) is retried
    * only TWICE (a persistent network error in the browser is almost always CORS/interception, not a
    * blip — retrying 5x just makes you wait ~15s for the same failure). A timeout abort is NOT retried.
    */
-  async function refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent) {
+  async function refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent, abortController) {
     const delays = [500, 1000, 2000, 4000, 8000];
     const MAX_NETWORK_RETRIES = 2; // cap for status-less network errors
     let attempt = 0, networkAttempts = 0, lastErr = null;
     while (attempt <= delays.length) {
       try {
-        return await refineCallOnce(provider, model, apiKey, systemPrompt, userContent);
+        return await refineCallOnce(provider, model, apiKey, systemPrompt, userContent, abortController);
       } catch (err) {
         lastErr = err;
+        if (err && err.userCanceled) throw err; // user clicked Cancel — stop immediately, no alert/retry
         if (err && err.wasAbort) throw err; // timeout — don't hammer
         const status = err && err.status;
         const isNetwork = (status === undefined);
@@ -3222,7 +3257,7 @@
         if (attempt === delays.length) break;
         const wait = delays[attempt];
         console.warn(ts(), '⚠️ Refine transient failure (' + (status || 'network') + '); retry ' + (attempt + 1) + '/' + delays.length + ' in ' + wait + 'ms');
-        await new Promise(r => setTimeout(r, wait));
+        await refineAbortableDelay(wait, abortController);
         attempt++;
         if (isNetwork) networkAttempts++;
       }
@@ -3440,6 +3475,16 @@
    * Markdown output.
    */
   async function refineTranscription() {
+    // If a request is already in-flight, clicking the same button again means CANCEL, not start another.
+    if (refineAbortController && !refineAbortController.signal.aborted) {
+      refineAbortController.__refineAbortReason = 'user';
+      refineAbortController.abort();
+      const b = document.getElementById('deepgram-refine-btn');
+      if (b) b.innerHTML = '✓ Canceled';
+      updateStatus('✨ Refine canceled', 'info');
+      return;
+    }
+
     const transcriptEl = document.getElementById('deepgram-transcript');
     if (!transcriptEl) return;
     const full = transcriptEl.value;
@@ -3483,11 +3528,13 @@
 
     const btn = document.getElementById('deepgram-refine-btn');
     const prevLabel = btn ? btn.innerHTML : null;
-    if (btn) { btn.disabled = true; btn.innerHTML = '⏳ Refining…'; }
-    updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '…', 'info');
+    const thisAbortController = new AbortController();
+    refineAbortController = thisAbortController;
+    if (btn) { btn.disabled = false; btn.innerHTML = '⏹ Cancel Refine'; }
+    updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '… (click Refine again to cancel)', 'info');
 
     try {
-      const result = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent);
+      const result = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent, thisAbortController);
       let cleaned = (result && result.text ? result.text : '').replace(/\s+$/, '');
       // Show the most-recent cost on the Refine context row (exact for OpenRouter, estimated for Anthropic).
       refineUpdateCostLabel(result ? result.cost : null, result ? result.estimated : false);
@@ -3503,7 +3550,12 @@
     } catch (err) {
       console.error('❌ Refine failed:', err);
       const status = err && err.status;
-      if (status === 401 || status === 403) {
+      if (err && err.userCanceled) {
+        updateStatus('✨ Refine canceled', 'info');
+        const cb = document.getElementById('deepgram-refine-btn');
+        if (cb) cb.innerHTML = '✓ Canceled';
+        await new Promise(r => setTimeout(r, 600));
+      } else if (status === 401 || status === 403) {
         const meta = refineProviderMeta(provider);
         localStorage.removeItem(meta.keyStorage);
         alert('Refine failed: your ' + meta.label + ' API key was rejected (' + status + '). It has been cleared — try again to re-enter it.');
@@ -3522,6 +3574,7 @@
     } finally {
       // ALWAYS re-enable the button (this is what prevents the permanent grayed-out state).
       const b = document.getElementById('deepgram-refine-btn');
+      if (refineAbortController === thisAbortController) refineAbortController = null;
       if (b) { b.disabled = false; b.innerHTML = prevLabel || '✨ Refine'; }
     }
   }
