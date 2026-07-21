@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.72
+// Version: 4.73
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,9 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.73: Widened the widget by 50px (maxWidth 260→310) to prevent text rollover.
+//     Deepened the total-cost purple: standard purple #8b6db5 for Σ, $, and reset button;
+//     the numeric value itself rendered in an even darker purple #5d3f8e for emphasis.
 //   - v4.72: Added running total cost to the always-visible widget header (far right, muted purple
 //     #a088b8, 9px — one notch below the per-turn cost). Accumulates every per-turn cost from server
 //     responses (Anthropic usage.cost or OpenRouter usage.cost) into a localStorage-persisted running
@@ -102,7 +105,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.72';
+  const EXT_VERSION = '4.73';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1251,7 +1254,7 @@
       el.style.fontSize = '12px';
       el.style.padding = '6px 8px';
       el.style.borderRadius = '4px';
-      el.style.maxWidth = '260px';
+      el.style.maxWidth = '310px';
       el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.35)';
       el.style.pointerEvents = 'auto';
       el.style.cursor = 'default';
@@ -1494,10 +1497,10 @@
     var oru = st.orUsage;
     parts.push(tmRenderCacheReport(au, oru));
 
-    // (v4.72) Running total cost — muted purple (#a088b8), 9px (one notch below per-turn cost), with reset button.
+    // (v4.73) Running total cost — deeper purple (#8b6db5) for Σ$/reset; numeric value in even darker purple (#5d3f8e).
     var totalCost = tmGetTotalCost();
-    parts.push('<span title="running total cost (session)" style="color:#a088b8;font-size:9px;">\u03a3$' + totalCost.toFixed(3) + '</span>' +
-      ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#a088b8;font-size:9px;opacity:0.6;">\u21ba</span>');
+    parts.push('<span title="running total cost (session)" style="color:#8b6db5;font-size:9px;">\u03a3$<span style="color:#5d3f8e;">' + totalCost.toFixed(3) + '</span></span>' +
+      ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#8b6db5;font-size:9px;opacity:0.6;">\u21ba</span>');
 
     return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
   }
