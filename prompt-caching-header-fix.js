@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.81
+// Version: 4.82
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -132,7 +132,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.81';
+  const EXT_VERSION = '4.82';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -195,10 +195,20 @@
 
   // (v4.80) Get the display session ID for the most-recent payload.
   // Returns the derived session ID if available, else null.
+  // (v4.82) Also expose the pasted session ID (from deriveConversationIdFromBody).
   function tmGetDisplaySessionId() {
     try {
       if (tmMostRecentPayloadStatus && tmMostRecentPayloadStatus.sessionId) {
         return tmMostRecentPayloadStatus.sessionId;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function tmGetDisplayPastedSessionId() {
+    try {
+      if (tmMostRecentPayloadStatus && tmMostRecentPayloadStatus.pastedSessionId) {
+        return tmMostRecentPayloadStatus.pastedSessionId;
       }
     } catch (e) {}
     return null;
@@ -731,6 +741,13 @@
                 try {
                   var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
                   if (reqBody) return tmDeriveStableSessionId(reqBody);
+                } catch (e) {}
+                return null;
+              })(),
+              pastedSessionId: (function() {
+                try {
+                  var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
+                  if (reqBody) return deriveConversationIdFromBody(reqBody);
                 } catch (e) {}
                 return null;
               })()
@@ -1540,12 +1557,14 @@
       '</div>'
     );
 
-    // (v4.80) Session ID display row — small dimmed monospace, below the status line.
+    // (v4.82) Session ID display row — shows derived hash + pasted session ID (if any).
     var displaySessionId = tmGetDisplaySessionId();
+    var displayPastedId = tmGetDisplayPastedSessionId();
+    var sidLine = 'Session ID: ' + (displaySessionId || '(none)') + ' | pasted: ' + (displayPastedId || '\u2014');
     if (displaySessionId) {
-      lines.push('<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">Session ID: ' + displaySessionId + '</div>');
+      lines.push('<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidLine + '</div>');
     } else {
-      lines.push('<div style="font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet — click header to generate)</div>');
+      lines.push('<div style="font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
 
     if (collapsed) {
@@ -2471,16 +2490,17 @@
 
       html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
 
-      // (v4.80) Display the derived session ID for this capture.
+      // (v4.82) Display the derived session ID + pasted session ID for this capture.
       try {
         var capReqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
         if (capReqBody) {
           var capSessionId = tmDeriveStableSessionId(capReqBody);
-          if (capSessionId) {
-            html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId) + '</div>';
+          var capPastedId = deriveConversationIdFromBody(capReqBody);
+          if (capSessionId || capPastedId) {
+            html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId || '(none)') + ' | pasted: ' + escapeHtml(capPastedId || '\u2014') + '</div>';
           }
         }
-      } catch (e) {}
+      } catch (e) {} {}
 
       html += '</div>';
     });
