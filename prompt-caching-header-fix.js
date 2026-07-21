@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.89
+// Version: 4.90
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.89';
+  const EXT_VERSION = '4.90';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -346,6 +346,9 @@
   // Hard record budgets make a 100-row ring safe even if a user raises the visible Trunc setting.
   const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 6000;
   const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1500;
+
+  // Escape-key handler reference (added on modal open, removed on close).
+  var tmPayloadCaptureModalEscapeHandler = null;
 
   function tmGetTruncationLimit() {
     try {
@@ -656,6 +659,15 @@
         record.body_chars_estimate = bodyRaw.length;
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
+
+        // (v4.90) Always derive and store session IDs on every capture record.
+        try {
+          record.session_id = tmDeriveStableSessionId(parsed);
+          record.pasted_session_id = deriveConversationIdFromBody(parsed);
+        } catch (e) {
+          record.session_id = null;
+          record.pasted_session_id = null;
+        }
 
         // v4.87: a 100-entry history needs a strict record budget. Prefer a small truncated
         // payload only when it fits; otherwise retain a diagnostic skeleton, then a tiny fallback.
@@ -1583,7 +1595,7 @@
 
   // (v4.69) Render the prompt-cache report (blue = tokens reused/saved, red = newly-created/expensive) for
   // a payload's usage. Shared by the always-visible header AND the per-row payload-capture modal ribbon.
-  function tmRenderCacheReport(au, oru) {
+  function tmRenderCacheReport(au, oru, costFontSize) {
     // (v4.71) Extract inference cost for the gray cost badge (appended to all return paths so it
     // surfaces in BOTH the always-visible widget header AND the per-row payload-capture modal).
     // (v4.78) Also check estimated_cost (DeepInfra's field name).
@@ -1592,8 +1604,9 @@
     else if (oru && oru.cost != null) { costVal = oru.cost; }
     else if (oru && oru.estimated_cost != null) { costVal = oru.estimated_cost; }
     else if (au && au.estimated_cost != null) { costVal = au.estimated_cost; }
+    var costStyle = 'color:#9aa4b2;' + (costFontSize ? ('font-size:' + costFontSize + ';font-weight:600;') : '');
     var costStr = (costVal > 0)
-      ? ' <span title="inference cost" style="color:#9aa4b2;">$' + costVal.toFixed(3) + '</span>'
+      ? ' <span title="inference cost" style="' + costStyle + '">$' + costVal.toFixed(3) + '</span>'
       : '';
 
     var genericUsage = (oru && (oru.cache_read_input_tokens != null || oru.cache_creation_input_tokens != null)) ? oru : null;
@@ -2033,12 +2046,11 @@
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
-    // Escape key closes the modal (any phase).
-    document.addEventListener('keydown', function(ev) {
-      if ((ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) && payloadCaptureModalEl && payloadCaptureModalEl.style.display === 'block') {
-        closePayloadCaptureModal();
-      }
-    }, true);
+    // Remove old escape handler; we add a fresh one on each open.
+    if (tmPayloadCaptureModalEscapeHandler) {
+      window.removeEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
+      tmPayloadCaptureModalEscapeHandler = null;
+    }
 
     overlay.addEventListener('click', function(ev) {
       const t = ev.target;
@@ -2240,7 +2252,7 @@
     panel.id = 'tm-payload-capture-modal';
     panel.style.position = 'absolute';
     panel.style.top = '50%';
-    panel.style.left = '18vw';
+    panel.style.left = '13vw';
     panel.style.transform = 'translateY(-50%)';
     panel.style.width = '58vw';
     panel.style.border = '2px solid rgba(255,255,255,0.18)';
@@ -2623,23 +2635,18 @@
       html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
-      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage) + '</div>';
+      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
 
 
 
-      html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
-
-      // (v4.82) Display the derived session ID + pasted session ID for this capture.
-      try {
-        var capReqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
-        if (capReqBody) {
-          var capSessionId = tmDeriveStableSessionId(capReqBody);
-          var capPastedId = deriveConversationIdFromBody(capReqBody);
-          if (capSessionId || capPastedId) {
-            html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId || '(none)') + ' | pasted: ' + escapeHtml(capPastedId || '\u2014') + '</div>';
-          }
-        }
-      } catch (e) {}
+      // (v4.90) Display the derived session ID + pasted session ID from the stored record fields.
+      var capSessionId = cap.session_id || null;
+      var capPastedId = cap.pasted_session_id || null;
+      if (capSessionId || capPastedId) {
+        html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId || '(none)') + ' | pasted: ' + escapeHtml(capPastedId || '—') + '</div>';
+      } else {
+        html += '<div style="font-size:8px;opacity:0.35;font-family:monospace;margin-top:2px;">Session ID: (not available for this capture)</div>';
+      }
 
       html += '</div>';
     });
@@ -2652,11 +2659,24 @@
     const overlay = ensurePayloadCaptureModal();
     overlay.style.display = 'block';
     renderPayloadCaptureModal();
+    // Register escape handler on every open (removed on close).
+    if (!tmPayloadCaptureModalEscapeHandler) {
+      tmPayloadCaptureModalEscapeHandler = function(ev) {
+        if (ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) {
+          closePayloadCaptureModal();
+        }
+      };
+      window.addEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
+    }
   }
 
   function closePayloadCaptureModal() {
     if (!payloadCaptureModalEl) return;
     payloadCaptureModalEl.style.display = 'none';
+    if (tmPayloadCaptureModalEscapeHandler) {
+      window.removeEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
+      tmPayloadCaptureModalEscapeHandler = null;
+    }
   }
 
   // ==================== FETCH OVERRIDE ====================
