@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.87
+// Version: 4.88
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.87';
+  const EXT_VERSION = '4.88';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2033,6 +2033,13 @@
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
+    // Escape key closes the modal.
+    document.addEventListener('keydown', function(ev) {
+      if (ev.key === 'Escape' && payloadCaptureModalEl && payloadCaptureModalEl.style.display === 'block') {
+        closePayloadCaptureModal();
+      }
+    });
+
     overlay.addEventListener('click', function(ev) {
       const t = ev.target;
       if (t.dataset && t.dataset.action === 'close-payload-modal') {
@@ -2233,9 +2240,9 @@
     panel.id = 'tm-payload-capture-modal';
     panel.style.position = 'absolute';
     panel.style.top = '50%';
-    panel.style.left = '50%';
-    panel.style.transform = 'translate(-50%, -50%)';
-    panel.style.width = '86vw';
+    panel.style.left = '2vw';
+    panel.style.transform = 'translateY(-50%)';
+    panel.style.width = '58vw';
     panel.style.height = '86vh';
     panel.style.background = 'rgba(15,15,20,0.96)';
     panel.style.color = '#fff';
