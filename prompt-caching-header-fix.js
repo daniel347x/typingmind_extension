@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.71
+// Version: 4.72
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,11 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.72: Added running total cost to the always-visible widget header (far right, muted purple
+//     #a088b8, 9px — one notch below the per-turn cost). Accumulates every per-turn cost from server
+//     responses (Anthropic usage.cost or OpenRouter usage.cost) into a localStorage-persisted running
+//     total (key: tm_total_cost). Includes a small ⟲ reset button that zeroes the total. Survives page
+//     refresh; no sync. Does NOT affect the per-row equivalent in the payload-capture modal.
 //   - v4.71: Added inference cost badge to the shared tmRenderCacheReport() helper — now appended in gray
 //     (#9aa4b2, non-colorized to avoid clashing with the blue cache-read / red cache-write indicators)
 //     to ALL three return paths, so it surfaces in BOTH the always-visible widget header AND the per-row
@@ -97,7 +102,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.71';
+  const EXT_VERSION = '4.72';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -127,6 +132,38 @@
   // (v4.63) Most-recent-payload status for the always-visible widget header: repair tally + cache usage.
   // Reflects whichever payload most recently RECEIVED a response, across all sessions (it may 'jump').
   let tmMostRecentPayloadStatus = { ts: 0, repairTally: null, anthropicUsage: null, orUsage: null };
+
+  // (v4.72) Running total cost — persisted in localStorage, survives page refreshes.
+  const TM_TOTAL_COST_KEY = 'tm_total_cost';
+
+  function tmGetTotalCost() {
+    try {
+      var v = parseFloat(localStorage.getItem(TM_TOTAL_COST_KEY));
+      return (!isNaN(v) && v >= 0) ? v : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  function tmSetTotalCost(val) {
+    try {
+      localStorage.setItem(TM_TOTAL_COST_KEY, String(val));
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Failed to persist tm_total_cost:', e);
+    }
+  }
+
+  function tmResetTotalCost() {
+    tmSetTotalCost(0);
+    renderGpt51UsageWidget();
+  }
+
+  // (v4.72) Extract the per-turn cost from a usage object (same logic as tmRenderCacheReport).
+  function tmExtractCostVal(au, oru) {
+    if (au && au.cost != null) return Number(au.cost) || 0;
+    if (oru && oru.cost != null) return Number(oru.cost) || 0;
+    return 0;
+  }
 
   console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
   
@@ -640,6 +677,13 @@
               anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
               orUsage: patch.response_usage || (capRec && capRec.response_usage) || null
             };
+            // (v4.72) Accumulate per-turn cost into the running total.
+            try {
+              var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
+              if (turnCost > 0) {
+                tmSetTotalCost(tmGetTotalCost() + turnCost);
+              }
+            } catch (e) {}
             renderGpt51UsageWidget();
           } catch (e) {}
         },
@@ -1325,6 +1369,12 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.72) Reset the running total cost
+          if (target.dataset.action === 'reset-total-cost') {
+            tmResetTotalCost();
+            ev.stopPropagation();
+            return;
+          }
         }
       });
     }
@@ -1443,6 +1493,11 @@
     var au = st.anthropicUsage;
     var oru = st.orUsage;
     parts.push(tmRenderCacheReport(au, oru));
+
+    // (v4.72) Running total cost — muted purple (#a088b8), 9px (one notch below per-turn cost), with reset button.
+    var totalCost = tmGetTotalCost();
+    parts.push('<span title="running total cost (session)" style="color:#a088b8;font-size:9px;">\u03a3$' + totalCost.toFixed(3) + '</span>' +
+      ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#a088b8;font-size:9px;opacity:0.6;">\u21ba</span>');
 
     return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
   }
