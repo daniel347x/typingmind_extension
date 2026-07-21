@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.213 Changes:
+ * - Refine context-slot staleness rings: INNER green now blends 1/3 actual timestamp position with
+ *   2/3 deliberately front-loaded recency rank (newest three stay vivid; #4 onward drops rapidly).
+ *   'Never' slots no longer distort the real-timestamp range by acting as epoch zero. OUTER absolute-age
+ *   ring is now orange rather than blue; its existing age curve is unchanged.
+ *
  * v3.212 Changes:
  * - NEW: DeepInfra provider added to Refine (OpenAI-compatible API at api.deepinfra.com).
  *   Supports the same Bearer auth + non-streaming OpenAI chat-completions shape as OpenRouter;
@@ -731,7 +737,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.212',
+  VERSION: '3.213',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2322,11 +2328,11 @@
   // Every slot square (in the Context modal ribbon) and every quick-switcher row shows TWO concentric
   // colored rings, computed identically by refineSlotRingColors() so the two surfaces never drift:
   //
-  //   INNER ring  = RELATIVE rank among the 10 slots. Newest = bright green, oldest = dim gray. The
-  //                 position is set by the ACTUAL time delta normalized between the newest and oldest
-  //                 slot (NOT an even 1..10 rank), so tightly-clustered edit times get near-identical
-  //                 colors and a lone stale slot drops to gray. 'never' (lastUpdated 0) = oldest.
-  //   OUTER ring  = ABSOLUTE age. Bright blue (just now) -> dim gray-blue (ancient). Piecewise-linear
+  //   INNER ring  = MIXED relative recency. 1/3 comes from actual position in the real timestamp
+  //                 range; 2/3 comes from an intentionally front-loaded newest→oldest rank curve.
+  //                 The newest three therefore remain visibly green even if tightly clustered, while
+  //                 #4 onward falls off fast. 'never' = dim gray and does not distort real timestamps.
+  //   OUTER ring  = ABSOLUTE age. Bright orange (just now) -> dim gray-orange (ancient). Piecewise-linear
   //                 in age with knees at 1 DAY and 1 WEEK: age 0 -> brightness 1.0; 1 day -> 0.66;
   //                 1 week -> 0.33; >= ~1 month -> floor 0.0. Continuous at the knees. 'never' = floor.
   //
@@ -2349,42 +2355,40 @@
     return 0.0;
   }
 
-  // Compute { inner, outer } ring colors for ONE slot, given the full set of slot timestamps.
-  //  - timestamps: array of lastUpdated values for all slots (0 / missing = never).
-  //  - t: this slot's lastUpdated (0 / missing = never).
   // Colors:
-  //  inner (relative, green->gray):  bright #28e05a  ->  dim #555555
-  //  outer (absolute, blue->grayblue): bright #2f6fe0 ->  dim #3a4a5a
+  //  inner (mixed actual-time + front-loaded rank, green->gray): bright #28e05a -> dim #555555
+  //  outer (absolute age, orange->gray-orange):                 bright #e08a28 -> dim #5a463a
   function refineSlotRingColors(t, timestamps) {
     const now = Date.now();
     const norm = (x) => (typeof x === 'number' && isFinite(x) && x > 0) ? x : 0; // 0 = never
     const mine = norm(t);
-
-    // --- INNER: relative rank by delta between newest and oldest of the set ---
     const vals = timestamps.map(norm);
-    const newest = Math.max.apply(null, vals.concat([0]));   // most-recent lastUpdated (0 if all never)
-    // oldest = smallest, but treat 'never'(0) as older than any real time by flooring to 0.
     const realVals = vals.filter(v => v > 0);
-    const hasNever = vals.some(v => v === 0);
-    let oldest;
-    if (hasNever) oldest = 0;                                 // a 'never' slot pins the oldest end
-    else oldest = realVals.length ? Math.min.apply(null, realVals) : 0;
-    let frac;
-    if (newest <= 0) {
-      frac = 1;                                               // all never -> everyone at the gray/oldest end
-    } else if (newest === oldest) {
-      frac = 0;                                               // all identical -> everyone bright green
-    } else if (mine <= 0) {
-      frac = 1;                                               // this slot is 'never' -> oldest end
-    } else {
-      frac = (newest - mine) / (newest - oldest);             // 0 at newest, 1 at oldest
-    }
-    const inner = refineLerpColor('#28e05a', '#555555', frac);
 
-    // --- OUTER: absolute age brightness ---
+    // --- INNER: 1/3 actual timestamp position + 2/3 intentionally front-loaded rank ---
+    // Crucial: only REAL timestamps define the actual-time range. A legacy/empty "never" slot is
+    // displayed as oldest, but must never make epoch zero the scale's lower bound.
+    const newest = realVals.length ? Math.max.apply(null, realVals) : 0;
+    const oldestReal = realVals.length ? Math.min.apply(null, realVals) : 0;
+    let timeBrightness;
+    if (mine <= 0 || newest <= 0) timeBrightness = 0;
+    else if (newest === oldestReal) timeBrightness = 1;
+    else timeBrightness = Math.max(0, Math.min(1, (mine - oldestReal) / (newest - oldestReal)));
+
+    // Stable newest-first rank. Ties share a rank so simultaneous edits look identical.
+    const uniqueNewestFirst = Array.from(new Set(realVals)).sort((a, b) => b - a);
+    const rank = mine > 0 ? uniqueNewestFirst.indexOf(mine) : 9;
+    // Explicit perceptual curve for ten slots: #1/#2/#3 vivid; #4 is already below half intensity,
+    // then it rapidly tails off. If fewer than ten slots have real timestamps, rank still means rank.
+    const rankBrightnessCurve = [1.00, 0.92, 0.82, 0.40, 0.28, 0.18, 0.10, 0.05, 0.02, 0.00];
+    const rankBrightness = rankBrightnessCurve[Math.max(0, Math.min(9, rank))];
+    const innerBrightness = (timeBrightness / 3) + ((2 * rankBrightness) / 3);
+    const inner = refineLerpColor('#555555', '#28e05a', innerBrightness);
+
+    // --- OUTER: absolute age brightness (same curve, orange palette) ---
     const ageMs = (mine > 0) ? (now - mine) : Infinity;       // never -> infinitely old -> floor
     const b = refineAbsoluteBrightness(ageMs);
-    const outer = refineLerpColor('#3a4a5a', '#2f6fe0', b);   // b=0 dim gray-blue .. b=1 bright blue
+    const outer = refineLerpColor('#5a463a', '#e08a28', b);   // b=0 dim gray-orange .. b=1 bright orange
 
     return { inner: inner, outer: outer };
   }
