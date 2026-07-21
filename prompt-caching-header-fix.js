@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.91
+// Version: 4.92
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.91';
+  const EXT_VERSION = '4.92';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2636,7 +2636,7 @@
       html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
-      html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
+      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
 
 
 
