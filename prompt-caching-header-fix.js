@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.79
+// Version: 4.80
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,12 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.80: Session ID system for prompt_cache_key + conversation identification. Clicking the
+//     widget header row copies "Session ID: <8-char hex>" to clipboard for pasting into the first
+//     turn. deriveConversationIdFromBody now scans for "Session ID: <hash>" instead of the obsolete
+//     "load files" / "CONVERSATION IDENTITY:" patterns. The session ID is displayed in a small dimmed
+//     row below the widget header AND per-row in the payload capture modal. tmDeriveStableSessionId
+//     unchanged (Tier 1 now tries Session ID, Tier 2 FNV-1a hash fallback remains).
 //   - v4.79: DeepInfra prompt caching fix — inject top-level `prompt_cache_key` into every
 //     DeepInfra request body using the same stable per-conversation derivation as OpenRouter's
 //     session_id (tmDeriveStableSessionId). DeepInfra load-balances across GPU workers; without a
@@ -126,7 +132,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.79';
+  const EXT_VERSION = '4.80';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -180,6 +186,22 @@
   function tmResetTotalCost() {
     tmSetTotalCost(0);
     renderGpt51UsageWidget();
+  }
+
+  // (v4.80) Generate a random 8-char hex session ID for click-to-copy.
+  function tmGenRandomSessionId() {
+    return ('00000000' + Math.floor(Math.random() * 0xFFFFFFFF).toString(16)).slice(-8);
+  }
+
+  // (v4.80) Get the display session ID for the most-recent payload.
+  // Returns the derived session ID if available, else null.
+  function tmGetDisplaySessionId() {
+    try {
+      if (tmMostRecentPayloadStatus && tmMostRecentPayloadStatus.sessionId) {
+        return tmMostRecentPayloadStatus.sessionId;
+      }
+    } catch (e) {}
+    return null;
   }
 
   // (v4.72) Extract the per-turn cost from a usage object (same logic as tmRenderCacheReport).
@@ -704,7 +726,14 @@
               ts: Date.now(),
               repairTally: (capRec && capRec.repair_tally) || null,
               anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
-              orUsage: patch.response_usage || (capRec && capRec.response_usage) || null
+              orUsage: patch.response_usage || (capRec && capRec.response_usage) || null,
+              sessionId: (function() {
+                try {
+                  var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
+                  if (reqBody) return tmDeriveStableSessionId(reqBody);
+                } catch (e) {}
+                return null;
+              })()
             };
             // (v4.72) Accumulate per-turn cost into the running total.
             try {
@@ -876,64 +905,12 @@
     }
     if (!userMessages.length) return null;
 
-    // 1) Primary: look for "load files <keyword>" in the FIRST user message
-    (function() {
-      const first = userMessages[0];
-      let text = '';
-      if (typeof first.content === 'string') {
-        text = first.content;
-      } else if (Array.isArray(first.content)) {
-        const textBlocks = first.content.filter(
-          block => block && (block.type === 'text' || block.type === 'input_text')
-        );
-        text = textBlocks.map(block => block.text || '').join(' ');
-      }
-      const lower = text.toLowerCase();
-      const prefix = 'load files';
-      const idx = lower.indexOf(prefix);
-      if (idx !== -1) {
-        let after = text.slice(idx + prefix.length).trim();
-        if (after) {
-          if (after.length > 128) after = after.slice(0, 128);
-          return after;
-        }
-      }
-      return null;
-    })();
-
-    const primaryId = (function() {
-      const first = userMessages[0];
-      let text = '';
-      if (typeof first.content === 'string') {
-        text = first.content;
-      } else if (Array.isArray(first.content)) {
-        const textBlocks = first.content.filter(
-          block => block && (block.type === 'text' || block.type === 'input_text')
-        );
-        text = textBlocks.map(block => block.text || '').join(' ');
-      }
-      const lower = text.toLowerCase();
-      const prefix = 'load files';
-      const idx = lower.indexOf(prefix);
-      if (idx === -1) return null;
-      let after = text.slice(idx + prefix.length).trim();
-      if (!after) return null;
-      // Extract only the keyword (first word/token), not the entire rest of the message
-      const keyword = after.split(/[\s\n]/)[0];
-      if (keyword && keyword.length > 0) {
-        return keyword.length > 128 ? keyword.slice(0, 128) : keyword;
-      }
-      return null;
-    })();
-
-    if (primaryId) return primaryId;
-
-    // 2) Safety: if no load-files keyword, scan the next few user messages
-    //    for a line starting with "CONVERSATION IDENTITY: <keyword>".
+    // (v4.80) Primary: scan all user messages for a line starting with "Session ID: <hash>".
+    // This replaces the obsolete "load files" / "CONVERSATION IDENTITY:" patterns.
+    const idPrefix = 'session id:';
     const maxToScan = Math.min(userMessages.length, 10);
-    const idPrefix = 'conversation identity:';
 
-    for (let i = 1; i < maxToScan; i++) {
+    for (let i = 0; i < maxToScan; i++) {
       const msg = userMessages[i];
       let text = '';
       if (typeof msg.content === 'string') {
@@ -1404,6 +1381,15 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.80) Copy a random Session ID to clipboard (clicking the header row)
+          if (target.dataset.action === 'copy-session-id') {
+            var randomId = tmGenRandomSessionId();
+            var sessionIdStr = 'Session ID: ' + randomId;
+            copyTextToClipboard(sessionIdStr, 'Session ID');
+            console.log('📋 [v' + EXT_VERSION + '] Copied to clipboard: ' + sessionIdStr);
+            ev.stopPropagation();
+            return;
+          }
         }
       });
     }
@@ -1548,11 +1534,19 @@
     const lines = [];
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
-      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
+      '<div data-action="copy-session-id" title="Click to copy Session ID to clipboard" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
         '<span style="font-weight:normal;line-height:1.5;">' + tmBuildWidgetStatusLine() + '</span>' +
         '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;margin-left:6px;font-weight:bold;">' + toggleIcon + '</span>' +
       '</div>'
     );
+
+    // (v4.80) Session ID display row — small dimmed monospace, below the status line.
+    var displaySessionId = tmGetDisplaySessionId();
+    if (displaySessionId) {
+      lines.push('<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">Session ID: ' + displaySessionId + '</div>');
+    } else {
+      lines.push('<div style="font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet — click header to generate)</div>');
+    }
 
     if (collapsed) {
       el.innerHTML = lines.join('');
@@ -2476,6 +2470,18 @@
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
+
+      // (v4.80) Display the derived session ID for this capture.
+      try {
+        var capReqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+        if (capReqBody) {
+          var capSessionId = tmDeriveStableSessionId(capReqBody);
+          if (capSessionId) {
+            html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId) + '</div>';
+          }
+        }
+      } catch (e) {}
+
       html += '</div>';
     });
 
