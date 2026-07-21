@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.93
+// Version: 4.94
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.93';
+  const EXT_VERSION = '4.94';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1595,7 +1595,7 @@
 
   // (v4.69) Render the prompt-cache report (blue = tokens reused/saved, red = newly-created/expensive) for
   // a payload's usage. Shared by the always-visible header AND the per-row payload-capture modal ribbon.
-  function tmRenderCacheReport(au, oru, costFontSize, costFirst) {
+  function tmRenderCacheReport(au, oru, costFontSize) {
     // (v4.71) Extract inference cost for the gray cost badge (appended to all return paths so it
     // surfaces in BOTH the always-visible widget header AND the per-row payload-capture modal).
     // (v4.78) Also check estimated_cost (DeepInfra's field name).
@@ -1609,16 +1609,12 @@
     var costStr = (costVal > 0)
       ? ' <span title="inference cost" style="' + costStyle + '">$' + costVal.toFixed(3) + '</span>'
       : '';
-    var costPrefix = (costFirst && costVal > 0)
-      ? ('<span title="inference cost" style="' + costStyle + '">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">·</span> ')
-      : '';
-    var costSuffix = costFirst ? '' : costStr;
 
     var genericUsage = (oru && (oru.cache_read_input_tokens != null || oru.cache_creation_input_tokens != null)) ? oru : null;
     if (genericUsage) {
-      return costPrefix + '<span style="color:#7dd67d;">cache</span> ' +
+      return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cache read (saved)" style="color:#5ab0ff;">↺' + tmFmtTok(genericUsage.cache_read_input_tokens || 0) + '</span> ' +
-        '<span title="cache write / creation" style="color:#ff6b6b;">+' + tmFmtTok(genericUsage.cache_creation_input_tokens || 0) + '</span>' + costSuffix;
+        '<span title="cache write / creation" style="color:#ff6b6b;">+' + tmFmtTok(genericUsage.cache_creation_input_tokens || 0) + '</span>' + costStr;
     }
     if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
       return '<span style="color:#7dd67d;">cache</span> ' +
@@ -1629,9 +1625,9 @@
       var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
-        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>' + costSuffix;
+        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>' + costStr;
     }
-    return costPrefix + '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costSuffix;
+    return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costStr;
   }
 
   function tmBuildWidgetStatusLine() {
@@ -2640,7 +2636,13 @@
       html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
-      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px', true) + '</div>';
+      // (v4.94) Cost pinned to the very left of the row, before repair blocks.
+      var costVal = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+      var costHtml = (costVal > 0)
+        ? ('<span title="inference cost" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">·</span> ')
+        : '';
+
+      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
 
 
 
