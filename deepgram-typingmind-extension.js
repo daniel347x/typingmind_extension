@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.214 Changes:
+ * - Context staleness-ring polish: green relative-recency is now the dominant OUTER 2px ring; the
+ *   absolute-age orange signal is a thin 1px INNER line separated by a dark gap. Orange is now five
+ *   practical discrete age bands (≤5m, ≤1h, ≤1d, ≤1w, ≤1mo) rather than the old smooth 1d/1w/1mo curve.
+ *
  * v3.213 Changes:
  * - Refine context-slot staleness rings: INNER green now blends 1/3 actual timestamp position with
  *   2/3 deliberately front-loaded recency rank (newest three stay vivid; #4 onward drops rapidly).
@@ -737,7 +742,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.213',
+  VERSION: '3.214',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2328,13 +2333,10 @@
   // Every slot square (in the Context modal ribbon) and every quick-switcher row shows TWO concentric
   // colored rings, computed identically by refineSlotRingColors() so the two surfaces never drift:
   //
-  //   INNER ring  = MIXED relative recency. 1/3 comes from actual position in the real timestamp
-  //                 range; 2/3 comes from an intentionally front-loaded newest→oldest rank curve.
-  //                 The newest three therefore remain visibly green even if tightly clustered, while
-  //                 #4 onward falls off fast. 'never' = dim gray and does not distort real timestamps.
-  //   OUTER ring  = ABSOLUTE age. Bright orange (just now) -> dim gray-orange (ancient). Piecewise-linear
-  //                 in age with knees at 1 DAY and 1 WEEK: age 0 -> brightness 1.0; 1 day -> 0.66;
-  //                 1 week -> 0.33; >= ~1 month -> floor 0.0. Continuous at the knees. 'never' = floor.
+  //   INNER / orange = ABSOLUTE age: a thin, separated inset accent with five practical discrete bands:
+  //                    <=5 minutes, <=1 hour, <=1 day, <=1 week, <=1 month; older/never = dim floor.
+  //   OUTER / green  = MIXED relative recency: dominant 2px border, 1/3 actual timestamp position +
+  //                    2/3 front-loaded newest→oldest rank curve. Newest three stay vivid; #4 fades fast.
   //
   // Helper: linear interpolate two #rrggbb colors by t in [0,1].
   function refineLerpColor(hexA, hexB, t) {
@@ -2345,19 +2347,20 @@
     return 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
   }
 
-  // Map an absolute age (ms) to a brightness in [0,1] via the 1-day / 1-week knees (continuous).
+  // Map absolute age to one of five discrete, human-meaningful orange levels.
   function refineAbsoluteBrightness(ageMs) {
     if (!isFinite(ageMs) || ageMs < 0) return 0;
-    const DAY = 86400000, WEEK = 7 * DAY, MONTH = 30 * DAY;
-    if (ageMs <= DAY)   return 1.0 - (ageMs / DAY) * (1.0 - 0.66);          // [1.00 .. 0.66] over 0..1d
-    if (ageMs <= WEEK)  return 0.66 - ((ageMs - DAY) / (WEEK - DAY)) * (0.66 - 0.33); // [0.66 .. 0.33] over 1d..1w
-    if (ageMs <= MONTH) return 0.33 - ((ageMs - WEEK) / (MONTH - WEEK)) * 0.33;       // [0.33 .. 0.00] over 1w..1mo
-    return 0.0;
+    const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, WEEK = 7 * DAY, MONTH = 30 * DAY;
+    if (ageMs <= 5 * MINUTE) return 1.00;  // just touched
+    if (ageMs <= HOUR)       return 0.78;  // this hour
+    if (ageMs <= DAY)        return 0.56;  // today
+    if (ageMs <= WEEK)       return 0.32;  // this week
+    if (ageMs <= MONTH)      return 0.14;  // this month
+    return 0.0;                             // older / never
   }
 
-  // Colors:
-  //  inner (mixed actual-time + front-loaded rank, green->gray): bright #28e05a -> dim #555555
-  //  outer (absolute age, orange->gray-orange):                 bright #e08a28 -> dim #5a463a
+  // Colors returned as { outer: green relative-recency, inner: orange absolute-age }.
+  //  outer: dominant 2px green->gray border; inner: thin orange->gray-orange inset accent.
   function refineSlotRingColors(t, timestamps) {
     const now = Date.now();
     const norm = (x) => (typeof x === 'number' && isFinite(x) && x > 0) ? x : 0; // 0 = never
@@ -2383,12 +2386,12 @@
     const rankBrightnessCurve = [1.00, 0.92, 0.82, 0.40, 0.28, 0.18, 0.10, 0.05, 0.02, 0.00];
     const rankBrightness = rankBrightnessCurve[Math.max(0, Math.min(9, rank))];
     const innerBrightness = (timeBrightness / 3) + ((2 * rankBrightness) / 3);
-    const inner = refineLerpColor('#555555', '#28e05a', innerBrightness);
+    const outer = refineLerpColor('#555555', '#28e05a', innerBrightness);
 
-    // --- OUTER: absolute age brightness (same curve, orange palette) ---
-    const ageMs = (mine > 0) ? (now - mine) : Infinity;       // never -> infinitely old -> floor
+    // --- INNER: absolute-age band (orange) ---
+    const ageMs = (mine > 0) ? (now - mine) : Infinity;
     const b = refineAbsoluteBrightness(ageMs);
-    const outer = refineLerpColor('#5a463a', '#e08a28', b);   // b=0 dim gray-orange .. b=1 bright orange
+    const inner = refineLerpColor('#5a463a', '#e08a28', b);
 
     return { inner: inner, outer: outer };
   }
@@ -2467,12 +2470,12 @@
         const hasText = slot.text && slot.text.trim();
         const rings = refineSlotRingColors(slot.lastUpdated, allTs);
         const row = document.createElement('div');
-        // Two staleness rings, same as the ribbon squares: OUTER border = absolute-age blue;
-        // INNER (inset box-shadow) = relative green. Extra left/right padding gives the rings room.
+        // Dominant OUTER green 2px recency ring; thin INNER orange age line, isolated by a dark gap.
+        // The first inset shadow paints the gap; the second leaves just a 1px orange band visible.
         row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:5px 12px; margin:2px 0; border-radius:6px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
           + 'border:2px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 2px ' + rings.inner + '; '
+          + 'box-shadow: inset 0 0 0 3px #1e1e1e, inset 0 0 0 4px ' + rings.inner + '; '
           + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
         // Tooltip leads with the full slot name (squares/rows are truncated) + last-updated time.
         row.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
@@ -2909,14 +2912,14 @@
         const sq = document.createElement('div');
         const isActive = (i === activeIdx());
         const isEditing = (i === editingIndex);
-        // Two staleness rings: OUTER border = absolute-age blue; INNER (inset box-shadow) = relative green.
+        // Dominant OUTER green 2px recency ring; thin INNER orange age line, isolated by a dark gap.
         const rings = refineSlotRingColors(slot.lastUpdated, allTs);
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
         sq.style.cssText = 'position:relative; min-width:44px; max-width:64px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
           + 'border:2px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 2px ' + rings.inner + '; '
+          + 'box-shadow: inset 0 0 0 3px #2a2a2a, inset 0 0 0 4px ' + rings.inner + '; '
           + editOutline
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
