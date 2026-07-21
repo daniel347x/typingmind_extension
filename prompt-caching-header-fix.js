@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.85
+// Version: 4.86
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.85';
+  const EXT_VERSION = '4.86';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -676,6 +676,68 @@
     return id;
   }
 
+  // (v4.86) Provider-agnostic response-usage fallback. Unknown normal endpoints are already
+  // captured; this reads known cache/cost field variants anywhere in JSON or SSE event objects,
+  // normalizes them for the widget/modal, and never changes the outbound request.
+  function tmExtractKnownUsageEvidence(root) {
+    if (!root || typeof root !== 'object') return null;
+    var out = {};
+    var found = false;
+    var seen = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
+
+    function num(v) {
+      var n = Number(v);
+      return isFinite(n) ? n : null;
+    }
+    function firstNum(obj, keys) {
+      for (var i = 0; i < keys.length; i++) {
+        if (obj && obj[keys[i]] != null) {
+          var n = num(obj[keys[i]]);
+          if (n != null) return n;
+        }
+      }
+      return null;
+    }
+    function setIfAbsent(key, value) {
+      if (value != null && out[key] == null) { out[key] = value; found = true; }
+    }
+    function inspect(obj) {
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
+      var details = obj.prompt_tokens_details || obj.promptTokensDetails || obj.input_tokens_details || obj.inputTokensDetails || null;
+      var read = firstNum(obj, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cache_read_tokens', 'cacheReadTokens', 'cached_tokens', 'cachedTokens', 'cached_content_token_count', 'cachedContentTokenCount', 'cache_hit_tokens', 'cacheHitTokens']);
+      if (read == null && details) read = firstNum(details, ['cached_tokens', 'cachedTokens', 'cached_content_token_count', 'cachedContentTokenCount', 'cache_read_tokens', 'cacheReadTokens']);
+      var write = firstNum(obj, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens', 'cache_write_input_tokens', 'cacheWriteInputTokens']);
+      if (write == null && details) write = firstNum(details, ['cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens']);
+      var cost = firstNum(obj, ['cost', 'estimated_cost', 'estimatedCost']);
+      setIfAbsent('cache_read_input_tokens', read);
+      setIfAbsent('cache_creation_input_tokens', write);
+      setIfAbsent('cost', cost);
+      if (read != null || write != null) {
+        out.prompt_tokens_details = out.prompt_tokens_details || {};
+        if (read != null) out.prompt_tokens_details.cached_tokens = read;
+        if (write != null) out.prompt_tokens_details.cache_write_tokens = write;
+      }
+    }
+    function walk(node, depth) {
+      if (!node || typeof node !== 'object' || depth > 8) return;
+      try {
+        if (seen) { if (seen.has(node)) return; seen.add(node); }
+      } catch (e) {}
+      if (Array.isArray(node)) {
+        for (var ai = 0; ai < node.length; ai++) walk(node[ai], depth + 1);
+        return;
+      }
+      inspect(node);
+      var keys = Object.keys(node);
+      for (var ki = 0; ki < keys.length; ki++) {
+        var value = node[keys[ki]];
+        if (value && typeof value === 'object') walk(value, depth + 1);
+      }
+    }
+    walk(root, 0);
+    return found ? out : null;
+  }
+
   function tmCaptureResponse(captureId, response) {
     if (!tmCaptureEnabled() || !captureId || !response) return;
 
@@ -700,6 +762,9 @@
             // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
             patch.response_body = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+            // Non-streaming provider responses: surface any known cache/cost evidence too.
+            var jsonUsage = tmExtractKnownUsageEvidence(parsed);
+            if (jsonUsage) patch.response_usage = jsonUsage;
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
@@ -719,8 +784,12 @@
                 if (jsonStr === '[DONE]') continue;
                 try {
                   var parsed2 = JSON.parse(jsonStr);
+                  // Generic fallback for unfamiliar providers / field nesting. This is read-only:
+                  // it merely promotes cache read/write + cost evidence into the capture/widget.
+                  var genericUsage = tmExtractKnownUsageEvidence(parsed2);
+                  if (genericUsage) { lastUsage = genericUsage; }
                   // OpenRouter-style: usage in root of chunk
-                  if (parsed2 && parsed2.usage) { lastUsage = parsed2.usage; }
+                  if (!genericUsage && parsed2 && parsed2.usage) { lastUsage = parsed2.usage; }
                   // OpenAI Responses-style: usage in response.completed -> response.usage
                   if (parsed2 && parsed2.response && parsed2.response.usage) { lastUsage = parsed2.response.usage; }
                   // Anthropic-style: usage in message_start
@@ -1488,6 +1557,12 @@
       ? ' <span title="inference cost" style="color:#9aa4b2;">$' + costVal.toFixed(3) + '</span>'
       : '';
 
+    var genericUsage = (oru && (oru.cache_read_input_tokens != null || oru.cache_creation_input_tokens != null)) ? oru : null;
+    if (genericUsage) {
+      return '<span style="color:#7dd67d;">cache</span> ' +
+        '<span title="cache read (saved)" style="color:#5ab0ff;">↺' + tmFmtTok(genericUsage.cache_read_input_tokens || 0) + '</span> ' +
+        '<span title="cache write / creation" style="color:#ff6b6b;">+' + tmFmtTok(genericUsage.cache_creation_input_tokens || 0) + '</span>' + costStr;
+    }
     if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
