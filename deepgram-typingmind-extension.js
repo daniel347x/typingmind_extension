@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.217 Changes:
+ * - Context staleness-ring polish v4: border-radius increased further (10px → 14px) for softer
+ *   orange inner corners. Green rank curve mid-tier compressed: ranks 4-7 now fade much faster
+ *   (0.40→0.22, 0.28→0.14, 0.18→0.08, 0.10→0.04) so the "middle" slots don't look falsely bright.
+ *
  * v3.216 Changes:
  * - Context staleness-ring polish v3: border-radius increased (7px → 10px) so the inner orange
  *   edge and outer green edge both have visibly softer rounded corners. Orange inset line thickened
@@ -753,7 +758,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.216',
+  VERSION: '3.217',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2396,7 +2401,7 @@
     const rank = mine > 0 ? uniqueNewestFirst.indexOf(mine) : 9;
     // Explicit perceptual curve for ten slots: #1/#2/#3 vivid; #4 is already below half intensity,
     // then it rapidly tails off. If fewer than ten slots have real timestamps, rank still means rank.
-    const rankBrightnessCurve = [1.00, 0.92, 0.82, 0.40, 0.28, 0.18, 0.10, 0.05, 0.02, 0.00];
+    const rankBrightnessCurve = [1.00, 0.92, 0.82, 0.22, 0.14, 0.08, 0.04, 0.02, 0.01, 0.00];
     const rankBrightness = rankBrightnessCurve[Math.max(0, Math.min(9, rank))];
     const innerBrightness = (timeBrightness / 3) + ((2 * rankBrightness) / 3);
     const outer = refineLerpColor('#555555', '#28e05a', innerBrightness);
@@ -2485,7 +2490,7 @@
         const row = document.createElement('div');
         // Dominant OUTER green 2px recency ring; thin INNER orange age line, isolated by a dark gap.
         // The first inset shadow paints the gap; the second leaves just a 1px orange band visible.
-        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:7px 16px; margin:2px 0; border-radius:10px; cursor:pointer; '
+        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:7px 16px; margin:2px 0; border-radius:14px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
           + 'border:3px solid ' + rings.outer + '; '
           + 'box-shadow: inset 0 0 0 5px #1e1e1e, inset 0 0 0 7px ' + rings.inner + '; '
@@ -2930,7 +2935,7 @@
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
-        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:10px; cursor:pointer; font-size:11px; text-align:center; '
+        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:14px; cursor:pointer; font-size:11px; text-align:center; '
           + 'border:3px solid ' + rings.outer + '; '
           + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
           + editOutline
