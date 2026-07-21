@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.212 Changes:
+ * - NEW: DeepInfra provider added to Refine (OpenAI-compatible API at api.deepinfra.com).
+ *   Supports the same Bearer auth + non-streaming OpenAI chat-completions shape as OpenRouter;
+ *   reads cost from usage.estimated_cost. Starter model: zai-org/GLM-5.2.
+ *
  * v3.211 Changes:
  * - NEW: Refine is now cancelable. While a Refine request is in-flight, the ✨ Refine button stays
  *   clickable and changes to ⏹ Cancel Refine; clicking it aborts the active API request/retry chain
@@ -726,7 +731,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.211',
+  VERSION: '3.212',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -769,10 +774,13 @@
     REFINE_PROVIDER_STORAGE: 'refine_provider',                 // 'anthropic' | 'openrouter'
     REFINE_ANTHROPIC_KEY_STORAGE: 'refine_anthropic_api_key',
     REFINE_OPENROUTER_KEY_STORAGE: 'refine_openrouter_api_key',
+    REFINE_DEEPINFRA_KEY_STORAGE: 'refine_deepinfra_api_key',
     REFINE_ANTHROPIC_MODEL_STORAGE: 'refine_anthropic_model',   // selected model string
     REFINE_OPENROUTER_MODEL_STORAGE: 'refine_openrouter_model',
+    REFINE_DEEPINFRA_MODEL_STORAGE: 'refine_deepinfra_model',
     REFINE_ANTHROPIC_MODELS_STORAGE: 'refine_anthropic_models_list', // editable list (JSON)
     REFINE_OPENROUTER_MODELS_STORAGE: 'refine_openrouter_models_list',
+    REFINE_DEEPINFRA_MODELS_STORAGE: 'refine_deepinfra_models_list',
     REFINE_SYSTEM_PROMPT_STORAGE: 'refine_system_prompt',       // permanent editable system prompt
     REFINE_CONTEXT_PREAMBLE_STORAGE: 'refine_context_preamble',  // editable text before the <context> block
     REFINE_TRANSCRIPTION_PREAMBLE_STORAGE: 'refine_transcription_preamble', // editable text before <transcription>
@@ -787,11 +795,13 @@
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
+    DEEPINFRA_CHAT_ENDPOINT: 'https://api.deepinfra.com/v1/openai/chat/completions',
     REFINE_MAX_TOKENS: 8192,
     DEFAULT_REFINE_PROVIDER: 'anthropic',
     // Starter model lists (editable in the UI; type any model string via ➕).
     DEFAULT_ANTHROPIC_MODELS: ['claude-opus-4-8', 'claude-sonnet-5', 'claude-opus-4-7', 'claude-haiku-4-5'],
     DEFAULT_OPENROUTER_MODELS: ['anthropic/claude-opus-4.8', 'anthropic/claude-sonnet-5', 'anthropic/claude-haiku-4.5'],
+    DEFAULT_DEEPINFRA_MODELS: ['zai-org/GLM-5.2'],
     // Anthropic-direct responses do NOT include a dollar cost (OpenRouter does, via usage.cost), so we
     // estimate it from token counts using this per-MTok table, keyed by a substring of the model id.
     // [inputPerMTok, outputPerMTok, cacheReadPerMTok]. Edit as Anthropic pricing changes.
@@ -2212,6 +2222,16 @@
         keyHint: 'openrouter.ai → Keys',
       };
     }
+    if (provider === 'deepinfra') {
+      return {
+        keyStorage: CONFIG.REFINE_DEEPINFRA_KEY_STORAGE,
+        modelStorage: CONFIG.REFINE_DEEPINFRA_MODEL_STORAGE,
+        modelsStorage: CONFIG.REFINE_DEEPINFRA_MODELS_STORAGE,
+        defaultModels: CONFIG.DEFAULT_DEEPINFRA_MODELS,
+        label: 'DeepInfra',
+        keyHint: 'deepinfra.com → Dashboard → API Keys',
+      };
+    }
     return {
       keyStorage: CONFIG.REFINE_ANTHROPIC_KEY_STORAGE,
       modelStorage: CONFIG.REFINE_ANTHROPIC_MODEL_STORAGE,
@@ -3134,8 +3154,11 @@
     const orUrl = CONFIG.OPENROUTER_CHAT_ENDPOINT + '?tm_passthrough=1';
     const anthropicUrl = CONFIG.ANTHROPIC_MESSAGES_ENDPOINT + '?tm_passthrough=1';
     try {
-      if (provider === 'openrouter') {
-        const resp = await fetch(orUrl, {
+      if (provider === 'openrouter' || provider === 'deepinfra') {
+        const dptUrl = (provider === 'deepinfra')
+          ? (CONFIG.DEEPINFRA_CHAT_ENDPOINT + '?tm_passthrough=1')
+          : (CONFIG.OPENROUTER_CHAT_ENDPOINT + '?tm_passthrough=1');
+        const resp = await fetch(dptUrl, {
           method: 'POST',
           signal: ctrl.signal,
           headers: {
@@ -3152,6 +3175,7 @@
             ],
             // Ask OpenRouter to include cost/usage accounting in the (non-streaming) response body
             // so usage.cost is populated; without this flag OpenRouter omits the cost.
+            // DeepInfra is OpenAI-compatible and returns usage.estimated_cost; it ignores this flag.
             usage: { include: true },
           }),
         });
@@ -3162,10 +3186,12 @@
         }
         const j = await resp.json();
         const txt = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-        if (!txt) throw new Error('Empty response from OpenRouter.');
+        if (!txt) throw new Error('Empty response from ' + (provider === 'deepinfra' ? 'DeepInfra' : 'OpenRouter') + '.');
         // OpenRouter reports an authoritative dollar cost directly in usage.cost (non-streaming).
+        // DeepInfra reports it in usage.estimated_cost.
+        const diCost = j && j.usage && (typeof j.usage.estimated_cost === 'number') ? j.usage.estimated_cost : null;
         const orCost = j && j.usage && (typeof j.usage.cost === 'number') ? j.usage.cost : null;
-        return { text: txt, cost: orCost, estimated: false };
+        return { text: txt, cost: diCost !== null ? diCost : orCost, estimated: false };
       }
       // Anthropic (direct) — may be intercepted/blocked by TypingMind's fetch hook; see note above.
       const resp = await fetch(anthropicUrl, {
@@ -5567,6 +5593,7 @@
           <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; width:auto; max-width:130px;">
             <option value="anthropic">Anthropic</option>
             <option value="openrouter">OpenRouter</option>
+            <option value="deepinfra">DeepInfra</option>
           </select>
           <span style="font-size:11px; opacity:0.8;">Model</span>
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:220px; color:#111; background:#fff;"></select>
