@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.82
+// Version: 4.83
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,11 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.83: Fix Session ID parsing when Dan's first message contains other text before the ID
+//     (e.g. "Load GLIMPSE\n\nSession ID: cd02b901"). deriveConversationIdFromBody now scans
+//     each user message with a multiline regex for a Session ID line anywhere in the text, instead
+//     of requiring the whole message to start with "Session ID:". This fixes the widget/modal
+//     pasted-ID display and ensures DeepInfra prompt_cache_key uses the explicit pasted ID.
 //   - v4.80: Session ID system for prompt_cache_key + conversation identification. Clicking the
 //     widget header row copies "Session ID: <8-char hex>" to clipboard for pasting into the first
 //     turn. deriveConversationIdFromBody now scans for "Session ID: <hash>" instead of the obsolete
@@ -132,7 +137,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.82';
+  const EXT_VERSION = '4.83';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -922,9 +927,11 @@
     }
     if (!userMessages.length) return null;
 
-    // (v4.80) Primary: scan all user messages for a line starting with "Session ID: <hash>".
+    // (v4.83) Primary: scan all user messages for a line containing "Session ID: <hash>".
     // This replaces the obsolete "load files" / "CONVERSATION IDENTITY:" patterns.
-    const idPrefix = 'session id:';
+    // IMPORTANT: Dan's first message often has other text before the ID, e.g.
+    //   Load GLIMPSE\n\nSession ID: cd02b901
+    // so this must be a multiline line-scan, NOT a whole-message startsWith() check.
     const maxToScan = Math.min(userMessages.length, 10);
 
     for (let i = 0; i < maxToScan; i++) {
@@ -936,15 +943,15 @@
         const textBlocks = msg.content.filter(
           block => block && (block.type === 'text' || block.type === 'input_text')
         );
-        text = textBlocks.map(block => block.text || '').join(' ');
+        text = textBlocks.map(block => block.text || '').join('\n');
       }
-      const trimmed = text.trim();
-      const lower = trimmed.toLowerCase();
-      if (lower.startsWith(idPrefix)) {
-        let after = trimmed.slice(idPrefix.length).trim();
-        if (!after) continue;
-        if (after.length > 128) after = after.slice(0, 128);
-        return after;
+
+      const m = String(text || '').match(/^\s*Session\s+ID\s*:\s*([^\s`]+)/im);
+      if (m && m[1]) {
+        let id = String(m[1]).trim();
+        // Be tolerant of Markdown/backtick punctuation around pasted snippets.
+        id = id.replace(/^`+|`+$/g, '').replace(/[.,;:]+$/g, '');
+        if (id) return id.length > 128 ? id.slice(0, 128) : id;
       }
     }
 
@@ -2500,7 +2507,7 @@
             html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId || '(none)') + ' | pasted: ' + escapeHtml(capPastedId || '\u2014') + '</div>';
           }
         }
-      } catch (e) {} {}
+      } catch (e) {}
 
       html += '</div>';
     });
