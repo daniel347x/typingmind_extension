@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.216 Changes:
+ * - Context staleness-ring polish v3: border-radius increased (7px → 10px) so the inner orange
+ *   edge and outer green edge both have visibly softer rounded corners. Orange inset line thickened
+ *   from 1px to 2px so the brighter ≤5m and ≤1h bands carry noticeably more visual weight.
+ *
  * v3.215 Changes:
  * - Context staleness-ring polish v2: outer green border thicker (2px -> 3px); larger dark gap between
  *   green and orange (3px -> 5px) and slightly thicker row padding so the list rows stay roomy.
@@ -748,7 +753,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.215',
+  VERSION: '3.216',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2480,10 +2485,10 @@
         const row = document.createElement('div');
         // Dominant OUTER green 2px recency ring; thin INNER orange age line, isolated by a dark gap.
         // The first inset shadow paints the gap; the second leaves just a 1px orange band visible.
-        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:7px 16px; margin:2px 0; border-radius:7px; cursor:pointer; '
+        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:7px 16px; margin:2px 0; border-radius:10px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
           + 'border:3px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 5px #1e1e1e, inset 0 0 0 6px ' + rings.inner + '; '
+          + 'box-shadow: inset 0 0 0 5px #1e1e1e, inset 0 0 0 7px ' + rings.inner + '; '
           + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
         // Tooltip leads with the full slot name (squares/rows are truncated) + last-updated time.
         row.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
@@ -2925,9 +2930,9 @@
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
-        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:7px; cursor:pointer; font-size:11px; text-align:center; '
+        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:10px; cursor:pointer; font-size:11px; text-align:center; '
           + 'border:3px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 6px ' + rings.inner + '; '
+          + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
           + editOutline
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
