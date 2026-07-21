@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.77
+// Version: 4.78
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,12 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.78: Added DeepInfra (api.deepinfra.com) as a new supported endpoint for GLM-5.2.
+//     It's an OpenAI-compatible /v1/openai/chat/completions endpoint. No repairs or cache
+//     injection needed (prompt caching appears automatic). Usage comes via the standard SSE
+//     root-level usage object (same path as OpenRouter). Cost is in `estimated_cost` (not `cost`),
+//     so tmRenderCacheReport + tmExtractCostVal now check estimated_cost too. Cached tokens
+//     in prompt_tokens_details.cached_tokens (same shape as OpenRouter).
 //   - v4.77: Removed the '(collapsed – click ▸ to expand)' hint row — saves vertical space,
 //     the toggle icon is self-evident.
 //   - v4.76: Final tweak — number font 11px→12px, purple lightened further toward white (#a98bc8 → #b8a0d5),
@@ -113,7 +119,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.77';
+  const EXT_VERSION = '4.78';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -170,9 +176,12 @@
   }
 
   // (v4.72) Extract the per-turn cost from a usage object (same logic as tmRenderCacheReport).
+  // (v4.78) Also check estimated_cost (DeepInfra's field name).
   function tmExtractCostVal(au, oru) {
     if (au && au.cost != null) return Number(au.cost) || 0;
     if (oru && oru.cost != null) return Number(oru.cost) || 0;
+    if (oru && oru.estimated_cost != null) return Number(oru.estimated_cost) || 0;
+    if (au && au.estimated_cost != null) return Number(au.estimated_cost) || 0;
     return 0;
   }
 
@@ -402,6 +411,8 @@
   function tmDetectProtocol(url, bodyObj) {
     const u = String(url || '');
     if (u.includes('/v1/responses')) return 'openai-responses';
+    // (v4.78) DeepInfra hosts an OpenAI-compatible chat-completions endpoint at /v1/openai/chat/completions
+    if (u.includes('api.deepinfra.com')) return 'deepinfra-chat-completions';
     if (u.includes('/v1/chat/completions')) return 'openai-chat-completions';
     // Anthropic-native: direct Anthropic OR OpenRouter Anthropic Skin (/api/v1/messages)
     if (u.includes('api.anthropic.com') || (u.includes('openrouter.ai') && u.includes('/v1/messages')) || (bodyObj && Array.isArray(bodyObj.messages) && !Array.isArray(bodyObj.input))) {
@@ -1443,9 +1454,12 @@
   function tmRenderCacheReport(au, oru) {
     // (v4.71) Extract inference cost for the gray cost badge (appended to all return paths so it
     // surfaces in BOTH the always-visible widget header AND the per-row payload-capture modal).
+    // (v4.78) Also check estimated_cost (DeepInfra's field name).
     var costVal = 0;
     if (au && au.cost != null) { costVal = au.cost; }
     else if (oru && oru.cost != null) { costVal = oru.cost; }
+    else if (oru && oru.estimated_cost != null) { costVal = oru.estimated_cost; }
+    else if (au && au.estimated_cost != null) { costVal = au.estimated_cost; }
     var costStr = (costVal > 0)
       ? ' <span title="inference cost" style="color:#9aa4b2;">$' + costVal.toFixed(3) + '</span>'
       : '';
@@ -3638,6 +3652,35 @@
         } catch (e) {
           console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify TypingMind proxy request:', e);
         }
+      }
+    }
+
+    // ==================== DEEPINFRA BRANCH (v4.78) ====================
+    // DeepInfra (api.deepinfra.com) hosts GLM-5.2 and other models on an OpenAI-compatible
+    // /v1/openai/chat/completions endpoint. Prompt caching appears automatic (cached_tokens
+    // shows up in prompt_tokens_details). No repairs or cache_control injection needed —
+    // just set the vendor hint so the payload is captured and the widget/modal surfaces it.
+    else if (typeof url === 'string' && url.includes('api.deepinfra.com')) {
+      vendorForThisCall = 'deepinfra';
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          // Capture for export tooling (deep clone)
+          try {
+            // DeepInfra uses the same messages shape as OpenAI chat-completions; reuse the Anthropic
+            // body export slot only if messages array is present (the export functions check by shape).
+            // No body modifications needed — just let it flow through to capture.
+          } catch (e) {}
+          // Derive conversation ID for notePayloadConversation + payload filters
+          const convId = deriveConversationIdFromBody(body);
+          if (convId) {
+            convIdForThisCall = convId;
+            notePayloadConversation(vendorForThisCall, convId, body.model);
+          }
+          // (v4.78) No repairs, no cache injection — passthrough with capture only.
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse DeepInfra request:', e);
       }
     }
 
