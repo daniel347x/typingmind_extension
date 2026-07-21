@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.88
+// Version: 4.89
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.88';
+  const EXT_VERSION = '4.89';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2033,12 +2033,12 @@
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
-    // Escape key closes the modal.
+    // Escape key closes the modal (any phase).
     document.addEventListener('keydown', function(ev) {
-      if (ev.key === 'Escape' && payloadCaptureModalEl && payloadCaptureModalEl.style.display === 'block') {
+      if ((ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) && payloadCaptureModalEl && payloadCaptureModalEl.style.display === 'block') {
         closePayloadCaptureModal();
       }
-    });
+    }, true);
 
     overlay.addEventListener('click', function(ev) {
       const t = ev.target;
@@ -2240,9 +2240,10 @@
     panel.id = 'tm-payload-capture-modal';
     panel.style.position = 'absolute';
     panel.style.top = '50%';
-    panel.style.left = '2vw';
+    panel.style.left = '18vw';
     panel.style.transform = 'translateY(-50%)';
     panel.style.width = '58vw';
+    panel.style.border = '2px solid rgba(255,255,255,0.18)';
     panel.style.height = '86vh';
     panel.style.background = 'rgba(15,15,20,0.96)';
     panel.style.color = '#fff';
@@ -2603,26 +2604,28 @@
 
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
-              '<span style="opacity:0.8;">#' + (idx + 1) + '</span> ' + protocol +
-              (model ? (' <span style="opacity:0.75;">(' + model + ')</span>') : '') +
+              '<span style="opacity:0.8;">#' + (idx + 1) + '</span>' +
+              (model ? (' <span style="font-weight:bold;color:#fff;">' + model + '</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
-      html += '<div style="font-size:10px;opacity:0.85;margin-top:2px;color:#8cf;">' + ts + '</div>';
+
+      html += '<div style="margin-top:2px;">' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">Summary</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Out Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Out Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Out Skel</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">In Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">In Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">In Skel</button>' +
+              '</div>';
+
+      html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
       html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
       html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage) + '</div>';
 
-      html += '<div style="margin-top:6px;font-size:10px;opacity:0.9;">Copy:</div>';
-      html += '<div style="margin-top:2px;">' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:0;">Summary</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Outbound Headers</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Outbound Payload</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Outbound Skeleton</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">Response Headers</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">Response Payload</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">Response Skeleton</button>' +
-              '</div>';
+
 
       html += '<div style="font-size:10px;opacity:0.7;margin-top:6px;">capId: ' + capId + '</div>';
 
