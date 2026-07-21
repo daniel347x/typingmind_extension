@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.86
+// Version: 4.87
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.86';
+  const EXT_VERSION = '4.87';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -340,9 +340,12 @@
   const TM_PAYLOAD_CAPTURE_ENABLED_KEY = 'tm_payload_capture_enabled';
   const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
 
-  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 20;
+  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 100;
   const TM_PAYLOAD_CAPTURE_TRUNCATION_KEY = 'tm_payload_capture_truncation';
-  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 1000;
+  const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 250;
+  // Hard record budgets make a 100-row ring safe even if a user raises the visible Trunc setting.
+  const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 6000;
+  const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1500;
 
   function tmGetTruncationLimit() {
     try {
@@ -538,6 +541,43 @@
     };
   }
 
+  function tmBuildMinimalCaptureSkeleton(bodyObj) {
+    // Last-resort compact record for the long-history ring: enough context to identify/cache-debug
+    // a request, but never a copy of its large tool/message payload.
+    var messages = Array.isArray(bodyObj && bodyObj.messages) ? bodyObj.messages :
+      (Array.isArray(bodyObj && bodyObj.input) ? bodyObj.input : []);
+    var tail = messages.slice(-8).map(function(m) {
+      var c = m && m.content;
+      return {
+        role: (m && m.role) || null,
+        content_kind: Array.isArray(c) ? 'array[' + c.length + ']' : typeof c,
+        content_types: Array.isArray(c) ? c.slice(0, 6).map(function(b) { return (b && b.type) || typeof b; }) : undefined
+      };
+    });
+    return {
+      _tm_compact_capture: true,
+      model: (bodyObj && bodyObj.model) || null,
+      keys: (bodyObj && typeof bodyObj === 'object') ? Object.keys(bodyObj) : [],
+      prompt_cache_key: bodyObj && bodyObj.prompt_cache_key,
+      session_id: bodyObj && bodyObj.session_id,
+      cache_control: bodyObj && bodyObj.cache_control,
+      tools: Array.isArray(bodyObj && bodyObj.tools) ? { count: bodyObj.tools.length } : undefined,
+      message_count: messages.length,
+      recent_messages: tail
+    };
+  }
+
+  function tmBuildCompactResponseSkeleton(responseObj) {
+    var usage = tmExtractKnownUsageEvidence(responseObj);
+    return {
+      _tm_compact_response: true,
+      keys: (responseObj && typeof responseObj === 'object') ? Object.keys(responseObj) : [],
+      model: responseObj && responseObj.model,
+      id: responseObj && responseObj.id,
+      usage: usage || undefined
+    };
+  }
+
   function tmReadCaptureRing() {
     try {
       const raw = localStorage.getItem(TM_PAYLOAD_CAPTURE_RING_KEY);
@@ -617,25 +657,18 @@
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
 
-        // Always try skeleton first (compact); fall back to truncated if small enough.
-        // This prevents localStorage quota overflow for huge payloads.
-        var skeleton = tmBuildHugeSkeleton(parsed);
-        var skeletonStr = JSON.stringify(skeleton);
-
-        // If skeleton is under 50KB, store it as body for richer debugging.
-        // Otherwise store just the skeleton.
-        if (skeletonStr.length < 50000) {
-          var truncated = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
-          var truncatedStr = JSON.stringify(truncated);
-          // Cap per-entry body at 200KB to keep ring buffer under localStorage limits
-          if (truncatedStr.length < 200000) {
-            record.body = truncated;
-          } else {
-            record.body_skeleton = skeleton;
-            record.stored_as_skeleton = true;
-          }
+        // v4.87: a 100-entry history needs a strict record budget. Prefer a small truncated
+        // payload only when it fits; otherwise retain a diagnostic skeleton, then a tiny fallback.
+        var compact = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+        var compactStr = JSON.stringify(compact);
+        if (compactStr.length <= TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS) {
+          record.body = compact;
         } else {
-          record.body_skeleton = skeleton;
+          var skeleton = tmBuildHugeSkeleton(parsed);
+          var skeletonStr = JSON.stringify(skeleton);
+          record.body_skeleton = (skeletonStr.length <= TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS)
+            ? skeleton
+            : tmBuildMinimalCaptureSkeleton(parsed);
           record.stored_as_skeleton = true;
         }
       } else if (bodyRaw != null) {
@@ -761,14 +794,20 @@
           try {
             // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
-            patch.response_body = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+            var storedResponse = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+            if (JSON.stringify(storedResponse).length <= TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS) {
+              patch.response_body = storedResponse;
+            } else {
+              patch.response_body = tmBuildCompactResponseSkeleton(parsed);
+              patch.response_body_compacted = true;
+            }
             // Non-streaming provider responses: surface any known cache/cost evidence too.
             var jsonUsage = tmExtractKnownUsageEvidence(parsed);
             if (jsonUsage) patch.response_usage = jsonUsage;
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
-            var headLimit = tmGetTruncationLimit();
+            var headLimit = Math.min(tmGetTruncationLimit(), TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS);
             patch.response_body_head = s.slice(0, headLimit) +
               (s.length > headLimit ? ('... [tm_truncated +' + (s.length - headLimit) + ' chars]') : '');
 
@@ -1651,9 +1690,9 @@
     var displayPastedId = tmGetDisplayPastedSessionId();
     var sidLine = 'Session ID: ' + (displaySessionId || '(none)') + ' | pasted: ' + (displayPastedId || '\u2014');
     if (displaySessionId) {
-      lines.push('<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidLine + '</div>');
+      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidLine + '</div>');
     } else {
-      lines.push('<div style="font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
+      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
 
     if (collapsed) {
@@ -2526,7 +2565,8 @@
 
     html += '<div style="font-size:11px;opacity:0.85;margin-bottom:8px;">' +
             'Stored in localStorage key <code>' + escapeHtml(TM_PAYLOAD_CAPTURE_RING_KEY) + '</code>. ' +
-            'Each string is truncated to ' + TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS + ' chars. ' +
+            'Ring holds up to ' + TM_PAYLOAD_CAPTURE_MAX_ENTRIES + ' entries; each outbound record is capped at ' + TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS + ' chars and each response at ' + TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS + ' chars. ' +
+            'The Trunc control limits individual strings; oversized entries become compact diagnostic skeletons. ' +
             'Responses are best-effort (may be empty for streaming/opaque responses).' +
             '</div>';
 
