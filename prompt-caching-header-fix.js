@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.76
+// Version: 4.77
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,8 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.77: Removed the '(collapsed – click ▸ to expand)' hint row — saves vertical space,
+//     the toggle icon is self-evident.
 //   - v4.76: Final tweak — number font 11px→12px, purple lightened further toward white (#a98bc8 → #b8a0d5),
 //     and set bold for emphasis. Σ, $, and reset button unchanged.
 //   - v4.75: Bumped the numeric value font from 10px to 11px and lightened its purple toward white (#8b6db5 → #a98bc8).
@@ -111,7 +113,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.76';
+  const EXT_VERSION = '4.77';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1532,7 +1534,6 @@
     );
 
     if (collapsed) {
-      lines.push('<div style="font-size:10px;opacity:0.85;">(collapsed – click ▸ to expand)</div>');
       el.innerHTML = lines.join('');
       return;
     }
