@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.74
+// Version: 4.75
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,8 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.75: Bumped the numeric value font from 10px to 11px and lightened its purple toward white (#8b6db5 → #a98bc8).
+//     Σ, $, and reset button unchanged (9px, #5d3f8e).
 //   - v4.74: Swapped the two purple shades (number now #8b6db5, Σ$/reset now #5d3f8e) and bumped
 //     the numeric value's font-size from 9px to 10px for emphasis.
 //   - v4.73: Widened the widget by 50px (maxWidth 260→310) to prevent text rollover.
@@ -107,7 +109,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.74';
+  const EXT_VERSION = '4.75';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1501,7 +1503,7 @@
 
     // (v4.73) Running total cost — deeper purple (#8b6db5) for Σ$/reset; numeric value in even darker purple (#5d3f8e).
     var totalCost = tmGetTotalCost();
-    parts.push('<span title="running total cost (session)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#8b6db5;font-size:10px;">' + totalCost.toFixed(3) + '</span></span>' +
+    parts.push('<span title="running total cost (session)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#a98bc8;font-size:11px;">' + totalCost.toFixed(3) + '</span></span>' +
       ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#5d3f8e;font-size:9px;opacity:0.6;">\u21ba</span>');
 
     return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
