@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.215 Changes:
+ * - Context staleness-ring polish v2: outer green border thicker (2px -> 3px); larger dark gap between
+ *   green and orange (3px -> 5px) and slightly thicker row padding so the list rows stay roomy.
+ *   Orange age bands dimmed sharply beyond the first hour (≤5m 1.00, ≤1h 0.55, ≤1d 0.18, ≤1w 0.10,
+ *   ≤1mo 0.05) so anything older than an hour is barely a hint rather than a competing signal.
+ *
  * v3.214 Changes:
  * - Context staleness-ring polish: green relative-recency is now the dominant OUTER 2px ring; the
  *   absolute-age orange signal is a thin 1px INNER line separated by a dark gap. Orange is now five
@@ -742,7 +748,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.214',
+  VERSION: '3.215',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2348,14 +2354,16 @@
   }
 
   // Map absolute age to one of five discrete, human-meaningful orange levels.
+  // Orange is intentionally subdued (anything older than ~1 hour is a hint, not a signal): green is
+  // the dominant color; orange is a quiet absolute-age accent that should not steal attention.
   function refineAbsoluteBrightness(ageMs) {
     if (!isFinite(ageMs) || ageMs < 0) return 0;
     const MINUTE = 60000, HOUR = 60 * MINUTE, DAY = 24 * HOUR, WEEK = 7 * DAY, MONTH = 30 * DAY;
-    if (ageMs <= 5 * MINUTE) return 1.00;  // just touched
-    if (ageMs <= HOUR)       return 0.78;  // this hour
-    if (ageMs <= DAY)        return 0.56;  // today
-    if (ageMs <= WEEK)       return 0.32;  // this week
-    if (ageMs <= MONTH)      return 0.14;  // this month
+    if (ageMs <= 5 * MINUTE) return 1.00;  // just touched (still gentle - green does the heavy lifting)
+    if (ageMs <= HOUR)       return 0.55;  // this hour
+    if (ageMs <= DAY)        return 0.18;  // today (barely visible)
+    if (ageMs <= WEEK)       return 0.10;  // this week
+    if (ageMs <= MONTH)      return 0.05;  // this month
     return 0.0;                             // older / never
   }
 
@@ -2472,10 +2480,10 @@
         const row = document.createElement('div');
         // Dominant OUTER green 2px recency ring; thin INNER orange age line, isolated by a dark gap.
         // The first inset shadow paints the gap; the second leaves just a 1px orange band visible.
-        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:5px 12px; margin:2px 0; border-radius:6px; cursor:pointer; '
+        row.style.cssText = 'position:relative; display:flex; align-items:baseline; gap:6px; padding:7px 16px; margin:2px 0; border-radius:7px; cursor:pointer; '
           + 'white-space:nowrap; overflow:hidden; text-overflow:ellipsis; '
-          + 'border:2px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 3px #1e1e1e, inset 0 0 0 4px ' + rings.inner + '; '
+          + 'border:3px solid ' + rings.outer + '; '
+          + 'box-shadow: inset 0 0 0 5px #1e1e1e, inset 0 0 0 6px ' + rings.inner + '; '
           + (isActive ? 'background:rgba(43,122,43,0.35);' : '');
         // Tooltip leads with the full slot name (squares/rows are truncated) + last-updated time.
         row.title = slot.name + '\nSlot ' + (i + 1) + (isActive ? ' (ACTIVE — Refine sends this)' : '') + '\n– last updated ' + refineFmtLastUpdated(slot.lastUpdated);
@@ -2917,9 +2925,9 @@
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
-        sq.style.cssText = 'position:relative; min-width:44px; max-width:64px; padding:6px 8px; border-radius:6px; cursor:pointer; font-size:11px; text-align:center; '
-          + 'border:2px solid ' + rings.outer + '; '
-          + 'box-shadow: inset 0 0 0 3px #2a2a2a, inset 0 0 0 4px ' + rings.inner + '; '
+        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:7px; cursor:pointer; font-size:11px; text-align:center; '
+          + 'border:3px solid ' + rings.outer + '; '
+          + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 6px ' + rings.inner + '; '
           + editOutline
           + 'background:' + (isActive ? 'rgba(43,122,43,0.35)' : (isEditing ? 'rgba(77,163,255,0.18)' : '#2a2a2a')) + '; '
           + 'color:#eee; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
