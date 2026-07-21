@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.78
+// Version: 4.79
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,13 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.79: DeepInfra prompt caching fix — inject top-level `prompt_cache_key` into every
+//     DeepInfra request body using the same stable per-conversation derivation as OpenRouter's
+//     session_id (tmDeriveStableSessionId). DeepInfra load-balances across GPU workers; without a
+//     cache key, requests landing on a different instance miss the KV cache and pay full price
+//     (~25% of turns). The key pins all turns of a conversation to one shared cache slot, even
+//     across instances. Key is scoped per-model + per-account (no collisions). Only injected when
+//     not already present (self-healing if TypingMind ever adds native support).
 //   - v4.78: Added DeepInfra (api.deepinfra.com) as a new supported endpoint for GLM-5.2.
 //     It's an OpenAI-compatible /v1/openai/chat/completions endpoint. No repairs or cache
 //     injection needed (prompt caching appears automatic). Usage comes via the standard SSE
@@ -119,7 +126,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.78';
+  const EXT_VERSION = '4.79';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3657,27 +3664,45 @@
 
     // ==================== DEEPINFRA BRANCH (v4.78) ====================
     // DeepInfra (api.deepinfra.com) hosts GLM-5.2 and other models on an OpenAI-compatible
-    // /v1/openai/chat/completions endpoint. Prompt caching appears automatic (cached_tokens
-    // shows up in prompt_tokens_details). No repairs or cache_control injection needed —
-    // just set the vendor hint so the payload is captured and the widget/modal surfaces it.
+    // /v1/openai/chat/completions endpoint. Prompt caching is automatic (KV-cache prefix reuse)
+    // but the serverless fleet load-balances across GPU workers, so ~25% of turns land on a
+    // different instance and miss the cache entirely — full-price re-process of the entire prefix.
+    // The fix (v4.79): inject a top-level `prompt_cache_key` parameter, which DeepInfra's docs
+    // describe as making requests with the same key + model share a KV cache even across instances.
+    // No body repairs or cache_control injection needed — just the cache key.
     else if (typeof url === 'string' && url.includes('api.deepinfra.com')) {
       vendorForThisCall = 'deepinfra';
       try {
         if (options.body) {
           const body = JSON.parse(options.body);
-          // Capture for export tooling (deep clone)
-          try {
-            // DeepInfra uses the same messages shape as OpenAI chat-completions; reuse the Anthropic
-            // body export slot only if messages array is present (the export functions check by shape).
-            // No body modifications needed — just let it flow through to capture.
-          } catch (e) {}
+          let modified = false;
+
+          // (v4.79) Inject prompt_cache_key for cross-instance cache pinning.
+          // Uses the same stable per-conversation derivation as OpenRouter's session_id.
+          // Only inject when not already present (self-healing).
+          if (!body.prompt_cache_key) {
+            var diCacheKey = tmDeriveStableSessionId(body);
+            if (diCacheKey) {
+              body.prompt_cache_key = diCacheKey;
+              modified = true;
+              console.log('✅ [v' + EXT_VERSION + '] DeepInfra: injected prompt_cache_key for cross-instance cache pinning:', diCacheKey);
+            } else {
+              console.warn('⚠️ [v' + EXT_VERSION + '] DeepInfra: could not derive a stable prompt_cache_key; cache pinning not set.');
+            }
+          }
+
           // Derive conversation ID for notePayloadConversation + payload filters
           const convId = deriveConversationIdFromBody(body);
           if (convId) {
             convIdForThisCall = convId;
             notePayloadConversation(vendorForThisCall, convId, body.model);
           }
-          // (v4.78) No repairs, no cache injection — passthrough with capture only.
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] DeepInfra request body updated (prompt_cache_key injected)');
+          }
+          // No repairs, no cache_control injection — passthrough with capture only.
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse DeepInfra request:', e);
