@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.83
+// Version: 4.84
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -7,6 +7,13 @@
 //   4. Inject OpenAI Responses API prompt caching parameters (prompt_cache_key, prompt_cache_retention) for GPT-5.1
 //   5. Track GPT-5.1 per-conversation usage and cached_tokens based on "load files <keyword>" first user message
 // Issues Fixed:
+//   - v4.84: Universal tools key canonicalization. tmStabilizeToolsOrdering() now runs once globally
+//     on every intercepted JSON request body before endpoint-specific branches (except passthrough),
+//     not just OpenRouter. This applies the proven v4.58 fix to DeepInfra, direct OpenAI, direct
+//     Anthropic, TypingMind proxy Anthropic, and any future endpoint with top-level body.tools.
+//     It recursively sorts object keys only; array order remains semantic and untouched. This should
+//     prevent TypingMind's nondeterministic tool-schema key ordering from busting exact-prefix prompt
+//     caches on providers beyond OpenRouter, especially DeepInfra GLM-5.2.
 //   - v4.83: Fix Session ID parsing when Dan's first message contains other text before the ID
 //     (e.g. "Load GLIMPSE\n\nSession ID: cd02b901"). deriveConversationIdFromBody now scans
 //     each user message with a multiline regex for a Session ID line anywhere in the text, instead
@@ -137,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.83';
+  const EXT_VERSION = '4.84';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3237,6 +3244,23 @@
       }
     } catch (e) {
       // If anything goes wrong detecting the marker, fall through to normal handling (fail-safe).
+    }
+
+    // ==================== UNIVERSAL TOOLS KEY CANONICALIZATION (v4.84) ====================
+    // Run the proven v4.58 OpenRouter fix for EVERY endpoint, before endpoint-specific branches.
+    // This is semantic-preserving: object keys are recursively sorted; array order is NEVER changed.
+    // It prevents TypingMind's nondeterministic tool-schema key ordering from busting exact-prefix
+    // prompt caches on providers beyond OpenRouter (notably DeepInfra GLM-5.2).
+    try {
+      if (options && typeof options.body === 'string') {
+        var tmUniversalBody = JSON.parse(options.body);
+        if (tmStabilizeToolsOrdering(tmUniversalBody)) {
+          options.body = JSON.stringify(tmUniversalBody);
+          console.log('✅ [v' + EXT_VERSION + '] Universally canonicalized tools key ordering before endpoint-specific handling.');
+        }
+      }
+    } catch (e) {
+      // Non-JSON bodies or parse failures are ignored here; endpoint branches retain their own handling.
     }
 
     // ==================== ANTHROPIC BRANCH ====================
