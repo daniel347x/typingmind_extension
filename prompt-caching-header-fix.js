@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.90
+// Version: 4.91
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.90';
+  const EXT_VERSION = '4.91';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1604,7 +1604,8 @@
     else if (oru && oru.cost != null) { costVal = oru.cost; }
     else if (oru && oru.estimated_cost != null) { costVal = oru.estimated_cost; }
     else if (au && au.estimated_cost != null) { costVal = au.estimated_cost; }
-    var costStyle = 'color:#9aa4b2;' + (costFontSize ? ('font-size:' + costFontSize + ';font-weight:600;') : '');
+    var costColor = costFontSize ? '#ffccd5' : '#9aa4b2';
+    var costStyle = 'color:' + costColor + ';' + (costFontSize ? ('font-size:' + costFontSize + ';font-weight:600;') : '');
     var costStr = (costVal > 0)
       ? ' <span title="inference cost" style="' + costStyle + '">$' + costVal.toFixed(3) + '</span>'
       : '';
@@ -2617,7 +2618,7 @@
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
               '<span style="opacity:0.8;">#' + (idx + 1) + '</span>' +
-              (model ? (' <span style="font-weight:bold;color:#fff;">' + model + '</span>') : '') +
+              (model ? (' <span style="font-weight:bold;color:#fff2f5;">' + model + '</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
 
@@ -2632,7 +2633,7 @@
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
-      html += '<div style="font-size:11px;opacity:0.9;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
+      html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
       html += '<div style="font-size:10px;margin-top:3px;letter-spacing:0.3px;">' + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">\u00b7</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
