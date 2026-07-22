@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.98
+// Version: 4.99
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.98';
+  const EXT_VERSION = '4.99';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -563,6 +563,7 @@
       keys: (bodyObj && typeof bodyObj === 'object') ? Object.keys(bodyObj) : [],
       prompt_cache_key: bodyObj && bodyObj.prompt_cache_key,
       session_id: bodyObj && bodyObj.session_id,
+      usage: bodyObj && bodyObj.usage,
       cache_control: bodyObj && bodyObj.cache_control,
       tools: Array.isArray(bodyObj && bodyObj.tools) ? { count: bodyObj.tools.length } : undefined,
       message_count: messages.length,
@@ -3513,14 +3514,6 @@
             }
           }
 
-          // (v4.98) Inject usage accounting flag so OpenRouter emits a final usage chunk
-          // with cost + cache tokens in streaming responses (even on cache misses).
-          if (!body.usage || !body.usage.include) {
-            body.usage = { include: true };
-            modified = true;
-            console.log('✅ [v' + EXT_VERSION + '] OpenRouter: injected usage.{include:true} for streaming cost/cache tracking');
-          }
-
           if (modified) {
             options.body = JSON.stringify(body);
             console.log('✅ [v3.0] Anthropic request body sanitized and ready');
@@ -3745,6 +3738,15 @@
                 console.warn('⚠️ [v' + EXT_VERSION + '] OpenRouter OpenAI-family (' + model + '): could not derive a stable session_id; sticky routing not set.');
               }
             }
+          }
+
+          // (v4.99) Inject usage accounting flag so OpenRouter emits a final usage chunk
+          // with cost + cache tokens in streaming responses (even on cache misses). Applies to
+          // ALL OpenRouter models on this OpenAI-compat path (Claude, GPT-family, and others).
+          if (!body.usage || !body.usage.include) {
+            body.usage = { include: true };
+            modified = true;
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter (OpenAI-compat): injected usage.{include:true} for streaming cost/cache tracking');
           }
 
           if (modified) {
