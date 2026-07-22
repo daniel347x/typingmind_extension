@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.218 Changes:
+ * - Refine now always copies the FINAL cleaned result to the clipboard (in addition to the pre-refine
+ *   original, which was already copied). For a selection refine, it verifies the original region is
+ *   still intact before replacing: if the text was edited while refining, it flashes "⚠ Selection
+ *   changed" on the button for ~2s and leaves the cleaned result on the clipboard instead of pasting
+ *   into a now-mismatched location.
+ *
  * v3.217 Changes:
  * - Context staleness-ring polish v4: border-radius increased further (10px → 14px) for softer
  *   orange inner corners. Green rank curve mid-tier compressed: ranks 4-7 now fade much faster
@@ -758,7 +765,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.217',
+  VERSION: '3.218',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3589,15 +3596,58 @@
       let cleaned = (result && result.text ? result.text : '').replace(/\s+$/, '');
       // Show the most-recent cost on the Refine context row (exact for OpenRouter, estimated for Anthropic).
       refineUpdateCostLabel(result ? result.cost : null, result ? result.estimated : false);
+
+      // ALWAYS copy the FINAL refined text to the clipboard (the pre-refine original was already
+      // copied above). Best-effort; never blocks the rest of the flow.
+      try { navigator.clipboard.writeText(cleaned).catch(() => {}); } catch (e) {}
+
+      // If this was a selection refine, verify the original region hasn't been edited while the
+      // request was in-flight. If it has, DON'T paste into a now-mismatched location — just flash
+      // the button and leave the result on the clipboard.
+      if (usingSelection) {
+        const currentFull = transcriptEl.value;
+        const currentRegion = currentFull.substring(selStart, selEnd);
+        if (currentRegion !== target) {
+          updateStatus('✨ Refined ✓ (selection changed — result on clipboard)', 'success');
+          const cb = document.getElementById('deepgram-refine-btn');
+          if (cb) {
+            cb.innerHTML = '⚠ Selection changed';
+            window.__refineSelectionMismatch = true;
+            if (window.__refineSelectionFlashTimer) clearTimeout(window.__refineSelectionFlashTimer);
+            window.__refineSelectionFlashTimer = setTimeout(function(){
+              const b = document.getElementById('deepgram-refine-btn');
+              if (b) b.innerHTML = prevLabel || '✨ Refine';
+              window.__refineSelectionMismatch = false;
+              window.__refineSelectionFlashTimer = null;
+            }, 2000);
+          }
+          return; // skip replacement — the finally block will see the flag and not overwrite the flash
+        }
+      }
+
       const newFull = full.substring(0, selStart) + cleaned + full.substring(selEnd);
       transcriptEl.value = newFull;
       const newCursor = selStart + cleaned.length;
-      transcriptEl.focus();
+      transcriptEl.focus({ preventScroll: true });
       transcriptEl.setSelectionRange(selStart, newCursor);
-      try { scrollToCursorPosition(transcriptEl, newCursor); } catch (e) {}
+      scrollToCursorPosition(transcriptEl, newCursor);
       try { updateInsertButtonState(); } catch (e) {}
       try { resetAutoClipboardTimer(); } catch (e) {}
       updateStatus('✨ Refined ✓', 'success');
+
+      // Flash the button briefly to confirm the replacement, then restore.
+      const fb = document.getElementById('deepgram-refine-btn');
+      if (fb) {
+        fb.innerHTML = usingSelection ? '✓ Replaced selection' : '✓ Refined';
+        window.__refineSuccessFlash = true;
+        if (window.__refineSuccessFlashTimer) clearTimeout(window.__refineSuccessFlashTimer);
+        window.__refineSuccessFlashTimer = setTimeout(function(){
+          const b = document.getElementById('deepgram-refine-btn');
+          if (b) b.innerHTML = prevLabel || '✨ Refine';
+          window.__refineSuccessFlash = false;
+          window.__refineSuccessFlashTimer = null;
+        }, 2000);
+      }
     } catch (err) {
       console.error('❌ Refine failed:', err);
       const status = err && err.status;
@@ -3624,9 +3674,10 @@
       updateStatus('❌ Refine failed', 'error');
     } finally {
       // ALWAYS re-enable the button (this is what prevents the permanent grayed-out state).
+      // Exception: if a selection-mismatch flash is active, let its timer handle the restore.
       const b = document.getElementById('deepgram-refine-btn');
       if (refineAbortController === thisAbortController) refineAbortController = null;
-      if (b) { b.disabled = false; b.innerHTML = prevLabel || '✨ Refine'; }
+      if (b) { b.disabled = false; if (!window.__refineSelectionMismatch && !window.__refineSuccessFlash) b.innerHTML = prevLabel || '✨ Refine'; }
     }
   }
 
@@ -8461,48 +8512,17 @@
   //   kind=AST,
   // ]
   function scrollToCursorPosition(element, cursorPos) {
-    // Use a more reliable method: Let the browser handle cursor visibility
-    // by temporarily blurring and refocusing, which triggers native scroll-to-cursor
-    
-    // Store current focus state
-    const hadFocus = document.activeElement === element;
-    
-    // Force a small delay to ensure DOM has updated with new text
-    requestAnimationFrame(() => {
-      // Focus the element to make cursor visible
-      element.focus();
-      
-      // Set selection range - browser will auto-scroll to show cursor
-      element.setSelectionRange(cursorPos, cursorPos);
-      
-      // Additional manual scroll adjustment for better visibility
-      // This provides the 2-line padding below cursor as requested
-      const style = window.getComputedStyle(element);
-      const lineHeight = parseInt(style.lineHeight) || parseInt(style.fontSize) * 1.6;
-      const padding = lineHeight * 2;
-      
-      // Get current scroll position after browser auto-scroll
-      const currentScroll = element.scrollTop;
-      const elementHeight = element.clientHeight;
-      
-      // Calculate where cursor likely is (approximate)
-      const textUpToCursor = element.value.substring(0, cursorPos);
-      const linesBeforeCursor = textUpToCursor.split('\n').length;
-      const approximateCursorY = linesBeforeCursor * lineHeight;
-      
-      // Check if cursor is near the bottom of visible area
-      const cursorDistanceFromBottom = (currentScroll + elementHeight) - approximateCursorY;
-      
-      // If cursor is too close to bottom (less than 2 lines of padding), scroll down a bit
-      if (cursorDistanceFromBottom < padding) {
-        element.scrollTop = currentScroll + (padding - cursorDistanceFromBottom);
-      }
-      
-      // If element didn't have focus before, blur it to restore previous state
-      if (!hadFocus) {
-        element.blur();
-      }
-    });
+    // Proportional scroll: same approach as read-aloud's elevenJumpToChunkInEditor.
+    // Don't touch focus (caller already handled it); just scroll the selection into view.
+    try {
+      const denom = Math.max(1, element.value.length);
+      const frac = cursorPos / denom;
+      const scrollable = Math.max(0, element.scrollHeight - element.clientHeight);
+      // Bias slightly past the estimate so the selection sits comfortably above the bottom edge.
+      const bias = Math.min(element.clientHeight * 0.18, 120);
+      const target = Math.round(frac * scrollable) + bias;
+      element.scrollTop = Math.max(0, Math.min(scrollable, target));
+    } catch (e) { /* ignore */ }
   }
   
   function flashStatusIndicator() {
