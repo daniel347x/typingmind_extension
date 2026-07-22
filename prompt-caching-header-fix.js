@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.97
+// Version: 4.98
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.97';
+  const EXT_VERSION = '4.98';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3513,6 +3513,14 @@
             }
           }
 
+          // (v4.98) Inject usage accounting flag so OpenRouter emits a final usage chunk
+          // with cost + cache tokens in streaming responses (even on cache misses).
+          if (!body.usage || !body.usage.include) {
+            body.usage = { include: true };
+            modified = true;
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter: injected usage.{include:true} for streaming cost/cache tracking');
+          }
+
           if (modified) {
             options.body = JSON.stringify(body);
             console.log('✅ [v3.0] Anthropic request body sanitized and ready');
@@ -3643,6 +3651,14 @@
             options.headers['anthropic-beta'] = currentBeta ? currentBeta + ',prompt-caching-2024-07-31' : 'prompt-caching-2024-07-31';
             console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin: injected prompt-caching beta header');
             modified = true;
+          }
+
+          // (v4.98) Inject usage accounting flag so OpenRouter emits a final usage chunk
+          // with cost + cache tokens in streaming responses (even on cache misses).
+          if (!body.usage || !body.usage.include) {
+            body.usage = { include: true };
+            modified = true;
+            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin: injected usage.{include:true} for streaming cost/cache tracking');
           }
 
           // Repair tools/content issues (same as direct Anthropic)
@@ -3839,6 +3855,19 @@
             tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
             tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
             if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+
+            // Prompt caching on the proxy path (v4.70).
+            // ...
+            // (existing caching logic remains)
+
+            // (v4.98) Inject usage accounting flag when the proxy target is OpenRouter.
+            if (tgtLower.includes('openrouter.ai')) {
+              if (!body.usage || !body.usage.include) {
+                body.usage = { include: true };
+                modified = true;
+                console.log('✅ [v' + EXT_VERSION + '] TM Proxy (target OpenRouter): injected usage.{include:true} for streaming cost/cache tracking');
+              }
+            }
 
             // ==================== PROMPT CACHING ON THE PROXY PATH (v4.70) ====================
             // REGRESSION FIX: v4.62 deliberately skipped caching here on the assumption that TypingMind +
