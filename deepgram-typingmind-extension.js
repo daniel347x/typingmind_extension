@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.219 Changes:
+ * - Refine context row on main widget: added ✂½ prune button at far left (prunes the active slot
+ *   to ~half, same as the popup scissors), added KB count in gray parentheses after the session
+ *   name (no more hovering the popup just to see slot size), and made "context:" bright white
+ *   since it's now clickable/hoverable.
+ *
  * v3.218 Changes:
  * - Refine now always copies the FINAL cleaned result to the clipboard (in addition to the pre-refine
  *   original, which was already copied). For a selection refine, it verifies the original region is
@@ -765,7 +771,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.218',
+  VERSION: '3.219',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2446,6 +2452,12 @@
   function refineUpdateContextButtonLabel() {
     const lbl = document.getElementById('deepgram-refine-active-context-label');
     if (lbl) lbl.textContent = refineGetActiveContextName();
+    const kb = document.getElementById('deepgram-refine-active-context-kb');
+    if (kb) {
+      const len = (refineGetContext() || '').length;
+      kb.textContent = '(' + (len / 1024).toFixed(1) + ' KB)';
+      kb.style.display = len > 0 ? '' : 'none';
+    }
     refineUpdateTailPreview();
   }
 
@@ -5650,9 +5662,11 @@
 
         <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
         <div style="display:flex; align-items:baseline; gap:8px; margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9;">
+          <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;" onclick="(function(){var cur=refineGetContexts();var i=refineGetActiveContextIndex();var n=(cur[i]&&cur[i].name)||'';var res=refinePruneSlotToHalf((cur[i]&&cur[i].text)||'');if(!res.changed){updateStatus('✂½ No section break to prune at','error');return;}if(!confirm('Prune slot '+n+' to ~half?\n\nThis will DELETE '+res.removed.toLocaleString()+' chars above the first section break at/after the midpoint (keeping '+res.text.length.toLocaleString()+' chars). Saved immediately.'))return;cur[i].text=res.text;refineTouchSlot(cur,i);refineSaveContexts(cur);refineUpdateContextButtonLabel();updateStatus('✂½ Pruned '+n+': removed '+res.removed.toLocaleString()+' chars (now '+res.text.length.toLocaleString()+')','success');})()">✂½</button>
           <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="opacity:0.6; cursor:pointer;">✨ context: ▾</span>
+            <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#fff; cursor:pointer;">✨ context: ▾</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
+            <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.5; color:#ccc; margin-left:3px;"></span>
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
