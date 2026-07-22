@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.99
+// Version: 4.100
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.99';
+  const EXT_VERSION = '4.100';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -619,7 +619,7 @@
       const u = String(url || '').toLowerCase();
       const isTmCorsProxy = u.includes('typingmind.com/api/cors-proxy');
       if (!isTmCorsProxy &&
-          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel'))) {
+          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io'))) {
         return null;
       }
     } catch (e) {}
