@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.95
+// Version: 4.96
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.95';
+  const EXT_VERSION = '4.96';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -650,7 +650,8 @@
       response_headers: null,
       response_body_parse_error: null,
       response_body: null,
-      response_body_chars: null
+      response_body_chars: null,
+      response_usage_segments: null
     };
 
     try {
@@ -828,6 +829,7 @@
               var lines = s.split('\n');
               var lastUsage = null;
               var anthropicUsage = null;
+              var usageSegments = [];
               for (var li = 0; li < lines.length; li++) {
                 var line = lines[li].trim();
                 if (!line.startsWith('data: ')) continue;
@@ -835,26 +837,31 @@
                 if (jsonStr === '[DONE]') continue;
                 try {
                   var parsed2 = JSON.parse(jsonStr);
+                  var hit = false;
                   // Generic fallback for unfamiliar providers / field nesting. This is read-only:
                   // it merely promotes cache read/write + cost evidence into the capture/widget.
                   var genericUsage = tmExtractKnownUsageEvidence(parsed2);
-                  if (genericUsage) { lastUsage = genericUsage; }
+                  if (genericUsage) { lastUsage = genericUsage; hit = true; }
                   // OpenRouter-style: usage in root of chunk
-                  if (!genericUsage && parsed2 && parsed2.usage) { lastUsage = parsed2.usage; }
+                  if (!genericUsage && parsed2 && parsed2.usage) { lastUsage = parsed2.usage; hit = true; }
                   // OpenAI Responses-style: usage in response.completed -> response.usage
-                  if (parsed2 && parsed2.response && parsed2.response.usage) { lastUsage = parsed2.response.usage; }
+                  if (parsed2 && parsed2.response && parsed2.response.usage) { lastUsage = parsed2.response.usage; hit = true; }
                   // Anthropic-style: usage in message_start
                   if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
-                    anthropicUsage = parsed2.message.usage;
+                    anthropicUsage = parsed2.message.usage; hit = true;
                   }
                   // Anthropic-style: additional usage in message_delta
                   if (parsed2 && parsed2.type === 'message_delta' && parsed2.usage) {
                     anthropicUsage = anthropicUsage || {};
                     var du = parsed2.usage;
                     for (var k in du) { if (Object.prototype.hasOwnProperty.call(du, k)) { anthropicUsage[k] = du[k]; } }
+                    hit = true;
                   }
+                  // (v4.96) Save the raw JSON blob for any segment that carried usage/cost evidence.
+                  if (hit) { usageSegments.push(jsonStr); }
                 } catch (parseErr) {}
               }
+              if (usageSegments.length > 0) { patch.response_usage_segments = usageSegments; }
               if (lastUsage) { patch.response_usage = lastUsage; }
               if (anthropicUsage) { patch.response_anthropic_usage = anthropicUsage; }
             } catch (usageErr) {}
@@ -2533,6 +2540,12 @@
         body_skeleton: sk
       };
       label = 'Response payload (skeleton)';
+    } else if (part === 'in_usage_segments') {
+      // Raw JSON blobs from SSE segments that carried usage/cost evidence.
+      var segs = cap.response_usage_segments;
+      if (!segs || !segs.length) return;
+      copyTextToClipboard(segs.join('\n'), 'Raw usage segments (' + segs.length + ')');
+      return;
     }
 
     if (obj == null) return;
@@ -2631,6 +2644,7 @@
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">In Hdrs</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">In Body</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">In Skel</button>' +
+              (cap.response_usage_segments && cap.response_usage_segments.length ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
