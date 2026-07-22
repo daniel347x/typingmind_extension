@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.220 Changes:
+ * - Refine button now splits into two buttons during a request: ⏹ Cancel (with live countdown
+ *   ticking every second, flashing red under 30s) and +30s (adds 30 seconds to the timeout
+ *   on each click — click repeatedly to buy minutes for long refinements). The two buttons
+ *   together occupy exactly the same width as the original single button (no layout jump).
+ *   After completion, a 5-second cooldown disables the button to prevent accidental re-clicks
+ *   from the +30s→Refine race condition.
+ *
  * v3.219 Changes:
  * - Refine context row on main widget: added ✂½ prune button at far left (prunes the active slot
  *   to ~half, same as the popup scissors), added KB count in gray parentheses after the session
@@ -771,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.219',
+  VERSION: '3.220',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -925,6 +933,8 @@
 
   // Refine request cancellation state (click ✨ Refine again while in-flight to abort immediately)
   let refineAbortController = null;
+  let refineTimeoutEnd = null;     // absolute ms timestamp when the current refine times out (+30s extends it)
+  let refineCountdownTimer = null; // interval id for the countdown display
 
   // Sidebar conversation title sizing
   // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
@@ -3187,8 +3197,16 @@
    */
   async function refineCallOnce(provider, model, apiKey, systemPrompt, userContent, abortController) {
     const ctrl = abortController || new AbortController();
-    const timeoutMs = 120000; // 2 min hard cap per attempt
-    const timer = setTimeout(() => { ctrl.__refineAbortReason = 'timeout'; ctrl.abort(); }, timeoutMs);
+    // Dynamic timeout: check every 500ms against refineTimeoutEnd (which the +30s button extends).
+    // This replaces the old fixed 2-minute setTimeout so the user can buy more time mid-request.
+    const timeoutCheck = setInterval(() => {
+      if (ctrl.signal.aborted) { clearInterval(timeoutCheck); return; }
+      if (typeof refineTimeoutEnd === 'number' && Date.now() >= refineTimeoutEnd) {
+        ctrl.__refineAbortReason = 'timeout';
+        ctrl.abort();
+        clearInterval(timeoutCheck);
+      }
+    }, 500);
     // Coordinate with the sibling Payload extension via a STATELESS URL SENTINEL (tm_passthrough=1)
     // appended to the endpoint URL below. The Payload extension's fetch hook reads it off THIS
     // request's own URL and passes the request through untouched. A URL query param (unlike a custom
@@ -3277,7 +3295,7 @@
       }
       throw err;
     } finally {
-      clearTimeout(timer);
+      clearInterval(timeoutCheck);
     }
   }
 
@@ -3600,8 +3618,58 @@
     const prevLabel = btn ? btn.innerHTML : null;
     const thisAbortController = new AbortController();
     refineAbortController = thisAbortController;
-    if (btn) { btn.disabled = false; btn.innerHTML = '⏹ Cancel Refine'; }
-    updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '… (click Refine again to cancel)', 'info');
+
+    // Replace the single Refine button with a split Cancel | +30s pair that occupies the same width.
+    if (btn) {
+      const btnRect = btn.getBoundingClientRect();
+      const btnWidth = Math.max(100, Math.round(btnRect.width));
+      btn.style.display = 'none';
+
+      const container = document.createElement('span');
+      container.id = 'deepgram-refine-split-container';
+      container.style.cssText = 'display:inline-flex; gap:4px; width:' + btnWidth + 'px;';
+
+      const cancelBtn = document.createElement('button');
+      cancelBtn.className = 'deepgram-btn deepgram-btn-info';
+      cancelBtn.style.cssText = 'flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; line-height:1.2; min-width:0;';
+      cancelBtn.innerHTML = '<span>⏹ Cancel</span><span id="deepgram-refine-countdown" style="font-size:9px; opacity:0.8;">2:00</span>';
+      cancelBtn.onclick = function(){
+        thisAbortController.__refineAbortReason = 'user';
+        thisAbortController.abort();
+      };
+
+      const addBtn = document.createElement('button');
+      addBtn.className = 'deepgram-btn deepgram-btn-info';
+      addBtn.style.cssText = 'flex:1; font-size:11px; min-width:0;';
+      addBtn.textContent = '+30s';
+      addBtn.onclick = function(){ refineTimeoutEnd += 30000; };
+
+      container.appendChild(cancelBtn);
+      container.appendChild(addBtn);
+      btn.parentNode.insertBefore(container, btn);
+
+      // Start the countdown display (updates every second).
+      refineTimeoutEnd = Date.now() + 120000;
+      if (refineCountdownTimer) clearInterval(refineCountdownTimer);
+      refineCountdownTimer = setInterval(function(){
+        const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
+        const min = Math.floor(remaining / 60);
+        const sec = remaining % 60;
+        const cd = document.getElementById('deepgram-refine-countdown');
+        if (cd) {
+          cd.textContent = min + ':' + (sec < 10 ? '0' : '') + sec;
+          if (remaining <= 30 && remaining > 0) {
+            cd.style.color = (Math.floor(Date.now() / 500) % 2) ? '#ff7777' : '';
+          }
+        }
+        if (remaining <= 0 && !thisAbortController.signal.aborted) {
+          thisAbortController.__refineAbortReason = 'timeout';
+          thisAbortController.abort();
+        }
+      }, 1000);
+    }
+
+    updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '…', 'info');
 
     try {
       const result = await refineCallWithRetry(provider, model, apiKey, systemPrompt, userContent, thisAbortController);
@@ -3647,18 +3715,21 @@
       try { resetAutoClipboardTimer(); } catch (e) {}
       updateStatus('✨ Refined ✓', 'success');
 
-      // Flash the button briefly to confirm the replacement, then restore.
-      const fb = document.getElementById('deepgram-refine-btn');
-      if (fb) {
-        fb.innerHTML = usingSelection ? '✓ Replaced selection' : '✓ Refined';
+      // Flash the button briefly to confirm replacement, then start 5s cooldown.
+      const rb = document.getElementById('deepgram-refine-btn');
+      if (rb) {
+        rb.innerHTML = usingSelection ? '✓ Replaced selection' : '✓ Refined';
+        rb.disabled = true;
+        rb.style.opacity = '0.55';
         window.__refineSuccessFlash = true;
         if (window.__refineSuccessFlashTimer) clearTimeout(window.__refineSuccessFlashTimer);
-        window.__refineSuccessFlashTimer = setTimeout(function(){
-          const b = document.getElementById('deepgram-refine-btn');
-          if (b) b.innerHTML = prevLabel || '✨ Refine';
+        if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
+        window.__refineCooldownTimer = setTimeout(function(){
+          const bb = document.getElementById('deepgram-refine-btn');
+          if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.innerHTML = '✨ Refine'; }
           window.__refineSuccessFlash = false;
-          window.__refineSuccessFlashTimer = null;
-        }, 2000);
+          window.__refineCooldownTimer = null;
+        }, 5000);
       }
     } catch (err) {
       console.error('❌ Refine failed:', err);
@@ -3666,31 +3737,59 @@
       if (err && err.userCanceled) {
         updateStatus('✨ Refine canceled', 'info');
         const cb = document.getElementById('deepgram-refine-btn');
-        if (cb) cb.innerHTML = '✓ Canceled';
-        await new Promise(r => setTimeout(r, 600));
+        if (cb) {
+          cb.innerHTML = '✓ Canceled';
+          cb.disabled = true;
+          cb.style.opacity = '0.55';
+          if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
+          window.__refineCooldownTimer = setTimeout(function(){
+            const bb = document.getElementById('deepgram-refine-btn');
+            if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.innerHTML = '✨ Refine'; }
+            window.__refineCooldownTimer = null;
+          }, 5000);
+        }
       } else if (status === 401 || status === 403) {
         const meta = refineProviderMeta(provider);
         localStorage.removeItem(meta.keyStorage);
         alert('Refine failed: your ' + meta.label + ' API key was rejected (' + status + '). It has been cleared — try again to re-enter it.');
       } else if (err && err.wasAbort) {
-        alert('Refine timed out (no response within 2 minutes). Try again, or try a faster model.');
+        alert('Refine timed out (no response). Try again, or add time with +30s next round.');
+        refineStartCooldown();
       } else if (err && err.status === undefined) {
-        // Bare network error. With the Payload extension's v4.59 passthrough guard in place this should
-        // be rare; if it recurs it is a genuine network/CORS issue or the sibling extension is stale.
+        // Bare network error.
         alert('Refine failed: network error (no response). Check your connection.'
           + '\n\nIf this persists, make sure the Payload extension is at v4.59+ (it must honor the'
           + ' x-tm-passthrough header), or switch the Provider dropdown to try the other provider.');
+        refineStartCooldown();
       } else {
         alert('Refine failed: ' + (err && err.message ? err.message : err));
+        refineStartCooldown();
       }
       updateStatus('❌ Refine failed', 'error');
     } finally {
-      // ALWAYS re-enable the button (this is what prevents the permanent grayed-out state).
-      // Exception: if a selection-mismatch flash is active, let its timer handle the restore.
-      const b = document.getElementById('deepgram-refine-btn');
+      // Always clean up the split-button UI and restore the original button.
+      if (refineCountdownTimer) { clearInterval(refineCountdownTimer); refineCountdownTimer = null; }
+      refineTimeoutEnd = null;
+      const container = document.getElementById('deepgram-refine-split-container');
+      if (container) container.remove();
+      const fbtn = document.getElementById('deepgram-refine-btn');
+      if (fbtn) fbtn.style.display = '';
       if (refineAbortController === thisAbortController) refineAbortController = null;
-      if (b) { b.disabled = false; if (!window.__refineSelectionMismatch && !window.__refineSuccessFlash) b.innerHTML = prevLabel || '✨ Refine'; }
     }
+  }
+
+  /** Start a 5s cooldown on the Refine button (disabled + dimmed) to prevent misclicks. */
+  function refineStartCooldown() {
+    const b = document.getElementById('deepgram-refine-btn');
+    if (!b) return;
+    b.disabled = true;
+    b.style.opacity = '0.55';
+    if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
+    window.__refineCooldownTimer = setTimeout(function(){
+      const bb = document.getElementById('deepgram-refine-btn');
+      if (bb) { bb.disabled = false; bb.style.opacity = ''; }
+      window.__refineCooldownTimer = null;
+    }, 5000);
   }
 
   /**
