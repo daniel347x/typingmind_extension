@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.110
+// Version: 4.111
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.110';
+  const EXT_VERSION = '4.111';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2716,12 +2716,23 @@
 
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
 
-      // (v4.108) Cache hit/miss badge + per-session cost at the LEFT of the title row, fixed-width.
+      // (v4.111) Button row at the very top of each entry.
+      html += '<div style="margin-bottom:3px;">' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">Summary</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Out Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Out Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Out Skel</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">In Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">In Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">In Skel</button>' +
+              (cap.response_usage_segments && cap.response_usage_segments.length ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
+              '</div>';
+
+      // (v4.111) Title row: #N (fixed-width, very left) + HIT/MISS + cost + model + hash.
       var isHit = tmIsSignificantCacheHit(cap);
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
-      // (v4.110) Session cost = ring-buffer sum + persistent storage (survives eviction).
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
@@ -2731,21 +2742,10 @@
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+              '<span style="display:inline-block;width:32px;opacity:0.8;">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
-              '<span style="opacity:0.8;">#' + (idx + 1) + '</span>' +
               (model ? (' <span style="font-weight:bold;color:#fff2f5;">' + model + '</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
-              '</div>';
-
-      html += '<div style="margin-top:2px;">' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">Summary</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Out Hdrs</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Out Body</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Out Skel</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">In Hdrs</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">In Body</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">In Skel</button>' +
-              (cap.response_usage_segments && cap.response_usage_segments.length ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
