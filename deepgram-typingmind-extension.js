@@ -935,6 +935,7 @@
   let refineAbortController = null;
   let refineTimeoutEnd = null;     // absolute ms timestamp when the current refine times out (+30s extends it)
   let refineCountdownTimer = null; // interval id for the countdown display
+  let refinePulseTimer = null;     // interval id for the split-button background pulse
 
   // Sidebar conversation title sizing
   // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
@@ -3687,6 +3688,23 @@
           thisAbortController.abort();
         }
       }, 1000);
+
+      // Subtle pulsing background on both split buttons: Cancel pulses blue ↔ warm-orange,
+      // +30s pulses green-teal ↔ warm-orange-green, offset by 500ms so they alternate.
+      var pulsePhase = false;
+      cancelBtn.style.transition = 'background 0.5s';
+      addBtn.style.transition = 'background 0.5s';
+      if (refinePulseTimer) clearInterval(refinePulseTimer);
+      refinePulseTimer = setInterval(function(){
+        pulsePhase = !pulsePhase;
+        if (pulsePhase) {
+          cancelBtn.style.background = 'rgba(80,120,200,0.55)';
+          addBtn.style.background = 'rgba(60,150,100,0.55)';
+        } else {
+          cancelBtn.style.background = 'rgba(180,110,50,0.55)';
+          addBtn.style.background = 'rgba(140,130,50,0.55)';
+        }
+      }, 500);
     }
 
     updateStatus('✨ Refining ' + (usingSelection ? 'selection' : 'whole transcript') + ' via ' + refineProviderMeta(provider).label + '…', 'info');
@@ -3789,6 +3807,7 @@
     } finally {
       // Always clean up the split-button UI and restore the original button.
       if (refineCountdownTimer) { clearInterval(refineCountdownTimer); refineCountdownTimer = null; }
+      if (refinePulseTimer) { clearInterval(refinePulseTimer); refinePulseTimer = null; }
       refineTimeoutEnd = null;
       const container = document.getElementById('deepgram-refine-split-container');
       if (container) container.remove();

@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.101
+// Version: 4.102
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.101';
+  const EXT_VERSION = '4.102';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -368,6 +368,22 @@
       }
     } catch (e) {}
     return tmGetTruncationLimit();
+  }
+
+  function tmSanitizeMalformedEmptyNoteValues(rawBody, contextLabel) {
+    // (v4.102) TypingMind cross-model conversion can emit invalid JSON fragments like
+    // "note": } or "note": , when switching old tool-history into Gemini format.
+    // This must run BEFORE JSON.parse and BEFORE endpoint-specific branches/proxy routing.
+    if (typeof rawBody !== 'string' || rawBody.indexOf('"note"') === -1) return rawBody;
+    var count = 0;
+    var fixed = rawBody.replace(/("note"\s*:\s*)(?=[}\],])/g, function(m, prefix) {
+      count++;
+      return prefix + 'null';
+    });
+    if (count > 0) {
+      console.log('✅ [v' + EXT_VERSION + '] Sanitized ' + count + ' malformed empty "note" JSON value(s)' + (contextLabel ? (' in ' + contextLabel) : '') + '.');
+    }
+    return fixed;
   }
 
   // Backwards-compat alias (used in pre-4.37 code paths that reference the const directly)
@@ -3417,6 +3433,16 @@
       // If anything goes wrong detecting the marker, fall through to normal handling (fail-safe).
     }
 
+    // ==================== GLOBAL MALFORMED-JSON SANITIZER (v4.102) ====================
+    // Must happen before any JSON.parse in universal canonicalization or endpoint branches.
+    try {
+      if (options && typeof options.body === 'string') {
+        const beforeSanitize = options.body;
+        const afterSanitize = tmSanitizeMalformedEmptyNoteValues(beforeSanitize, String(url || 'request'));
+        if (afterSanitize !== beforeSanitize) options.body = afterSanitize;
+      }
+    } catch (e) {}
+
     // ==================== UNIVERSAL TOOLS KEY CANONICALIZATION (v4.84) ====================
     // Run the proven v4.58 OpenRouter fix for EVERY endpoint, before endpoint-specific branches.
     // This is semantic-preserving: object keys are recursively sorted; array order is NEVER changed.
@@ -3529,18 +3555,8 @@
       vendorForThisCall = 'gemini';
       try {
         if (options.body) {
-          // (v4.101) Sanitize known malformed JSON before parsing. TypingMind's cross-model
-          // conversation conversion can produce empty field values like "note": } which
-          // is invalid JSON. Replace with null to keep the field present but valid.
-          var geminiBodyStr = options.body;
-          var geminiSanitized = geminiBodyStr.replace(/"note"\s*:\s*\}/g, '"note": null}');
-          if (geminiSanitized !== geminiBodyStr) {
-            options.body = geminiSanitized;
-            console.log('✅ [v' + EXT_VERSION + '] Gemini: sanitized malformed "note": } in request body');
-          }
-
           const body = JSON.parse(options.body);
-          let modified = (geminiSanitized !== geminiBodyStr);
+          let modified = false;
 
           // Capture latest Gemini body for export tooling (deep clone so we preserve pre-repair state).
           try {
