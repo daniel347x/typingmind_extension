@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.155
+// Version: 4.156
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,9 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.155';
+  // @carto-group id=client-group-1 label="Client group 1"
+
+  const EXT_VERSION = '4.156';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -195,6 +197,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmPruneSessionScopedStorage-0m8e,
+  //   role=__lambdao_1.tmPruneSessionScopedStorage,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Anti-leak: prunes every session-derived map by per-entry _ts. Global settings are intentionally left alone.,
+  //   kind=ast,
+  // ]
   function tmPruneSessionScopedStorage(cutoff) {
     function pruneMap(storeKey, missingTsMeansOld) {
       try {
@@ -222,6 +231,13 @@
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmResetTotalCost-6cs3,
+  //   role=__lambdao_1.tmResetTotalCost,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Resets global cost and prunes week-old session-derived map entries.,
+  //   kind=ast,
+  // ]
   function tmResetTotalCost() {
     tmSetTotalCost(0);
     // Purge week-old session-derived maps. These maps carry per-entry _ts metadata;
@@ -236,6 +252,13 @@
   // v4.153 keys by session ID + model + resolved endpoint host + proxy/direct flag.
   const TM_SESSION_COSTS_KEY = 'tm_session_costs_v2';
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmGetSessionCosts-fnas,
+  //   role=__lambdao_1.tmGetSessionCosts,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Reads per-identity session cost aggregate from tm_session_costs_v2.,
+  //   kind=ast,
+  // ]
   function tmGetSessionCosts() {
     try {
       var raw = localStorage.getItem(TM_SESSION_COSTS_KEY);
@@ -243,6 +266,13 @@
     } catch (e) { return {}; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmExtractEndpointHost-6uov,
+  //   role=__lambdao_1.tmExtractEndpointHost,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Endpoint identity: resolves real target host (x-target-endpoint for proxy traffic, fallback to URL host).,
+  //   kind=ast,
+  // ]
   function tmExtractEndpointHost(cap) {
     // (v4.107) Extract a short host identifier from the capture URL for per-endpoint stratification.
     try {
@@ -260,16 +290,37 @@
     return 'unknown';
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmIsProxyCapture-am0g,
+  //   role=__lambdao_1.tmIsProxyCapture,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Detects whether a capture was routed via TypingMind's cors-proxy.,
+  //   kind=ast,
+  // ]
   function tmIsProxyCapture(cap) {
     try {
       return !!(cap && cap.url && String(cap.url).toLowerCase().includes('typingmind.com/api/cors-proxy'));
     } catch (e) { return false; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildSessionCostKey-stdp,
+  //   role=__lambdao_1.tmBuildSessionCostKey,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=THE canonical 4-part identity key (sid::model::host::proxy|direct). Cost and hue must both key off this identity.,
+  //   kind=ast,
+  // ]
   function tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy) {
     return (sessionId || '') + '::' + (model || '') + '::' + (endpointHost || 'unknown') + '::' + (isProxy ? 'proxy' : 'direct');
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRecordSessionCost-34n7,
+  //   role=__lambdao_1.tmRecordSessionCost,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Event-sourced session cost ledger; persists per-identity totals in tm_session_costs_v2 and stamps session_cost_total onto capture rows at response receipt.,
+  //   kind=ast,
+  // ]
   function tmRecordSessionCost(sessionId, model, endpointHost, isProxy, cost) {
     if (!sessionId || !model || cost <= 0) return 0;
     try {
@@ -289,6 +340,12 @@
     return 0;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmGetSessionCost-3tm0,
+  //   role=__lambdao_1.tmGetSessionCost,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   kind=ast,
+  // ]
   function tmGetSessionCost(sessionId, model, endpointHost, isProxy) {
     if (!sessionId || !model) return 0;
     try {
@@ -300,6 +357,13 @@
     } catch (e) { return 0; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmTouchSessionScopedStores-gz4j,
+  //   role=__lambdao_1.tmTouchSessionScopedStores,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Anti-leak: touches _ts on all session-derived entries for a given sessionId. Called at response receipt so active sessions stay fresh.,
+  //   kind=ast,
+  // ]
   function tmTouchSessionScopedStores(sessionId, ts) {
     if (!sessionId) return;
     ts = ts || Date.now();
@@ -388,8 +452,16 @@
   // (v4.131) Persistent per-session/model/endpoint hue map for well-separated colors.
   // v4.152 uses a v2 key because older cache entries could assign the same hue to
   // distinct model/endpoint identities by seeding from sessionId alone.
-  const TM_SESSION_HUES_KEY = 'tm_session_hues_v2';
+  // v4.156 bumps to v3 key: golden-angle placement needs clean slate (v2 is poisoned with hue-30 collisions).
+  const TM_SESSION_HUES_KEY = 'tm_session_hues_v3';
   var tmSessionHueCache = null;
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmLoadSessionHueCache-qzed,
+  //   role=__lambdao_1.tmLoadSessionHueCache,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Loads the in-memory hue cache from tm_session_hues_v3. Null memo on store version bumps.,
+  //   kind=ast,
+  // ]
   function tmLoadSessionHueCache() {
     if (tmSessionHueCache) return tmSessionHueCache;
     try {
@@ -398,35 +470,41 @@
     } catch (e) { tmSessionHueCache = {}; }
     return tmSessionHueCache;
   }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSaveSessionHueCache-m2ml,
+  //   role=__lambdao_1.tmSaveSessionHueCache,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Persists in-memory hue cache to tm_session_hues_v3.,
+  //   kind=ast,
+  // ]
   function tmSaveSessionHueCache() {
     try { localStorage.setItem(TM_SESSION_HUES_KEY, JSON.stringify(tmSessionHueCache || {})); } catch (e) {}
   }
-  function tmAssignSessionHue(sessionId, existingHues) {
-    // Find the largest gap among existing hues and place the new one in its middle.
-    var sorted = existingHues.slice().sort(function(a, b) { return a - b; });
-    var bestGap = 0, bestPos = 0;
-    for (var i = 0; i < sorted.length; i++) {
-      var a = sorted[i];
-      var b = sorted[(i + 1) % sorted.length];
-      if (i === sorted.length - 1) b += 360; // wrap around
-      var gap = b - a;
-      if (gap > bestGap) {
-        bestGap = gap;
-        bestPos = (a + gap / 2) % 360;
-      }
-    }
-    if (sorted.length === 0) {
-      // No existing hues — use hash to pick a starting point.
-      var hashNum = parseInt(tmFnv1a32(sessionId || 'default'), 16);
-      if (!isFinite(hashNum)) hashNum = 0;
-      bestPos = (hashNum % 360 + 360) % 360;
-    }
-    // Avoid red.
-    if (bestPos <= 20) bestPos = 30;
-    else if (bestPos >= 340) bestPos = 330;
-    return Math.round(bestPos);
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmAssignSessionHue-c3l7,
+  //   role=__lambdao_1.tmAssignSessionHue,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Hue placement for new identity keys. v4.156: golden-angle over [30,330]; replaced largest-gap+red-clamp design that collapsed all hues to 30 once the wheel crowded.,
+  //   kind=ast,
+  // ]
+  function tmAssignSessionHue(seedKey, existingHues) {
+    // Usable wheel: [30, 330] (300°). Red arc excluded BY CONSTRUCTION, not by clamp.
+    // Golden-angle sequence: deterministic, near-optimal spread, no gap search.
+    // (The old largest-gap + red-clamp design was a collision attractor: the red zone
+    // is a permanently unfillable gap, so once the wheel crowded, every midpoint fell
+    // in red and clamped to exactly 30 — all identities converged on one hue.)
+    var n = existingHues.length;
+    var GOLDEN_ANGLE = 137.50776405003785;
+    return Math.round(30 + ((n * GOLDEN_ANGLE) % 300));
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmModelEndpointColor-0nfj,
+  //   role=__lambdao_1.tmModelEndpointColor,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Identity→color entry point. Key = sid::model::host::proxy|direct. Caches in tm_session_hues_v3. Empty model → fixed '#fff2f5' (silent; check tooltip).,
+  //   kind=ast,
+  // ]
   function tmModelEndpointColor(model, endpointHost, isProxy, sessionId) {
     if (!model) return '#fff2f5';
     var cache = tmLoadSessionHueCache();
@@ -453,6 +531,13 @@
   }
 
   // (v4.134) Human-readable session name storage.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmGetSessionName-ha2z,
+  //   role=__lambdao_1.tmGetSessionName,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Human-readable session name lookup; keyed by sessionId only (names are per-conversation, not per-model).,
+  //   kind=ast,
+  // ]
   function tmGetSessionName(sessionId) {
     if (!sessionId) return '';
     try {
@@ -462,6 +547,13 @@
       return (entry && typeof entry === 'object') ? (entry._name || '') : (entry || '');
     } catch (e) { return ''; }
   }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSetSessionName-2h0s,
+  //   role=__lambdao_1.tmSetSessionName,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Stores human-readable session name with _session_id + _ts metadata.,
+  //   kind=ast,
+  // ]
   function tmSetSessionName(sessionId, name) {
     if (!sessionId) return;
     try {
@@ -509,6 +601,11 @@
   }
 
   console.log('🔧 Prompt Caching & Tool Result Fix & Payload Analysis v' + EXT_VERSION + ' - Initializing...');
+
+  // v4.156 Boot-time zombie cleanup: remove poisoned v1/v2 hue stores and legacy cost store.
+  try { localStorage.removeItem('tm_session_hues'); } catch (e) {}
+  try { localStorage.removeItem('tm_session_hues_v2'); } catch (e) {}
+  try { localStorage.removeItem('tm_session_costs'); } catch (e) {}
   
   // ==================== OPENROUTER CACHE TTL WARNING ====================
   // Tracks the last OpenRouter+Claude request timestamp and displays a visual
@@ -540,6 +637,8 @@
       }
     } catch (e) {}
   }
+
+  // @carto-group id=client-group-2 label="Client group 2"
 
   function tmUpdateCacheWarningDisplay() {
     const widget = document.getElementById('gpt51-usage-widget');
@@ -771,6 +870,13 @@
     return 'unknown';
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildHugeSkeleton-92sj,
+  //   role=__lambdao_1.tmBuildHugeSkeleton,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Skeleton builder for oversized payload captures. NOTE: Gemini contents-bodies fall through to key-only stub (no model field) — model must be carried on _model.,
+  //   kind=ast,
+  // ]
   function tmBuildHugeSkeleton(bodyObj) {
     // Preserve enough structure to debug cache_control placement + tool use + protocol.
     // Intentionally strips large text.
@@ -836,6 +942,13 @@
     };
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildMinimalCaptureSkeleton-a6iw,
+  //   role=__lambdao_1.tmBuildMinimalCaptureSkeleton,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Last-resort compact capture record; preserves model, session_id, cache_control, tool count, message shape. No full message text.,
+  //   kind=ast,
+  // ]
   function tmBuildMinimalCaptureSkeleton(bodyObj) {
     // Last-resort compact record for the long-history ring: enough context to identify/cache-debug
     // a request, but never a copy of its large tool/message payload.
@@ -901,6 +1014,13 @@
     tmWriteCaptureRing(ring);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
+  //   role=__lambdao_1.tmCaptureFetchCall,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs.,
+  //   kind=ast,
+  // ]
   function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall) {
     if (!tmCaptureEnabled()) return null;
 
@@ -1033,6 +1153,8 @@
     return id;
   }
 
+  // @carto-group id=client-group-3 label="Client group 3"
+
   // (v4.86) Provider-agnostic response-usage fallback. Unknown normal endpoints are already
   // captured; this reads known cache/cost field variants anywhere in JSON or SSE event objects,
   // normalizes them for the widget/modal, and never changes the outbound request.
@@ -1120,6 +1242,13 @@
     return dst;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCaptureResponse-vq1x,
+  //   role=__lambdao_1.tmCaptureResponse,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Response receipt = the ONE identity/cost/metadata stamping event (usage extraction, cost recording, _identity stamp, store touch, widget render).,
+  //   kind=ast,
+  // ]
   function tmCaptureResponse(captureId, response) {
     if (!tmCaptureEnabled() || !captureId || !response) return;
 
@@ -1259,6 +1388,10 @@
                     } catch (e) {}
                     var recIsProxy = false;
                     try { recIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
+                    // v4.156: Stamp the resolved identity on the capture record so all
+                    // consumers (widget, modal, hue, cost) read from one source of truth.
+                    var identityKey = recSid + '::' + recModel + '::' + recHost + '::' + (recIsProxy ? 'proxy' : 'direct');
+                    tmUpdateCaptureRecord(captureId, { _identity: { sid: recSid, model: recModel, host: recHost, proxy: recIsProxy, key: identityKey } });
                     var newSessionTotal = tmRecordSessionCost(recSid, recModel, recHost, recIsProxy, turnCost);
                     if (newSessionTotal > 0) {
                       tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: recModel });
@@ -1421,6 +1554,13 @@
 
   // ==================== GPT-5.1 CONVERSATION ID & USAGE WIDGET HELPERS ====================
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.deriveConversationIdFromBody-aubh,
+  //   role=__lambdao_1.deriveConversationIdFromBody,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Session identity tier 1: scans first 10 user messages for 'Session ID: <hash>' line (multiline regex). Returns pasted ID or null.,
+  //   kind=ast,
+  // ]
   function deriveConversationIdFromBody(body) {
     let userMessages = [];
     if (Array.isArray(body.messages)) {
@@ -1478,6 +1618,8 @@
       console.warn('⚠️ [v' + EXT_VERSION + '] Failed to save gpt51_conv_usage to localStorage:', e);
     }
   }
+
+  // @carto-group id=client-group-4 label="Client group 4"
 
   function updateGpt51Usage(convId, usage) {
     if (!convId || !usage) return;
@@ -2025,6 +2167,8 @@
     return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costStr;
   }
 
+  // @carto-group id=client-group-5 label="Client group 5"
+
   function tmBuildWidgetStatusLine() {
     var st = tmMostRecentPayloadStatus || {};
     var rt = st.repairTally || null;
@@ -2074,6 +2218,13 @@
     return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.renderGpt51UsageWidget-j6og,
+  //   role=__lambdao_1.renderGpt51UsageWidget,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Primary widget render. MUST read stamped cap._identity for hue+cost together; never re-derive per-surface. Also renders modal/payload links, trunc control, Gemini repair toggle.,
+  //   kind=ast,
+  // ]
   function renderGpt51UsageWidget() {
     if (typeof document === 'undefined') return;
     const el = ensureGpt51UsageWidget();
@@ -2100,15 +2251,26 @@
     var displaySessionName = tmGetSessionName(displaySessionId || displayPastedId);
     var displaySidColor = '#9aa4b2';
     // Determine hue for the most-recent-payload session.
+    // v4.156: prefer stamped _identity; fall back to per-field derivation.
     try {
       var ring = tmReadCaptureRing();
       var last = ring.length > 0 ? ring[ring.length - 1] : null;
       if (last) {
         var lastModel = '';
         var lastHost = '';
-        try { lastModel = tmCaptureModel(last); } catch (e) {}
-        try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
-        displaySidColor = tmModelEndpointColor(lastModel, lastHost, tmIsProxyCapture(last), last.session_id || null);
+        var lastIsProxy = false;
+        var lastSid = last.session_id || null;
+        if (last._identity) {
+          lastModel = last._identity.model || '';
+          lastHost = last._identity.host || '';
+          lastIsProxy = !!last._identity.proxy;
+          lastSid = last._identity.sid || lastSid;
+        } else {
+          try { lastModel = tmCaptureModel(last); } catch (e) {}
+          try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
+          lastIsProxy = tmIsProxyCapture(last);
+        }
+        displaySidColor = tmModelEndpointColor(lastModel, lastHost, lastIsProxy, lastSid);
       }
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
@@ -2119,15 +2281,23 @@
       var displaySid = displaySessionId || displayPastedId;
       var displayModel = '';
       var displayHost = '';
+      var displayIsProxy = false;
       try {
-        var ring = tmReadCaptureRing();
-        var last = ring.length > 0 ? ring[ring.length - 1] : null;
-        if (last) {
-          try { displayModel = tmCaptureModel(last); } catch (e) {}
-          try { displayHost = tmExtractEndpointHost(last); } catch (e) {}
+        var ring2 = tmReadCaptureRing();
+        var last2 = ring2.length > 0 ? ring2[ring2.length - 1] : null;
+        if (last2) {
+          if (last2._identity) {
+            displayModel = last2._identity.model || '';
+            displayHost = last2._identity.host || '';
+            displayIsProxy = !!last2._identity.proxy;
+          } else {
+            try { displayModel = tmCaptureModel(last2); } catch (e) {}
+            try { displayHost = tmExtractEndpointHost(last2); } catch (e) {}
+            displayIsProxy = tmIsProxyCapture(last2);
+          }
         }
       } catch (e) {}
-      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost, last ? tmIsProxyCapture(last) : false) : 0;
+      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost, displayIsProxy) : 0;
       if (widgetSessionCost > 0) {
         sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
@@ -2862,6 +3032,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCaptureModel-uh3f,
+  //   role=__lambdao_1.tmCaptureModel,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Canonical model resolution for a capture: _model → body/skeleton → response body. Prefer cap._identity when available.,
+  //   kind=ast,
+  // ]
   function tmCaptureModel(cap) {
     if (!cap) return '';
     if (cap._model) return String(cap._model);
@@ -2879,6 +3056,13 @@
     return '';
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildCaptureSummary-h05z,
+  //   role=__lambdao_1.tmBuildCaptureSummary,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Builds a diagnostic summary from a capture record for modal copy buttons. Uses tmCaptureModel for model identity.,
+  //   kind=ast,
+  // ]
   function tmBuildCaptureSummary(cap) {
     if (!cap) return null;
     const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
@@ -3032,6 +3216,13 @@
            '</div>';
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.renderPayloadCaptureModal-wkgo,
+  //   role=__lambdao_1.renderPayloadCaptureModal,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
+  //   kind=ast,
+  // ]
   function renderPayloadCaptureModal() {
     if (!payloadCaptureModalInnerEl) return;
 
@@ -3113,15 +3304,17 @@
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
-      var capModel = tmCaptureModel(cap);
+      var capIdentity = cap._identity || null;
+      var capModel = capIdentity ? (capIdentity.model || '') : tmCaptureModel(cap);
       var capModelHtml = escapeHtml(capModel);
-      var capHost = '';
-      try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var capIsProxy = tmIsProxyCapture(cap);
+      var capHost = capIdentity ? (capIdentity.host || '') : '';
+      if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
+      var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
+      var modelColorTooltip = escapeHtml(capIdentity ? capIdentity.key : (capSessionId + '::' + capModel + '::' + capHost + '::' + (capIsProxy ? 'proxy' : 'direct')));
       var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
@@ -3129,7 +3322,7 @@
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               '</span>' +
-              (capModelHtml ? (' <span style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
+              (capModelHtml ? (' <span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
@@ -3234,6 +3427,8 @@
 
     return changed;
   }
+
+  // @carto-group id=client-group-6 label="Client group 6"
 
   function repairAnthropicEmptyMessageContent(body) {
     if (!Array.isArray(body.messages) || body.messages.length === 0) return 0;
@@ -3753,6 +3948,13 @@
   //
   // Scope guard: the CALLER only invokes this for non-Claude OpenAI-family models, so Claude
   // (which shares the OpenRouter chat-completions branch) is never touched.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmDeriveStableSessionId-h7sh,
+  //   role=__lambdao_1.tmDeriveStableSessionId,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Session identity tier 2: deterministic FNV-1a hash of first-system + first-user message as stable fallback when no pasted Session ID exists.,
+  //   kind=ast,
+  // ]
   function tmDeriveStableSessionId(body) {
     // 1) Prefer the extension's existing conversation-id derivation when it yields something.
     try {
@@ -3803,6 +4005,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmEnsureOpenRouterAccountingAndSession-t849,
+  //   role=__lambdao_1.tmEnsureOpenRouterAccountingAndSession,
+  //   slice_labels=tm-payload-cost-visibility,
+  //   comment=OpenRouter injector: sessions_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
+  //   kind=ast,
+  // ]
   function tmEnsureOpenRouterAccountingAndSession(body, label) {
     // (v4.104) Universal OpenRouter injection: session_id for sticky routing + usage.{include:true}
     // for streaming cost/cache tracking. Called on every OpenRouter path (direct or proxy).
