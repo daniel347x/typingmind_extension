@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.121
+// Version: 4.122
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.121';
+  const EXT_VERSION = '4.122';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -248,39 +248,42 @@
     } catch (e) { return 0; }
   }
 
-  // (v4.117) Determine if a capture represents a significant cache hit.
-  // Requires cached tokens > 1000 AND at least 50% of total prompt tokens.
+  // (v4.122) Determine if a capture represents a significant cache hit.
+  // Requires cached tokens > 1000 AND at least 50% of prompt tokens. No cost heuristics.
   function tmIsSignificantCacheHit(cap) {
     try {
-      var au = cap.response_anthropic_usage;
-      var oru = cap.response_usage;
-
-      // Helper: cached must be a significant fraction of the total.
+      function num(v) {
+        var n = Number(v);
+        return isFinite(n) ? n : null;
+      }
       function isSignificant(cached, total) {
+        cached = num(cached); total = num(total);
         if (cached == null || total == null) return false;
-        cached = Number(cached); total = Number(total);
         if (cached <= 1000) return false;
         if (total <= 0) return false;
         return (cached / total) >= 0.5;
       }
-
-      // Anthropic-style: cache_read_input_tokens
-      if (au && isSignificant(au.cache_read_input_tokens, au.input_tokens)) return true;
-
-      // OpenRouter / OpenAI-style: cached_tokens in prompt_tokens_details
-      if (oru && oru.prompt_tokens_details) {
-        var cached = oru.prompt_tokens_details.cached_tokens;
-        var total = oru.prompt_tokens || oru.total_tokens;
-        if (isSignificant(cached, total)) return true;
+      function usageHit(u) {
+        if (!u || typeof u !== 'object') return false;
+        if (isSignificant(u.cache_read_input_tokens, u.input_tokens || u.prompt_tokens || u.total_tokens)) return true;
+        if (u.prompt_tokens_details && isSignificant(u.prompt_tokens_details.cached_tokens, u.prompt_tokens || u.total_tokens)) return true;
+        if (u.input_tokens_details && isSignificant(u.input_tokens_details.cached_tokens, u.input_tokens || u.prompt_tokens || u.total_tokens)) return true;
+        return false;
       }
 
-      // Generic fallback: cache_read_input_tokens on oru
-      if (oru && isSignificant(oru.cache_read_input_tokens, oru.prompt_tokens || oru.total_tokens)) return true;
+      if (usageHit(cap.response_anthropic_usage)) return true;
+      if (usageHit(cap.response_usage)) return true;
 
-      // (v4.121) Fallback: if ratio check fails but cached > 1000 and cost < $0.10, it's a hit.
-      if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens > 1000) {
-        if (oru.cost != null && Number(oru.cost) < 0.10) return true;
-        if (oru.estimated_cost != null && Number(oru.estimated_cost) < 0.10) return true;
+      // Raw SSE usage-segment fallback. This catches rows captured before/without normalized prompt_tokens.
+      if (Array.isArray(cap.response_usage_segments)) {
+        for (var i = 0; i < cap.response_usage_segments.length; i++) {
+          try {
+            var parsed = JSON.parse(cap.response_usage_segments[i]);
+            if (usageHit(parsed && parsed.usage)) return true;
+            var evidence = tmExtractKnownUsageEvidence(parsed);
+            if (usageHit(evidence)) return true;
+          } catch (e) {}
+        }
       }
     } catch (e) {}
     return false;
@@ -291,8 +294,11 @@
     if (!model) return '#fff2f5';
     var seed = model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
     var hash = tmFnv1a32(seed);
+    // tmFnv1a32 returns an 8-char HEX STRING; convert it before hue math.
+    var hashNum = parseInt(hash, 16);
+    if (!isFinite(hashNum)) hashNum = 0;
     // Use the hash to pick a hue (0-360), then HSL with high saturation + lightness.
-    var hue = (hash % 360 + 360) % 360;
+    var hue = (hashNum % 360 + 360) % 360;
     // Avoid red hues (0-20 and 340-360) to keep red reserved for the MISS badge.
     if (hue <= 20) hue = 30;
     else if (hue >= 340) hue = 330;
