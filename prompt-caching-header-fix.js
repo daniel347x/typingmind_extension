@@ -2811,7 +2811,7 @@
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               '</span>' +
-              (model ? (' <span style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;padding-top:10px;display:inline-block;">' + model + '</span>') : '') +
+              (model ? (' <span style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;padding-top:15px;display:inline-block;">' + model + '</span>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
