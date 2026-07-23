@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.135
+// Version: 4.136
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.135';
+  const EXT_VERSION = '4.136';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -507,7 +507,7 @@
   const TM_PAYLOAD_CAPTURE_ENABLED_KEY = 'tm_payload_capture_enabled';
   const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
 
-  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 100;
+  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 500;
   const TM_PAYLOAD_CAPTURE_TRUNCATION_KEY = 'tm_payload_capture_truncation';
   const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 250;
   // Hard record budgets make a 100-row ring safe even if a user raises the visible Trunc setting.
