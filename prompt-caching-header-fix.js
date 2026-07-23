@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.150
+// Version: 4.151
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.150';
+  const EXT_VERSION = '4.151';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1037,6 +1037,28 @@
     return found ? out : null;
   }
 
+  function tmMergeUsageInto(dst, src) {
+    if (!src) return dst;
+    dst = dst || {};
+    var keys = Object.keys(src);
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var v = src[k];
+      if (v == null) continue;
+      // Deep-merge prompt_tokens_details so cached_tokens and cache_write_tokens
+      // from separate SSE chunks survive rather than clobbering each other.
+      if (k === 'prompt_tokens_details' && v && typeof v === 'object' && !Array.isArray(v)) {
+        dst[k] = dst[k] || {};
+        tmMergeUsageInto(dst[k], v);
+        continue;
+      }
+      // Never overwrite a positive cost with zero.
+      if (k === 'cost' && v === 0 && dst[k] && dst[k] > 0) continue;
+      dst[k] = v;
+    }
+    return dst;
+  }
+
   function tmCaptureResponse(captureId, response) {
     if (!tmCaptureEnabled() || !captureId || !response) return;
 
@@ -1095,20 +1117,17 @@
                   // it merely promotes cache read/write + cost evidence into the capture/widget.
                   var genericUsage = tmExtractKnownUsageEvidence(parsed2);
                   if (genericUsage) {
-                    if (!lastUsage) { lastUsage = Object.assign({}, genericUsage); }
-                    else { Object.assign(lastUsage, genericUsage); }
+                    lastUsage = tmMergeUsageInto(lastUsage, genericUsage);
                     hit = true;
                   }
                   // OpenRouter-style: usage in root of chunk
                   if (!genericUsage && parsed2 && parsed2.usage) {
-                    if (!lastUsage) { lastUsage = Object.assign({}, parsed2.usage); }
-                    else { Object.assign(lastUsage, parsed2.usage); }
+                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.usage);
                     hit = true;
                   }
                   // OpenAI Responses-style: usage in response.completed -> response.usage
                   if (parsed2 && parsed2.response && parsed2.response.usage) {
-                    if (!lastUsage) { lastUsage = Object.assign({}, parsed2.response.usage); }
-                    else { Object.assign(lastUsage, parsed2.response.usage); }
+                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.response.usage);
                     hit = true;
                   }
                   // Anthropic-style: usage in message_start
