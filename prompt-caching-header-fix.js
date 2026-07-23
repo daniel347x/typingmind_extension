@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.145
+// Version: 4.146
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.145';
+  const EXT_VERSION = '4.146';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -197,8 +197,42 @@
 
   function tmResetTotalCost() {
     tmSetTotalCost(0);
-    // (v4.106) Also reset per-session cost tracking.
-    try { localStorage.removeItem(TM_SESSION_COSTS_KEY); } catch (e) {}
+    // (v4.146) Purge week-old session cost/name/hue entries.
+    try {
+      var costs = tmGetSessionCosts();
+      var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      var keys = Object.keys(costs);
+      var changed = false;
+      for (var i = 0; i < keys.length; i++) {
+        var entry = costs[keys[i]];
+        if (typeof entry === 'object' && entry._ts && entry._ts < cutoff) {
+          delete costs[keys[i]];
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      // Also purge old session names and hues.
+      var namesRaw = localStorage.getItem('tm_session_names');
+      if (namesRaw) {
+        var names = JSON.parse(namesRaw);
+        var namesChanged = false;
+        var nameKeys = Object.keys(names);
+        for (var j = 0; j < nameKeys.length; j++) {
+          if (!costs[nameKeys[j]]) { delete names[nameKeys[j]]; namesChanged = true; }
+        }
+        if (namesChanged) localStorage.setItem('tm_session_names', JSON.stringify(names));
+      }
+      var huesRaw = localStorage.getItem('tm_session_hues');
+      if (huesRaw) {
+        var hues = JSON.parse(huesRaw);
+        var huesChanged = false;
+        var hueKeys = Object.keys(hues);
+        for (var k = 0; k < hueKeys.length; k++) {
+          if (!costs[hueKeys[k]]) { delete hues[hueKeys[k]]; huesChanged = true; }
+        }
+        if (huesChanged) localStorage.setItem('tm_session_hues', JSON.stringify(hues));
+      }
+    } catch (e) {}
     renderGpt51UsageWidget();
   }
 
@@ -234,9 +268,16 @@
     try {
       var costs = tmGetSessionCosts();
       var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
-      costs[key] = (costs[key] || 0) + cost;
+      var entry = costs[key];
+      var total = 0;
+      if (typeof entry === 'object') {
+        total = (entry._total || 0) + cost;
+      } else {
+        total = (Number(entry) || 0) + cost;
+      }
+      costs[key] = { _total: total, _ts: Date.now() };
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
-      return costs[key];
+      return total;
     } catch (e) {}
     return 0;
   }
@@ -246,7 +287,9 @@
     try {
       var costs = tmGetSessionCosts();
       var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
-      return costs[key] || 0;
+      var entry = costs[key];
+      if (typeof entry === 'object') return entry._total || 0;
+      return Number(entry) || 0;
     } catch (e) { return 0; }
   }
 
@@ -1971,6 +2014,20 @@
       var sidParts = [];
       sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
       if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
+      // (v4.146) Current session total at the left, before the labels.
+      var displaySid = displaySessionId || displayPastedId;
+      var displayModel = '';
+      try {
+        var ring = tmReadCaptureRing();
+        var last = ring.length > 0 ? ring[ring.length - 1] : null;
+        if (last) {
+          try { var s = tmBuildCaptureSummary(last); displayModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
+        }
+      } catch (e) {}
+      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, '') : 0;
+      if (widgetSessionCost > 0) {
+        sidParts.unshift('<span style="color:' + displaySidColor + ';font-size:11px;font-weight:bold;">$' + widgetSessionCost.toFixed(2) + '</span>');
+      }
       if (displaySessionName) {
         sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || displayPastedId) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">' + displaySessionName + '</span>');
       } else {
