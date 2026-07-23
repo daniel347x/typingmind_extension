@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.148
+// Version: 4.149
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.148';
+  const EXT_VERSION = '4.149';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -564,6 +564,7 @@
   var tmPayloadCaptureModalEscapeHandler = null;
 
   var tmPromptActive = false;
+  var tmPayloadCaptureSuppressEscapeUntil = 0;
 
   function tmGetTruncationLimit() {
     try {
@@ -2654,7 +2655,11 @@
           var currentName = tmGetSessionName(sid);
           tmPromptActive = true;
           var newName = prompt('Session name for ' + sid + ':', currentName || '');
-          // Delay resetting the flag so the keyup escape handler still sees it.
+          // Native prompt() closes on Escape, but the corresponding keyup can arrive after
+          // prompt() returns. Suppress that trailing Escape so it does not also close the
+          // ring-buffer modal underneath the rename prompt.
+          tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+          // Delay resetting the flag so the immediate keyup escape handler still sees it.
           setTimeout(function() { tmPromptActive = false; }, 100);
           if (newName !== null) {
             tmSetSessionName(sid, newName);
@@ -3061,6 +3066,11 @@
       tmPayloadCaptureModalEscapeHandler = function(ev) {
         if (tmPromptActive) return;
         if (ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) {
+          if (Date.now() < tmPayloadCaptureSuppressEscapeUntil) {
+            ev.stopPropagation();
+            if (ev.preventDefault) ev.preventDefault();
+            return;
+          }
           closePayloadCaptureModal();
         }
       };
