@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.153
+// Version: 4.154
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.153';
+  const EXT_VERSION = '4.154';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -195,39 +195,39 @@
     }
   }
 
+  function tmPruneSessionScopedStorage(cutoff) {
+    function pruneMap(storeKey, missingTsMeansOld) {
+      try {
+        var raw = localStorage.getItem(storeKey);
+        if (!raw) return;
+        var map = JSON.parse(raw);
+        if (!map || typeof map !== 'object') return;
+        var changed = false;
+        var keys = Object.keys(map);
+        for (var i = 0; i < keys.length; i++) {
+          var entry = map[keys[i]];
+          var ts = (entry && typeof entry === 'object') ? Number(entry._ts || 0) : 0;
+          if ((ts && ts < cutoff) || (!ts && missingTsMeansOld)) {
+            delete map[keys[i]];
+            changed = true;
+          }
+        }
+        if (changed) localStorage.setItem(storeKey, JSON.stringify(map));
+      } catch (e) {}
+    }
+    pruneMap(TM_SESSION_COSTS_KEY, false);
+    pruneMap('tm_session_names', true);
+    pruneMap(TM_SESSION_HUES_KEY, true);
+    pruneMap('gpt51_conv_usage', true);
+    try { tmSessionHueCache = null; } catch (e) {}
+  }
+
   function tmResetTotalCost() {
     tmSetTotalCost(0);
-    // (v4.146) Purge week-old session cost/name/hue entries.
+    // Purge week-old session-derived maps. These maps carry per-entry _ts metadata;
+    // global settings are intentionally not session-scoped and are left alone.
     try {
-      var costs = tmGetSessionCosts();
-      var cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      var keys = Object.keys(costs);
-      var changed = false;
-      for (var i = 0; i < keys.length; i++) {
-        var entry = costs[keys[i]];
-        if (typeof entry === 'object' && entry._ts && entry._ts < cutoff) {
-          delete costs[keys[i]];
-          changed = true;
-        }
-      }
-      if (changed) localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
-      // Also purge old session names and hues.
-      var namesRaw = localStorage.getItem('tm_session_names');
-      if (namesRaw) {
-        var names = JSON.parse(namesRaw);
-        var namesChanged = false;
-        var nameKeys = Object.keys(names);
-        for (var j = 0; j < nameKeys.length; j++) {
-          if (!costs[nameKeys[j]]) { delete names[nameKeys[j]]; namesChanged = true; }
-        }
-        if (namesChanged) localStorage.setItem('tm_session_names', JSON.stringify(names));
-      }
-      var huesRaw = localStorage.getItem(TM_SESSION_HUES_KEY);
-      if (huesRaw) {
-        // Hues are cheap and keyed by full session/model/endpoint identity; reset drops stale assignments.
-        localStorage.removeItem(TM_SESSION_HUES_KEY);
-        tmSessionHueCache = {};
-      }
+      tmPruneSessionScopedStorage(Date.now() - 7 * 24 * 60 * 60 * 1000);
     } catch (e) {}
     renderGpt51UsageWidget();
   }
@@ -282,7 +282,7 @@
       } else {
         total = (Number(entry) || 0) + cost;
       }
-      costs[key] = { _total: total, _ts: Date.now() };
+      costs[key] = { _total: total, _session_id: sessionId, _ts: Date.now() };
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
       return total;
     } catch (e) {}
@@ -298,6 +298,50 @@
       if (typeof entry === 'object') return entry._total || 0;
       return Number(entry) || 0;
     } catch (e) { return 0; }
+  }
+
+  function tmTouchSessionScopedStores(sessionId, ts) {
+    if (!sessionId) return;
+    ts = ts || Date.now();
+    function entrySessionId(key, entry) {
+      if (entry && typeof entry === 'object' && entry._session_id) return String(entry._session_id);
+      if (String(key).indexOf('::') >= 0) return String(key).split('::')[0];
+      return String(key);
+    }
+    function touchMap(storeKey, convertLegacy) {
+      try {
+        var raw = localStorage.getItem(storeKey);
+        if (!raw) return;
+        var map = JSON.parse(raw);
+        if (!map || typeof map !== 'object') return;
+        var changed = false;
+        var keys = Object.keys(map);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          var entry = map[key];
+          if (entrySessionId(key, entry) !== String(sessionId)) continue;
+          if (entry && typeof entry === 'object') {
+            entry._session_id = String(sessionId);
+            entry._ts = ts;
+          } else if (convertLegacy === 'cost') {
+            map[key] = { _total: Number(entry) || 0, _session_id: String(sessionId), _ts: ts };
+          } else if (convertLegacy === 'name') {
+            map[key] = { _name: String(entry || ''), _session_id: String(sessionId), _ts: ts };
+          } else if (convertLegacy === 'hue') {
+            map[key] = { _hue: Number(entry), _session_id: String(sessionId), _ts: ts };
+          } else if (convertLegacy === 'gpt51') {
+            map[key] = { _session_id: String(sessionId), _ts: ts };
+          }
+          changed = true;
+        }
+        if (changed) localStorage.setItem(storeKey, JSON.stringify(map));
+      } catch (e) {}
+    }
+    touchMap(TM_SESSION_COSTS_KEY, 'cost');
+    touchMap('tm_session_names', 'name');
+    touchMap(TM_SESSION_HUES_KEY, 'hue');
+    touchMap('gpt51_conv_usage', 'gpt51');
+    try { tmSessionHueCache = null; } catch (e) {}
   }
 
   // (v4.122) Determine if a capture represents a significant cache hit.
@@ -387,7 +431,8 @@
     if (!model) return '#fff2f5';
     var cache = tmLoadSessionHueCache();
     var key = (sessionId || '') + '::' + model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
-    var hue = cache[key];
+    var entry = cache[key];
+    var hue = (entry && typeof entry === 'object') ? entry._hue : entry;
     // Use the FULL hue identity as the seed, not just sessionId. Otherwise the
     // same session can bias multiple model/endpoint combinations toward the same color.
     var hueSeed = key;
@@ -397,10 +442,11 @@
       var keys = Object.keys(cache);
       for (var i = 0; i < keys.length; i++) {
         var v = cache[keys[i]];
-        if (typeof v === 'number') existing.push(v);
+        var hv = (v && typeof v === 'object') ? v._hue : v;
+        if (typeof hv === 'number') existing.push(hv);
       }
       hue = tmAssignSessionHue(hueSeed, existing);
-      cache[key] = hue;
+      cache[key] = { _hue: hue, _session_id: sessionId || '', _ts: Date.now() };
       tmSaveSessionHueCache();
     }
     return 'hsl(' + hue + ', 55%, 72%)';
@@ -412,7 +458,8 @@
     try {
       var raw = localStorage.getItem('tm_session_names');
       var map = raw ? JSON.parse(raw) : {};
-      return map[sessionId] || '';
+      var entry = map[sessionId];
+      return (entry && typeof entry === 'object') ? (entry._name || '') : (entry || '');
     } catch (e) { return ''; }
   }
   function tmSetSessionName(sessionId, name) {
@@ -420,7 +467,7 @@
     try {
       var raw = localStorage.getItem('tm_session_names');
       var map = raw ? JSON.parse(raw) : {};
-      map[sessionId] = String(name || '').trim();
+      map[sessionId] = { _name: String(name || '').trim(), _session_id: String(sessionId), _ts: Date.now() };
       localStorage.setItem('tm_session_names', JSON.stringify(map));
     } catch (e) {}
   }
@@ -1188,6 +1235,11 @@
                 return null;
               })()
             };
+            // Touch any stored session-derived metadata for this session, even if this
+            // particular response carries no billable cost.
+            try {
+              tmTouchSessionScopedStores(tmMostRecentPayloadStatus.sessionId || tmMostRecentPayloadStatus.pastedSessionId, Date.now());
+            } catch (e) {}
             // (v4.72) Accumulate per-turn cost into the running total.
             try {
               var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
@@ -1453,6 +1505,8 @@
     stats.lastContextInput = input;
     stats.lastContextPct   = contextPct;
     stats.hidden = false; // ensure conversation reappears in widget once new usage arrives
+    stats._session_id = convId;
+    stats._ts = Date.now();
 
     store[convId] = stats;
     saveGpt51UsageStore(store);
