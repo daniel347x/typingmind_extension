@@ -2017,14 +2017,16 @@
       // (v4.146) Current session total at the left, before the labels.
       var displaySid = displaySessionId || displayPastedId;
       var displayModel = '';
+      var displayHost = '';
       try {
         var ring = tmReadCaptureRing();
         var last = ring.length > 0 ? ring[ring.length - 1] : null;
         if (last) {
           try { var s = tmBuildCaptureSummary(last); displayModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
+          try { displayHost = tmExtractEndpointHost(last); } catch (e) {}
         }
       } catch (e) {}
-      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, '') : 0;
+      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost) : 0;
       if (widgetSessionCost > 0) {
         sidParts.unshift('<span style="color:' + displaySidColor + ';font-size:11px;font-weight:bold;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
