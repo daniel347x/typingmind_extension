@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.108
+// Version: 4.109
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.108';
+  const EXT_VERSION = '4.109';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2721,12 +2721,27 @@
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
+      // (v4.109) Compute session cost on-the-fly from the ring buffer for reliability.
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
       try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var sessionCost = tmGetSessionCost(capSessionId, capModel, capHost);
+      var sessionCost = 0;
+      if (capSessionId && capModel) {
+        for (var ri = 0; ri < ring.length; ri++) {
+          var r = ring[ri];
+          if (!r) continue;
+          var rSid = r.session_id || null;
+          var rModel = '';
+          var rHost = '';
+          try { var rSum = tmBuildCaptureSummary(r); rModel = (rSum && rSum.model) ? String(rSum.model) : ''; } catch (e) {}
+          try { rHost = tmExtractEndpointHost(r); } catch (e) {}
+          if (rSid === capSessionId && rModel === capModel && rHost === capHost) {
+            sessionCost += tmExtractCostVal(r.response_anthropic_usage, r.response_usage);
+          }
+        }
+      }
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
