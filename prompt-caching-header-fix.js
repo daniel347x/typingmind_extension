@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.154
+// Version: 4.155
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.154';
+  const EXT_VERSION = '4.155';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -953,6 +953,7 @@
         record.body_chars_estimate = bodyRaw.length;
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
+        record._model = (parsed && parsed.model) ? String(parsed.model) : null;
 
         // (v4.90) Always derive and store session IDs on every capture record.
         try {
@@ -1253,8 +1254,7 @@
                     var recModel = '';
                     var recHost = '';
                     try {
-                      var recSum = tmBuildCaptureSummary(capRec);
-                      recModel = (recSum && recSum.model) ? String(recSum.model) : '';
+                      recModel = tmCaptureModel(capRec);
                       recHost = tmExtractEndpointHost(capRec);
                     } catch (e) {}
                     var recIsProxy = false;
@@ -2106,7 +2106,7 @@
       if (last) {
         var lastModel = '';
         var lastHost = '';
-        try { var s = tmBuildCaptureSummary(last); lastModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
+        try { lastModel = tmCaptureModel(last); } catch (e) {}
         try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
         displaySidColor = tmModelEndpointColor(lastModel, lastHost, tmIsProxyCapture(last), last.session_id || null);
       }
@@ -2123,7 +2123,7 @@
         var ring = tmReadCaptureRing();
         var last = ring.length > 0 ? ring[ring.length - 1] : null;
         if (last) {
-          try { var s = tmBuildCaptureSummary(last); displayModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
+          try { displayModel = tmCaptureModel(last); } catch (e) {}
           try { displayHost = tmExtractEndpointHost(last); } catch (e) {}
         }
       } catch (e) {}
@@ -2862,11 +2862,28 @@
     }
   }
 
+  function tmCaptureModel(cap) {
+    if (!cap) return '';
+    if (cap._model) return String(cap._model);
+    try {
+      var reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+      if (reqBody && reqBody.model) return String(reqBody.model);
+    } catch (e) {}
+    try {
+      if (cap.body_skeleton && cap.body_skeleton.model) return String(cap.body_skeleton.model);
+      if (cap.body && cap.body.model) return String(cap.body.model);
+    } catch (e2) {}
+    try {
+      if (cap.response_body && cap.response_body.model) return String(cap.response_body.model);
+    } catch (e3) {}
+    return '';
+  }
+
   function tmBuildCaptureSummary(cap) {
     if (!cap) return null;
     const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
 
-    let model = null;
+    let model = tmCaptureModel(cap);
     let hasCacheControl = null;
     let cacheControlSummary = null;
     let system_tools_prefix_hash = null;
@@ -2874,7 +2891,7 @@
 
     try {
       if (reqBody && typeof reqBody === 'object') {
-        model = reqBody.model || null;
+        if (!model) model = reqBody.model || null;
         cacheControlSummary = tmSummarizeCacheControl(reqBody);
         hasCacheControl = !!(cacheControlSummary && cacheControlSummary.hasAny);
         system_tools_prefix_hash = tmComputeSystemToolsPrefixHash(reqBody);
@@ -3096,10 +3113,7 @@
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
-      var capModel = cap._model || '';
-      if (!capModel) {
-        try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
-      }
+      var capModel = tmCaptureModel(cap);
       var capModelHtml = escapeHtml(capModel);
       var capHost = '';
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
