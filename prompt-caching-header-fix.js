@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.132
+// Version: 4.133
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.132';
+  const EXT_VERSION = '4.133';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2873,12 +2873,15 @@
 
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
-      var bottomParts = [];
-      if (prefixHash) bottomParts.push('h:' + escapeHtml(prefixHash));
-      if (capSessionId) bottomParts.push('Session ID: ' + escapeHtml(capSessionId));
-      if (capPastedId) bottomParts.push('pasted: ' + escapeHtml(capPastedId));
-      if (bottomParts.length > 0) {
-        html += '<div style="font-size:10px;opacity:0.5;font-family:monospace;margin-top:2px;">' + bottomParts.join(' | ') + '</div>';
+      // (v4.133) Bottom row: build parts individually so pasted ID gets the model color + larger font.
+      var bottomPartsHtml = [];
+      if (prefixHash) bottomPartsHtml.push('h:' + escapeHtml(prefixHash));
+      if (capSessionId) bottomPartsHtml.push('Session ID: ' + escapeHtml(capSessionId));
+      if (capPastedId) {
+        bottomPartsHtml.push('pasted: <span style="color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
+      }
+      if (bottomPartsHtml.length > 0) {
+        html += '<div style="font-size:10px;opacity:0.5;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
       } else {
         html += '<div style="font-size:8px;opacity:0.35;font-family:monospace;margin-top:2px;">Session ID: (not available for this capture)</div>';
       }
