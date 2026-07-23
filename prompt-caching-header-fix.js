@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.134
+// Version: 4.135
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.134';
+  const EXT_VERSION = '4.135';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2925,18 +2925,19 @@
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
       // (v4.134) Bottom row: session name support.
+      // (v4.135) Dim only the non-colored labels, not the session ID/name values.
       var sessionName = (capSessionId || capPastedId) ? tmGetSessionName(capSessionId || capPastedId) : '';
       var bottomPartsHtml = [];
-      if (prefixHash) bottomPartsHtml.push('h:' + escapeHtml(prefixHash));
-      if (capSessionId) bottomPartsHtml.push('Session ID: ' + escapeHtml(capSessionId));
+      if (prefixHash) bottomPartsHtml.push('<span style="opacity:0.5;">h:' + escapeHtml(prefixHash) + '</span>');
+      if (capSessionId) bottomPartsHtml.push('<span style="opacity:0.5;">Session ID: ' + escapeHtml(capSessionId) + '</span>');
       if (capPastedId) {
-        bottomPartsHtml.push('pasted: <span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
+        bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
       if (sessionName) {
         bottomPartsHtml.push('<span style="color:' + modelColor + ';font-size:12px;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
-        html += '<div style="font-size:10px;opacity:0.5;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
+        html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
       } else {
         html += '<div style="font-size:8px;opacity:0.35;font-family:monospace;margin-top:2px;">Session ID: (not available for this capture)</div>';
       }
