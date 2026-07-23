@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.112
+// Version: 4.113
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.112';
+  const EXT_VERSION = '4.113';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2690,6 +2690,23 @@
             'Responses are best-effort (may be empty for streaming/opaque responses).' +
             '</div>';
 
+    // (v4.113) Pre-compute per-row running session costs (chronological, oldest first).
+    var sessionCostMap = {};
+    for (var si = 0; si < ring.length; si++) {
+      var sr = ring[si];
+      if (!sr) continue;
+      var sSid = sr.session_id || null;
+      var sModel = '';
+      var sHost = '';
+      try { var sSum = tmBuildCaptureSummary(sr); sModel = (sSum && sSum.model) ? String(sSum.model) : ''; } catch (e) {}
+      try { sHost = tmExtractEndpointHost(sr); } catch (e) {}
+      if (sSid && sModel) {
+        var sKey = sSid + '::' + sModel + '::' + sHost;
+        sessionCostMap[sKey] = (sessionCostMap[sKey] || 0) + tmExtractCostVal(sr.response_anthropic_usage, sr.response_usage);
+      }
+      if (sr.id) sessionCostMap[sr.id] = sessionCostMap[sKey] || 0;
+    }
+
     items.forEach((cap, idx) => {
       if (!cap) return;
       const ts = escapeHtml(cap.ts_local || cap.ts || '');
@@ -2738,7 +2755,7 @@
       var capHost = '';
       try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var sessionCost = tmGetSessionCost(capSessionId, capModel, capHost);
+      var sessionCost = (cap.id && sessionCostMap[cap.id] != null) ? sessionCostMap[cap.id] : tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
