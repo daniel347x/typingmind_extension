@@ -2933,7 +2933,7 @@
 
     // ----- Ribbon of slot squares -----
     const ribbon = document.createElement('div');
-    ribbon.style.cssText = 'display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px;';
+    ribbon.style.cssText = 'display:flex; flex-direction:column; gap:4px; margin-bottom:10px;';
 
     const ta = document.createElement('textarea');
     ta.style.cssText = 'flex:1 1 auto; min-height:300px; width:100%; box-sizing:border-box; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
@@ -2965,7 +2965,7 @@
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
-        sq.style.cssText = 'position:relative; min-width:46px; max-width:66px; padding:8px 10px; border-radius:14px; cursor:pointer; font-size:11px; text-align:center; '
+        sq.style.cssText = 'position:relative; width:100%; padding:8px 12px; border-radius:14px; cursor:pointer; font-size:11px; text-align:left; '
           + 'border:3px solid ' + rings.outer + '; '
           + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
           + editOutline
@@ -3012,7 +3012,7 @@
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
-        nameSpan.style.cssText = 'display:inline-block; max-width:38px; overflow:hidden; text-overflow:ellipsis; vertical-align:middle;';
+        nameSpan.style.cssText = 'display:block; padding:0 22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
         const pen = document.createElement('span');
         pen.textContent = ' ✎';
         pen.style.cssText = 'opacity:0.6; margin-left:2px;';
