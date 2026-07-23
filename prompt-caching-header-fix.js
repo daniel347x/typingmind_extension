@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.156
+// Version: 4.157
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.156';
+  const EXT_VERSION = '4.157';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -303,6 +303,12 @@
     } catch (e) { return false; }
   }
 
+  // v4.157: THE single canonical identity-key builder. Cost AND hue both route through this
+  // so their keys can never drift (previously hue used '' for a missing host, cost used 'unknown').
+  function tmBuildIdentityKey(sessionId, model, endpointHost, isProxy) {
+    return (sessionId || '') + '::' + (model || '') + '::' + (endpointHost || 'unknown') + '::' + (isProxy ? 'proxy' : 'direct');
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildSessionCostKey-stdp,
   //   role=__lambdao_1.tmBuildSessionCostKey,
@@ -311,7 +317,7 @@
   //   kind=ast,
   // ]
   function tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy) {
-    return (sessionId || '') + '::' + (model || '') + '::' + (endpointHost || 'unknown') + '::' + (isProxy ? 'proxy' : 'direct');
+    return tmBuildIdentityKey(sessionId, model, endpointHost, isProxy);
   }
 
   // @beacon[
@@ -344,6 +350,7 @@
   //   id=auto-beacon@__lambdao_1.tmGetSessionCost-3tm0,
   //   role=__lambdao_1.tmGetSessionCost,
   //   slice_labels=tm-payload-cost-visibility,
+  //   comment=Reads a single per-identity session cost total from tm_session_costs_v2 via tmBuildSessionCostKey.,
   //   kind=ast,
   // ]
   function tmGetSessionCost(sessionId, model, endpointHost, isProxy) {
@@ -484,18 +491,26 @@
   //   id=auto-beacon@__lambdao_1.tmAssignSessionHue-c3l7,
   //   role=__lambdao_1.tmAssignSessionHue,
   //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Hue placement for new identity keys. v4.156: golden-angle over [30,330]; replaced largest-gap+red-clamp design that collapsed all hues to 30 once the wheel crowded.,
+  //   comment=Hue placement for new identity keys. v4.157: integer permutation (n*137 mod 300, coprime with 300) + collision-probe so no two identities share a hue within a 300-set; replaced golden-angle round which repeated at n=24.,
   //   kind=ast,
   // ]
   function tmAssignSessionHue(seedKey, existingHues) {
     // Usable wheel: [30, 330] (300°). Red arc excluded BY CONSTRUCTION, not by clamp.
-    // Golden-angle sequence: deterministic, near-optimal spread, no gap search.
-    // (The old largest-gap + red-clamp design was a collision attractor: the red zone
-    // is a permanently unfillable gap, so once the wheel crowded, every midpoint fell
-    // in red and clamped to exactly 30 — all identities converged on one hue.)
+    // v4.157: integer permutation. STEP=137 is coprime with 300 (gcd=1), so
+    // (n*137)%300 visits all 300 integer offsets before repeating — no rounding,
+    // no exact-duplicate hues within a 300-identity working set. Then collision-probe
+    // against the hues already in the cache so we never hand back an occupied hue even
+    // across store generations / manual edits.
+    var STEP = 137;
+    var used = {};
+    for (var i = 0; i < existingHues.length; i++) { used[existingHues[i]] = true; }
     var n = existingHues.length;
-    var GOLDEN_ANGLE = 137.50776405003785;
-    return Math.round(30 + ((n * GOLDEN_ANGLE) % 300));
+    for (var probe = 0; probe < 300; probe++) {
+      var hue = 30 + (((n + probe) * STEP) % 300);
+      if (!used[hue]) return hue;
+    }
+    // Wheel genuinely full (>=300 distinct identities) — fall back deterministically.
+    return 30 + ((n * STEP) % 300);
   }
 
   // @beacon[
@@ -508,7 +523,9 @@
   function tmModelEndpointColor(model, endpointHost, isProxy, sessionId) {
     if (!model) return '#fff2f5';
     var cache = tmLoadSessionHueCache();
-    var key = (sessionId || '') + '::' + model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
+    // v4.157: use the ONE canonical identity-key builder (shared with cost) so hue and
+    // cost keys can never drift on host-fallback normalization.
+    var key = tmBuildIdentityKey(sessionId, model, endpointHost, isProxy);
     var entry = cache[key];
     var hue = (entry && typeof entry === 'object') ? entry._hue : entry;
     // Use the FULL hue identity as the seed, not just sessionId. Otherwise the
@@ -1370,31 +1387,37 @@
             try {
               tmTouchSessionScopedStores(tmMostRecentPayloadStatus.sessionId || tmMostRecentPayloadStatus.pastedSessionId, Date.now());
             } catch (e) {}
+            // v4.157: Resolve + stamp identity UNCONDITIONALLY (independent of cost), so every
+            // response — zero-cost, no-usage, or errored — carries a canonical identity for hue/cost.
+            // Also hang it on tmMostRecentPayloadStatus so the widget uses ONE identity for both
+            // hue and cost (no more mixing most-recent-response session with last-ring-entry model).
+            try {
+              if (capRec) {
+                var idSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
+                var idModel = '';
+                var idHost = '';
+                try { idModel = tmCaptureModel(capRec); } catch (e) {}
+                try { idHost = tmExtractEndpointHost(capRec); } catch (e) {}
+                var idIsProxy = false;
+                try { idIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
+                var idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
+                var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
+                tmMostRecentPayloadStatus.identity = identity;
+                tmUpdateCaptureRecord(captureId, { _identity: identity });
+              }
+            } catch (e) {}
             // (v4.72) Accumulate per-turn cost into the running total.
             try {
               var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
               if (turnCost > 0) {
                 tmSetTotalCost(tmGetTotalCost() + turnCost);
                 // (v4.110) Record per-session cost to persistent storage (survives ring-buffer eviction).
-                // Reuse capRec from above instead of a second getCaptureById.
+                // Reuse capRec + the identity resolved just above instead of re-deriving.
                 try {
                   if (capRec) {
-                    var recSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
-                    var recModel = '';
-                    var recHost = '';
-                    try {
-                      recModel = tmCaptureModel(capRec);
-                      recHost = tmExtractEndpointHost(capRec);
-                    } catch (e) {}
-                    var recIsProxy = false;
-                    try { recIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
-                    // v4.156: Stamp the resolved identity on the capture record so all
-                    // consumers (widget, modal, hue, cost) read from one source of truth.
-                    var identityKey = recSid + '::' + recModel + '::' + recHost + '::' + (recIsProxy ? 'proxy' : 'direct');
-                    tmUpdateCaptureRecord(captureId, { _identity: { sid: recSid, model: recModel, host: recHost, proxy: recIsProxy, key: identityKey } });
-                    var newSessionTotal = tmRecordSessionCost(recSid, recModel, recHost, recIsProxy, turnCost);
+                    var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
                     if (newSessionTotal > 0) {
-                      tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: recModel });
+                      tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: idModel });
                     }
                   }
                 } catch (e) {}
@@ -2250,27 +2273,33 @@
     var displayPastedId = tmGetDisplayPastedSessionId();
     var displaySessionName = tmGetSessionName(displaySessionId || displayPastedId);
     var displaySidColor = '#9aa4b2';
+    var displaySidTooltip = '';
     // Determine hue for the most-recent-payload session.
-    // v4.156: prefer stamped _identity; fall back to per-field derivation.
+    // v4.157: prefer the identity stamped on tmMostRecentPayloadStatus (single source for BOTH
+    // hue and cost); fall back to the last ring entry's _identity; then per-field derivation.
+    var widgetIdentity = null;
     try {
-      var ring = tmReadCaptureRing();
-      var last = ring.length > 0 ? ring[ring.length - 1] : null;
-      if (last) {
-        var lastModel = '';
-        var lastHost = '';
-        var lastIsProxy = false;
-        var lastSid = last.session_id || null;
-        if (last._identity) {
-          lastModel = last._identity.model || '';
-          lastHost = last._identity.host || '';
-          lastIsProxy = !!last._identity.proxy;
-          lastSid = last._identity.sid || lastSid;
-        } else {
+      if (tmMostRecentPayloadStatus && tmMostRecentPayloadStatus.identity) {
+        widgetIdentity = tmMostRecentPayloadStatus.identity;
+      } else {
+        var ring = tmReadCaptureRing();
+        var last = ring.length > 0 ? ring[ring.length - 1] : null;
+        if (last && last._identity) {
+          widgetIdentity = last._identity;
+        } else if (last) {
+          var lastModel = '';
+          var lastHost = '';
+          var lastIsProxy = false;
+          var lastSid = last.session_id || null;
           try { lastModel = tmCaptureModel(last); } catch (e) {}
           try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
-          lastIsProxy = tmIsProxyCapture(last);
+          try { lastIsProxy = tmIsProxyCapture(last); } catch (e) {}
+          widgetIdentity = { sid: lastSid, model: lastModel, host: lastHost, proxy: lastIsProxy, key: tmBuildIdentityKey(lastSid, lastModel, lastHost, lastIsProxy) };
         }
-        displaySidColor = tmModelEndpointColor(lastModel, lastHost, lastIsProxy, lastSid);
+      }
+      if (widgetIdentity) {
+        displaySidColor = tmModelEndpointColor(widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy, widgetIdentity.sid);
+        displaySidTooltip = widgetIdentity.key || '';
       }
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
@@ -2278,30 +2307,19 @@
       sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
       if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
       // (v4.146) Current session total at the left, before the labels.
+      // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
+      // and cost come from ONE identity (no more mixing sources).
       var displaySid = displaySessionId || displayPastedId;
-      var displayModel = '';
-      var displayHost = '';
-      var displayIsProxy = false;
+      var widgetSessionCost = 0;
       try {
-        var ring2 = tmReadCaptureRing();
-        var last2 = ring2.length > 0 ? ring2[ring2.length - 1] : null;
-        if (last2) {
-          if (last2._identity) {
-            displayModel = last2._identity.model || '';
-            displayHost = last2._identity.host || '';
-            displayIsProxy = !!last2._identity.proxy;
-          } else {
-            try { displayModel = tmCaptureModel(last2); } catch (e) {}
-            try { displayHost = tmExtractEndpointHost(last2); } catch (e) {}
-            displayIsProxy = tmIsProxyCapture(last2);
-          }
+        if (widgetIdentity && widgetIdentity.sid && widgetIdentity.model) {
+          widgetSessionCost = tmGetSessionCost(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
         }
       } catch (e) {}
-      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost, displayIsProxy) : 0;
       if (widgetSessionCost > 0) {
         sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
-      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
+      lines.push('<div data-action="open-payload-capture-modal" title="' + (displaySidTooltip ? escapeHtml('identity: ' + displaySidTooltip) : 'Open payload capture history') + '" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
 
       // (v4.148) Session name gets its own full-width row so the session/status row does not wrap.
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
@@ -3314,7 +3332,7 @@
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
-      var modelColorTooltip = escapeHtml(capIdentity ? capIdentity.key : (capSessionId + '::' + capModel + '::' + capHost + '::' + (capIsProxy ? 'proxy' : 'direct')));
+      var modelColorTooltip = escapeHtml(capIdentity ? capIdentity.key : tmBuildIdentityKey(capSessionId, capModel, capHost, capIsProxy));
       var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
@@ -4009,7 +4027,7 @@
   //   id=auto-beacon@__lambdao_1.tmEnsureOpenRouterAccountingAndSession-t849,
   //   role=__lambdao_1.tmEnsureOpenRouterAccountingAndSession,
   //   slice_labels=tm-payload-cost-visibility,
-  //   comment=OpenRouter injector: sessions_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
+  //   comment=OpenRouter injector: session_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
   //   kind=ast,
   // ]
   function tmEnsureOpenRouterAccountingAndSession(body, label) {
