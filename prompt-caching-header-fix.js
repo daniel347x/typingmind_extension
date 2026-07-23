@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.151
+// Version: 4.152
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.151';
+  const EXT_VERSION = '4.152';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -222,15 +222,11 @@
         }
         if (namesChanged) localStorage.setItem('tm_session_names', JSON.stringify(names));
       }
-      var huesRaw = localStorage.getItem('tm_session_hues');
+      var huesRaw = localStorage.getItem(TM_SESSION_HUES_KEY);
       if (huesRaw) {
-        var hues = JSON.parse(huesRaw);
-        var huesChanged = false;
-        var hueKeys = Object.keys(hues);
-        for (var k = 0; k < hueKeys.length; k++) {
-          if (!costs[hueKeys[k]]) { delete hues[hueKeys[k]]; huesChanged = true; }
-        }
-        if (huesChanged) localStorage.setItem('tm_session_hues', JSON.stringify(hues));
+        // Hues are cheap and keyed by full session/model/endpoint identity; reset drops stale assignments.
+        localStorage.removeItem(TM_SESSION_HUES_KEY);
+        tmSessionHueCache = {};
       }
     } catch (e) {}
     renderGpt51UsageWidget();
@@ -334,18 +330,21 @@
     return false;
   }
 
-  // (v4.131) Persistent per-session hue map for well-separated colors.
+  // (v4.131) Persistent per-session/model/endpoint hue map for well-separated colors.
+  // v4.152 uses a v2 key because older cache entries could assign the same hue to
+  // distinct model/endpoint identities by seeding from sessionId alone.
+  const TM_SESSION_HUES_KEY = 'tm_session_hues_v2';
   var tmSessionHueCache = null;
   function tmLoadSessionHueCache() {
     if (tmSessionHueCache) return tmSessionHueCache;
     try {
-      var raw = localStorage.getItem('tm_session_hues');
+      var raw = localStorage.getItem(TM_SESSION_HUES_KEY);
       tmSessionHueCache = raw ? JSON.parse(raw) : {};
     } catch (e) { tmSessionHueCache = {}; }
     return tmSessionHueCache;
   }
   function tmSaveSessionHueCache() {
-    try { localStorage.setItem('tm_session_hues', JSON.stringify(tmSessionHueCache || {})); } catch (e) {}
+    try { localStorage.setItem(TM_SESSION_HUES_KEY, JSON.stringify(tmSessionHueCache || {})); } catch (e) {}
   }
   function tmAssignSessionHue(sessionId, existingHues) {
     // Find the largest gap among existing hues and place the new one in its middle.
@@ -378,6 +377,9 @@
     var cache = tmLoadSessionHueCache();
     var key = (sessionId || '') + '::' + model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
     var hue = cache[key];
+    // Use the FULL hue identity as the seed, not just sessionId. Otherwise the
+    // same session can bias multiple model/endpoint combinations toward the same color.
+    var hueSeed = key;
     if (hue == null) {
       // Collect existing hues from the cache.
       var existing = [];
@@ -386,7 +388,7 @@
         var v = cache[keys[i]];
         if (typeof v === 'number') existing.push(v);
       }
-      hue = tmAssignSessionHue(sessionId, existing);
+      hue = tmAssignSessionHue(hueSeed, existing);
       cache[key] = hue;
       tmSaveSessionHueCache();
     }
@@ -3031,6 +3033,7 @@
       if (!capModel) {
         try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
       }
+      var capModelHtml = escapeHtml(capModel);
       var capHost = '';
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost);
@@ -3044,7 +3047,7 @@
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               '</span>' +
-              (model ? (' <span style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + model + '</span>') : '') +
+              (capModelHtml ? (' <span style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
