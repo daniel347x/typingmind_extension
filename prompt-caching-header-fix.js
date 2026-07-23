@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.120
+// Version: 4.121
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.120';
+  const EXT_VERSION = '4.121';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -276,6 +276,12 @@
 
       // Generic fallback: cache_read_input_tokens on oru
       if (oru && isSignificant(oru.cache_read_input_tokens, oru.prompt_tokens || oru.total_tokens)) return true;
+
+      // (v4.121) Fallback: if ratio check fails but cached > 1000 and cost < $0.10, it's a hit.
+      if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens > 1000) {
+        if (oru.cost != null && Number(oru.cost) < 0.10) return true;
+        if (oru.estimated_cost != null && Number(oru.estimated_cost) < 0.10) return true;
+      }
     } catch (e) {}
     return false;
   }
