@@ -2788,7 +2788,7 @@
       var isHit = tmIsSignificantCacheHit(cap);
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
-        : '<span title="cache miss" style="display:inline-block;width:38px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
+        : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
