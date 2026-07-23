@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.149
+// Version: 4.150
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.149';
+  const EXT_VERSION = '4.150';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1094,11 +1094,23 @@
                   // Generic fallback for unfamiliar providers / field nesting. This is read-only:
                   // it merely promotes cache read/write + cost evidence into the capture/widget.
                   var genericUsage = tmExtractKnownUsageEvidence(parsed2);
-                  if (genericUsage) { lastUsage = genericUsage; hit = true; }
+                  if (genericUsage) {
+                    if (!lastUsage) { lastUsage = Object.assign({}, genericUsage); }
+                    else { Object.assign(lastUsage, genericUsage); }
+                    hit = true;
+                  }
                   // OpenRouter-style: usage in root of chunk
-                  if (!genericUsage && parsed2 && parsed2.usage) { lastUsage = parsed2.usage; hit = true; }
+                  if (!genericUsage && parsed2 && parsed2.usage) {
+                    if (!lastUsage) { lastUsage = Object.assign({}, parsed2.usage); }
+                    else { Object.assign(lastUsage, parsed2.usage); }
+                    hit = true;
+                  }
                   // OpenAI Responses-style: usage in response.completed -> response.usage
-                  if (parsed2 && parsed2.response && parsed2.response.usage) { lastUsage = parsed2.response.usage; hit = true; }
+                  if (parsed2 && parsed2.response && parsed2.response.usage) {
+                    if (!lastUsage) { lastUsage = Object.assign({}, parsed2.response.usage); }
+                    else { Object.assign(lastUsage, parsed2.response.usage); }
+                    hit = true;
+                  }
                   // Anthropic-style: usage in message_start
                   if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
                     anthropicUsage = parsed2.message.usage; hit = true;
