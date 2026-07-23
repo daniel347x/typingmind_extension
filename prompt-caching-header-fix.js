@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.117
+// Version: 4.118
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.117';
+  const EXT_VERSION = '4.118';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2794,7 +2794,6 @@
               '<span style="display:inline-block;width:32px;opacity:0.8;' + (isHit ? '' : 'color:#ff6b6b;') + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               (model ? (' <span style="font-weight:bold;color:' + modelColor + ';">' + model + '</span>') : '') +
-              (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
@@ -2811,11 +2810,14 @@
 
 
 
-      // (v4.90) Display the derived session ID + pasted session ID from the stored record fields.
-      var capSessionId = cap.session_id || null;
+      // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
-      if (capSessionId || capPastedId) {
-        html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">Session ID: ' + escapeHtml(capSessionId || '(none)') + ' | pasted: ' + escapeHtml(capPastedId || '—') + '</div>';
+      var bottomParts = [];
+      if (prefixHash) bottomParts.push('h:' + escapeHtml(prefixHash));
+      if (capSessionId) bottomParts.push('Session ID: ' + escapeHtml(capSessionId));
+      if (capPastedId) bottomParts.push('pasted: ' + escapeHtml(capPastedId));
+      if (bottomParts.length > 0) {
+        html += '<div style="font-size:8px;opacity:0.5;font-family:monospace;margin-top:2px;">' + bottomParts.join(' | ') + '</div>';
       } else {
         html += '<div style="font-size:8px;opacity:0.35;font-family:monospace;margin-top:2px;">Session ID: (not available for this capture)</div>';
       }
