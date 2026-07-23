@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.130
+// Version: 4.131
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.130';
+  const EXT_VERSION = '4.131';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -289,19 +289,62 @@
     return false;
   }
 
-  // (v4.115) Derive a stable, bright color from model + endpoint + proxy flag.
+  // (v4.131) Persistent per-session hue map for well-separated colors.
+  var tmSessionHueCache = null;
+  function tmLoadSessionHueCache() {
+    if (tmSessionHueCache) return tmSessionHueCache;
+    try {
+      var raw = localStorage.getItem('tm_session_hues');
+      tmSessionHueCache = raw ? JSON.parse(raw) : {};
+    } catch (e) { tmSessionHueCache = {}; }
+    return tmSessionHueCache;
+  }
+  function tmSaveSessionHueCache() {
+    try { localStorage.setItem('tm_session_hues', JSON.stringify(tmSessionHueCache || {})); } catch (e) {}
+  }
+  function tmAssignSessionHue(sessionId, existingHues) {
+    // Find the largest gap among existing hues and place the new one in its middle.
+    var sorted = existingHues.slice().sort(function(a, b) { return a - b; });
+    var bestGap = 0, bestPos = 0;
+    for (var i = 0; i < sorted.length; i++) {
+      var a = sorted[i];
+      var b = sorted[(i + 1) % sorted.length];
+      if (i === sorted.length - 1) b += 360; // wrap around
+      var gap = b - a;
+      if (gap > bestGap) {
+        bestGap = gap;
+        bestPos = (a + gap / 2) % 360;
+      }
+    }
+    if (sorted.length === 0) {
+      // No existing hues — use hash to pick a starting point.
+      var hashNum = parseInt(tmFnv1a32(sessionId || 'default'), 16);
+      if (!isFinite(hashNum)) hashNum = 0;
+      bestPos = (hashNum % 360 + 360) % 360;
+    }
+    // Avoid red.
+    if (bestPos <= 20) bestPos = 30;
+    else if (bestPos >= 340) bestPos = 330;
+    return Math.round(bestPos);
+  }
+
   function tmModelEndpointColor(model, endpointHost, isProxy, sessionId) {
     if (!model) return '#fff2f5';
-    var seed = model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct') + '::' + (sessionId || '');
-    var hash = tmFnv1a32(seed);
-    // tmFnv1a32 returns an 8-char HEX STRING; convert it before hue math.
-    var hashNum = parseInt(hash, 16);
-    if (!isFinite(hashNum)) hashNum = 0;
-    // Use the hash to pick a hue (0-360), then HSL with high saturation + lightness.
-    var hue = (hashNum % 360 + 360) % 360;
-    // Avoid red hues (0-20 and 340-360) to keep red reserved for the MISS badge.
-    if (hue <= 20) hue = 30;
-    else if (hue >= 340) hue = 330;
+    var cache = tmLoadSessionHueCache();
+    var key = sessionId || (model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct'));
+    var hue = cache[key];
+    if (hue == null) {
+      // Collect existing hues from the cache.
+      var existing = [];
+      var keys = Object.keys(cache);
+      for (var i = 0; i < keys.length; i++) {
+        var v = cache[keys[i]];
+        if (typeof v === 'number') existing.push(v);
+      }
+      hue = tmAssignSessionHue(sessionId, existing);
+      cache[key] = hue;
+      tmSaveSessionHueCache();
+    }
     return 'hsl(' + hue + ', 55%, 72%)';
   }
 
