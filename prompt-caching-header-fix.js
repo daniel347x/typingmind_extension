@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.129
+// Version: 4.130
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.129';
+  const EXT_VERSION = '4.130';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -290,9 +290,9 @@
   }
 
   // (v4.115) Derive a stable, bright color from model + endpoint + proxy flag.
-  function tmModelEndpointColor(model, endpointHost, isProxy) {
+  function tmModelEndpointColor(model, endpointHost, isProxy, sessionId) {
     if (!model) return '#fff2f5';
-    var seed = model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
+    var seed = model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct') + '::' + (sessionId || '');
     var hash = tmFnv1a32(seed);
     // tmFnv1a32 returns an 8-char HEX STRING; convert it before hue math.
     var hashNum = parseInt(hash, 16);
@@ -2803,7 +2803,7 @@
       var sessionCost = (cap.id && sessionCostMap[cap.id] != null) ? sessionCostMap[cap.id] : tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
-      var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')));
+      var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')), capSessionId);
       var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
