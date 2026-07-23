@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.100
+// Version: 4.101
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.100';
+  const EXT_VERSION = '4.101';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3529,8 +3529,18 @@
       vendorForThisCall = 'gemini';
       try {
         if (options.body) {
+          // (v4.101) Sanitize known malformed JSON before parsing. TypingMind's cross-model
+          // conversation conversion can produce empty field values like "note": } which
+          // is invalid JSON. Replace with null to keep the field present but valid.
+          var geminiBodyStr = options.body;
+          var geminiSanitized = geminiBodyStr.replace(/"note"\s*:\s*\}/g, '"note": null}');
+          if (geminiSanitized !== geminiBodyStr) {
+            options.body = geminiSanitized;
+            console.log('✅ [v' + EXT_VERSION + '] Gemini: sanitized malformed "note": } in request body');
+          }
+
           const body = JSON.parse(options.body);
-          let modified = false;
+          let modified = (geminiSanitized !== geminiBodyStr);
 
           // Capture latest Gemini body for export tooling (deep clone so we preserve pre-repair state).
           try {
