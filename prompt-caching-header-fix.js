@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.114
+// Version: 4.115
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.114';
+  const EXT_VERSION = '4.115';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -261,6 +261,16 @@
       if (oru && oru.cache_read_input_tokens > 1000) return true;
     } catch (e) {}
     return false;
+  }
+
+  // (v4.115) Derive a stable, bright color from model + endpoint + proxy flag.
+  function tmModelEndpointColor(model, endpointHost, isProxy) {
+    if (!model) return '#fff2f5';
+    var seed = model + '::' + (endpointHost || '') + '::' + (isProxy ? 'proxy' : 'direct');
+    var hash = tmFnv1a32(seed);
+    // Use the hash to pick a hue (0-360), then HSL with high saturation + lightness.
+    var hue = (hash % 360 + 360) % 360;
+    return 'hsl(' + hue + ', 55%, 72%)';
   }
 
   // (v4.80) Generate a random 8-char hex session ID for click-to-copy.
@@ -2758,10 +2768,12 @@
       var sessionCost = (cap.id && sessionCostMap[cap.id] != null) ? sessionCostMap[cap.id] : tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
+      var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')));
+
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
               '<span style="display:inline-block;width:32px;opacity:0.8;' + (isHit ? '' : 'color:#ff6b6b;') + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
-              (model ? (' <span style="font-weight:bold;color:#fff2f5;">' + model + '</span>') : '') +
+              (model ? (' <span style="font-weight:bold;color:' + modelColor + ';">' + model + '</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
               '</div>';
 
