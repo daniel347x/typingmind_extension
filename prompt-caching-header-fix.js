@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.139
+// Version: 4.140
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.139';
+  const EXT_VERSION = '4.140';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1942,10 +1942,10 @@
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span style="opacity:0.5;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
-      if (displayPastedId) sidParts.push('<span style="opacity:0.5;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;">' + displayPastedId + '</span>');
-      if (displaySessionName) sidParts.push('<span style="color:' + displaySidColor + ';font-size:10px;">' + displaySessionName + '</span>');
-      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
+      sidParts.push('<span style="opacity:0.5;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      if (displayPastedId) sidParts.push('<span style="opacity:0.5;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
+      if (displaySessionName) sidParts.push('<span style="color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:none;">' + displaySessionName + '</span>');
+      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
@@ -2952,7 +2952,7 @@
         bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
       if (sessionName) {
-        bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
+        bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:13px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
