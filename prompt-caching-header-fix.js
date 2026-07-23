@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.119
+// Version: 4.120
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.119';
+  const EXT_VERSION = '4.120';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -868,6 +868,9 @@
       setIfAbsent('cache_read_input_tokens', read);
       setIfAbsent('cache_creation_input_tokens', write);
       setIfAbsent('cost', cost);
+      // (v4.120) Preserve prompt_tokens / total_tokens so the hit/miss ratio check works.
+      setIfAbsent('prompt_tokens', firstNum(obj, ['prompt_tokens', 'promptTokens']));
+      setIfAbsent('total_tokens', firstNum(obj, ['total_tokens', 'totalTokens']));
       if (read != null || write != null) {
         out.prompt_tokens_details = out.prompt_tokens_details || {};
         if (read != null) out.prompt_tokens_details.cached_tokens = read;
@@ -2779,7 +2782,7 @@
       var isHit = tmIsSignificantCacheHit(cap);
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
-        : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
+        : '<span title="cache miss" style="display:inline-block;width:38px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
