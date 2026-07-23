@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.105
+// Version: 4.106
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.105';
+  const EXT_VERSION = '4.106';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -197,7 +197,53 @@
 
   function tmResetTotalCost() {
     tmSetTotalCost(0);
+    // (v4.106) Also reset per-session cost tracking.
+    try { localStorage.removeItem(TM_SESSION_COSTS_KEY); } catch (e) {}
     renderGpt51UsageWidget();
+  }
+
+  // (v4.106) Per-session cost tracking — keyed by derived-session-ID + model.
+  const TM_SESSION_COSTS_KEY = 'tm_session_costs';
+
+  function tmGetSessionCosts() {
+    try {
+      var raw = localStorage.getItem(TM_SESSION_COSTS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+
+  function tmRecordSessionCost(sessionId, model, cost) {
+    if (!sessionId || !model || cost <= 0) return;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = sessionId + '::' + model;
+      costs[key] = (costs[key] || 0) + cost;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+    } catch (e) {}
+  }
+
+  function tmGetSessionCost(sessionId, model) {
+    if (!sessionId || !model) return 0;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = sessionId + '::' + model;
+      return costs[key] || 0;
+    } catch (e) { return 0; }
+  }
+
+  // (v4.106) Determine if a capture represents a significant cache hit (>1000 tokens reused).
+  function tmIsSignificantCacheHit(cap) {
+    try {
+      var au = cap.response_anthropic_usage;
+      var oru = cap.response_usage;
+      // Anthropic-style: cache_read_input_tokens
+      if (au && au.cache_read_input_tokens > 1000) return true;
+      // OpenRouter / OpenAI-style: cached_tokens in prompt_tokens_details
+      if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens > 1000) return true;
+      // Generic fallback: cache_read_input_tokens on oru
+      if (oru && oru.cache_read_input_tokens > 1000) return true;
+    } catch (e) {}
+    return false;
   }
 
   // (v4.80) Generate a random 8-char hex session ID for click-to-copy.
@@ -913,6 +959,19 @@
               var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
               if (turnCost > 0) {
                 tmSetTotalCost(tmGetTotalCost() + turnCost);
+                // (v4.106) Also record per-session cost.
+                try {
+                  var capRec2 = getCaptureById(captureId);
+                  if (capRec2) {
+                    var recSid = capRec2.session_id || null;
+                    var recModel = '';
+                    try {
+                      var recSum = tmBuildCaptureSummary(capRec2);
+                      recModel = (recSum && recSum.model) ? String(recSum.model) : '';
+                    } catch (e) {}
+                    tmRecordSessionCost(recSid, recModel, turnCost);
+                  }
+                } catch (e) {}
               }
             } catch (e) {}
             renderGpt51UsageWidget();
@@ -2637,10 +2696,23 @@
       const inDisabled = hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;';
 
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
+
+      // (v4.106) Cache hit/miss badge + per-session cost at the right of the title row.
+      var isHit = tmIsSignificantCacheHit(cap);
+      var hitBadge = isHit
+        ? '<span title="cache hit" style="color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
+        : '<span title="cache miss" style="color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
+      var capSessionId = cap.session_id || null;
+      var capModel = '';
+      try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
+      var sessionCost = tmGetSessionCost(capSessionId, capModel);
+      var sessionCostStr = sessionCost > 0 ? (' <span title="session cost" style="color:#ffccd5;font-size:9px;">$' + sessionCost.toFixed(2) + '</span>') : '';
+
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
               '<span style="opacity:0.8;">#' + (idx + 1) + '</span>' +
               (model ? (' <span style="font-weight:bold;color:#fff2f5;">' + model + '</span>') : '') +
               (prefixHash ? (' <span style="opacity:0.65;">h:' + prefixHash + '</span>') : '') +
+              ' <span style="float:right;">' + hitBadge + sessionCostStr + '</span>' +
               '</div>';
 
       html += '<div style="margin-top:2px;">' +
