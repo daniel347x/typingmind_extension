@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.141
+// Version: 4.142
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.141';
+  const EXT_VERSION = '4.142';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1757,6 +1757,22 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.142) Set a human-readable name for the session from the widget.
+          if (target.dataset.action === 'set-session-name') {
+            var sid = target.dataset.sessionId;
+            if (sid) {
+              var currentName = tmGetSessionName(sid);
+              tmPromptActive = true;
+              var newName = prompt('Session name for ' + sid + ':', currentName || '');
+              tmPromptActive = false;
+              if (newName !== null) {
+                tmSetSessionName(sid, newName);
+                renderGpt51UsageWidget();
+              }
+            }
+            ev.stopPropagation();
+            return;
+          }
           // (v4.80) Copy a random Session ID to clipboard (clicking the header row)
           if (target.dataset.action === 'copy-session-id' || (target.closest && target.closest('[data-action="copy-session-id"]'))) {
             var randomId = tmGenRandomSessionId();
@@ -1946,7 +1962,12 @@
       var sidParts = [];
       sidParts.push('<span style="opacity:0.5;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
       if (displayPastedId) sidParts.push('<span style="opacity:0.5;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
-      if (displaySessionName) sidParts.push('<span style="color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:none;">' + displaySessionName + '</span>');
+      if (displaySessionName) {
+        sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || displayPastedId) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">' + displaySessionName + '</span>');
+      } else {
+        var sidForName = displaySessionId || displayPastedId || '';
+        sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(sidForName) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;pointer-events:auto;">click to name session</span>');
+      }
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
