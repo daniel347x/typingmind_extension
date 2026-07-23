@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.116
+// Version: 4.117
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.116';
+  const EXT_VERSION = '4.117';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -248,17 +248,34 @@
     } catch (e) { return 0; }
   }
 
-  // (v4.106) Determine if a capture represents a significant cache hit (>1000 tokens reused).
+  // (v4.117) Determine if a capture represents a significant cache hit.
+  // Requires cached tokens > 1000 AND at least 50% of total prompt tokens.
   function tmIsSignificantCacheHit(cap) {
     try {
       var au = cap.response_anthropic_usage;
       var oru = cap.response_usage;
+
+      // Helper: cached must be a significant fraction of the total.
+      function isSignificant(cached, total) {
+        if (cached == null || total == null) return false;
+        cached = Number(cached); total = Number(total);
+        if (cached <= 1000) return false;
+        if (total <= 0) return false;
+        return (cached / total) >= 0.5;
+      }
+
       // Anthropic-style: cache_read_input_tokens
-      if (au && au.cache_read_input_tokens > 1000) return true;
+      if (au && isSignificant(au.cache_read_input_tokens, au.input_tokens)) return true;
+
       // OpenRouter / OpenAI-style: cached_tokens in prompt_tokens_details
-      if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens > 1000) return true;
+      if (oru && oru.prompt_tokens_details) {
+        var cached = oru.prompt_tokens_details.cached_tokens;
+        var total = oru.prompt_tokens || oru.total_tokens;
+        if (isSignificant(cached, total)) return true;
+      }
+
       // Generic fallback: cache_read_input_tokens on oru
-      if (oru && oru.cache_read_input_tokens > 1000) return true;
+      if (oru && isSignificant(oru.cache_read_input_tokens, oru.prompt_tokens || oru.total_tokens)) return true;
     } catch (e) {}
     return false;
   }
