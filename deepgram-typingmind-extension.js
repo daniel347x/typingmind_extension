@@ -5805,7 +5805,7 @@
           <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
           <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
             <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#fff; cursor:pointer;">✨ context: ▾</span>
-            <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
+            <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:12px; color:#2e9b2e;"></span>
             <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.5; color:#ccc; margin-left:3px;"></span>
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
