@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.113
+// Version: 4.114
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.113';
+  const EXT_VERSION = '4.114';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1717,18 +1717,18 @@
     if (genericUsage) {
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cache read (saved)" style="color:#5ab0ff;">↺' + tmFmtTok(genericUsage.cache_read_input_tokens || 0) + '</span> ' +
-        '<span title="cache write / creation" style="color:#ff6b6b;">+' + tmFmtTok(genericUsage.cache_creation_input_tokens || 0) + '</span>' + costStr;
+        '<span title="cache write / creation" style="color:#9aa4b2;">+' + tmFmtTok(genericUsage.cache_creation_input_tokens || 0) + '</span>' + costStr;
     }
     if (au && (au.cache_read_input_tokens != null || au.cache_creation_input_tokens != null)) {
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cache read (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(au.cache_read_input_tokens || 0) + '</span> ' +
-        '<span title="cache creation (expensive/new)" style="color:#ff6b6b;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>' + costStr;
+        '<span title="cache creation (expensive/new)" style="color:#9aa4b2;">+' + tmFmtTok(au.cache_creation_input_tokens || 0) + '</span>' + costStr;
     }
     if (oru && oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens != null) {
       var orWrite = (oru.cache_write_tokens != null) ? oru.cache_write_tokens : (oru.prompt_tokens_details.cache_write_tokens || 0);
       return '<span style="color:#7dd67d;">cache</span> ' +
         '<span title="cached tokens (saved)" style="color:#5ab0ff;">\u21ba' + tmFmtTok(oru.prompt_tokens_details.cached_tokens || 0) + '</span> ' +
-        '<span title="cache write" style="color:#ff6b6b;">+' + tmFmtTok(orWrite) + '</span>' + costStr;
+        '<span title="cache write" style="color:#9aa4b2;">+' + tmFmtTok(orWrite) + '</span>' + costStr;
     }
     return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costStr;
   }
