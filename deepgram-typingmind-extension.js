@@ -5820,13 +5820,13 @@
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
           <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
           <span style="font-size:11px; opacity:0.8;">Provider</span>
-          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; width:auto; max-width:100px;">
+          <select id="deepgram-refine-provider-select" class="monospace" title="API provider" style="font-size:11px; color:#111; background:#fff; width:auto; max-width:100px; padding:0 3px;">
             <option value="anthropic">Anthropic</option>
             <option value="openrouter">OpenRouter</option>
             <option value="deepinfra">DeepInfra</option>
           </select>
           <span style="font-size:11px; opacity:0.8;">Model</span>
-          <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:160px; color:#111; background:#fff;"></select>
+          <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:160px; color:#111; background:#fff; padding:0 3px;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:0; padding:3px 6px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:0; padding:3px 6px;">🗑️</button>
           <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px;">📝 Context</button>

@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.118
+// Version: 4.119
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.118';
+  const EXT_VERSION = '4.119';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2779,7 +2779,7 @@
       var isHit = tmIsSignificantCacheHit(cap);
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
-        : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
+        : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
@@ -2789,9 +2789,10 @@
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')));
+      var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
-              '<span style="display:inline-block;width:32px;opacity:0.8;' + (isHit ? '' : 'color:#ff6b6b;') + '">#' + (idx + 1) + '</span>' +
+              '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               (model ? (' <span style="font-weight:bold;color:' + modelColor + ';">' + model + '</span>') : '') +
               '</div>';
