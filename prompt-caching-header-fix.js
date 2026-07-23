@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.147
+// Version: 4.148
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.147';
+  const EXT_VERSION = '4.148';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2028,15 +2028,18 @@
       } catch (e) {}
       var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost) : 0;
       if (widgetSessionCost > 0) {
-        sidParts.unshift('<span style="color:' + displaySidColor + ';font-size:11px;font-weight:bold;">$' + widgetSessionCost.toFixed(2) + '</span>');
-      }
-      if (displaySessionName) {
-        sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || displayPastedId) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">' + displaySessionName + '</span>');
-      } else {
-        var sidForName = displaySessionId || displayPastedId || '';
-        sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(sidForName) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;pointer-events:auto;">click to name session</span>');
+        sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
+
+      // (v4.148) Session name gets its own full-width row so the session/status row does not wrap.
+      // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
+      var nameSid = displaySessionId || displayPastedId || '';
+      if (displaySessionName) {
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + '</div>');
+      } else {
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session</div>');
+      }
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
