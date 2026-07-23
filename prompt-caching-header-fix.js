@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.133
+// Version: 4.134
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.133';
+  const EXT_VERSION = '4.134';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -346,6 +346,25 @@
       tmSaveSessionHueCache();
     }
     return 'hsl(' + hue + ', 55%, 72%)';
+  }
+
+  // (v4.134) Human-readable session name storage.
+  function tmGetSessionName(sessionId) {
+    if (!sessionId) return '';
+    try {
+      var raw = localStorage.getItem('tm_session_names');
+      var map = raw ? JSON.parse(raw) : {};
+      return map[sessionId] || '';
+    } catch (e) { return ''; }
+  }
+  function tmSetSessionName(sessionId, name) {
+    if (!sessionId) return;
+    try {
+      var raw = localStorage.getItem('tm_session_names');
+      var map = raw ? JSON.parse(raw) : {};
+      map[sessionId] = String(name || '').trim();
+      localStorage.setItem('tm_session_names', JSON.stringify(map));
+    } catch (e) {}
   }
 
   // (v4.80) Generate a random 8-char hex session ID for click-to-copy.
@@ -1890,12 +1909,29 @@
       '</div>'
     );
 
-    // (v4.82) Session ID display row — shows derived hash + pasted session ID (if any).
+    // (v4.134) Session ID row with name support.
     var displaySessionId = tmGetDisplaySessionId();
     var displayPastedId = tmGetDisplayPastedSessionId();
-    var sidLine = 'Session ID: ' + (displaySessionId || '(none)') + ' | pasted: ' + (displayPastedId || '\u2014');
-    if (displaySessionId) {
-      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidLine + '</div>');
+    var displaySessionName = tmGetSessionName(displaySessionId || displayPastedId);
+    var displaySidColor = '#9aa4b2';
+    // Determine hue for the most-recent-payload session.
+    try {
+      var ring = tmReadCaptureRing();
+      var last = ring.length > 0 ? ring[ring.length - 1] : null;
+      if (last) {
+        var lastModel = '';
+        var lastHost = '';
+        try { var s = tmBuildCaptureSummary(last); lastModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
+        try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
+        displaySidColor = tmModelEndpointColor(lastModel, lastHost, !!(last.url && last.url.toLowerCase().includes('typingmind.com/api/cors-proxy')), last.session_id || null);
+      }
+    } catch (e) {}
+    if (displaySessionId || displayPastedId) {
+      var sidParts = [];
+      sidParts.push('<span style="opacity:0.5;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      if (displayPastedId) sidParts.push('<span style="opacity:0.5;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;">' + displayPastedId + '</span>');
+      if (displaySessionName) sidParts.push('<span style="color:' + displaySidColor + ';font-size:10px;">' + displaySessionName + '</span>');
+      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.5;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
@@ -2502,6 +2538,21 @@
         if (txt) copyTextToClipboard(txt, 'console command');
         return;
       }
+
+      // (v4.134) Set a human-readable name for the session.
+      if (t.dataset && t.dataset.action === 'set-session-name') {
+        var sid = t.dataset.sessionId;
+        if (sid) {
+          var currentName = tmGetSessionName(sid);
+          var newName = prompt('Session name for ' + sid + ':', currentName || '');
+          if (newName !== null) {
+            tmSetSessionName(sid, newName);
+            renderPayloadCaptureModal();
+            renderGpt51UsageWidget();
+          }
+        }
+        return;
+      }
     });
 
     return overlay;
@@ -2873,12 +2924,16 @@
 
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
-      // (v4.133) Bottom row: build parts individually so pasted ID gets the model color + larger font.
+      // (v4.134) Bottom row: session name support.
+      var sessionName = (capSessionId || capPastedId) ? tmGetSessionName(capSessionId || capPastedId) : '';
       var bottomPartsHtml = [];
       if (prefixHash) bottomPartsHtml.push('h:' + escapeHtml(prefixHash));
       if (capSessionId) bottomPartsHtml.push('Session ID: ' + escapeHtml(capSessionId));
       if (capPastedId) {
-        bottomPartsHtml.push('pasted: <span style="color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
+        bottomPartsHtml.push('pasted: <span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
+      }
+      if (sessionName) {
+        bottomPartsHtml.push('<span style="color:' + modelColor + ';font-size:12px;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;opacity:0.5;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';

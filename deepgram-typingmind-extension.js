@@ -5806,7 +5806,7 @@
           <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
             <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#fff; cursor:pointer;">✨ context: ▾</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:12px; color:#2e9b2e;"></span>
-            <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.5; color:#ccc; margin-left:3px;"></span>
+            <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px;"></span>
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
