@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.138
+// Version: 4.139
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.138';
+  const EXT_VERSION = '4.139';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1077,14 +1077,14 @@
               repairTally: (capRec && capRec.repair_tally) || null,
               anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
               orUsage: patch.response_usage || (capRec && capRec.response_usage) || null,
-              sessionId: (function() {
+              sessionId: (capRec && capRec.session_id) || (function() {
                 try {
                   var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
                   if (reqBody) return tmDeriveStableSessionId(reqBody);
                 } catch (e) {}
                 return null;
               })(),
-              pastedSessionId: (function() {
+              pastedSessionId: (capRec && capRec.pasted_session_id) || (function() {
                 try {
                   var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
                   if (reqBody) return deriveConversationIdFromBody(reqBody);
