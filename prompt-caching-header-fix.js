@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.144
+// Version: 4.145
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.144';
+  const EXT_VERSION = '4.145';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -230,13 +230,15 @@
   }
 
   function tmRecordSessionCost(sessionId, model, endpointHost, cost) {
-    if (!sessionId || !model || cost <= 0) return;
+    if (!sessionId || !model || cost <= 0) return 0;
     try {
       var costs = tmGetSessionCosts();
       var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
       costs[key] = (costs[key] || 0) + cost;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return costs[key];
     } catch (e) {}
+    return 0;
   }
 
   function tmGetSessionCost(sessionId, model, endpointHost) {
@@ -1115,7 +1117,10 @@
                       recModel = (recSum && recSum.model) ? String(recSum.model) : '';
                       recHost = tmExtractEndpointHost(capRec);
                     } catch (e) {}
-                    tmRecordSessionCost(recSid, recModel, recHost, turnCost);
+                    var newSessionTotal = tmRecordSessionCost(recSid, recModel, recHost, turnCost);
+                    if (newSessionTotal > 0) {
+                      tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: recModel });
+                    }
                   }
                 } catch (e) {}
               }
@@ -2873,26 +2878,8 @@
             'Responses are best-effort (may be empty for streaming/opaque responses).' +
             '</div>';
 
-    // (v4.113) Pre-compute per-row running session costs (chronological, oldest first).
-    // (v4.144) Pre-compute session costs: start from persistent storage to include dropped entries.
-    var sessionCostMap = {};
-    for (var si = 0; si < ring.length; si++) {
-      var sr = ring[si];
-      if (!sr) continue;
-      var sSid = sr.session_id || null;
-      var sModel = sr._model || '';
-      var sHost = '';
-      if (!sModel) {
-        try { var sSum = tmBuildCaptureSummary(sr); sModel = (sSum && sSum.model) ? String(sSum.model) : ''; } catch (e) {}
-      }
-      try { sHost = tmExtractEndpointHost(sr); } catch (e) {}
-      if (sSid && sModel) {
-        var sKey = sSid + '::' + sModel + '::' + sHost;
-        if (!sessionCostMap[sKey]) sessionCostMap[sKey] = tmGetSessionCost(sSid, sModel, sHost);
-        sessionCostMap[sKey] += tmExtractCostVal(sr.response_anthropic_usage, sr.response_usage);
-      }
-      if (sr.id) sessionCostMap[sr.id] = sessionCostMap[sKey] || 0;
-    }
+    // (v4.145) Session costs are stamped onto each capture row at response receipt.
+    // No live recomputation from ring entries here; avoids double-counting and preserves history.
 
     items.forEach((cap, idx) => {
       if (!cap) return;
@@ -2948,7 +2935,7 @@
       }
       var capHost = '';
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var sessionCost = (cap.id && sessionCostMap[cap.id] != null) ? sessionCostMap[cap.id] : tmGetSessionCost(capSessionId, capModel, capHost);
+      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')), capSessionId);
