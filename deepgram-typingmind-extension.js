@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.220',
+  VERSION: '3.221',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3631,8 +3631,8 @@
 
       const cancelBtn = document.createElement('button');
       cancelBtn.className = 'deepgram-btn deepgram-btn-info';
-      cancelBtn.style.cssText = 'flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:11px; line-height:1.2; min-width:0;';
-      cancelBtn.innerHTML = '<span>⏹ Cancel</span><span id="deepgram-refine-countdown" style="font-size:9px; opacity:0.8;">2:00</span>';
+      cancelBtn.style.cssText = 'flex:2; display:flex; align-items:center; justify-content:center; gap:6px; font-size:11px; line-height:1.2; min-width:0; padding:3px 6px;';
+      cancelBtn.innerHTML = '<span style="font-size:10px; opacity:0.85;">⏹ Cancel</span><span id="deepgram-refine-countdown" style="font-size:11px; font-variant-numeric:tabular-nums;">2:00</span>';
       cancelBtn.onclick = function(){
         thisAbortController.__refineAbortReason = 'user';
         thisAbortController.abort();
@@ -5761,7 +5761,7 @@
 
         <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
         <div style="display:flex; align-items:baseline; gap:8px; margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9;">
-          <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;" onclick="(function(){var cur=refineGetContexts();var i=refineGetActiveContextIndex();var n=(cur[i]&&cur[i].name)||'';var res=refinePruneSlotToHalf((cur[i]&&cur[i].text)||'');if(!res.changed){updateStatus('✂½ No section break to prune at','error');return;}if(!confirm('Prune slot '+n+' to ~half?\n\nThis will DELETE '+res.removed.toLocaleString()+' chars above the first section break at/after the midpoint (keeping '+res.text.length.toLocaleString()+' chars). Saved immediately.'))return;cur[i].text=res.text;refineTouchSlot(cur,i);refineSaveContexts(cur);refineUpdateContextButtonLabel();updateStatus('✂½ Pruned '+n+': removed '+res.removed.toLocaleString()+' chars (now '+res.text.length.toLocaleString()+')','success');})()">✂½</button>
+          <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
           <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
             <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#fff; cursor:pointer;">✨ context: ▾</span>
             <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:600; color:#2e9b2e;"></span>
@@ -6113,6 +6113,25 @@
     document.getElementById('deepgram-refine-clearkey-btn').addEventListener('click', refineClearApiKey);
     const refineTotalResetBtn = document.getElementById('deepgram-refine-total-reset-btn');
     if (refineTotalResetBtn) refineTotalResetBtn.addEventListener('click', refineResetTotalCost);
+
+    // ✂½ Inline prune button (same logic as the popup & modal scissors, wired here because
+    // inline onclick can't reach IIFE-scoped functions).
+    var refinePruneBtn = document.getElementById('deepgram-refine-prune-btn');
+    if (refinePruneBtn) refinePruneBtn.addEventListener('click', function(){
+      var cur = refineGetContexts();
+      var i = refineGetActiveContextIndex();
+      var n = (cur[i] && cur[i].name) || '';
+      var res = refinePruneSlotToHalf((cur[i] && cur[i].text) || '');
+      if (!res.changed) { updateStatus('✂½ No section break to prune at', 'error'); return; }
+      if (!confirm('Prune slot ' + n + ' to ~half?\n\nThis will DELETE ' + res.removed.toLocaleString()
+        + ' chars above the first section break at/after the midpoint (keeping ' + res.text.length.toLocaleString()
+        + ' chars). Saved immediately.')) return;
+      cur[i].text = res.text;
+      refineTouchSlot(cur, i);
+      refineSaveContexts(cur);
+      refineUpdateContextButtonLabel();
+      updateStatus('✂½ Pruned ' + n + ': removed ' + res.removed.toLocaleString() + ' chars (now ' + res.text.length.toLocaleString() + ')', 'success');
+    });
     refineRefreshProviderDropdown();
     refineUpdateContextButtonLabel();
     refineUpdateTotalCostLabel();
