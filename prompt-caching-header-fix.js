@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.106
+// Version: 4.107
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.106';
+  const EXT_VERSION = '4.107';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -212,21 +212,38 @@
     } catch (e) { return {}; }
   }
 
-  function tmRecordSessionCost(sessionId, model, cost) {
+  function tmExtractEndpointHost(cap) {
+    // (v4.107) Extract a short host identifier from the capture URL for per-endpoint stratification.
+    try {
+      var u = String(cap.url || '').toLowerCase();
+      // For proxy traffic, prefer the target endpoint from the outbound headers.
+      var hdrs = cap.headers || {};
+      var tgt = String(hdrs['x-target-endpoint'] || '').toLowerCase();
+      if (tgt) {
+        var m = tgt.match(/https?:\/\/([^\/]+)/);
+        if (m) return m[1];
+      }
+      var m2 = u.match(/https?:\/\/([^\/]+)/);
+      if (m2) return m2[1];
+    } catch (e) {}
+    return 'unknown';
+  }
+
+  function tmRecordSessionCost(sessionId, model, endpointHost, cost) {
     if (!sessionId || !model || cost <= 0) return;
     try {
       var costs = tmGetSessionCosts();
-      var key = sessionId + '::' + model;
+      var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
       costs[key] = (costs[key] || 0) + cost;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
     } catch (e) {}
   }
 
-  function tmGetSessionCost(sessionId, model) {
+  function tmGetSessionCost(sessionId, model, endpointHost) {
     if (!sessionId || !model) return 0;
     try {
       var costs = tmGetSessionCosts();
-      var key = sessionId + '::' + model;
+      var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
       return costs[key] || 0;
     } catch (e) { return 0; }
   }
@@ -965,11 +982,13 @@
                   if (capRec2) {
                     var recSid = capRec2.session_id || null;
                     var recModel = '';
+                    var recHost = '';
                     try {
                       var recSum = tmBuildCaptureSummary(capRec2);
                       recModel = (recSum && recSum.model) ? String(recSum.model) : '';
+                      recHost = tmExtractEndpointHost(capRec2);
                     } catch (e) {}
-                    tmRecordSessionCost(recSid, recModel, turnCost);
+                    tmRecordSessionCost(recSid, recModel, recHost, turnCost);
                   }
                 } catch (e) {}
               }
@@ -2704,8 +2723,10 @@
         : '<span title="cache miss" style="color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
       var capModel = '';
+      var capHost = '';
       try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
-      var sessionCost = tmGetSessionCost(capSessionId, capModel);
+      try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
+      var sessionCost = tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = sessionCost > 0 ? (' <span title="session cost" style="color:#ffccd5;font-size:9px;">$' + sessionCost.toFixed(2) + '</span>') : '';
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +

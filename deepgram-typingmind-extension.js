@@ -3694,17 +3694,17 @@
       var pulsePhase = true; // start vibrant immediately
       cancelBtn.style.transition = 'background 0.5s';
       addBtn.style.transition = 'background 0.5s';
-      cancelBtn.style.background = 'rgba(80,120,200,0.55)';
-      addBtn.style.background = 'rgba(60,150,100,0.55)';
+      cancelBtn.style.background = 'rgba(180,110,50,0.55)';
+      addBtn.style.background = 'rgba(140,130,50,0.55)';
       if (refinePulseTimer) clearInterval(refinePulseTimer);
       refinePulseTimer = setInterval(function(){
         pulsePhase = !pulsePhase;
         if (pulsePhase) {
-          cancelBtn.style.background = 'rgba(80,120,200,0.55)';
-          addBtn.style.background = 'rgba(60,150,100,0.55)';
-        } else {
           cancelBtn.style.background = 'rgba(180,110,50,0.55)';
           addBtn.style.background = 'rgba(140,130,50,0.55)';
+        } else {
+          cancelBtn.style.background = 'rgba(80,120,200,0.55)';
+          addBtn.style.background = 'rgba(60,150,100,0.55)';
         }
       }, 500);
     }
