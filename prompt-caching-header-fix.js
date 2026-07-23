@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.142
+// Version: 4.143
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.142';
+  const EXT_VERSION = '4.143';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1764,7 +1764,7 @@
               var currentName = tmGetSessionName(sid);
               tmPromptActive = true;
               var newName = prompt('Session name for ' + sid + ':', currentName || '');
-              tmPromptActive = false;
+              setTimeout(function() { tmPromptActive = false; }, 100);
               if (newName !== null) {
                 tmSetSessionName(sid, newName);
                 renderGpt51UsageWidget();
@@ -2583,7 +2583,8 @@
           var currentName = tmGetSessionName(sid);
           tmPromptActive = true;
           var newName = prompt('Session name for ' + sid + ':', currentName || '');
-          tmPromptActive = false;
+          // Delay resetting the flag so the keyup escape handler still sees it.
+          setTimeout(function() { tmPromptActive = false; }, 100);
           if (newName !== null) {
             tmSetSessionName(sid, newName);
             renderPayloadCaptureModal();
