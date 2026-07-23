@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.104
+// Version: 4.105
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.104';
+  const EXT_VERSION = '4.105';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1741,15 +1741,7 @@
 
     // Always show export/modal links (work for all vendors), even if no GPT-5.1 convs
     if (!hasGpt51Convs) {
-      // No GPT-5.1 conversations, but still render universal controls
-      lines.push('<div style="font-size:12px;opacity:0.9;margin-bottom:4px;">GPT-5.1 usage: (no tracked conversations)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
       lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
 
       const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
@@ -1837,11 +1829,6 @@
       }
     }
 
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="export-anthropic-conversation">Export Anthropic convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gemini-conversation">Export Gemini convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-grok-conversation">Export Grok convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="export-gpt51-conversation">Export GPT-5.1 convo (user+assistant JSON)</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-modal">Manage tool payloads…</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
     lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
