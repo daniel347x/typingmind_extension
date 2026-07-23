@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.143
+// Version: 4.144
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.143';
+  const EXT_VERSION = '4.144';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -889,6 +889,10 @@
     for (var si = 0; si < ring.length - TM_PAYLOAD_CAPTURE_MAX_RICH_ENTRIES; si++) {
       var old = ring[si];
       if (old) {
+        // (v4.144) Save model name so it survives stripping.
+        if (!old._model && old.body) {
+          try { var b = old.stored_as_skeleton ? old.body_skeleton : old.body; if (b && b.model) old._model = b.model; } catch (e) {}
+        }
         old.body = null;
         old.body_skeleton = null;
         old.response_body = null;
@@ -1960,8 +1964,8 @@
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span style="opacity:0.5;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
-      if (displayPastedId) sidParts.push('<span style="opacity:0.5;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
+      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
       if (displaySessionName) {
         sidParts.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || displayPastedId) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">' + displaySessionName + '</span>');
       } else {
@@ -2870,18 +2874,22 @@
             '</div>';
 
     // (v4.113) Pre-compute per-row running session costs (chronological, oldest first).
+    // (v4.144) Pre-compute session costs: start from persistent storage to include dropped entries.
     var sessionCostMap = {};
     for (var si = 0; si < ring.length; si++) {
       var sr = ring[si];
       if (!sr) continue;
       var sSid = sr.session_id || null;
-      var sModel = '';
+      var sModel = sr._model || '';
       var sHost = '';
-      try { var sSum = tmBuildCaptureSummary(sr); sModel = (sSum && sSum.model) ? String(sSum.model) : ''; } catch (e) {}
+      if (!sModel) {
+        try { var sSum = tmBuildCaptureSummary(sr); sModel = (sSum && sSum.model) ? String(sSum.model) : ''; } catch (e) {}
+      }
       try { sHost = tmExtractEndpointHost(sr); } catch (e) {}
       if (sSid && sModel) {
         var sKey = sSid + '::' + sModel + '::' + sHost;
-        sessionCostMap[sKey] = (sessionCostMap[sKey] || 0) + tmExtractCostVal(sr.response_anthropic_usage, sr.response_usage);
+        if (!sessionCostMap[sKey]) sessionCostMap[sKey] = tmGetSessionCost(sSid, sModel, sHost);
+        sessionCostMap[sKey] += tmExtractCostVal(sr.response_anthropic_usage, sr.response_usage);
       }
       if (sr.id) sessionCostMap[sr.id] = sessionCostMap[sKey] || 0;
     }
@@ -2934,9 +2942,11 @@
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
       var capSessionId = cap.session_id || null;
-      var capModel = '';
+      var capModel = cap._model || '';
+      if (!capModel) {
+        try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
+      }
       var capHost = '';
-      try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
       var sessionCost = (cap.id && sessionCostMap[cap.id] != null) ? sessionCostMap[cap.id] : tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
