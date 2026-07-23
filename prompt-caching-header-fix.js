@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.109
+// Version: 4.110
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.109';
+  const EXT_VERSION = '4.110';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -976,17 +976,17 @@
               var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
               if (turnCost > 0) {
                 tmSetTotalCost(tmGetTotalCost() + turnCost);
-                // (v4.106) Also record per-session cost.
+                // (v4.110) Record per-session cost to persistent storage (survives ring-buffer eviction).
+                // Reuse capRec from above instead of a second getCaptureById.
                 try {
-                  var capRec2 = getCaptureById(captureId);
-                  if (capRec2) {
-                    var recSid = capRec2.session_id || null;
+                  if (capRec) {
+                    var recSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
                     var recModel = '';
                     var recHost = '';
                     try {
-                      var recSum = tmBuildCaptureSummary(capRec2);
+                      var recSum = tmBuildCaptureSummary(capRec);
                       recModel = (recSum && recSum.model) ? String(recSum.model) : '';
-                      recHost = tmExtractEndpointHost(capRec2);
+                      recHost = tmExtractEndpointHost(capRec);
                     } catch (e) {}
                     tmRecordSessionCost(recSid, recModel, recHost, turnCost);
                   }
@@ -2721,27 +2721,13 @@
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:30px;color:#ff6b6b;font-size:9px;font-weight:bold;">MISS</span>';
-      // (v4.109) Compute session cost on-the-fly from the ring buffer for reliability.
+      // (v4.110) Session cost = ring-buffer sum + persistent storage (survives eviction).
       var capSessionId = cap.session_id || null;
       var capModel = '';
       var capHost = '';
       try { var sum = tmBuildCaptureSummary(cap); capModel = (sum && sum.model) ? String(sum.model) : ''; } catch (e) {}
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var sessionCost = 0;
-      if (capSessionId && capModel) {
-        for (var ri = 0; ri < ring.length; ri++) {
-          var r = ring[ri];
-          if (!r) continue;
-          var rSid = r.session_id || null;
-          var rModel = '';
-          var rHost = '';
-          try { var rSum = tmBuildCaptureSummary(r); rModel = (rSum && rSum.model) ? String(rSum.model) : ''; } catch (e) {}
-          try { rHost = tmExtractEndpointHost(r); } catch (e) {}
-          if (rSid === capSessionId && rModel === capModel && rHost === capHost) {
-            sessionCost += tmExtractCostVal(r.response_anthropic_usage, r.response_usage);
-          }
-        }
-      }
+      var sessionCost = tmGetSessionCost(capSessionId, capModel, capHost);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       html += '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
