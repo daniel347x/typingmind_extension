@@ -3669,6 +3669,10 @@
       container.appendChild(addBtn);
       btn.parentNode.insertBefore(container, btn);
 
+      // Disable Send while a Refine is in-flight (prevents sending un-refined text).
+      var sendBtn = document.getElementById('deepgram-send-btn');
+      if (sendBtn) sendBtn.disabled = true;
+
       // Start the countdown display (updates every second).
       refineTimeoutEnd = Date.now() + 120000;
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
@@ -3816,6 +3820,8 @@
       const fbtn = document.getElementById('deepgram-refine-btn');
       if (fbtn) fbtn.style.display = '';
       if (refineAbortController === thisAbortController) refineAbortController = null;
+      // Re-enable the Send button (its normal state is managed by updateInsertButtonState).
+      try { updateInsertButtonState(); } catch (e) {}
     }
   }
 
