@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.221',
+  VERSION: '3.222',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3636,13 +3636,33 @@
       cancelBtn.onclick = function(){
         thisAbortController.__refineAbortReason = 'user';
         thisAbortController.abort();
+        // Brief press feedback.
+        cancelBtn.style.background = 'rgba(255,255,255,0.25)';
+        setTimeout(function(){ cancelBtn.style.background = ''; }, 150);
       };
 
       const addBtn = document.createElement('button');
       addBtn.className = 'deepgram-btn deepgram-btn-info';
       addBtn.style.cssText = 'flex:1; font-size:11px; min-width:0;';
       addBtn.textContent = '+30s';
-      addBtn.onclick = function(){ refineTimeoutEnd += 30000; };
+      addBtn.onclick = function(){
+        refineTimeoutEnd += 30000;
+        // Brief press feedback.
+        addBtn.style.background = 'rgba(255,255,255,0.25)';
+        setTimeout(function(){ addBtn.style.background = ''; }, 150);
+        // Flash the countdown orange to confirm the time extension.
+        var cd = document.getElementById('deepgram-refine-countdown');
+        if (cd) {
+          cd.style.transition = 'none';
+          cd.style.color = '#ffaa44';
+          cd.style.textShadow = '0 0 6px #ffaa44';
+          setTimeout(function(){
+            cd.style.transition = 'color 0.4s, text-shadow 0.4s';
+            cd.style.color = '';
+            cd.style.textShadow = '';
+          }, 50);
+        }
+      };
 
       container.appendChild(cancelBtn);
       container.appendChild(addBtn);
