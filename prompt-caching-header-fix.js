@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.102
+// Version: 4.103
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.102';
+  const EXT_VERSION = '4.103';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3747,21 +3747,20 @@
 
             // Reset cache TTL warning timer on every OpenRouter+Claude request
             tmResetOpenRouterCacheTimer();
-          } else if (isOpenAIFamily) {
-            // v4.55: OpenAI-family (GPT-5.x) prompt caching on OpenRouter is AUTOMATIC upstream,
-            // but requires SAME-PROVIDER sticky routing across turns to actually hit. Inject a
-            // stable top-level session_id to activate sticky routing from the first request
-            // (breaks the 'no stickiness until a cache hit, no cache hit without stickiness'
-            // deadlock). Does NOT inject any cache_control (that is Claude-only). Claude never
-            // reaches this arm (isClaude is true for it).
+          } else if (!isClaude) {
+            // v4.55/v4.103: All non-Claude models on OpenRouter (OpenAI-family, Google Gemini, DeepSeek, etc.)
+            // use implicit prompt caching, which requires SAME-PROVIDER sticky routing across turns to hit.
+            // Inject a stable top-level session_id to activate sticky routing from the first request
+            // (breaks the 'no stickiness until a cache hit, no cache hit without stickiness' deadlock
+            // and prevents OpenRouter load-balancer worker hopping on Gemini/DeepSeek).
             if (!body.session_id) {
               var orSessionId = tmDeriveStableSessionId(body);
               if (orSessionId) {
                 body.session_id = orSessionId;
                 modified = true;
-                console.log('✅ [v' + EXT_VERSION + '] OpenRouter OpenAI-family (' + model + '): injected session_id for sticky routing:', orSessionId);
+                console.log('✅ [v' + EXT_VERSION + '] OpenRouter non-Claude (' + model + '): injected session_id for sticky routing:', orSessionId);
               } else {
-                console.warn('⚠️ [v' + EXT_VERSION + '] OpenRouter OpenAI-family (' + model + '): could not derive a stable session_id; sticky routing not set.');
+                console.warn('⚠️ [v' + EXT_VERSION + '] OpenRouter non-Claude (' + model + '): could not derive a stable session_id; sticky routing not set.');
               }
             }
           }

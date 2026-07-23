@@ -3691,9 +3691,11 @@
 
       // Subtle pulsing background on both split buttons: Cancel pulses blue ↔ warm-orange,
       // +30s pulses green-teal ↔ warm-orange-green, offset by 500ms so they alternate.
-      var pulsePhase = false;
+      var pulsePhase = true; // start vibrant immediately
       cancelBtn.style.transition = 'background 0.5s';
       addBtn.style.transition = 'background 0.5s';
+      cancelBtn.style.background = 'rgba(80,120,200,0.55)';
+      addBtn.style.background = 'rgba(60,150,100,0.55)';
       if (refinePulseTimer) clearInterval(refinePulseTimer);
       refinePulseTimer = setInterval(function(){
         pulsePhase = !pulsePhase;
