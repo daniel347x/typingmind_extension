@@ -2934,7 +2934,7 @@
         bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
       if (sessionName) {
-        bottomPartsHtml.push('<span style="color:' + modelColor + ';font-size:12px;">' + escapeHtml(sessionName) + '</span>');
+        bottomPartsHtml.push('<span style="color:' + modelColor + ';font-size:12px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
