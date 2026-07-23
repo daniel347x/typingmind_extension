@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.103
+// Version: 4.104
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.103';
+  const EXT_VERSION = '4.104';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3321,6 +3321,31 @@
     }
   }
 
+  function tmEnsureOpenRouterAccountingAndSession(body, label) {
+    // (v4.104) Universal OpenRouter injection: session_id for sticky routing + usage.{include:true}
+    // for streaming cost/cache tracking. Called on every OpenRouter path (direct or proxy).
+    var changed = false;
+
+    if (!body.session_id) {
+      var sid = tmDeriveStableSessionId(body);
+      if (sid) {
+        body.session_id = sid;
+        changed = true;
+        console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': injected session_id for sticky routing:', sid);
+      } else {
+        console.warn('⚠️ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': could not derive a stable session_id; sticky routing not set.');
+      }
+    }
+
+    if (!body.usage || !body.usage.include) {
+      body.usage = { include: true };
+      changed = true;
+      console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': injected usage.{include:true} for streaming cost/cache tracking');
+    }
+
+    return changed;
+  }
+
   function repairOpenAIOrphanedToolCalls(body) {
     if (!body || !Array.isArray(body.input)) return 0;
 
@@ -3672,12 +3697,9 @@
             modified = true;
           }
 
-          // (v4.98) Inject usage accounting flag so OpenRouter emits a final usage chunk
-          // with cost + cache tokens in streaming responses (even on cache misses).
-          if (!body.usage || !body.usage.include) {
-            body.usage = { include: true };
+          // (v4.98/v4.104) Inject usage accounting + session_id for all OpenRouter traffic.
+          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter Anthropic Skin')) {
             modified = true;
-            console.log('✅ [v' + EXT_VERSION + '] OpenRouter Anthropic Skin: injected usage.{include:true} for streaming cost/cache tracking');
           }
 
           // Repair tools/content issues (same as direct Anthropic)
@@ -3747,31 +3769,11 @@
 
             // Reset cache TTL warning timer on every OpenRouter+Claude request
             tmResetOpenRouterCacheTimer();
-          } else if (!isClaude) {
-            // v4.55/v4.103: All non-Claude models on OpenRouter (OpenAI-family, Google Gemini, DeepSeek, etc.)
-            // use implicit prompt caching, which requires SAME-PROVIDER sticky routing across turns to hit.
-            // Inject a stable top-level session_id to activate sticky routing from the first request
-            // (breaks the 'no stickiness until a cache hit, no cache hit without stickiness' deadlock
-            // and prevents OpenRouter load-balancer worker hopping on Gemini/DeepSeek).
-            if (!body.session_id) {
-              var orSessionId = tmDeriveStableSessionId(body);
-              if (orSessionId) {
-                body.session_id = orSessionId;
-                modified = true;
-                console.log('✅ [v' + EXT_VERSION + '] OpenRouter non-Claude (' + model + '): injected session_id for sticky routing:', orSessionId);
-              } else {
-                console.warn('⚠️ [v' + EXT_VERSION + '] OpenRouter non-Claude (' + model + '): could not derive a stable session_id; sticky routing not set.');
-              }
-            }
           }
 
-          // (v4.99) Inject usage accounting flag so OpenRouter emits a final usage chunk
-          // with cost + cache tokens in streaming responses (even on cache misses). Applies to
-          // ALL OpenRouter models on this OpenAI-compat path (Claude, GPT-family, and others).
-          if (!body.usage || !body.usage.include) {
-            body.usage = { include: true };
+          // (v4.104) Universal session_id + usage accounting for ALL OpenRouter models on this path.
+          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter')) {
             modified = true;
-            console.log('✅ [v' + EXT_VERSION + '] OpenRouter (OpenAI-compat): injected usage.{include:true} for streaming cost/cache tracking');
           }
 
           if (modified) {
@@ -3887,12 +3889,10 @@
             // ...
             // (existing caching logic remains)
 
-            // (v4.98) Inject usage accounting flag when the proxy target is OpenRouter.
+            // (v4.104) Universal session_id + usage accounting when proxy target is OpenRouter.
             if (tgtLower.includes('openrouter.ai')) {
-              if (!body.usage || !body.usage.include) {
-                body.usage = { include: true };
+              if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
                 modified = true;
-                console.log('✅ [v' + EXT_VERSION + '] TM Proxy (target OpenRouter): injected usage.{include:true} for streaming cost/cache tracking');
               }
             }
 
@@ -3941,6 +3941,27 @@
           }
         } catch (e) {
           console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify TypingMind proxy request:', e);
+        }
+      } else if (tgtLower.includes('openrouter.ai')) {
+        // (v4.104) Proxy target is OpenRouter but not Anthropic-messages (e.g. OpenAI-compat
+        // chat completions). Inject session_id + usage accounting without Anthropic-specific repairs.
+        vendorForThisCall = 'tm-proxy-openrouter';
+        try {
+          if (options.body) {
+            const body = JSON.parse(options.body);
+            let modified = false;
+
+            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
+              modified = true;
+            }
+
+            if (modified) {
+              options.body = JSON.stringify(body);
+              console.log('✅ [v' + EXT_VERSION + '] TypingMind proxy → OpenRouter: injected session_id + usage accounting');
+            }
+          }
+        } catch (e) {
+          console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse/modify TypingMind proxy OpenRouter request:', e);
         }
       }
     }
