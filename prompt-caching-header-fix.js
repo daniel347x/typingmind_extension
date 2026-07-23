@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.136
+// Version: 4.137
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.136';
+  const EXT_VERSION = '4.137';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -508,11 +508,12 @@
   const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
 
   const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 500;
+  const TM_PAYLOAD_CAPTURE_MAX_RICH_ENTRIES = 100;
   const TM_PAYLOAD_CAPTURE_TRUNCATION_KEY = 'tm_payload_capture_truncation';
   const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 250;
-  // Hard record budgets make a 100-row ring safe even if a user raises the visible Trunc setting.
-  const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 6000;
-  const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1500;
+  // Hard record budgets keep 500-entry ring safe. Rich entries (first 100) get full detail.
+  const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 1000;
+  const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1000;
 
   // Escape-key handler reference (added on modal open, removed on close).
   var tmPayloadCaptureModalEscapeHandler = null;
@@ -2866,6 +2867,9 @@
 
       const outBtnStyle = 'background:#245f36;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
       const inBtnStyle  = 'background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;';
+      const isRich = idx < TM_PAYLOAD_CAPTURE_MAX_RICH_ENTRIES;
+      const btnDisabled = isRich ? '' : 'opacity:0.35;cursor:not-allowed;pointer-events:none;';
+      const disabledNote = isRich ? '' : ' <span style="font-size:9px;opacity:0.4;">(disabled)</span>';
 
       const hasResp = cap.response_status != null || cap.response_headers != null || cap.response_body != null;
       const inDisabled = hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;';
@@ -2874,14 +2878,15 @@
 
       // (v4.111) Button row at the very top of each entry.
       html += '<div style="margin-bottom:3px;">' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;">Summary</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + '">Out Hdrs</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + '">Out Body</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Out Skel</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + inDisabled + '">In Hdrs</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + inDisabled + '">In Body</button>' +
-              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + (hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;') + '">In Skel</button>' +
-              (cap.response_usage_segments && cap.response_usage_segments.length ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;' + btnDisabled + '">Summary</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + btnDisabled + '">Out Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + btnDisabled + '">Out Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload_skeleton" style="background:#1f4a2b;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + btnDisabled + '">Out Skel</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + btnDisabled + '">In Hdrs</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + btnDisabled + '">In Body</button>' +
+              '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + btnDisabled + '">In Skel</button>' +
+              (cap.response_usage_segments && cap.response_usage_segments.length && isRich ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
+              disabledNote +
               '</div>';
 
       // (v4.111) Title row: #N (fixed-width, very left) + HIT/MISS + cost + model + hash.
@@ -2934,7 +2939,7 @@
         bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
       if (sessionName) {
-        bottomPartsHtml.push('<span style="color:' + modelColor + ';font-size:12px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
+        bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
