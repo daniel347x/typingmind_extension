@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.152
+// Version: 4.153
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -144,7 +144,7 @@
 (function() {
   'use strict';
 
-  const EXT_VERSION = '4.152';
+  const EXT_VERSION = '4.153';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -232,8 +232,9 @@
     renderGpt51UsageWidget();
   }
 
-  // (v4.106) Per-session cost tracking — keyed by derived-session-ID + model.
-  const TM_SESSION_COSTS_KEY = 'tm_session_costs';
+  // (v4.106) Per-session cost tracking.
+  // v4.153 keys by session ID + model + resolved endpoint host + proxy/direct flag.
+  const TM_SESSION_COSTS_KEY = 'tm_session_costs_v2';
 
   function tmGetSessionCosts() {
     try {
@@ -259,11 +260,21 @@
     return 'unknown';
   }
 
-  function tmRecordSessionCost(sessionId, model, endpointHost, cost) {
+  function tmIsProxyCapture(cap) {
+    try {
+      return !!(cap && cap.url && String(cap.url).toLowerCase().includes('typingmind.com/api/cors-proxy'));
+    } catch (e) { return false; }
+  }
+
+  function tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy) {
+    return (sessionId || '') + '::' + (model || '') + '::' + (endpointHost || 'unknown') + '::' + (isProxy ? 'proxy' : 'direct');
+  }
+
+  function tmRecordSessionCost(sessionId, model, endpointHost, isProxy, cost) {
     if (!sessionId || !model || cost <= 0) return 0;
     try {
       var costs = tmGetSessionCosts();
-      var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
       var entry = costs[key];
       var total = 0;
       if (typeof entry === 'object') {
@@ -278,11 +289,11 @@
     return 0;
   }
 
-  function tmGetSessionCost(sessionId, model, endpointHost) {
+  function tmGetSessionCost(sessionId, model, endpointHost, isProxy) {
     if (!sessionId || !model) return 0;
     try {
       var costs = tmGetSessionCosts();
-      var key = sessionId + '::' + model + '::' + (endpointHost || 'unknown');
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
       var entry = costs[key];
       if (typeof entry === 'object') return entry._total || 0;
       return Number(entry) || 0;
@@ -1194,7 +1205,9 @@
                       recModel = (recSum && recSum.model) ? String(recSum.model) : '';
                       recHost = tmExtractEndpointHost(capRec);
                     } catch (e) {}
-                    var newSessionTotal = tmRecordSessionCost(recSid, recModel, recHost, turnCost);
+                    var recIsProxy = false;
+                    try { recIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
+                    var newSessionTotal = tmRecordSessionCost(recSid, recModel, recHost, recIsProxy, turnCost);
                     if (newSessionTotal > 0) {
                       tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: recModel });
                     }
@@ -2041,7 +2054,7 @@
         var lastHost = '';
         try { var s = tmBuildCaptureSummary(last); lastModel = (s && s.model) ? String(s.model) : ''; } catch (e) {}
         try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
-        displaySidColor = tmModelEndpointColor(lastModel, lastHost, !!(last.url && last.url.toLowerCase().includes('typingmind.com/api/cors-proxy')), last.session_id || null);
+        displaySidColor = tmModelEndpointColor(lastModel, lastHost, tmIsProxyCapture(last), last.session_id || null);
       }
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
@@ -2060,7 +2073,7 @@
           try { displayHost = tmExtractEndpointHost(last); } catch (e) {}
         }
       } catch (e) {}
-      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost) : 0;
+      var widgetSessionCost = (displaySid && displayModel) ? tmGetSessionCost(displaySid, displayModel, displayHost, last ? tmIsProxyCapture(last) : false) : 0;
       if (widgetSessionCost > 0) {
         sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
@@ -3036,10 +3049,11 @@
       var capModelHtml = escapeHtml(capModel);
       var capHost = '';
       try { capHost = tmExtractEndpointHost(cap); } catch (e) {}
-      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost);
+      var capIsProxy = tmIsProxyCapture(cap);
+      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
-      var modelColor = tmModelEndpointColor(capModel, capHost, !!(cap.url && cap.url.toLowerCase().includes('typingmind.com/api/cors-proxy')), capSessionId);
+      var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
       var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
