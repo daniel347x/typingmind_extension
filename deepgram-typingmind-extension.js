@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.224',
+  VERSION: '3.226',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2965,7 +2965,7 @@
         // Editing gets a bright blue accent outline on TOP of the rings (a 3rd, outermost hint) so the
         // slot you're editing is still obvious without stealing the absolute-age ring.
         const editOutline = isEditing ? 'outline:2px solid #4da3ff; outline-offset:1px; ' : '';
-        sq.style.cssText = 'position:relative; width:100%; padding:8px 12px; border-radius:14px; cursor:pointer; font-size:11px; text-align:left; '
+        sq.style.cssText = 'position:relative; width:100%; padding:8px 12px; border-radius:14px; cursor:pointer; font-size:11px; display:flex; align-items:center; '
           + 'border:3px solid ' + rings.outer + '; '
           + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
           + editOutline
@@ -3012,7 +3012,7 @@
         const hasText = slot.text && slot.text.trim();
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
-        nameSpan.style.cssText = 'display:block; padding:0 22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        nameSpan.style.cssText = 'flex:1 1 auto; padding:0 4px 0 22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
         const pen = document.createElement('span');
         pen.textContent = ' ✎';
         pen.style.cssText = 'opacity:0.6; margin-left:2px;';
@@ -3672,6 +3672,8 @@
       // Disable Send while a Refine is in-flight (prevents sending un-refined text).
       var sendBtn = document.getElementById('deepgram-send-btn');
       if (sendBtn) sendBtn.disabled = true;
+      // Also make the transcript read-only so typing doesn't re-enable Send.
+      if (transcriptEl) transcriptEl.readOnly = true;
 
       // Start the countdown display (updates every second).
       refineTimeoutEnd = Date.now() + 120000;
@@ -3822,6 +3824,8 @@
       if (refineAbortController === thisAbortController) refineAbortController = null;
       // Re-enable the Send button (its normal state is managed by updateInsertButtonState).
       try { updateInsertButtonState(); } catch (e) {}
+      // Re-enable editing in the transcript.
+      if (transcriptEl) transcriptEl.readOnly = false;
     }
   }
 
