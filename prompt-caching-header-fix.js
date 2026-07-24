@@ -3332,7 +3332,7 @@
       var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
-      var modelColorTooltip = escapeHtml(capIdentity ? capIdentity.key : tmBuildIdentityKey(capSessionId, capModel, capHost, capIsProxy));
+      var modelColorTooltip = escapeHtml((capIdentity ? capIdentity.key : tmBuildIdentityKey(capSessionId, capModel, capHost, capIsProxy)) + ' — ' + modelColor);
       var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
       html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
