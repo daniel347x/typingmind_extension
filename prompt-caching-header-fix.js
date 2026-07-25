@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.162
+// Version: 4.163
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.162';
+  const EXT_VERSION = '4.163';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2983,7 +2983,7 @@
       }
     });
 
-    // v4.162: Change handler for Sol reasoning effort dropdown (select fires change, not click).
+    // v4.162: Change handler for Sol reasoning effort dropdown + v4.163: identity filter dropdown.
     overlay.addEventListener('change', function(ev) {
       var t = ev.target;
       if (t && t.dataset && t.dataset.action === 'set-sol-reasoning-effort') {
@@ -2992,6 +2992,22 @@
           tmSetSolReasoningEffort(newLevel);
           console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
         }
+        ev.stopPropagation();
+      }
+      // v4.163: Identity filter dropdown
+      if (t && t.dataset && t.dataset.action === 'set-modal-filter') {
+        tmModalFilterIdentity = t.value || null;
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+      }
+    });
+
+    // v4.163: Sort pill click handler (separate listener, stops at first match)
+    overlay.addEventListener('click', function(ev) {
+      var t = ev.target;
+      if (t && t.dataset && t.dataset.action === 'set-modal-sort') {
+        tmModalSortMode = t.dataset.sortMode || 'chronological';
+        renderPayloadCaptureModal();
         ev.stopPropagation();
       }
     });
@@ -3271,8 +3287,101 @@
            '</div>';
   }
 
+  // v4.163: Modal sort/filter state — survives modal open/close, not persisted.
+  var tmModalSortMode = 'chronological';  // 'chronological' | 'turn-cost' | 'session-cost'
+  var tmModalFilterIdentity = null;        // null = no filter, or an identity key string
+
+  // v4.163: Extract the identity key for a capture, preferring stamped _identity.
+  function tmCapIdentityKey(cap) {
+    if (cap._identity) return cap._identity.key || '';
+    var sid = cap.session_id || null;
+    var model = '';
+    var host = '';
+    try { model = tmCaptureModel(cap); } catch (e) {}
+    try { host = tmExtractEndpointHost(cap); } catch (e) {}
+    var isProxy = false;
+    try { isProxy = tmIsProxyCapture(cap); } catch (e) {}
+    return tmBuildIdentityKey(sid, model, host, isProxy);
+  }
+
+  // v4.163: Extract per-turn cost for a capture.
+  function tmCapTurnCost(cap) {
+    return tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+  }
+
+  // v4.163: Extract session/aggregate total cost for a capture.
+  function tmCapSessionCost(cap) {
+    if (cap.session_cost_total != null) return cap.session_cost_total;
+    var sid = cap.session_id || null;
+    var model = '';
+    var host = '';
+    try { model = tmCaptureModel(cap); } catch (e) {}
+    try { host = tmExtractEndpointHost(cap); } catch (e) {}
+    var isProxy = false;
+    try { isProxy = tmIsProxyCapture(cap); } catch (e) {}
+    return tmGetSessionCost(sid, model, host, isProxy);
+  }
+
+  // v4.163: Build identity display label for the filter dropdown.
+  function tmCapIdentityLabel(cap) {
+    var sid = '';
+    var model = '';
+    var host = '';
+    var isProxy = false;
+    if (cap._identity) {
+      sid = cap._identity.sid || '';
+      model = cap._identity.model || '';
+      host = cap._identity.host || '';
+      isProxy = !!cap._identity.proxy;
+    } else {
+      sid = cap.session_id || '';
+      try { model = tmCaptureModel(cap); } catch (e) {}
+      try { host = tmExtractEndpointHost(cap); } catch (e) {}
+      try { isProxy = tmIsProxyCapture(cap); } catch (e) {}
+    }
+    var label = sid + ' — ' + model;
+    // Disambiguate if needed (same sid+model but different host or proxy)
+    return { label: label, host: host, isProxy: isProxy, key: tmCapIdentityKey(cap) };
+  }
+
+  // v4.163: Sort items array in place according to tmModalSortMode.
+  // items are initially most-recent-first (ring.slice().reverse()).
+  function tmSortModalItems(items) {
+    if (tmModalSortMode === 'chronological') return; // already in the right order
+    // For cost sorts: zero/no-cost entries surface to top, then descending by cost.
+    // Within the same cost bucket, maintain chronological order (most recent first).
+    // items.forEach passes index; use it as a stable tiebreaker.
+    items.forEach(function(cap, idx) { cap._tmpSortIdx = idx; });
+    if (tmModalSortMode === 'turn-cost') {
+      items.sort(function(a, b) {
+        var ca = tmCapTurnCost(a);
+        var cb = tmCapTurnCost(b);
+        // Zero-cost entries go to top
+        var aZero = (ca <= 0), bZero = (cb <= 0);
+        if (aZero && !bZero) return -1;
+        if (!aZero && bZero) return 1;
+        if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx; // chronological within zeros
+        // Both have cost: descending
+        if (cb !== ca) return cb - ca;
+        return a._tmpSortIdx - b._tmpSortIdx; // chronological tiebreak
+      });
+    } else if (tmModalSortMode === 'session-cost') {
+      items.sort(function(a, b) {
+        var ca = tmCapSessionCost(a);
+        var cb = tmCapSessionCost(b);
+        var aZero = (ca <= 0), bZero = (cb <= 0);
+        if (aZero && !bZero) return -1;
+        if (!aZero && bZero) return 1;
+        if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx;
+        if (cb !== ca) return cb - ca;
+        return a._tmpSortIdx - b._tmpSortIdx;
+      });
+    }
+    // Clean up temp property
+    items.forEach(function(cap) { delete cap._tmpSortIdx; });
+  }
+
   // @beacon[
-  //   id=auto-beacon@__lambdao_1.renderPayloadCaptureModal-wkgo,
   //   role=__lambdao_1.renderPayloadCaptureModal,
   //   slice_labels=tm-payload-cost-visibility,
   //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
@@ -3282,22 +3391,74 @@
     if (!payloadCaptureModalInnerEl) return;
 
     const ring = tmReadCaptureRing();
-    const items = ring.slice().reverse(); // most recent first
+    var items = ring.slice().reverse(); // most recent first
 
     // Status banner first, in ALL states.
     let html = tmBuildCaptureStatusBanner();
 
-    // v4.162: Sol reasoning effort dropdown — always visible, on its own row below the banner.
+    // v4.162: Sol reasoning effort dropdown + v4.163: sort pills + filter dropdown — on one row.
     var solEffort = tmGetSolReasoningEffort();
     var solOpts = ['medium', 'high', 'xhigh', 'max'];
-    var solSelectHtml = '<span style="font-size:10px;opacity:0.85;">Sol Model Reasoning Level:&nbsp;</span>' +
+    var solSelectHtml = '<span style="font-size:10px;opacity:0.85;">Sol Reasoning:&nbsp;</span>' +
       '<select data-action="set-sol-reasoning-effort" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
     for (var si = 0; si < solOpts.length; si++) {
       var opt = solOpts[si];
       solSelectHtml += '<option value="' + opt + '"' + (opt === solEffort ? ' selected' : '') + '>' + opt + '</option>';
     }
     solSelectHtml += '</select>';
-    html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;">' + solSelectHtml + '</div>';
+
+    // v4.163: Sort pills
+    var sortPills = ['chronological', 'turn-cost', 'session-cost'];
+    var sortLabels = { 'chronological': 'Chronological', 'turn-cost': 'Turn Cost', 'session-cost': 'Session Cost' };
+    var pillsHtml = '';
+    for (var sp = 0; sp < sortPills.length; sp++) {
+      var mode = sortPills[sp];
+      var isActive = (tmModalSortMode === mode);
+      var pillStyle = isActive
+        ? 'background:#5a3a8e;color:#fff;border:1px solid #7a5aae;'
+        : 'background:#333;color:#aaa;border:1px solid #555;';
+      pillsHtml += '<button data-action="set-modal-sort" data-sort-mode="' + mode + '" style="' + pillStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:4px;">' + sortLabels[mode] + '</button>';
+    }
+
+    // v4.163: Identity filter dropdown — populated from ring entries
+    var filterHtml = '<span style="font-size:10px;opacity:0.85;margin-left:8px;">Filter:&nbsp;</span>' +
+      '<select data-action="set-modal-filter" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
+    filterHtml += '<option value=""' + (!tmModalFilterIdentity ? ' selected' : '') + '>All</option>';
+    if (ring.length > 0) {
+      // Collect unique identities
+      var idMap = {};
+      var idEntries = [];
+      for (var ri = ring.length - 1; ri >= 0; ri--) {
+        var rcap = ring[ri];
+        if (!rcap) continue;
+        var ikey = tmCapIdentityKey(rcap);
+        if (idMap[ikey]) continue;
+        idMap[ikey] = true;
+        var idInfo = tmCapIdentityLabel(rcap);
+        idEntries.push({ key: ikey, label: idInfo.label, host: idInfo.host, isProxy: idInfo.isProxy });
+      }
+      // Check for duplicate sid+model labels that need disambiguation
+      var labelCounts = {};
+      for (var ei = 0; ei < idEntries.length; ei++) {
+        var lbl = idEntries[ei].label;
+        labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
+      }
+      for (var ei2 = 0; ei2 < idEntries.length; ei2++) {
+        var entry = idEntries[ei2];
+        var displayLabel = entry.label;
+        if (labelCounts[displayLabel] > 1) {
+          // Disambiguate
+          displayLabel += ' (' + (entry.isProxy ? 'proxy' : 'direct') + ' @ ' + (entry.host || 'unknown') + ')';
+        }
+        var selected = (tmModalFilterIdentity === entry.key) ? ' selected' : '';
+        filterHtml += '<option value="' + escapeHtml(entry.key) + '"' + selected + '>' + escapeHtml(displayLabel) + '</option>';
+      }
+    }
+    filterHtml += '</select>';
+
+    html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
+      solSelectHtml + pillsHtml + filterHtml +
+      '</div>';
 
     if (!items.length) {
       if (!tmCaptureEnabled()) {
@@ -3319,6 +3480,12 @@
             'The Trunc control limits individual strings; oversized entries become compact diagnostic skeletons. ' +
             'Responses are best-effort (may be empty for streaming/opaque responses).' +
             '</div>';
+
+    // v4.163: Apply identity filter first, then sort
+    if (tmModalFilterIdentity) {
+      items = items.filter(function(cap) { return cap && tmCapIdentityKey(cap) === tmModalFilterIdentity; });
+    }
+    tmSortModalItems(items);
 
     // (v4.145) Session costs are stamped onto each capture row at response receipt.
     // No live recomputation from ring entries here; avoids double-counting and preserves history.
