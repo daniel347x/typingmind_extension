@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.160
+// Version: 4.161
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.160';
+  const EXT_VERSION = '4.161';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4134,6 +4134,36 @@
     return (/sol-pro/).test(m);
   }
 
+  // v4.161: Detects plain Sol (not Sol Pro). Matches 'sol' as a model-name segment.
+  function tmIsPlainSolModel(model) {
+    if (!model) return false;
+    var m = String(model).toLowerCase();
+    if (tmIsSolProModel(m)) return false;
+    // Recognize 'sol' as a distinct segment delimited by /, -, _, or string boundaries.
+    return /(?:^|[\/_-])sol(?:$|[\/_-])/.test(m);
+  }
+
+  // v4.161: Ensure plain-Sol requests carry reasoning.effort = 'high' at the top level.
+  // Mutates body in place. Returns true if anything was changed.
+  function tmEnsurePlainSolReasoningHigh(body) {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+    if (!tmIsPlainSolModel(body.model)) return false;
+    var changed = false;
+    if (!body.reasoning || typeof body.reasoning !== 'object' || Array.isArray(body.reasoning)) {
+      body.reasoning = { effort: 'high' };
+      changed = true;
+    } else {
+      if (body.reasoning.effort !== 'high') {
+        body.reasoning.effort = 'high';
+        changed = true;
+      }
+    }
+    if (changed) {
+      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=high for plain Sol model:', body.model);
+    }
+    return changed;
+  }
+
   // Mutates usage in place. Returns true if anything was changed.
   function tmRewriteSolProUsage(usage, completionTokens, logPrefix) {
     if (!usage || typeof usage !== 'object') return false;
@@ -4314,17 +4344,25 @@
       }
     } catch (e) {}
 
-    // ==================== UNIVERSAL TOOLS KEY CANONICALIZATION (v4.84) ====================
+    // ==================== UNIVERSAL OUTBOUND INJECTION (v4.84 tools + v4.161 Sol reasoning) ====================
     // Run the proven v4.58 OpenRouter fix for EVERY endpoint, before endpoint-specific branches.
     // This is semantic-preserving: object keys are recursively sorted; array order is NEVER changed.
     // It prevents TypingMind's nondeterministic tool-schema key ordering from busting exact-prefix
     // prompt caches on providers beyond OpenRouter (notably DeepInfra GLM-5.2).
+    // v4.161: Also injects reasoning.effort=high for plain Sol (not Sol Pro) on this same parse pass.
     try {
       if (options && typeof options.body === 'string') {
         var tmUniversalBody = JSON.parse(options.body);
+        var tmUniversalChanged = false;
         if (tmStabilizeToolsOrdering(tmUniversalBody)) {
+          tmUniversalChanged = true;
+        }
+        if (tmEnsurePlainSolReasoningHigh(tmUniversalBody)) {
+          tmUniversalChanged = true;
+        }
+        if (tmUniversalChanged) {
           options.body = JSON.stringify(tmUniversalBody);
-          console.log('✅ [v' + EXT_VERSION + '] Universally canonicalized tools key ordering before endpoint-specific handling.');
+          console.log('✅ [v' + EXT_VERSION + '] Universal outbound pass: tools canonicalized and/or Sol reasoning injected before endpoint-specific handling.');
         }
       }
     } catch (e) {
