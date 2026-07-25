@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.157
+// Version: 4.158
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.157';
+  const EXT_VERSION = '4.158';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4118,6 +4118,123 @@
     return null;
   }
 
+  // ==================== SOL PRO USAGE GUARD (v4.158) ====================
+  // Sol Pro (gpt-5.6-sol-pro, etc.) bills hidden server-side reasoning tokens AS THOUGH
+  // they are prompt input tokens — inflating the reported prompt_tokens to 1M+ per turn.
+  // TypingMind's context-manager reads that value and triggers automatic summarization,
+  // destroying the session every time Sol Pro responds. This guard rewrites the SSE usage
+  // event BEFORE TypingMind sees it: prompt_tokens are capped at 25,000 and total_tokens
+  // are adjusted to {capped_prompt + completion_tokens}. The original event is preserved
+  // in the clone that tmCaptureResponse reads, so cost accounting stays correct.
+
+  function tmIsSolProModel(model) {
+    // Matches 'gpt-5.6-sol-pro', 'gpt-5.7-sol-pro', etc. but NOT plain 'sol'.
+    if (!model) return false;
+    var m = String(model).toLowerCase();
+    return (/sol-pro/).test(m);
+  }
+
+  // Mutates usage in place. Returns true if anything was changed.
+  function tmRewriteSolProUsage(usage, completionTokens, logPrefix) {
+    if (!usage || typeof usage !== 'object') return false;
+    var origPrompt = Number(usage.prompt_tokens);
+    var origTotal = Number(usage.total_tokens);
+    var compToks = (typeof completionTokens === 'number' && completionTokens >= 0)
+      ? completionTokens
+      : (Number(usage.completion_tokens) || 0);
+    if (!(origPrompt > 25000)) return false;
+    usage.prompt_tokens = 25000;
+    usage.total_tokens = 25000 + compToks;
+    if (logPrefix) {
+      console.log(logPrefix + ': prompt_tokens ' + origPrompt + ' → 25000; total_tokens ' + origTotal + ' → ' + usage.total_tokens);
+    }
+    return true;
+  }
+
+  // Returns a TransformStream that rewrites SSE data: lines carrying usage.prompt_tokens
+  // get prompt_tokens / total_tokens capped when the response model also identifies Sol Pro.
+  function tmCreateSolProUsageTransform() {
+    var decoder = new TextDecoder('utf-8', { fatal: false });
+    var encoder = new TextEncoder();
+    var partial = '';
+    var transformedOnce = false;
+
+    return new TransformStream({
+      transform: function(chunk, controller) {
+        try {
+          var text = decoder.decode(chunk, { stream: true });
+          partial += text;
+          // Emit complete lines; keep partial final line for the next chunk.
+          var lines = partial.split('\n');
+          partial = lines.pop(); // may be '' if the chunk ended with newline
+          for (var i = 0; i < lines.length; i++) {
+            var line = lines[i];
+            if (!transformedOnce && line.indexOf('"prompt_tokens"') >= 0 && (/"usage"/).test(line)) {
+              try {
+                var dataPrefix = '';
+                var jsonStr = line;
+                var m = line.match(/^(data:\s*)(.*)/);
+                if (m) { dataPrefix = m[1]; jsonStr = m[2]; }
+                if (jsonStr !== '[DONE]') {
+                  var obj = JSON.parse(jsonStr);
+                  var respModel = (obj && obj.model) ? String(obj.model) : '';
+                  if (tmIsSolProModel(respModel) && obj.usage) {
+                    var before = line;
+                    tmRewriteSolProUsage(obj.usage, null, '🛡️ [Sol Pro guard]');
+                    line = dataPrefix + JSON.stringify(obj);
+                    transformedOnce = true;
+                    if (line !== before) {
+                      console.log('🛡️ [v' + EXT_VERSION + '] Sol Pro usage guard: transformed SSE usage line.');
+                    }
+                  }
+                }
+              } catch (parseErr) {
+                // Not valid JSON on this line — pass through unchanged (safe fallback).
+              }
+            }
+            controller.enqueue(encoder.encode(line + '\n'));
+          }
+        } catch (transformErr) {
+          // Last-resort: emit the raw chunk so the stream is never broken.
+          controller.enqueue(chunk);
+        }
+      },
+      flush: function(controller) {
+        try {
+          if (partial) {
+            controller.enqueue(encoder.encode(partial));
+          }
+        } catch (flushErr) {
+          // Swallow.
+        }
+        decoder = null;
+        encoder = null;
+      }
+    });
+  }
+
+  // Wrap a Response with a transformed body (Sol Pro usage guard).
+  // Falls back to the original response if the body stream is unavailable.
+  function tmWrapSolProResponse(response) {
+    try {
+      if (!response || !response.body || typeof response.body.pipeThrough !== 'function') {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Sol Pro guard: response body not pipeable — returning original.');
+        return response;
+      }
+      var transformed = response.body.pipeThrough(tmCreateSolProUsageTransform());
+      var headers = new Headers(response.headers);
+      headers.delete('content-length');
+      return new Response(transformed, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: headers
+      });
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Sol Pro guard: failed to wrap response — returning original:', e);
+      return response;
+    }
+  }
+
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
@@ -4284,7 +4401,7 @@
       }
     }
 
-    // ==================== GEMINI (GOOGLE GENERATIVE LANGUAGE) BRANCH ====================
+  // ==================== GEMINI (GOOGLE GENERATIVE LANGUAGE) BRANCH ====================
     else if (url.includes('generativelanguage.googleapis.com')) {
       vendorForThisCall = 'gemini';
       try {
@@ -4736,13 +4853,29 @@
 
     const fetchPromise = originalFetch(...args);
 
+    // v4.158: Determine whether this request targets Sol Pro (model name contains 'sol-pro').
+    // We parse the FINAL outbound body (after all endpoint-specific modifications).
+    var shouldSanitizeSolProUsage = false;
+    try {
+      if (options && typeof options.body === 'string') {
+        var finalBody = JSON.parse(options.body);
+        if (finalBody && tmIsSolProModel(finalBody.model)) {
+          shouldSanitizeSolProUsage = true;
+        }
+      }
+    } catch (e) {}
+
     // Capture response headers/body (best-effort, does not affect the original response stream)
-    const fetchPromiseCaptured = captureId
-      ? fetchPromise.then(function(response) {
-          try { tmCaptureResponse(captureId, response); } catch (e) {}
-          return response;
-        })
-      : fetchPromise;
+    var fetchPromiseCaptured = fetchPromise.then(function(response) {
+      if (captureId) {
+        try { tmCaptureResponse(captureId, response); } catch (e) {}
+      }
+      // v4.158: Sol Pro usage guard — rewrite the SSE usage event before TypingMind sees it.
+      if (shouldSanitizeSolProUsage) {
+        return tmWrapSolProResponse(response);
+      }
+      return response;
+    });
 
     if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
       return fetchPromiseCaptured.then(function(response) {
