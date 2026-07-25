@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.161
+// Version: 4.162
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.161';
+  const EXT_VERSION = '4.162';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -155,6 +155,20 @@
   };
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
+
+  // v4.162: Toggleable Sol reasoning effort (medium / high / x-high / max). Persisted in localStorage.
+  const TM_SOL_REASONING_EFFORT_KEY = 'tm_sol_reasoning_effort';
+
+  function tmGetSolReasoningEffort() {
+    try {
+      var v = localStorage.getItem(TM_SOL_REASONING_EFFORT_KEY);
+      return (v === 'medium' || v === 'high' || v === 'x-high' || v === 'max') ? v : 'high';
+    } catch (e) { return 'high'; }
+  }
+
+  function tmSetSolReasoningEffort(level) {
+    try { localStorage.setItem(TM_SOL_REASONING_EFFORT_KEY, level); } catch (e) {}
+  }
 
   // (v4.62) Removed obsolete GPT-5.4 reasoning-effort helpers (tmModelString / tmIsGpt54Model /
   // tmEnsureOpenRouterGpt54Reasoning / tmEnsureOpenAIGpt54Reasoning). TypingMind now exposes the
@@ -2023,6 +2037,16 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.162) Sol reasoning effort dropdown — onchange bubbles to this click handler.
+          if (target.dataset.action === 'set-sol-reasoning-effort') {
+            var newLevel = target.value;
+            if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'x-high' || newLevel === 'max')) {
+              tmSetSolReasoningEffort(newLevel);
+              console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
+            }
+            ev.stopPropagation();
+            return;
+          }
           // Close (hide) a specific conversation from the list
           if (target.dataset.convId) {
             const convId = target.dataset.convId;
@@ -2959,6 +2983,19 @@
       }
     });
 
+    // v4.162: Change handler for Sol reasoning effort dropdown (select fires change, not click).
+    overlay.addEventListener('change', function(ev) {
+      var t = ev.target;
+      if (t && t.dataset && t.dataset.action === 'set-sol-reasoning-effort') {
+        var newLevel = t.value;
+        if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'x-high' || newLevel === 'max')) {
+          tmSetSolReasoningEffort(newLevel);
+          console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
+        }
+        ev.stopPropagation();
+      }
+    });
+
     return overlay;
   }
 
@@ -3249,6 +3286,18 @@
 
     // Status banner first, in ALL states.
     let html = tmBuildCaptureStatusBanner();
+
+    // v4.162: Sol reasoning effort dropdown — always visible, on its own row below the banner.
+    var solEffort = tmGetSolReasoningEffort();
+    var solOpts = ['medium', 'high', 'x-high', 'max'];
+    var solSelectHtml = '<span style="font-size:10px;opacity:0.85;">Sol Model Reasoning Level:&nbsp;</span>' +
+      '<select data-action="set-sol-reasoning-effort" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
+    for (var si = 0; si < solOpts.length; si++) {
+      var opt = solOpts[si];
+      solSelectHtml += '<option value="' + opt + '"' + (opt === solEffort ? ' selected' : '') + '>' + opt + '</option>';
+    }
+    solSelectHtml += '</select>';
+    html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;">' + solSelectHtml + '</div>';
 
     if (!items.length) {
       if (!tmCaptureEnabled()) {
@@ -4149,17 +4198,23 @@
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
     if (!tmIsPlainSolModel(body.model)) return false;
     var changed = false;
+    var level = tmGetSolReasoningEffort();
+    // v4.162: always inject summary:auto alongside the effort level (restores streaming thinking).
     if (!body.reasoning || typeof body.reasoning !== 'object' || Array.isArray(body.reasoning)) {
-      body.reasoning = { effort: 'high' };
+      body.reasoning = { effort: level, summary: 'auto' };
       changed = true;
     } else {
-      if (body.reasoning.effort !== 'high') {
-        body.reasoning.effort = 'high';
+      if (body.reasoning.effort !== level) {
+        body.reasoning.effort = level;
+        changed = true;
+      }
+      if (body.reasoning.summary !== 'auto') {
+        body.reasoning.summary = 'auto';
         changed = true;
       }
     }
     if (changed) {
-      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=high for plain Sol model:', body.model);
+      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=' + level + ' + summary=auto for plain Sol model:', body.model);
     }
     return changed;
   }
