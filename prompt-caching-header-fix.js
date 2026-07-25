@@ -162,7 +162,7 @@
   function tmGetSolReasoningEffort() {
     try {
       var v = localStorage.getItem(TM_SOL_REASONING_EFFORT_KEY);
-      return (v === 'medium' || v === 'high' || v === 'x-high' || v === 'max') ? v : 'high';
+      return (v === 'medium' || v === 'high' || v === 'xhigh' || v === 'max') ? v : 'high';
     } catch (e) { return 'high'; }
   }
 
@@ -2040,7 +2040,7 @@
           // (v4.162) Sol reasoning effort dropdown — onchange bubbles to this click handler.
           if (target.dataset.action === 'set-sol-reasoning-effort') {
             var newLevel = target.value;
-            if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'x-high' || newLevel === 'max')) {
+            if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
               tmSetSolReasoningEffort(newLevel);
               console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
             }
@@ -2988,7 +2988,7 @@
       var t = ev.target;
       if (t && t.dataset && t.dataset.action === 'set-sol-reasoning-effort') {
         var newLevel = t.value;
-        if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'x-high' || newLevel === 'max')) {
+        if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
           tmSetSolReasoningEffort(newLevel);
           console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
         }
@@ -3289,7 +3289,7 @@
 
     // v4.162: Sol reasoning effort dropdown — always visible, on its own row below the banner.
     var solEffort = tmGetSolReasoningEffort();
-    var solOpts = ['medium', 'high', 'x-high', 'max'];
+    var solOpts = ['medium', 'high', 'xhigh', 'max'];
     var solSelectHtml = '<span style="font-size:10px;opacity:0.85;">Sol Model Reasoning Level:&nbsp;</span>' +
       '<select data-action="set-sol-reasoning-effort" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
     for (var si = 0; si < solOpts.length; si++) {
