@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.158
+// Version: 4.159
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.158';
+  const EXT_VERSION = '4.159';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4157,50 +4157,67 @@
     var decoder = new TextDecoder('utf-8', { fatal: false });
     var encoder = new TextEncoder();
     var partial = '';
-    var transformedOnce = false;
+    var hadDecodeError = false;
 
     return new TransformStream({
       transform: function(chunk, controller) {
+        // Decode the raw chunk. If decoding itself fails, reset buffered state and
+        // emit the raw bytes so we don't duplicate text that is already in `partial`.
+        var text;
         try {
-          var text = decoder.decode(chunk, { stream: true });
-          partial += text;
-          // Emit complete lines; keep partial final line for the next chunk.
-          var lines = partial.split('\n');
-          partial = lines.pop(); // may be '' if the chunk ended with newline
-          for (var i = 0; i < lines.length; i++) {
-            var line = lines[i];
-            if (!transformedOnce && line.indexOf('"prompt_tokens"') >= 0 && (/"usage"/).test(line)) {
-              try {
-                var dataPrefix = '';
-                var jsonStr = line;
-                var m = line.match(/^(data:\s*)(.*)/);
-                if (m) { dataPrefix = m[1]; jsonStr = m[2]; }
-                if (jsonStr !== '[DONE]') {
-                  var obj = JSON.parse(jsonStr);
-                  var respModel = (obj && obj.model) ? String(obj.model) : '';
-                  if (tmIsSolProModel(respModel) && obj.usage) {
-                    var before = line;
-                    tmRewriteSolProUsage(obj.usage, null, '🛡️ [Sol Pro guard]');
-                    line = dataPrefix + JSON.stringify(obj);
-                    transformedOnce = true;
-                    if (line !== before) {
-                      console.log('🛡️ [v' + EXT_VERSION + '] Sol Pro usage guard: transformed SSE usage line.');
-                    }
+          text = decoder.decode(chunk, { stream: true });
+        } catch (decodeErr) {
+          // Decoding failed — flush whatever we had and pass the raw chunk through.
+          if (partial) {
+            try { controller.enqueue(encoder.encode(partial)); } catch (e) {}
+            partial = '';
+          }
+          hadDecodeError = true;
+          controller.enqueue(chunk);
+          return;
+        }
+        partial += text;
+        // Emit complete lines; keep partial final line for the next chunk.
+        var lines = partial.split('\n');
+        partial = lines.pop(); // may be '' if the chunk ended with a newline
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (line.indexOf('"prompt_tokens"') >= 0 && (/"usage"/).test(line)) {
+            try {
+              var dataPrefix = '';
+              var jsonStr = line;
+              var m = line.match(/^(data:\s*)(.*)/);
+              if (m) { dataPrefix = m[1]; jsonStr = m[2]; }
+              if (jsonStr !== '[DONE]') {
+                var obj = JSON.parse(jsonStr);
+                var respModel = (obj && obj.model) ? String(obj.model) : '';
+                // v4.159: check EVERY usage-bearing line (not just the first).
+                if (tmIsSolProModel(respModel) && obj.usage) {
+                  var before = line;
+                  tmRewriteSolProUsage(obj.usage, null, '🛡️ [Sol Pro guard]');
+                  line = dataPrefix + JSON.stringify(obj);
+                  if (line !== before) {
+                    console.log('🛡️ [v' + EXT_VERSION + '] Sol Pro usage guard: transformed SSE usage line.');
                   }
                 }
-              } catch (parseErr) {
-                // Not valid JSON on this line — pass through unchanged (safe fallback).
               }
+            } catch (parseErr) {
+              // Not valid JSON on this line — pass through unchanged (safe fallback).
             }
-            controller.enqueue(encoder.encode(line + '\n'));
           }
-        } catch (transformErr) {
-          // Last-resort: emit the raw chunk so the stream is never broken.
-          controller.enqueue(chunk);
+          try {
+            controller.enqueue(encoder.encode(line + '\n'));
+          } catch (enqueueErr) {
+            // Stream may be closed — stop emitting.
+          }
         }
       },
       flush: function(controller) {
         try {
+          // v4.159: drain any trailing bytes still held by the streaming decoder.
+          if (!hadDecodeError) {
+            try { partial += decoder.decode(); } catch (e) {}
+          }
           if (partial) {
             controller.enqueue(encoder.encode(partial));
           }
@@ -4216,21 +4233,24 @@
   // Wrap a Response with a transformed body (Sol Pro usage guard).
   // Falls back to the original response if the body stream is unavailable.
   function tmWrapSolProResponse(response) {
+    // Validate that the response body is pipeable BEFORE we lock it.
     try {
       if (!response || !response.body || typeof response.body.pipeThrough !== 'function') {
         console.warn('⚠️ [v' + EXT_VERSION + '] Sol Pro guard: response body not pipeable — returning original.');
         return response;
       }
-      var transformed = response.body.pipeThrough(tmCreateSolProUsageTransform());
       var headers = new Headers(response.headers);
       headers.delete('content-length');
+      var transformed = response.body.pipeThrough(tmCreateSolProUsageTransform());
       return new Response(transformed, {
         status: response.status,
         statusText: response.statusText,
         headers: headers
       });
     } catch (e) {
-      console.warn('⚠️ [v' + EXT_VERSION + '] Sol Pro guard: failed to wrap response — returning original:', e);
+      // v4.159: if we get here AFTER pipeThrough, the original body is already locked.
+      // We cannot safely return it. Log and rethrow so the caller can handle the broken pipe.
+      console.warn('⚠️ [v' + EXT_VERSION + '] Sol Pro guard: failed to wrap response. Original body may be locked.', e);
       return response;
     }
   }
