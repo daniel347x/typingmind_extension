@@ -2319,7 +2319,7 @@
               ? '<span style="position:absolute;top:-10px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
               : '') +
             ((totalMisses > 0 || totalHits > 0)
-              ? '<span style="position:absolute;top:-9px;right:-18px;color:#c8c8c8;font-size:8px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + '/' + totalHits + '</span>'
+              ? '<span style="position:absolute;top:-9px;right:-18px;color:#ccffcc;font-size:9px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + '/' + totalHits + '</span>'
               : '') +
         '</span>'
       : '';
