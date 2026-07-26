@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.168
+// Version: 4.169
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.168';
+  const EXT_VERSION = '4.169';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -376,6 +376,35 @@
       if (typeof entry === 'object') return entry._total || 0;
       return Number(entry) || 0;
     } catch (e) { return 0; }
+  }
+
+  // v4.169: Record cache hit/miss for the identity ledger (tm_session_costs_v2).
+  // Called once per response at stamp time, never during render.
+  function tmRecordIdentityCacheOutcome(sessionId, model, endpointHost, isProxy, isHit) {
+    if (!sessionId || !model) return null;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
+      var entry = costs[key];
+      if (!entry || typeof entry !== 'object') {
+        entry = { _total: Number(entry) || 0, _session_id: String(sessionId), _ts: Date.now() };
+      }
+      var kind = isHit ? 'hit' : 'miss';
+      entry._cache_hits = Number(entry._cache_hits || 0);
+      entry._cache_misses = Number(entry._cache_misses || 0);
+      if (isHit) entry._cache_hits++; else entry._cache_misses++;
+      if (entry._cache_last === kind) {
+        entry._cache_streak = Number(entry._cache_streak || 0) + 1;
+      } else {
+        entry._cache_last = kind;
+        entry._cache_streak = 1;
+      }
+      entry._session_id = String(sessionId);
+      entry._ts = Date.now();
+      costs[key] = entry;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return entry;
+    } catch (e) { return null; }
   }
 
   // @beacon[
@@ -1418,6 +1447,14 @@
                 var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
                 tmMostRecentPayloadStatus.identity = identity;
                 tmUpdateCaptureRecord(captureId, { _identity: identity });
+                // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
+                try {
+                  var cacheHit = tmIsSignificantCacheHit(capRec);
+                  var cacheStats = tmRecordIdentityCacheOutcome(idSid, idModel, idHost, idIsProxy, cacheHit);
+                  tmMostRecentPayloadStatus.cacheHit = cacheHit;
+                  tmMostRecentPayloadStatus.cacheStats = cacheStats;
+                  tmUpdateCaptureRecord(captureId, { _cache_hit: cacheHit });
+                } catch (e) {}
               }
             } catch (e) {}
             // (v4.72) Accumulate per-turn cost into the running total.
@@ -2260,8 +2297,26 @@
     // v4.168: Per-turn cost is now rendered inline here (not via tmRenderCacheReport's tiny gray badge)
     // so it can be the flashpoint — larger font, orange-red, bold.
     var turnCostVal = tmExtractCostVal(au, oru);
+    // v4.169: Cache hit/miss badges around the cost.
+    var cacheHit = !!st.cacheHit;
+    var stats = st.cacheStats || {};
+    var streak = Number(stats._cache_streak || 0);
+    var totalHits = Number(stats._cache_hits || 0);
+    var totalMisses = Number(stats._cache_misses || 0);
+    var missBorder = cacheHit
+      ? ''
+      : 'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;';
     var turnCostStr = (turnCostVal > 0)
-      ? ' <span title="inference cost (this turn)" style="color:#ff6b3d;font-size:13px;font-weight:bold;">$' + turnCostVal.toFixed(3) + '</span>'
+      ? ' <span title="inference cost (this turn) — ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
+          'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
+            '$' + turnCostVal.toFixed(3) +
+            (streak > 0
+              ? '<span style="position:absolute;top:-10px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
+              : '') +
+            ((totalMisses > 0 || totalHits > 0)
+              ? '<span style="position:absolute;top:-9px;right:-18px;color:#c8c8c8;font-size:8px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + '/' + totalHits + '</span>'
+              : '') +
+        '</span>'
       : '';
     // Build the cache report WITHOUT the cost badge (cost is rendered separately above).
     var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
