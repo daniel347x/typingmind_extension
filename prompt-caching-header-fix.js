@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.167
+// Version: 4.168
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.167';
+  const EXT_VERSION = '4.168';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2189,8 +2189,10 @@
     else if (au && au.estimated_cost != null) { costVal = au.estimated_cost; }
     var costColor = costFontSize ? '#ffccd5' : '#9aa4b2';
     var costStyle = 'color:' + costColor + ';' + (costFontSize ? ('font-size:' + costFontSize + ';font-weight:600;') : '');
-    // When costFontSize is set the caller renders the cost separately (modal left-pin).
-    var costStr = (costVal > 0 && !costFontSize)
+    // When costFontSize is set the caller renders the cost separately (modal left-pin, or widget inline).
+    // v4.168: '__skip_cost__' sentinel suppresses the cost badge entirely (widget now renders cost inline).
+    var skipCost = (costFontSize === '__skip_cost__');
+    var costStr = (costVal > 0 && !costFontSize && !skipCost)
       ? ' <span title="inference cost" style="' + costStyle + '">$' + costVal.toFixed(3) + '</span>'
       : '';
 
@@ -2255,7 +2257,15 @@
 
     var au = st.anthropicUsage;
     var oru = st.orUsage;
-    parts.push(tmRenderCacheReport(au, oru));
+    // v4.168: Per-turn cost is now rendered inline here (not via tmRenderCacheReport's tiny gray badge)
+    // so it can be the flashpoint — larger font, orange-red, bold.
+    var turnCostVal = tmExtractCostVal(au, oru);
+    var turnCostStr = (turnCostVal > 0)
+      ? ' <span title="inference cost (this turn)" style="color:#ff6b3d;font-size:13px;font-weight:bold;">$' + turnCostVal.toFixed(3) + '</span>'
+      : '';
+    // Build the cache report WITHOUT the cost badge (cost is rendered separately above).
+    var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
+    parts.push(cacheReportNoCost + turnCostStr);
 
     // (v4.73) Running total cost — deeper purple (#8b6db5) for Σ$/reset; numeric value in even darker purple (#5d3f8e).
     var totalCost = tmGetTotalCost();
