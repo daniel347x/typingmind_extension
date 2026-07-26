@@ -4973,11 +4973,13 @@
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
           // v4.173: Temp hack — replace first user message with random int for Kimi
           const isKimi = /kimi/i.test(model);
-          if (isKimi && Array.isArray(body.messages) && body.messages.length > 0) {
-            var firstMsg = body.messages[0];
-            if (firstMsg && firstMsg.role === 'user') {
-              firstMsg.content = String(Math.floor(Math.random() * 9999999));
-              modified = true;
+          if (isKimi && Array.isArray(body.messages)) {
+            for (var mi = 0; mi < body.messages.length; mi++) {
+              if (body.messages[mi] && body.messages[mi].role === 'user') {
+                body.messages[mi].content = String(Math.floor(Math.random() * 9999999));
+                modified = true;
+                break;
+              }
             }
           }
 
