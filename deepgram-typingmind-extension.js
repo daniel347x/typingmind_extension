@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.229',
+  VERSION: '3.230',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1325,7 +1325,8 @@
    * The current playback rate (from the slider / localStorage / default).
    */
   function elevenGetRate() {
-    return parseFloat(localStorage.getItem(CONFIG.ELEVENLABS_RATE_STORAGE)) || CONFIG.DEFAULT_ELEVENLABS_RATE;
+    const v = parseFloat(localStorage.getItem(CONFIG.ELEVENLABS_RATE_STORAGE)) || CONFIG.DEFAULT_ELEVENLABS_RATE;
+    return Math.max(1, Math.min(2, v)); // clamp legacy saves into the current 1–2× slider range
   }
 
   /**
@@ -2055,7 +2056,7 @@
    * Change playback speed live (also persists for next time).
    */
   function elevenSetRate(rate) {
-    rate = Math.max(0.5, Math.min(3, parseFloat(rate) || CONFIG.DEFAULT_ELEVENLABS_RATE));
+    rate = Math.max(1, Math.min(2, parseFloat(rate) || CONFIG.DEFAULT_ELEVENLABS_RATE));
     localStorage.setItem(CONFIG.ELEVENLABS_RATE_STORAGE, String(rate));
     if (elevenAudio) elevenAudio.playbackRate = rate;
     const lbl = document.getElementById('deepgram-eleven-rate-label');
@@ -5911,7 +5912,7 @@
           <button id="deepgram-eleven-play-btn" class="deepgram-btn deepgram-btn-info" title="Read the transcript window aloud" style="min-width:34px;">▶</button>
           <button id="deepgram-eleven-stop-btn" class="deepgram-btn deepgram-btn-secondary" title="Stop (reset to start)" style="min-width:34px;" disabled>⏹</button>
           <span style="font-size:11px; opacity:0.8;">Speed</span>
-          <input id="deepgram-eleven-rate-slider" type="range" min="0.5" max="3" step="0.05" style="width:84px; vertical-align:middle;">
+          <input id="deepgram-eleven-rate-slider" type="range" min="1" max="2" step="0.05" title="Playback speed (1–2×)" style="width:110px; vertical-align:middle;">
           <span id="deepgram-eleven-rate-label" style="font-size:11px; min-width:36px; display:inline-block;">1.50×</span>
           <span style="font-size:11px; opacity:0.8;">Voice</span>
           <select id="deepgram-eleven-voice-select" class="monospace" style="font-size:11px; max-width:130px; color:#111; background:#fff;"></select>
