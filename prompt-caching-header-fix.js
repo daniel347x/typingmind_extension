@@ -4971,13 +4971,6 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.172: Kimi K3 — set max_completion_tokens to 512K to keep
-          // total (prompt + tool + max_completion) under the 1M context window.
-          const isKimi = /kimi/i.test(model);
-          if (isKimi) {
-            body.max_completion_tokens = 524288;
-            modified = true;
-          }
 
           // v4.58: UNIVERSAL tools key canonicalization (all OpenRouter models). Must run BEFORE
           // any per-model caching logic so the outbound tools block is byte-stable across turns
