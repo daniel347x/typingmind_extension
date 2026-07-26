@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.163
+// Version: 4.164
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.163';
+  const EXT_VERSION = '4.164';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3341,7 +3341,7 @@
     }
     var label = sid + ' — ' + model;
     // Disambiguate if needed (same sid+model but different host or proxy)
-    return { label: label, host: host, isProxy: isProxy, key: tmCapIdentityKey(cap) };
+    return { label: label, host: host, isProxy: isProxy, key: tmCapIdentityKey(cap), model: model, sid: sid };
   }
 
   // v4.163: Sort items array in place according to tmModalSortMode.
@@ -3356,10 +3356,10 @@
       items.sort(function(a, b) {
         var ca = tmCapTurnCost(a);
         var cb = tmCapTurnCost(b);
-        // Zero-cost entries go to top
+        // Zero-cost entries go to bottom
         var aZero = (ca <= 0), bZero = (cb <= 0);
-        if (aZero && !bZero) return -1;
-        if (!aZero && bZero) return 1;
+        if (aZero && !bZero) return 1;
+        if (!aZero && bZero) return -1;
         if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx; // chronological within zeros
         // Both have cost: descending
         if (cb !== ca) return cb - ca;
@@ -3370,8 +3370,8 @@
         var ca = tmCapSessionCost(a);
         var cb = tmCapSessionCost(b);
         var aZero = (ca <= 0), bZero = (cb <= 0);
-        if (aZero && !bZero) return -1;
-        if (!aZero && bZero) return 1;
+        if (aZero && !bZero) return 1;
+        if (!aZero && bZero) return -1;
         if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx;
         if (cb !== ca) return cb - ca;
         return a._tmpSortIdx - b._tmpSortIdx;
@@ -3435,7 +3435,7 @@
         if (idMap[ikey]) continue;
         idMap[ikey] = true;
         var idInfo = tmCapIdentityLabel(rcap);
-        idEntries.push({ key: ikey, label: idInfo.label, host: idInfo.host, isProxy: idInfo.isProxy });
+        idEntries.push({ key: ikey, label: idInfo.label, host: idInfo.host, isProxy: idInfo.isProxy, model: idInfo.model, sid: idInfo.sid });
       }
       // Check for duplicate sid+model labels that need disambiguation
       var labelCounts = {};
@@ -3450,8 +3450,11 @@
           // Disambiguate
           displayLabel += ' (' + (entry.isProxy ? 'proxy' : 'direct') + ' @ ' + (entry.host || 'unknown') + ')';
         }
+        // v4.164: Color the option text with the identity's hue (Chrome/Edge renders option colors)
+        var optColor = tmModelEndpointColor(entry.model || '', entry.host, entry.isProxy, entry.sid || '');
+        var optStyle = 'style="color:' + optColor + ';font-weight:bold;"';
         var selected = (tmModalFilterIdentity === entry.key) ? ' selected' : '';
-        filterHtml += '<option value="' + escapeHtml(entry.key) + '"' + selected + '>' + escapeHtml(displayLabel) + '</option>';
+        filterHtml += '<option value="' + escapeHtml(entry.key) + '"' + selected + ' ' + optStyle + '>' + escapeHtml(displayLabel) + '</option>';
       }
     }
     filterHtml += '</select>';
