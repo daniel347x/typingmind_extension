@@ -5214,6 +5214,18 @@
             const body = JSON.parse(options.body);
             let modified = false;
 
+            // v4.173: Temp hack — replace first user message with random int for Kimi
+            const proxyModel = (body && typeof body.model === 'string') ? body.model : '';
+            if (/kimi/i.test(proxyModel) && Array.isArray(body.messages)) {
+              for (var mi = 0; mi < body.messages.length; mi++) {
+                if (body.messages[mi] && body.messages[mi].role === 'user') {
+                  body.messages[mi].content = String(Math.floor(Math.random() * 9999999));
+                  modified = true;
+                  break;
+                }
+              }
+            }
+
             if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
               modified = true;
             }
