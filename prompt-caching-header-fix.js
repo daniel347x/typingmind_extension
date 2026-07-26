@@ -2398,8 +2398,8 @@
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
-      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span style="color:' + displaySidColor + ';font-size:10px;pointer-events:none;">' + displayPastedId + '</span>');
+      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + displayPastedId + '</span>');
       // (v4.146) Current session total at the left, before the labels.
       // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
       // and cost come from ONE identity (no more mixing sources).
@@ -3692,7 +3692,7 @@
       var sessionName = (capSessionId || capPastedId) ? tmGetSessionName(capSessionId || capPastedId) : '';
       var bottomPartsHtml = [];
       if (prefixHash) bottomPartsHtml.push('<span style="opacity:0.5;">h:' + escapeHtml(prefixHash) + '</span>');
-      if (capSessionId) bottomPartsHtml.push('<span style="opacity:0.5;">Session ID: ' + escapeHtml(capSessionId) + '</span>');
+      if (capSessionId) bottomPartsHtml.push('<span style="opacity:0.5;">Session ID: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId) + '" title="Click to name this session" style="cursor:pointer;opacity:0.5;">' + escapeHtml(capSessionId) + '</span>');
       if (capPastedId) {
         bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
