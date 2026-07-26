@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.227',
+  VERSION: '3.228',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -840,6 +840,7 @@
     REFINE_CONTEXT_SLOTS: 10,                                    // number of parallel-session context slots
     REFINE_TAIL_PREVIEW_CHARS: 128,                              // chars of the active slot's last line to preview (yellow row)
     REFINE_TOTAL_COST_STORAGE: 'refine_total_cost',              // running accumulated cost (persisted; user-resettable)
+    REFINE_TIME_LOST_STORAGE: 'refine_time_lost_ms',             // running accumulated Refine wait time in ms (persisted; reset along with total cost)
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -934,6 +935,7 @@
   // Refine request cancellation state (click ✨ Refine again while in-flight to abort immediately)
   let refineAbortController = null;
   let refineTimeoutEnd = null;     // absolute ms timestamp when the current refine times out (+30s extends it)
+  let refineRequestStartTs = null; // ms timestamp when the current refine request started (for the 'time lost' tally)
   let refineCountdownTimer = null; // interval id for the countdown display
   let refinePulseTimer = null;     // interval id for the split-button background pulse
 
@@ -2720,6 +2722,9 @@
   function refineResetTotalCost() {
     localStorage.setItem(CONFIG.REFINE_TOTAL_COST_STORAGE, '0');
     refineUpdateTotalCostLabel();
+    // The ↺ reset covers BOTH running tallies: total cost AND total time lost.
+    localStorage.setItem(CONFIG.REFINE_TIME_LOST_STORAGE, '0');
+    refineUpdateTimeLostLabel();
   }
   /** Render the running total (yellow amount, same larger font as most-recent). */
   function refineUpdateTotalCostLabel() {
@@ -2729,6 +2734,36 @@
     const dollars = total < 0.01 ? total.toFixed(5) : total.toFixed(4);
     el.innerHTML = 'total cost: <span style="font-weight:600; color:#e6c200; font-size:15px;">$' + dollars + '</span>';
     el.title = 'Running total of all refines (best-effort; includes Anthropic estimates). Click ↺ to reset.';
+  }
+
+  /** The persisted running total of time spent waiting on Refine requests (ms). Reset along with total cost. */
+  function refineGetTimeLostMs() {
+    const v = parseInt(localStorage.getItem(CONFIG.REFINE_TIME_LOST_STORAGE), 10);
+    return (isNaN(v) || v < 0) ? 0 : v;
+  }
+  function refineAddToTimeLost(ms) {
+    const next = refineGetTimeLostMs() + (Math.round(ms) || 0);
+    localStorage.setItem(CONFIG.REFINE_TIME_LOST_STORAGE, String(next));
+    refineUpdateTimeLostLabel();
+  }
+  /** Format a ms duration as 'Xh Ym Zs', omitting any zero components ('0s' when the total is exactly zero). */
+  function refineFormatTimeLost(ms) {
+    const totalSec = Math.floor(ms / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const parts = [];
+    if (h > 0) parts.push(h + 'h');
+    if (m > 0) parts.push(m + 'm');
+    if (s > 0 || parts.length === 0) parts.push(s + 's');
+    return parts.join(' ');
+  }
+  /** Render the running time-lost total (red-orange amount, same layout as the cost labels). */
+  function refineUpdateTimeLostLabel() {
+    const el = document.getElementById('deepgram-refine-time-lost-label');
+    if (!el) return;
+    el.innerHTML = 'time lost: <span style="font-weight:600; color:#ff6b4a; font-size:15px;">' + refineFormatTimeLost(refineGetTimeLostMs()) + '</span>';
+    el.title = 'Total time spent waiting on Refine requests (accumulates across sessions). Click ↺ to reset (also resets total cost).';
   }
 
   /** (Re)populate the provider + model dropdowns from saved state. */
@@ -3677,6 +3712,9 @@
 
       // Start the countdown display (updates every second).
       refineTimeoutEnd = Date.now() + 120000;
+      // 'Time lost' tally: mark the request start; the finally block accumulates elapsed ms on ANY exit
+      // (success, cancel, timeout, error) — this is the time Dan spends waiting on the model.
+      refineRequestStartTs = Date.now();
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
       refineCountdownTimer = setInterval(function(){
         const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
@@ -3814,6 +3852,12 @@
       updateStatus('❌ Refine failed', 'error');
     } finally {
       // Always clean up the split-button UI and restore the original button.
+      // 'Time lost' tally: EVERY exit path (success, selection-mismatch return, cancel, timeout,
+      // network/API error) funnels through here, so this one accumulation covers them all.
+      if (refineRequestStartTs !== null) {
+        try { refineAddToTimeLost(Date.now() - refineRequestStartTs); } catch (e) {}
+        refineRequestStartTs = null;
+      }
       if (refineCountdownTimer) { clearInterval(refineCountdownTimer); refineCountdownTimer = null; }
       if (refinePulseTimer) { clearInterval(refinePulseTimer); refinePulseTimer = null; }
       refineTimeoutEnd = null;
@@ -5820,7 +5864,8 @@
           </span>
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-          <button id="deepgram-refine-total-reset-btn" title="Reset the running total to $0" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
+          <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
         </div>
 
         <!-- ✨ Refine: tail preview of the active context slot's last line (confirm-what-you-appended) -->
@@ -6186,6 +6231,7 @@
     refineRefreshProviderDropdown();
     refineUpdateContextButtonLabel();
     refineUpdateTotalCostLabel();
+    refineUpdateTimeLostLabel();
     refineInstallContextQuickSwitch();
 
     // ElevenLabs Read-Aloud controls
