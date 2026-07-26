@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.172
+// Version: 4.173
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.172';
+  const EXT_VERSION = '4.173';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4971,6 +4971,15 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
+          // v4.173: Temp hack — replace first user message with random int for Kimi
+          const isKimi = /kimi/i.test(model);
+          if (isKimi && Array.isArray(body.messages) && body.messages.length > 0) {
+            var firstMsg = body.messages[0];
+            if (firstMsg && firstMsg.role === 'user') {
+              firstMsg.content = String(Math.floor(Math.random() * 9999999));
+              modified = true;
+            }
+          }
 
           // v4.58: UNIVERSAL tools key canonicalization (all OpenRouter models). Must run BEFORE
           // any per-model caching logic so the outbound tools block is byte-stable across turns
