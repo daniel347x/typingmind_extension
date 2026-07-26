@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.228',
+  VERSION: '3.229',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2758,12 +2758,25 @@
     if (s > 0 || parts.length === 0) parts.push(s + 's');
     return parts.join(' ');
   }
-  /** Render the running time-lost total (red-orange amount, same layout as the cost labels). */
-  function refineUpdateTimeLostLabel() {
+  /** Render a specific ms value into the time-lost label (shared by the persisted render and the live in-flight tick). */
+  function refineRenderTimeLost(ms) {
     const el = document.getElementById('deepgram-refine-time-lost-label');
     if (!el) return;
-    el.innerHTML = 'time lost: <span style="font-weight:600; color:#ff6b4a; font-size:15px;">' + refineFormatTimeLost(refineGetTimeLostMs()) + '</span>';
+    el.innerHTML = 'time lost: <span style="font-weight:600; color:#ff6b4a; font-size:15px;">' + refineFormatTimeLost(ms) + '</span>';
     el.title = 'Total time spent waiting on Refine requests (accumulates across sessions). Click ↺ to reset (also resets total cost).';
+  }
+  /** Render the PERSISTED running time-lost total (red-orange amount, same layout as the cost labels). */
+  function refineUpdateTimeLostLabel() {
+    refineRenderTimeLost(refineGetTimeLostMs());
+  }
+  /**
+   * Live tick while a request is IN-FLIGHT: render the persisted total PLUS this request's
+   * elapsed time so the number climbs in real time. Display-only — nothing is persisted here;
+   * the finally block accumulates the exact elapsed ms at the end, superseding the projection.
+   */
+  function refineUpdateTimeLostLive() {
+    if (refineRequestStartTs === null) return;
+    refineRenderTimeLost(refineGetTimeLostMs() + (Date.now() - refineRequestStartTs));
   }
 
   /** (Re)populate the provider + model dropdowns from saved state. */
@@ -3718,6 +3731,8 @@
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
       refineCountdownTimer = setInterval(function(){
         const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
+        // Live 'time lost' tick — climbs in lockstep with the countdown.
+        try { refineUpdateTimeLostLive(); } catch (e) {}
         const min = Math.floor(remaining / 60);
         const sec = remaining % 60;
         const cd = document.getElementById('deepgram-refine-countdown');
