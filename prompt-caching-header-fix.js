@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.165
+// Version: 4.166
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.165';
+  const EXT_VERSION = '4.166';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3350,27 +3350,52 @@
 
   // v4.163: Sort items array in place according to tmModalSortMode.
   // items are initially most-recent-first (ring.slice().reverse()).
+  // v4.166: In session-cost mode, collapse to one representative row per identity
+  // (highest session cost; most recent on ties) before sorting.
   function tmSortModalItems(items) {
     if (tmModalSortMode === 'chronological') return; // already in the right order
-    // For cost sorts: zero/no-cost entries surface to top, then descending by cost.
+    // For cost sorts: zero/no-cost entries go to bottom, then descending by cost.
     // Within the same cost bucket, maintain chronological order (most recent first).
-    // items.forEach passes index; use it as a stable tiebreaker.
     items.forEach(function(cap, idx) { cap._tmpSortIdx = idx; });
+
     if (tmModalSortMode === 'turn-cost') {
       items.sort(function(a, b) {
         var ca = tmCapTurnCost(a);
         var cb = tmCapTurnCost(b);
-        // Zero-cost entries go to bottom
         var aZero = (ca <= 0), bZero = (cb <= 0);
         if (aZero && !bZero) return 1;
         if (!aZero && bZero) return -1;
-        if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx; // chronological within zeros
-        // Both have cost: descending
+        if (aZero && bZero) return a._tmpSortIdx - b._tmpSortIdx;
         if (cb !== ca) return cb - ca;
-        return a._tmpSortIdx - b._tmpSortIdx; // chronological tiebreak
+        return a._tmpSortIdx - b._tmpSortIdx;
       });
     } else if (tmModalSortMode === 'session-cost') {
-      items.sort(function(a, b) {
+      // v4.166: Deduplicate to one row per identity — the row with the highest session cost,
+      // most recent on tie. Then sort those representatives descending by cost.
+      var bestPerKey = {};
+      for (var di = 0; di < items.length; di++) {
+        var dcap = items[di];
+        if (!dcap) continue;
+        var dkey = tmCapIdentityKey(dcap);
+        var dcost = tmCapSessionCost(dcap);
+        var existing = bestPerKey[dkey];
+        if (!existing) {
+          bestPerKey[dkey] = { cap: dcap, cost: dcost, idx: dcap._tmpSortIdx };
+        } else {
+          // Keep the one with higher cost; on tie keep the more recent (lower _tmpSortIdx = earlier in reversed array = more recent)
+          if (dcost > existing.cost || (dcost === existing.cost && dcap._tmpSortIdx < existing.idx)) {
+            bestPerKey[dkey] = { cap: dcap, cost: dcost, idx: dcap._tmpSortIdx };
+          }
+        }
+      }
+      // Rebuild items from the deduplicated set
+      var deduped = [];
+      var dkeys = Object.keys(bestPerKey);
+      for (var dk = 0; dk < dkeys.length; dk++) {
+        deduped.push(bestPerKey[dkeys[dk]].cap);
+      }
+      // Sort deduped items descending by cost, zero-cost to bottom, chronological tiebreak
+      deduped.sort(function(a, b) {
         var ca = tmCapSessionCost(a);
         var cb = tmCapSessionCost(b);
         var aZero = (ca <= 0), bZero = (cb <= 0);
@@ -3380,6 +3405,9 @@
         if (cb !== ca) return cb - ca;
         return a._tmpSortIdx - b._tmpSortIdx;
       });
+      // Replace items contents with deduped
+      items.length = 0;
+      for (var ri = 0; ri < deduped.length; ri++) { items.push(deduped[ri]); }
     }
     // Clean up temp property
     items.forEach(function(cap) { delete cap._tmpSortIdx; });
