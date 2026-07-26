@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.170
+// Version: 4.171
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.170';
+  const EXT_VERSION = '4.171';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3817,6 +3817,29 @@
     return changed;
   }
 
+  // v4.171: OpenAI-compatible chat-completions repair for providers like Kimi/Moonshot
+  // that reject historic assistant messages with content:"". Keep shape conservative:
+  // for chat-completions messages, replace empty/missing content with a simple text string.
+  function repairChatCompletionsEmptyMessageContent(body, label) {
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return 0;
+    let changed = 0;
+    body.messages.forEach((msg, msgIdx) => {
+      if (!msg) return;
+      if (msg.role !== 'assistant' && msg.role !== 'user' && msg.role !== 'system') return;
+      const c = msg.content;
+      const empty =
+        c == null ||
+        (typeof c === 'string' && c.trim() === '') ||
+        (Array.isArray(c) && c.length === 0);
+      if (empty) {
+        msg.content = `[tm_repaired_empty_${msg.role}_message]`;
+        console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
+        changed++;
+      }
+    });
+    return changed;
+  }
+
   function repairGeminiThoughtSignatures(body) {
     if (!body || !Array.isArray(body.contents)) return false;
 
@@ -4957,9 +4980,15 @@
             modified = true;
           }
 
-          // (v4.65) Tag the FAMILY for the header badge. No shape-specific repairs run on the OpenAI-compat
-          // body here (R repairs are Anthropic-messages-only; T repair is Responses-only), so counts stay 0.
+          // (v4.65) Tag the FAMILY for the header badge. OpenAI-compatible providers can reject
+          // historic empty message content (e.g. Kimi/Moonshot: assistant content:""), so repair
+          // that conservatively with string placeholders on this chat-completions path.
           repairTallyForThisCall = { family: (isClaude ? 'anthropic' : (isOpenAIFamily ? 'openai' : null)), toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
+          var emptyChatContentCount = repairChatCompletionsEmptyMessageContent(body, 'OpenRouter chat-completions');
+          if (emptyChatContentCount) {
+            repairTallyForThisCall.emptyMessageContent = emptyChatContentCount;
+            modified = true;
+          }
 
           if (isClaude) {
             // Normalize top-level cache_control to ttl:1h.
@@ -5109,7 +5138,12 @@
 
             // (v4.104) Universal session_id + usage accounting when proxy target is OpenRouter.
             if (tgtLower.includes('openrouter.ai')) {
-              if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
+              var emptyProxyChatContentCount = repairChatCompletionsEmptyMessageContent(body, 'TM Proxy → OpenRouter chat-completions');
+            if (emptyProxyChatContentCount) {
+              modified = true;
+            }
+
+            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
                 modified = true;
               }
             }
