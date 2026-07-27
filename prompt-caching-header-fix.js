@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.189
+// Version: 4.190
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.189';
+  const EXT_VERSION = '4.190';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2311,16 +2311,18 @@
     var missBorder = cacheHit
       ? ''
       : 'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;';
+    // v4.190: when the fat miss border is present, raise both superscripts ~7px so they clear it
+    var supTopAdj = missBorder ? -7 : 0;
     var turnCostStr = (turnCostVal > 0)
       ? ' <span title="inference cost (this turn) — ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
           'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
             '$' + turnCostVal.toFixed(3) +
             (streak > 0
-              ? '<span style="position:absolute;top:-10px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
+              ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
               : '') +
             // v4.189: hit/miss superscript readability — font 9px->11px, spaces around the slash
             ((totalMisses > 0 || totalHits > 0)
-              ? '<span style="position:absolute;top:-9px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + ' / ' + totalHits + '</span>'
+              ? '<span style="position:absolute;top:' + (-9 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + ' / ' + totalHits + '</span>'
               : '') +
         '</span>'
       : '';
