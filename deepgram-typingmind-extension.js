@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.235',
+  VERSION: '3.236',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2843,9 +2843,9 @@
     var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
     var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
     if (firstPreview === lastPreview) {
-      el.innerHTML = '<div style="font-size:9px; line-height:1; height:6px; overflow:hidden; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     } else {
-      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:9px; line-height:1; height:6px; overflow:hidden; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     }
   }
 
@@ -2878,7 +2878,16 @@
   function getLatestChatTurnNorm() {
     var container = document.querySelector('div.dynamic-chat-content-container');
     if (!container || !container.children.length) return '';
-    var lastTurn = container.children[container.children.length - 1];
+    // Scan backward to find the last child that contains a response element (not a UI-only trailing element).
+    var lastTurn = null;
+    for (var i = container.children.length - 1; i >= 0; i--) {
+      var child = container.children[i];
+      if (child.querySelector && child.querySelector('[data-element-id*="response"], [data-element-id*="user"]')) {
+        lastTurn = child;
+        break;
+      }
+    }
+    if (!lastTurn) return '';
     var text = '';
     (function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
@@ -2901,6 +2910,8 @@
     var minLen = 10;
     var match = sessionNorm.length >= minLen && chatNorm.length >= minLen &&
       (sessionNorm.includes(chatNorm) || chatNorm.includes(sessionNorm) || sessionNorm === chatNorm);
+    // Debug: expose the comparison for console inspection.
+    window.__chatMatchDebug = { session: sessionNorm, chat: chatNorm, match: match, ts: Date.now() };
     if (match) {
       el.style.borderLeft = '4px solid #28e05a';
       el.style.paddingLeft = '8px';
@@ -2912,6 +2923,7 @@
 
   var chatMatchTimer = null;
   var chatMatchObserver = null;
+  var chatMatchInterval = null;
   function initChatMatchWatcher() {
     var container = document.querySelector('div.dynamic-chat-content-container');
     if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
@@ -2921,6 +2933,9 @@
       chatMatchTimer = setTimeout(checkChatSessionMatch, 1000);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
+    // Periodic fallback: re-check every 5s in case the observer detached (SPA navigation).
+    if (chatMatchInterval) clearInterval(chatMatchInterval);
+    chatMatchInterval = setInterval(checkChatSessionMatch, 5000);
     checkChatSessionMatch();
   }
 
