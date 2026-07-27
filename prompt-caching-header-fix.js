@@ -3832,14 +3832,8 @@
         (typeof c === 'string' && c.trim() === '') ||
         (Array.isArray(c) && c.length === 0);
       if (empty) {
-        // v4.175: Only inject placeholder when the message has ONLY role+content.
-        // If it has tool_calls or other fields, the empty content is valid (tool call is the real content).
-        var extraKeys = 0;
-        var keys = Object.keys(msg);
-        for (var ki = 0; ki < keys.length; ki++) {
-          if (keys[ki] !== 'role' && keys[ki] !== 'content') extraKeys++;
-        }
-        if (extraKeys > 0) return;
+        // v4.176: Replace empty content (string or array) with placeholder.
+        // When content is an empty array, use a string stub instead.
         msg.content = `[tm_repaired_empty_${msg.role}_message]`;
         console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
         changed++;
