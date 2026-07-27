@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.232',
+  VERSION: '3.233',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -887,9 +887,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 940,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 940,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 480,
+    DEFAULT_TRANSCRIPT_HEIGHT: 840,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 840,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 380,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
     TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 490
@@ -2806,24 +2806,37 @@
   }
 
   function refineUpdateTailPreview() {
-    const el = document.getElementById('deepgram-refine-tail-label');
+    var el = document.getElementById('deepgram-refine-tail-label');
     if (!el) return;
-    const text = refineGetContext();
+    var text = refineGetContext();
     if (!text || !text.trim()) { el.textContent = ''; return; }
-    let s = text.replace(/\s+$/, '');            // trim trailing whitespace
-    let lines = s.split('\n');
-    // Drop a trailing pure '---' section-break line (and any now-trailing blank lines) so we preview
-    // real content, not the divider.
+    var s = text.replace(/\s+$/, '');
+    var lines = s.split('\n');
+    // Drop trailing '---' section-break lines and blank lines.
     while (lines.length && (/^\s*-{3,}\s*$/.test(lines[lines.length - 1]) || lines[lines.length - 1].trim() === '')) {
       lines.pop();
     }
     if (!lines.length) { el.textContent = ''; return; }
-    const lastLine = lines[lines.length - 1];
-    const n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
-    // Leading ellipsis: there is preceding content. Trailing ellipsis: ONLY when the last line was
-    // actually cut off at the char limit (omit it when the whole line fit).
-    const trailing = lastLine.length > n ? '…' : '';
-    el.textContent = lastLine.slice(0, n) + trailing;
+    var lastLine = lines[lines.length - 1];
+    var n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
+    var trailing = lastLine.length > n ? '\u2026' : '';
+    var lastPreview = lastLine.slice(0, n) + trailing;
+    // Find the first line of the most recent entry (walk back to the most recent '---' break).
+    var firstLineOfLastEntry = null;
+    for (var i = lines.length - 2; i >= 0; i--) {
+      if (/^\s*-{3,}\s*$/.test(lines[i])) {
+        firstLineOfLastEntry = lines[i + 1];
+        break;
+      }
+    }
+    if (firstLineOfLastEntry === null) firstLineOfLastEntry = lines[0];
+    var firstTrailing = firstLineOfLastEntry.length > n ? '\u2026' : '';
+    var firstPreview = firstLineOfLastEntry.slice(0, n) + firstTrailing;
+    if (firstPreview === lastPreview) {
+      el.innerHTML = '<span style="white-space:nowrap;">' + lastPreview + '</span>';
+    } else {
+      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><br><span style="opacity:0.45;">…</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
+    }
   }
 
   /**
@@ -2860,7 +2873,7 @@
     const dollars = cost < 0.01 ? cost.toFixed(5) : cost.toFixed(4);
     // Only the AMOUNT is bold green; the 'most recent cost:' prefix keeps the row's default color.
     const amount = (estimated ? '~$' : '$') + dollars;
-    el.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e; font-size:15px;">' + amount + '</span>';
+    el.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">' + amount + '</span>';
     el.title = estimated
       ? 'Estimated from token usage (Anthropic returns no cost field)'
       : 'Reported directly by OpenRouter (usage.cost)';
@@ -2932,7 +2945,7 @@
   function refineRenderLastDuration(ms) {
     var el = document.getElementById('deepgram-refine-last-duration');
     if (!el) return;
-    el.innerHTML = 'last: <span style="font-weight:600; color:#d4a090; font-size:14px;">' + refineFormatTimeLost(ms) + '</span>';
+    el.innerHTML = 'last: <span style="font-weight:600; color:#ebc8b8; font-size:16px;">' + refineFormatTimeLost(ms) + '</span>';
   }
   function refineUpdateLastDurationLabel() {
     if (refineLastDurationMs == null) {
@@ -3914,7 +3927,7 @@
       refineLastDurationMs = 0;
       try { refineUpdateLastDurationLabel(); } catch (e) {}
       var _costEl = document.getElementById('deepgram-refine-cost-label');
-      if (_costEl) _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e; font-size:15px;">—</span>';
+      if (_costEl) _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
       refineCountdownTimer = setInterval(function(){
         const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
@@ -6075,7 +6088,7 @@
           <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
             <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
             <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; position:relative; top:-4px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
+              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; position:relative; top:-1px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
               <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:14px; color:#2e9b2e;"></span>
               <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
             </span>
@@ -6083,14 +6096,14 @@
             <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
           </div>
-          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:8px;">
+          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:30px;">
             <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           </div>
         </div>
 
-        <!-- ✨ Refine: tail preview of the active context slot's last line (confirm-what-you-appended) -->
-        <div id="deepgram-refine-tail-label" title="Start of the LAST line currently saved in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.3; color:#e6c200; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+        <!-- ✨ Refine: tail preview of the active context slot (first line of most-recent entry + last line) -->
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
@@ -6382,6 +6395,11 @@
     if (localStorage.getItem('transcript_height_reset_v3203') !== '1') {
       localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
       localStorage.setItem('transcript_height_reset_v3203', '1');
+    }
+    // v3.232: reduce default transcript height by 100px
+    if (localStorage.getItem('transcript_height_reset_v3232') !== '1') {
+      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
+      localStorage.setItem('transcript_height_reset_v3232', '1');
     }
 
     // Load saved widget dimensions
