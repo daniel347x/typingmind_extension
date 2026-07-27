@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.183
+// Version: 4.184
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.183';
+  const EXT_VERSION = '4.184';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5004,23 +5004,23 @@
               modified = true;
               if (msg.tool_calls) { delete msg.tool_calls; modified = true; }
             }
-            // Generate random words for the swap
-            var wordList = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','juliet','kilo','lima','mike','november','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
-            var randWords = [];
-            for (var rw = 0; rw < 6; rw++) {
-              randWords.push(wordList[Math.floor(Math.random() * wordList.length)]);
+            // v4.183: Prompt for text to inject — blocks the request until Dan pastes something.
+            var injectedText = prompt('[tm Kimi hack] Paste text to inject into the payload:');
+            if (injectedText) {
+              var swapText = '[tm_hack] ' + injectedText.trim();
+            } else {
+              var swapText = '[tm_hack] (no text provided)';
             }
-            var randomPhrase = '[tm_hack] ' + randWords.join(' ');
             // v4.182: Adjust swapIndex for removed messages before assigning
             if (swapIndex > 0) swapIndex -= removed;
-            // Swap: move the found message's content to index 1, random words to found index
+            // Swap: move the found message's content to index 1, injected text to found index
             if (swapIndex > 0 && swapIndex < body.messages.length && body.messages[1] && body.messages[1].role === 'user') {
               var savedContent = body.messages[swapIndex].content;
-              body.messages[swapIndex].content = randomPhrase;
+              body.messages[swapIndex].content = swapText;
               body.messages[1].content = savedContent;
               modified = true;
             } else if (body.messages[1] && body.messages[1].role === 'user') {
-              body.messages[1].content = randomPhrase;
+              body.messages[1].content = swapText;
               modified = true;
             }
           }
