@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.180
+// Version: 4.181
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.180';
+  const EXT_VERSION = '4.181';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4973,7 +4973,7 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.179: Temp hack for Kimi debugging — stub messages + dummy tool calls
+          // v4.180: Temp hack for Kimi debugging — progressive reduction
           if (/kimi/i.test(model) && Array.isArray(body.messages)) {
             // Replace first user message (index 1) with random phrase
             if (body.messages[1] && body.messages[1].role === 'user') {
@@ -4985,25 +4985,26 @@
               body.messages[1].content = '[tm_hack] ' + randWords.join(' ');
               modified = true;
             }
-            // Indices 2-22: stub content and replace tool_calls with minimal workflowy_glimpse
+            // Indices 2-22: stub content, delete tool_calls, remove tool messages entirely
+            var removed = 0;
             for (var hi2 = 2; hi2 <= 22 && hi2 < body.messages.length; hi2++) {
-              var msg = body.messages[hi2];
+              var idx = hi2 - removed;
+              var msg = body.messages[idx];
               if (!msg) continue;
+              // Remove tool role messages entirely
+              if (msg.role === 'tool') {
+                body.messages.splice(idx, 1);
+                removed++;
+                hi2--; // re-examine this index
+                modified = true;
+                continue;
+              }
               msg.content = '[tm_hack_stubbed]';
               modified = true;
-              // Replace tool_calls with minimal dummy if present
-              if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
-                var oldId = msg.tool_calls[0].id || ('call_' + Math.random().toString(16).slice(2, 10));
-                msg.tool_calls = [{
-                  id: oldId,
-                  type: 'function',
-                  function: { name: 'workflowy_glimpse', arguments: '{"as_markdown":true}' }
-                }];
+              // Delete tool_calls from assistant messages
+              if (msg.tool_calls) {
+                delete msg.tool_calls;
                 modified = true;
-              }
-              // For tool role messages, also update tool_call_id to match
-              if (msg.role === 'tool' && msg.tool_call_id) {
-                // Keep the existing tool_call_id as-is (it pairs with the assistant's call)
               }
             }
           }
