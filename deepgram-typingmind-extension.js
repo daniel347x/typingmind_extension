@@ -764,7 +764,9 @@
     return;
   }
   window.__deepgramExtensionLoaded = true;
-  
+
+  // @carto-group id=client-group-1 label="Client group 1"
+
   // ==================== TIMESTAMP HELPER ====================
   function ts() {
     const now = new Date();
@@ -779,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.231',
+  VERSION: '3.232',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -952,6 +954,8 @@
   let cachedFolderReserveNonHover = null;
   let folderReserveMeasureInFlight = false;
   
+  // @carto-group id=client-group-2 label="Client group 2"
+
   // ==================== RICH TEXT CONVERSION ====================
   
   /**
@@ -1247,6 +1251,8 @@
       alert('Failed to paste from clipboard. Make sure you have text copied.');
     }
   }
+
+  // @carto-group id=client-group-3 label="Client group 3"
   
   // ==================== ELEVENLABS READ-ALOUD (TTS) ====================
   // Read-aloud state (module-scoped)
@@ -1918,6 +1924,9 @@
     return true;
   }
 
+  // @carto-group id=client-group-4 label="Client group 4"
+
+
   /**
    * Live-mirror the current chunk into the detach modal's duplicate Now-Playing pane, if open.
    * Recomputes the position strings independently so elevenHighlightChunk stays byte-for-byte as-is.
@@ -2373,6 +2382,8 @@
     }
   }
 
+  // @carto-group id=client-group-4a label="Client group 4a"
+
   // ===== Toggle-squares row (dynamic session quick-switcher) =====
 
   /** Return the 10-element toggle-slot array (session indices or nulls). Always 10 slots. */
@@ -2421,7 +2432,7 @@
     const contexts = refineGetContexts();
     const activeIdx = refineGetActiveContextIndex();
     const allTs = contexts.map(function(s) { return (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0; });
-    const plusBtn = document.getElementById('deepgram-refine-toggle-plus');
+    const squaresContainer = document.getElementById('deepgram-refine-toggle-squares');
     slots.forEach(function(slotIdx) {
       if (slotIdx === null || slotIdx === undefined) return;
       const ctx = contexts[slotIdx];
@@ -2466,11 +2477,12 @@
       };
       inner.appendChild(pen);
       wrapper.appendChild(inner);
-      row.insertBefore(wrapper, plusBtn);
+      squaresContainer.appendChild(wrapper);
     });
     // Plus/minus button states.
     var visibleCount = slots.filter(function(s) { return s !== null; }).length;
     var minusBtn = document.getElementById('deepgram-refine-toggle-minus');
+    var plusBtn = document.getElementById('deepgram-refine-toggle-plus');
     if (plusBtn) plusBtn.disabled = (visibleCount >= 10);
     if (minusBtn) minusBtn.disabled = (visibleCount === 0);
   }
@@ -2738,6 +2750,8 @@
     trigger.addEventListener('click', (e) => { e.stopPropagation(); clearTimeout(hoverTimer); if (popup) closePopup(); else openPopup(); });
   }
 
+  // @carto-group id=client-group-5 label="Client group 5"
+
   /**
    * Update the small yellow row showing the START of the active slot's LAST line — a quick 'did I
    * already append that?' confirmation. Deliberately simple line parsing: take the saved text, strip
@@ -2915,11 +2929,18 @@
     refineRenderTimeLost(refineGetTimeLostMs());
   }
   /** Render the 'last:' sub-row: the duration of the most recent completed refine (lighter, desaturated, right-aligned). */
-  function refineUpdateLastDurationLabel() {
-    const el = document.getElementById('deepgram-refine-last-duration');
+  function refineRenderLastDuration(ms) {
+    var el = document.getElementById('deepgram-refine-last-duration');
     if (!el) return;
-    if (refineLastDurationMs == null) { el.textContent = ''; return; }
-    el.innerHTML = 'last: <span style="font-weight:600; color:#d4a090; font-size:14px;">' + refineFormatTimeLost(refineLastDurationMs) + '</span>';
+    el.innerHTML = 'last: <span style="font-weight:600; color:#d4a090; font-size:14px;">' + refineFormatTimeLost(ms) + '</span>';
+  }
+  function refineUpdateLastDurationLabel() {
+    if (refineLastDurationMs == null) {
+      var el = document.getElementById('deepgram-refine-last-duration');
+      if (el) el.textContent = '';
+      return;
+    }
+    refineRenderLastDuration(refineLastDurationMs);
   }
   /**
    * Live tick while a request is IN-FLIGHT: render the persisted total PLUS this request's
@@ -2928,7 +2949,9 @@
    */
   function refineUpdateTimeLostLive() {
     if (refineRequestStartTs === null) return;
-    refineRenderTimeLost(refineGetTimeLostMs() + (Date.now() - refineRequestStartTs));
+    var elapsed = Date.now() - refineRequestStartTs;
+    refineRenderTimeLost(refineGetTimeLostMs() + elapsed);
+    refineRenderLastDuration(elapsed);
   }
 
   /** (Re)populate the provider + model dropdowns from saved state. */
@@ -3272,6 +3295,7 @@
     paintFullName();
     paintRibbon();
 
+    
     // ----- Buttons -----
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;';
@@ -3296,6 +3320,8 @@
     document.body.appendChild(overlay);
     ta.focus();
   }
+
+  // @carto-group id=client-group-6 label="Client group 6"
 
   /** A simple reusable text-editing modal (used by both the prompt and context editors). */
   function refineOpenTextModal(opts) {
@@ -3555,6 +3581,8 @@
     }
     throw lastErr || new Error('Refine request failed');
   }
+
+  // @carto-group id=client-group-7 label="Client group 7"
 
   // ===== 📖 Dictionary protect-list (Wispr Flow canonical terms) =====
   // Stored as a JSON array of canonical strings in CONFIG.REFINE_DICTIONARY_STORAGE. Wispr Flow has no
@@ -3882,6 +3910,11 @@
       // 'Time lost' tally: mark the request start; the finally block accumulates elapsed ms on ANY exit
       // (success, cancel, timeout, error) — this is the time Dan spends waiting on the model.
       refineRequestStartTs = Date.now();
+      // Reset 'last:' to zero and blank the cost label while the request is in-flight.
+      refineLastDurationMs = 0;
+      try { refineUpdateLastDurationLabel(); } catch (e) {}
+      var _costEl = document.getElementById('deepgram-refine-cost-label');
+      if (_costEl) _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#2e9b2e; font-size:15px;">—</span>';
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
       refineCountdownTimer = setInterval(function(){
         const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
@@ -4044,6 +4077,8 @@
       if (transcriptEl) transcriptEl.readOnly = false;
     }
   }
+
+  // @carto-group id=client-group-8 label="Client group 8"
 
   /** Start a 2s cooldown on the Refine button (disabled + dimmed) to prevent misclicks. */
   function refineStartCooldown() {
@@ -6030,8 +6065,9 @@
 
         <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
         <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
-          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
+          <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto;"></span>
           <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
+          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
         </div>
 
         <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
@@ -6039,7 +6075,7 @@
           <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
             <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
             <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; text-decoration:underline; text-underline-offset:2px;">✨ context: ▾</span>
+              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; position:relative; top:-4px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
               <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:14px; color:#2e9b2e;"></span>
               <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
             </span>
@@ -6047,9 +6083,9 @@
             <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
           </div>
-          <div style="display:flex; align-items:baseline; gap:8px; font-size:11px; opacity:0.85;">
-            <span id="deepgram-refine-cost-label" style="flex:0 0 auto; display:inline-block; min-width:230px; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-right:18px;"></span>
-            <span id="deepgram-refine-last-duration" style="flex:0 0 auto; display:inline-block; min-width:140px; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-right:8px;"></span>
+          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:8px;">
+            <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+            <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           </div>
         </div>
 
@@ -6668,6 +6704,8 @@
       row.dataset.tmToolModalBound = '1';
     });
   }
+
+  // @carto-group id=client-group-8a label="Client group 8"
 
   function ensureToolModalElements() {
     if (toolModalOverlay) return toolModalOverlay;
@@ -7313,6 +7351,8 @@
     prepared.titleEl.style.setProperty('padding-right', reserve + 'px', 'important');
     prepared.titleEl.style.setProperty('min-width', '0', 'important');
   }
+
+  // @carto-group id=client-group-9 label="Client group 9"
 
   function installConversationHoverReserveCalculator(sidebarContentEl) {
     if (!sidebarContentEl) return;
@@ -7978,6 +8018,8 @@
     localStorage.setItem(CONFIG.KEYTERMS_STORAGE, keyterms);
     console.log('✓ Keyterms saved');
   }
+
+  // @carto-group id=client-group-10 label="Client group 10"
   
   // ==================== WEBSOCKET URL BUILDER ====================
   function buildWebSocketUrl() {
@@ -8573,6 +8615,8 @@
       console.log(ts(), '📊 sendToWhisper finally block END');
     }
   }
+
+  // @carto-group id=client-group-11 label="Client group 1"
   
   // @beacon[
   //   id=tm@21,
@@ -9169,6 +9213,8 @@
     }, 1500);
   }
   
+  // @carto-group id=client-group-12 label="Client group 12"
+
   // ==================== TYPINGMIND INTEGRATION ====================
   
   // @beacon[
@@ -9778,6 +9824,8 @@
       }
     }
   }
+
+  // @carto-group id=client-group-13 label="Client group 13"
   
   function onSpeakerCheckboxChange(e) {
     saveTeamsSettings();
@@ -10435,6 +10483,8 @@
     
     console.log('✓ Doc annotation popover shown', docAnnotationSavedSelection);
   }
+
+  // @carto-group id=client-group-14 label="Client group 14"
   
   function hideDocAnnotationPopover() {
     const popover = document.getElementById('doc-annotation-popover');
