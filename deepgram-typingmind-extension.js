@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.236',
+  VERSION: '3.237',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2849,10 +2849,12 @@
     }
   }
 
-  /** Strip a string to alphanumeric + hyphens, lowercase — quick-and-dirty comparison key. */
+  /** Strip a string to pure alphanumeric, lowercase — comparison key. (Hyphens stripped too: they're
+   *  formatting artifacts (table separators, etc.) that create false mismatches between Markdown source
+   *  and rendered HTML. The --- breaks are only used for block identification, not comparison.) */
   function normalizeForChatMatch(s) {
     if (!s) return '';
-    return s.replace(/[^a-zA-Z0-9\-]/g, '').toLowerCase();
+    return s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
   /** The last '---'-delimited block of the active context session, normalized for comparison. */
