@@ -3832,8 +3832,9 @@
         (typeof c === 'string' && c.trim() === '') ||
         (Array.isArray(c) && c.length === 0);
       if (empty) {
-        // v4.176: Replace empty content (string or array) with placeholder.
-        // When content is an empty array, use a string stub instead.
+        // v4.188: Skip replacement when message has tool_calls — the tool call is the real content.
+        if (msg.tool_calls) return;
+        // Replace empty content (string or array) with placeholder.
         msg.content = `[tm_repaired_empty_${msg.role}_message]`;
         console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
         changed++;
