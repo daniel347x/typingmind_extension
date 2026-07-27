@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.184
+// Version: 4.185
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.184';
+  const EXT_VERSION = '4.185';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4973,54 +4973,22 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.181: Temp hack for Kimi debugging — find + swap + strip
+          // v4.184: Temp hack for Kimi — delete first 100 user messages
           if (/kimi/i.test(model) && Array.isArray(body.messages)) {
-            // Find the user message starting with the target string
-            var TARGET = 'Okay, I\'m giving this right on back to DeepSeek v4. Can you implement it?';
-            var swapIndex = -1;
-            for (var fi = 2; fi < body.messages.length; fi++) {
-              if (body.messages[fi] && body.messages[fi].role === 'user' &&
-                  typeof body.messages[fi].content === 'string' &&
-                  body.messages[fi].content.indexOf(TARGET) === 0) {
-                swapIndex = fi;
-                break;
+            var userCount = 0;
+            var keepFrom = -1;
+            // Scan from index 1 (skip system) to find the 100th user message
+            for (var di = 1; di < body.messages.length; di++) {
+              if (body.messages[di] && body.messages[di].role === 'user') {
+                userCount++;
+                if (userCount === 100) {
+                  keepFrom = di + 1; // keep starting from the message AFTER the 100th user
+                  break;
+                }
               }
             }
-            var endIdx = (swapIndex > 0) ? swapIndex : 22;
-            // Strip messages between index 2 and endIdx (exclusive of endIdx)
-            var removed = 0;
-            for (var hi2 = 2; hi2 < endIdx && hi2 < body.messages.length; hi2++) {
-              var idx = hi2 - removed;
-              var msg = body.messages[idx];
-              if (!msg) continue;
-              if (msg.role === 'tool') {
-                body.messages.splice(idx, 1);
-                removed++;
-                hi2--;
-                modified = true;
-                continue;
-              }
-              msg.content = '[tm_hack_stubbed]';
-              modified = true;
-              if (msg.tool_calls) { delete msg.tool_calls; modified = true; }
-            }
-            // v4.183: Prompt for text to inject — blocks the request until Dan pastes something.
-            var injectedText = prompt('[tm Kimi hack] Paste text to inject into the payload:');
-            if (injectedText) {
-              var swapText = '[tm_hack] ' + injectedText.trim();
-            } else {
-              var swapText = '[tm_hack] (no text provided)';
-            }
-            // v4.182: Adjust swapIndex for removed messages before assigning
-            if (swapIndex > 0) swapIndex -= removed;
-            // Swap: move the found message's content to index 1, injected text to found index
-            if (swapIndex > 0 && swapIndex < body.messages.length && body.messages[1] && body.messages[1].role === 'user') {
-              var savedContent = body.messages[swapIndex].content;
-              body.messages[swapIndex].content = swapText;
-              body.messages[1].content = savedContent;
-              modified = true;
-            } else if (body.messages[1] && body.messages[1].role === 'user') {
-              body.messages[1].content = swapText;
+            if (keepFrom > 1) {
+              body.messages.splice(1, keepFrom - 1);
               modified = true;
             }
           }
