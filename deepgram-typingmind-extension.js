@@ -779,7 +779,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.230',
+  VERSION: '3.231',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -841,6 +841,7 @@
     REFINE_TAIL_PREVIEW_CHARS: 128,                              // chars of the active slot's last line to preview (yellow row)
     REFINE_TOTAL_COST_STORAGE: 'refine_total_cost',              // running accumulated cost (persisted; user-resettable)
     REFINE_TIME_LOST_STORAGE: 'refine_time_lost_ms',             // running accumulated Refine wait time in ms (persisted; reset along with total cost)
+    REFINE_TOGGLE_SLOTS_STORAGE: 'refine_toggle_slots',           // JSON array of 10 slot indices (or nulls) for the toggle-squares row
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -938,6 +939,7 @@
   let refineRequestStartTs = null; // ms timestamp when the current refine request started (for the 'time lost' tally)
   let refineCountdownTimer = null; // interval id for the countdown display
   let refinePulseTimer = null;     // interval id for the split-button background pulse
+  let refineLastDurationMs = null; // duration (ms) of the most recent completed refine, for the 'last:' sub-row
 
   // Sidebar conversation title sizing
   // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
@@ -2371,6 +2373,146 @@
     }
   }
 
+  // ===== Toggle-squares row (dynamic session quick-switcher) =====
+
+  /** Return the 10-element toggle-slot array (session indices or nulls). Always 10 slots. */
+  function refineGetToggleSlots() {
+    try {
+      const raw = localStorage.getItem(CONFIG.REFINE_TOGGLE_SLOTS_STORAGE);
+      if (raw) {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length === 10) return arr;
+      }
+    } catch (e) {}
+    return Array(10).fill(null);
+  }
+  function refineSaveToggleSlots(list) {
+    localStorage.setItem(CONFIG.REFINE_TOGGLE_SLOTS_STORAGE, JSON.stringify(list));
+  }
+  /** Called when a session's TEXT is updated: ensure that session is in the toggle row. */
+  function refineSyncToggleSlots(updatedIdx) {
+    if (updatedIdx === null || updatedIdx === undefined || updatedIdx < 0) return;
+    const slots = refineGetToggleSlots();
+    if (slots.includes(updatedIdx)) return; // already showing
+    const emptySlot = slots.indexOf(null);
+    if (emptySlot !== -1) {
+      slots[emptySlot] = updatedIdx;
+    } else {
+      // All full: evict the OLDEST-updated among the showing slots.
+      const contexts = refineGetContexts();
+      let oldestIdx = -1, oldestTs = Infinity;
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i] === null) continue;
+        const ctx = contexts[slots[i]];
+        const ts = (ctx && typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
+        if (ts < oldestTs) { oldestTs = ts; oldestIdx = i; }
+      }
+      if (oldestIdx !== -1) slots[oldestIdx] = updatedIdx;
+    }
+    refineSaveToggleSlots(slots);
+  }
+  /** Render the toggle row from localStorage. Safe to call at any time (idempotent). */
+  function refineRenderToggleRow() {
+    const row = document.getElementById('deepgram-refine-toggle-row');
+    if (!row) return;
+    // Clear existing squares (keep the +/- buttons).
+    row.querySelectorAll('.refine-toggle-square-wrapper').forEach(function(s) { s.remove(); });
+    const slots = refineGetToggleSlots();
+    const contexts = refineGetContexts();
+    const activeIdx = refineGetActiveContextIndex();
+    const allTs = contexts.map(function(s) { return (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0; });
+    const plusBtn = document.getElementById('deepgram-refine-toggle-plus');
+    slots.forEach(function(slotIdx) {
+      if (slotIdx === null || slotIdx === undefined) return;
+      const ctx = contexts[slotIdx];
+      if (!ctx) return;
+      const isActive = (slotIdx === activeIdx);
+      const rings = refineSlotRingColors(ctx.lastUpdated, allTs);
+      // OUTER wrapper: dim dark red rectangular border when ACTIVE, transparent otherwise.
+      const wrapper = document.createElement('span');
+      wrapper.className = 'refine-toggle-square-wrapper';
+      wrapper.style.cssText = 'display:inline-block; '
+        + (isActive ? 'border:3px solid #8b2020; border-radius:0; padding:6px; ' : 'border:3px solid transparent; border-radius:0; padding:6px; ')
+        + 'cursor:pointer;';
+      wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
+      wrapper.onclick = function() {
+        refineSetActiveContextIndex(slotIdx);
+        refineRenderToggleRow();
+      };
+      // INNER: ring-decorated rectangle (same pattern as quick-switcher & modal rows).
+      const inner = document.createElement('span');
+      inner.style.cssText = 'display:inline-block; padding:6px 12px; border-radius:14px; font-size:11px; '
+        + 'border:3px solid ' + rings.outer + '; '
+        + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
+        + 'background:#2a2a2a; color:#eee; white-space:nowrap; position:relative;';
+      const nameSpan = document.createElement('span');
+      nameSpan.textContent = ctx.name;
+      nameSpan.style.cssText = 'padding-right:20px;';
+      inner.appendChild(nameSpan);
+      // ✎ pencil (upper right — rename only).
+      const pen = document.createElement('span');
+      pen.textContent = ' \u270E';
+      pen.style.cssText = 'position:absolute; top:1px; right:3px; font-size:10px; opacity:0.6; cursor:pointer;';
+      pen.onclick = function(e) {
+        e.stopPropagation();
+        var nm = prompt('Name for slot ' + (slotIdx + 1) + ':', ctx.name);
+        if (nm && nm.trim()) {
+          var ctx2 = refineGetContexts();
+          ctx2[slotIdx].name = nm.trim();
+          refineSaveContexts(ctx2);
+          refineUpdateContextButtonLabel();
+          refineRenderToggleRow();
+        }
+      };
+      inner.appendChild(pen);
+      wrapper.appendChild(inner);
+      row.insertBefore(wrapper, plusBtn);
+    });
+    // Plus/minus button states.
+    var visibleCount = slots.filter(function(s) { return s !== null; }).length;
+    var minusBtn = document.getElementById('deepgram-refine-toggle-minus');
+    if (plusBtn) plusBtn.disabled = (visibleCount >= 10);
+    if (minusBtn) minusBtn.disabled = (visibleCount === 0);
+  }
+  /** + button: add the most-recently-updated NOT-showing session to the right end. */
+  function refineToggleRowAdd() {
+    var slots = refineGetToggleSlots();
+    var contexts = refineGetContexts();
+    var bestIdx = -1, bestTs = -Infinity;
+    for (var i = 0; i < contexts.length; i++) {
+      if (slots.includes(i)) continue;
+      var ctx = contexts[i];
+      if (!ctx) continue;
+      var ts = (typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
+      if (ts > bestTs) { bestTs = ts; bestIdx = i; }
+    }
+    if (bestIdx === -1) return;
+    var emptySlot = slots.indexOf(null);
+    if (emptySlot !== -1) {
+      slots[emptySlot] = bestIdx;
+      refineSaveToggleSlots(slots);
+      refineRenderToggleRow();
+    }
+  }
+  /** − button: evict the oldest-updated among the currently showing squares. */
+  function refineToggleRowRemove() {
+    var slots = refineGetToggleSlots();
+    var contexts = refineGetContexts();
+    var oldestIdx = -1, oldestTs = Infinity;
+    for (var i = 0; i < slots.length; i++) {
+      if (slots[i] === null) continue;
+      var ctx = contexts[slots[i]];
+      if (!ctx) continue;
+      var ts = (typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
+      if (ts < oldestTs) { oldestTs = ts; oldestIdx = i; }
+    }
+    if (oldestIdx === -1) return;
+    slots.splice(oldestIdx, 1);
+    slots.push(null); // maintain 10-element length
+    refineSaveToggleSlots(slots);
+    refineRenderToggleRow();
+  }
+
   // ===== Slot staleness color gradients (two independent rings) =====
   //
   // Every slot square (in the Context modal ribbon) and every quick-switcher row shows TWO concentric
@@ -2563,6 +2705,8 @@
           cur[i].text = res.text;
           refineTouchSlot(cur, i);
           refineSaveContexts(cur);
+          refineSyncToggleSlots(i);
+          refineRenderToggleRow();
           refineUpdateContextButtonLabel();
           updateStatus('✂½ Pruned “' + slot.name + '”: removed ' + res.removed.toLocaleString() + ' chars (now ' + res.text.length.toLocaleString() + ')', 'success');
           // Rebuild the popup so this row's char count + staleness rings refresh.
@@ -2665,7 +2809,7 @@
     // Leading ellipsis: there is preceding content. Trailing ellipsis: ONLY when the last line was
     // actually cut off at the char limit (omit it when the whole line fit).
     const trailing = lastLine.length > n ? '…' : '';
-    el.textContent = '…' + lastLine.slice(0, n) + trailing;
+    el.textContent = lastLine.slice(0, n) + trailing;
   }
 
   /**
@@ -2755,7 +2899,7 @@
     const s = totalSec % 60;
     const parts = [];
     if (h > 0) parts.push(h + 'h');
-    if (m > 0) parts.push(m + 'm');
+    if (h > 0 || m > 0) parts.push(m + 'm');
     if (s > 0 || parts.length === 0) parts.push(s + 's');
     return parts.join(' ');
   }
@@ -2769,6 +2913,13 @@
   /** Render the PERSISTED running time-lost total (red-orange amount, same layout as the cost labels). */
   function refineUpdateTimeLostLabel() {
     refineRenderTimeLost(refineGetTimeLostMs());
+  }
+  /** Render the 'last:' sub-row: the duration of the most recent completed refine (lighter, desaturated, right-aligned). */
+  function refineUpdateLastDurationLabel() {
+    const el = document.getElementById('deepgram-refine-last-duration');
+    if (!el) return;
+    if (refineLastDurationMs == null) { el.textContent = ''; return; }
+    el.innerHTML = 'last: <span style="font-weight:600; color:#d4a090; font-size:14px;">' + refineFormatTimeLost(refineLastDurationMs) + '</span>';
   }
   /**
    * Live tick while a request is IN-FLIGHT: render the persisted total PLUS this request's
@@ -3052,6 +3203,8 @@
           refineTouchSlot(slots, i);
           if (isEditingThis) ta.value = res.text;   // reflect in the open editor
           refineSaveContexts(slots);
+          refineSyncToggleSlots(i);
+          refineRenderToggleRow();
           refineUpdateContextButtonLabel();
           paintFullName();
           paintRibbon();
@@ -3127,7 +3280,7 @@
     const cancel = mkBtn('Close', '#555');
     cancel.onclick = closeModal;
     const save = mkBtn('💾 Save all', '#2b7a2b');
-    save.onclick = () => { stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); closeModal(); };
+    save.onclick = () => { stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
@@ -3846,7 +3999,7 @@
             const bb = document.getElementById('deepgram-refine-btn');
             if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.innerHTML = '✨ Refine'; }
             window.__refineCooldownTimer = null;
-          }, 5000);
+          }, 2000);
         }
       } else if (status === 401 || status === 403) {
         const meta = refineProviderMeta(provider);
@@ -3871,7 +4024,10 @@
       // 'Time lost' tally: EVERY exit path (success, selection-mismatch return, cancel, timeout,
       // network/API error) funnels through here, so this one accumulation covers them all.
       if (refineRequestStartTs !== null) {
-        try { refineAddToTimeLost(Date.now() - refineRequestStartTs); } catch (e) {}
+        const elapsed = Date.now() - refineRequestStartTs;
+        try { refineAddToTimeLost(elapsed); } catch (e) {}
+        refineLastDurationMs = elapsed;
+        try { refineUpdateLastDurationLabel(); } catch (e) {}
         refineRequestStartTs = null;
       }
       if (refineCountdownTimer) { clearInterval(refineCountdownTimer); refineCountdownTimer = null; }
@@ -3889,7 +4045,7 @@
     }
   }
 
-  /** Start a 5s cooldown on the Refine button (disabled + dimmed) to prevent misclicks. */
+  /** Start a 2s cooldown on the Refine button (disabled + dimmed) to prevent misclicks. */
   function refineStartCooldown() {
     const b = document.getElementById('deepgram-refine-btn');
     if (!b) return;
@@ -3900,7 +4056,7 @@
       const bb = document.getElementById('deepgram-refine-btn');
       if (bb) { bb.disabled = false; bb.style.opacity = ''; }
       window.__refineCooldownTimer = null;
-    }, 5000);
+    }, 2000);
   }
 
   /**
@@ -3943,6 +4099,8 @@
     slots[i].text = combined;
     refineTouchSlot(slots, i);   // clipboard append changed the slot's text -> stamp last-updated
     refineSaveContexts(slots);
+    refineSyncToggleSlots(i);
+    refineRenderToggleRow();
     refineUpdateContextButtonLabel();
 
     // Brief visual confirmation on the button, then restore its label.
@@ -5870,22 +6028,33 @@
           </button>
         </div>
 
+        <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
+        <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
+          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
+          <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
+        </div>
+
         <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
-        <div style="display:flex; align-items:baseline; gap:8px; margin-top:6px; font-size:11px; line-height:1.3; opacity:0.9;">
-          <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
-          <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-            <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#fff; cursor:pointer;">✨ context: ▾</span>
-            <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:12px; color:#2e9b2e;"></span>
-            <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px;"></span>
-          </span>
-          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-          <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-          <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-          <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
+        <div style="margin-top:6px; line-height:1.3; opacity:0.9;">
+          <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
+            <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
+            <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; text-decoration:underline; text-underline-offset:2px;">✨ context: ▾</span>
+              <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:14px; color:#2e9b2e;"></span>
+              <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
+            </span>
+            <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+            <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+            <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
+          </div>
+          <div style="display:flex; align-items:baseline; gap:8px; font-size:11px; opacity:0.85;">
+            <span id="deepgram-refine-cost-label" style="flex:0 0 auto; display:inline-block; min-width:230px; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-right:18px;"></span>
+            <span id="deepgram-refine-last-duration" style="flex:0 0 auto; display:inline-block; min-width:140px; text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; padding-right:8px;"></span>
+          </div>
         </div>
 
         <!-- ✨ Refine: tail preview of the active context slot's last line (confirm-what-you-appended) -->
-        <div id="deepgram-refine-tail-label" title="Start of the LAST line currently saved in the active context slot" style="margin-top:2px; font-size:10px; line-height:1.3; color:#e6c200; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
+        <div id="deepgram-refine-tail-label" title="Start of the LAST line currently saved in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.3; color:#e6c200; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"></div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
@@ -6242,13 +6411,22 @@
       refineTouchSlot(cur, i);
       refineSaveContexts(cur);
       refineUpdateContextButtonLabel();
+      refineSyncToggleSlots(i);
+      refineRenderToggleRow();
       updateStatus('✂½ Pruned ' + n + ': removed ' + res.removed.toLocaleString() + ' chars (now ' + res.text.length.toLocaleString() + ')', 'success');
     });
     refineRefreshProviderDropdown();
     refineUpdateContextButtonLabel();
+    refineRenderToggleRow();
     refineUpdateTotalCostLabel();
     refineUpdateTimeLostLabel();
     refineInstallContextQuickSwitch();
+
+    // ✨ Refine toggle-row controls (+/− add/remove session squares)
+    var togglePlusBtn = document.getElementById('deepgram-refine-toggle-plus');
+    if (togglePlusBtn) togglePlusBtn.addEventListener('click', refineToggleRowAdd);
+    var toggleMinusBtn = document.getElementById('deepgram-refine-toggle-minus');
+    if (toggleMinusBtn) toggleMinusBtn.addEventListener('click', refineToggleRowRemove);
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
@@ -9231,14 +9409,13 @@
           }
         }, 100);
         
-        // Visual feedback
-        const btn = document.getElementById('deepgram-insert-btn');
-        const originalText = btn.textContent;
-        btn.textContent = '✓ Inserted!';
-        
-        setTimeout(() => {
-          btn.textContent = originalText;
-        }, 2000);
+        // Visual feedback on the Send button (not the Refine: Append button — those are unrelated).
+        var sendBtn = document.getElementById('deepgram-send-btn');
+        if (sendBtn) {
+          var origText = sendBtn.innerHTML;
+          sendBtn.innerHTML = '✓ Inserted';
+          setTimeout(function(){ if (sendBtn) sendBtn.innerHTML = origText; }, 1500);
+        }
         
         console.log('✅ Text inserted successfully!');
         
