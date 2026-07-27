@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.174
+// Version: 4.175
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.174';
+  const EXT_VERSION = '4.175';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4971,17 +4971,6 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.173: Temp hack — replace first user message with random int for Kimi
-          const isKimi = /kimi/i.test(model);
-          if (isKimi && Array.isArray(body.messages)) {
-            for (var mi = 0; mi < body.messages.length; mi++) {
-              if (body.messages[mi] && body.messages[mi].role === 'user') {
-                body.messages[mi].content = String(Math.floor(Math.random() * 9999999));
-                modified = true;
-                break;
-              }
-            }
-          }
 
           // v4.58: UNIVERSAL tools key canonicalization (all OpenRouter models). Must run BEFORE
           // any per-model caching logic so the outbound tools block is byte-stable across turns
@@ -5213,18 +5202,6 @@
           if (options.body) {
             const body = JSON.parse(options.body);
             let modified = false;
-
-            // v4.173: Temp hack — replace first user message with random int for Kimi
-            const proxyModel = (body && typeof body.model === 'string') ? body.model : '';
-            if (/kimi/i.test(proxyModel) && Array.isArray(body.messages)) {
-              for (var mi = 0; mi < body.messages.length; mi++) {
-                if (body.messages[mi] && body.messages[mi].role === 'user') {
-                  body.messages[mi].content = String(Math.floor(Math.random() * 9999999));
-                  modified = true;
-                  break;
-                }
-              }
-            }
 
             if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
               modified = true;
