@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.185
+// Version: 4.186
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.185';
+  const EXT_VERSION = '4.186';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4984,6 +4984,16 @@
                 di--; // re-examine this index after splice
                 modified = true;
               }
+            }
+            // Replace the first remaining user message with random words
+            if (body.messages[1] && body.messages[1].role === 'user') {
+              var wordList = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','juliet','kilo','lima','mike','november','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
+              var randWords = [];
+              for (var rw = 0; rw < 6; rw++) {
+                randWords.push(wordList[Math.floor(Math.random() * wordList.length)]);
+              }
+              body.messages[1].content = '[tm_hack] ' + randWords.join(' ');
+              modified = true;
             }
           }
 
