@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.234',
+  VERSION: '3.235',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2627,6 +2627,7 @@
       kb.style.display = len > 0 ? '' : 'none';
     }
     refineUpdateTailPreview();
+    checkChatSessionMatch();
   }
 
   /**
@@ -2842,10 +2843,85 @@
     var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
     var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
     if (firstPreview === lastPreview) {
-      el.innerHTML = '<span style="opacity:0.45;">\u2026</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<div style="font-size:9px; line-height:1; height:6px; overflow:hidden; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     } else {
-      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><br><span style="opacity:0.45;">\u2026</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:9px; line-height:1; height:6px; overflow:hidden; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     }
+  }
+
+  /** Strip a string to alphanumeric + hyphens, lowercase — quick-and-dirty comparison key. */
+  function normalizeForChatMatch(s) {
+    if (!s) return '';
+    return s.replace(/[^a-zA-Z0-9\-]/g, '').toLowerCase();
+  }
+
+  /** The last '---'-delimited block of the active context session, normalized for comparison. */
+  function getSessionLastBlockNorm() {
+    var text = refineGetContext();
+    if (!text || !text.trim()) return '';
+    var s = text.replace(/\s+$/, '');
+    var lines = s.split('\n');
+    while (lines.length) {
+      var t = lines[lines.length - 1].trim();
+      if (t === '' || /^-{3,}$/.test(t)) lines.pop();
+      else break;
+    }
+    if (!lines.length) return '';
+    var blockStart = 0;
+    for (var i = lines.length - 2; i >= 0; i--) {
+      if (/^-{3,}$/.test(lines[i].trim())) { blockStart = i + 1; break; }
+    }
+    return normalizeForChatMatch(lines.slice(blockStart).join(' '));
+  }
+
+  /** Text of the most recent chat turn in TypingMind, normalized (excludes details/tool-calls). */
+  function getLatestChatTurnNorm() {
+    var container = document.querySelector('div.dynamic-chat-content-container');
+    if (!container || !container.children.length) return '';
+    var lastTurn = container.children[container.children.length - 1];
+    var text = '';
+    (function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') return;
+      var eid = node.getAttribute && node.getAttribute('data-element-id');
+      if (eid && /action|tool/i.test(eid)) return;
+      for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
+      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
+    })(lastTurn);
+    return normalizeForChatMatch(text);
+  }
+
+  /** Compare session last block vs latest chat turn; apply/remove green border on tail label. */
+  function checkChatSessionMatch() {
+    var el = document.getElementById('deepgram-refine-tail-label');
+    if (!el) return;
+    var sessionNorm = getSessionLastBlockNorm();
+    var chatNorm = getLatestChatTurnNorm();
+    var minLen = 10;
+    var match = sessionNorm.length >= minLen && chatNorm.length >= minLen &&
+      (sessionNorm.includes(chatNorm) || chatNorm.includes(sessionNorm) || sessionNorm === chatNorm);
+    if (match) {
+      el.style.borderLeft = '4px solid #28e05a';
+      el.style.paddingLeft = '8px';
+    } else {
+      el.style.borderLeft = '';
+      el.style.paddingLeft = '';
+    }
+  }
+
+  var chatMatchTimer = null;
+  var chatMatchObserver = null;
+  function initChatMatchWatcher() {
+    var container = document.querySelector('div.dynamic-chat-content-container');
+    if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
+    if (chatMatchObserver) chatMatchObserver.disconnect();
+    chatMatchObserver = new MutationObserver(function() {
+      if (chatMatchTimer) clearTimeout(chatMatchTimer);
+      chatMatchTimer = setTimeout(checkChatSessionMatch, 1000);
+    });
+    chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
+    checkChatSessionMatch();
   }
 
   /**
@@ -6602,6 +6678,8 @@
     
     // Watch for sidebar view changes and reapply layout widths
     initializeSidebarWatcher();
+    // Watch for chat-turn changes and show the session-match green border on the tail label
+    initChatMatchWatcher();
   }
   
   // ==================== SIDEBAR VIEW WATCHER ====================
