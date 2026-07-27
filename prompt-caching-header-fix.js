@@ -4973,23 +4973,17 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.184: Temp hack for Kimi — delete first 100 user messages
+          // v4.185: Temp hack for Kimi — delete first 100 user messages
           if (/kimi/i.test(model) && Array.isArray(body.messages)) {
             var userCount = 0;
-            var keepFrom = -1;
-            // Scan from index 1 (skip system) to find the 100th user message
-            for (var di = 1; di < body.messages.length; di++) {
+            // Scan from index 1 (skip system) and remove user messages one at a time
+            for (var di = 1; di < body.messages.length && userCount < 100; di++) {
               if (body.messages[di] && body.messages[di].role === 'user') {
+                body.messages.splice(di, 1);
                 userCount++;
-                if (userCount === 100) {
-                  keepFrom = di + 1; // keep starting from the message AFTER the 100th user
-                  break;
-                }
+                di--; // re-examine this index after splice
+                modified = true;
               }
-            }
-            if (keepFrom > 1) {
-              body.messages.splice(1, keepFrom - 1);
-              modified = true;
             }
           }
 
