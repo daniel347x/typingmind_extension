@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.186
+// Version: 4.187
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.186';
+  const EXT_VERSION = '4.187';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4973,27 +4973,33 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.185: Temp hack for Kimi — delete first 100 user messages
+          // v4.186: Temp hack for Kimi — remove ALL user messages except the last one
           if (/kimi/i.test(model) && Array.isArray(body.messages)) {
-            var userCount = 0;
-            // Scan from index 1 (skip system) and remove user messages one at a time
-            for (var di = 1; di < body.messages.length && userCount < 100; di++) {
+            // Find all user message indices
+            var userIndices = [];
+            for (var di = 1; di < body.messages.length; di++) {
               if (body.messages[di] && body.messages[di].role === 'user') {
-                body.messages.splice(di, 1);
-                userCount++;
-                di--; // re-examine this index after splice
-                modified = true;
+                userIndices.push(di);
               }
             }
-            // Replace the first remaining user message with random words
-            if (body.messages[1] && body.messages[1].role === 'user') {
-              var wordList = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','juliet','kilo','lima','mike','november','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
-              var randWords = [];
-              for (var rw = 0; rw < 6; rw++) {
-                randWords.push(wordList[Math.floor(Math.random() * wordList.length)]);
-              }
-              body.messages[1].content = '[tm_hack] ' + randWords.join(' ');
+            // Remove all user messages except the last one (working backwards)
+            for (var ui = userIndices.length - 2; ui >= 0; ui--) {
+              body.messages.splice(userIndices[ui], 1);
               modified = true;
+            }
+            // Replace the last remaining user message with random words
+            var wordList = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','juliet','kilo','lima','mike','november','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
+            var randWords = [];
+            for (var rw = 0; rw < 6; rw++) {
+              randWords.push(wordList[Math.floor(Math.random() * wordList.length)]);
+            }
+            // v4.186: Scan forward from index 1 to find first remaining user message
+            for (var fi = 1; fi < body.messages.length; fi++) {
+              if (body.messages[fi] && body.messages[fi].role === 'user') {
+                body.messages[fi].content = '[tm_hack] ' + randWords.join(' ');
+                modified = true;
+                break;
+              }
             }
           }
 
