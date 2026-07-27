@@ -4973,12 +4973,37 @@
           const model = (body && typeof body.model === 'string') ? body.model : '';
           const isClaude = model.startsWith('anthropic/') || model.toLowerCase().includes('claude');
           const isOpenAIFamily = model.startsWith('openai/') || /(^|\/)gpt-/.test(model.toLowerCase());
-          // v4.179: Temp hack — stub content at indices 2-22 for Kimi
+          // v4.179: Temp hack for Kimi debugging — stub messages + dummy tool calls
           if (/kimi/i.test(model) && Array.isArray(body.messages)) {
-            for (var hi = 2; hi <= 22 && hi < body.messages.length; hi++) {
-              if (body.messages[hi]) {
-                body.messages[hi].content = '[tm_hack_stubbed]';
+            // Replace first user message (index 1) with random phrase
+            if (body.messages[1] && body.messages[1].role === 'user') {
+              var wordList = ['alpha','bravo','charlie','delta','echo','foxtrot','golf','hotel','juliet','kilo','lima','mike','november','papa','quebec','romeo','sierra','tango','uniform','victor','whiskey','xray','yankee','zulu'];
+              var randWords = [];
+              for (var rw = 0; rw < 6; rw++) {
+                randWords.push(wordList[Math.floor(Math.random() * wordList.length)]);
+              }
+              body.messages[1].content = '[tm_hack] ' + randWords.join(' ');
+              modified = true;
+            }
+            // Indices 2-22: stub content and replace tool_calls with minimal workflowy_glimpse
+            for (var hi2 = 2; hi2 <= 22 && hi2 < body.messages.length; hi2++) {
+              var msg = body.messages[hi2];
+              if (!msg) continue;
+              msg.content = '[tm_hack_stubbed]';
+              modified = true;
+              // Replace tool_calls with minimal dummy if present
+              if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+                var oldId = msg.tool_calls[0].id || ('call_' + Math.random().toString(16).slice(2, 10));
+                msg.tool_calls = [{
+                  id: oldId,
+                  type: 'function',
+                  function: { name: 'workflowy_glimpse', arguments: '{"as_markdown":true}' }
+                }];
                 modified = true;
+              }
+              // For tool role messages, also update tool_call_id to match
+              if (msg.role === 'tool' && msg.tool_call_id) {
+                // Keep the existing tool_call_id as-is (it pairs with the assistant's call)
               }
             }
           }
