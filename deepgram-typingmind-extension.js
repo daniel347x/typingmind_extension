@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.233',
+  VERSION: '3.234',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2812,30 +2812,39 @@
     if (!text || !text.trim()) { el.textContent = ''; return; }
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
-    // Drop trailing '---' section-break lines and blank lines.
-    while (lines.length && (/^\s*-{3,}\s*$/.test(lines[lines.length - 1]) || lines[lines.length - 1].trim() === '')) {
-      lines.pop();
+    // Drop trailing section-break (---) and blank lines.
+    while (lines.length) {
+      var t = lines[lines.length - 1].trim();
+      if (t === '' || /^-{3,}$/.test(t)) lines.pop();
+      else break;
     }
     if (!lines.length) { el.textContent = ''; return; }
     var lastLine = lines[lines.length - 1];
     var n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
     var trailing = lastLine.length > n ? '\u2026' : '';
     var lastPreview = lastLine.slice(0, n) + trailing;
-    // Find the first line of the most recent entry (walk back to the most recent '---' break).
+    // March upward to find the most recent '---' break, then walk forward past blank lines.
     var firstLineOfLastEntry = null;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (/^\s*-{3,}\s*$/.test(lines[i])) {
-        firstLineOfLastEntry = lines[i + 1];
+      if (/^-{3,}$/.test(lines[i].trim())) {
+        for (var j = i + 1; j < lines.length; j++) {
+          if (lines[j].trim() !== '') { firstLineOfLastEntry = lines[j]; break; }
+        }
         break;
       }
     }
-    if (firstLineOfLastEntry === null) firstLineOfLastEntry = lines[0];
-    var firstTrailing = firstLineOfLastEntry.length > n ? '\u2026' : '';
-    var firstPreview = firstLineOfLastEntry.slice(0, n) + firstTrailing;
+    // No break found: the whole text is one entry; use the first non-empty line.
+    if (firstLineOfLastEntry === null) {
+      for (var k = 0; k < lines.length; k++) {
+        if (lines[k].trim() !== '') { firstLineOfLastEntry = lines[k]; break; }
+      }
+    }
+    var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
+    var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
     if (firstPreview === lastPreview) {
-      el.innerHTML = '<span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<span style="opacity:0.45;">\u2026</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
     } else {
-      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><br><span style="opacity:0.45;">…</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><br><span style="opacity:0.45;">\u2026</span><br><span style="white-space:nowrap;">' + lastPreview + '</span>';
     }
   }
 
@@ -6096,7 +6105,7 @@
             <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
           </div>
-          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:30px;">
+          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:33px;">
             <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           </div>
