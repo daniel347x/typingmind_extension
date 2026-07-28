@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.238',
+  VERSION: '3.239',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -844,6 +844,7 @@
     REFINE_TOTAL_COST_STORAGE: 'refine_total_cost',              // running accumulated cost (persisted; user-resettable)
     REFINE_TIME_LOST_STORAGE: 'refine_time_lost_ms',             // running accumulated Refine wait time in ms (persisted; reset along with total cost)
     REFINE_TOGGLE_SLOTS_STORAGE: 'refine_toggle_slots',           // JSON array of 10 slot indices (or nulls) for the toggle-squares row
+    REFINE_ACTIVE_CONVO_SLOT_STORAGE: 'refine_active_convo_slot', // session index of the auto-matched conversation (special first slot)
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -942,6 +943,8 @@
   let refineCountdownTimer = null; // interval id for the countdown display
   let refinePulseTimer = null;     // interval id for the split-button background pulse
   let refineLastDurationMs = null; // duration (ms) of the most recent completed refine, for the 'last:' sub-row
+  let refineFrozenAutoSelect = false; // freeze flag: when true, auto-select of matching conversation is suppressed
+  let lastAutoMatchIdx = -1;          // session index of the most recent auto-match (-1 = none)
 
   // Sidebar conversation title sizing
   // Measure hover icon cluster footprint and keep titles maximally wide when not hovered.
@@ -2400,87 +2403,118 @@
   function refineSaveToggleSlots(list) {
     localStorage.setItem(CONFIG.REFINE_TOGGLE_SLOTS_STORAGE, JSON.stringify(list));
   }
+  /** Get the special auto-match conversation slot index (null if unset). */
+  function refineGetActiveConvoSlot() {
+    var v = parseInt(localStorage.getItem(CONFIG.REFINE_ACTIVE_CONVO_SLOT_STORAGE), 10);
+    return (isNaN(v) || v < 0 || v >= CONFIG.REFINE_CONTEXT_SLOTS) ? null : v;
+  }
+  function refineSaveActiveConvoSlot(idx) {
+    if (idx === null || idx === undefined) localStorage.removeItem(CONFIG.REFINE_ACTIVE_CONVO_SLOT_STORAGE);
+    else localStorage.setItem(CONFIG.REFINE_ACTIVE_CONVO_SLOT_STORAGE, String(idx));
+  }
+  /** Update the freeze button visual state. */
+  function refineUpdateFreezeButton() {
+    var btn = document.getElementById('deepgram-refine-freeze-btn');
+    if (!btn) return;
+    btn.style.opacity = refineFrozenAutoSelect ? '1' : '0.3';
+    btn.title = refineFrozenAutoSelect
+      ? 'Auto-select frozen — click to unfreeze (auto-select matching conversation)'
+      : 'Auto-select active — click to freeze (stop auto-selecting)';
+  }
+
   /** Called when a session's TEXT is updated: ensure that session is in the toggle row. */
   function refineSyncToggleSlots(updatedIdx) {
     if (updatedIdx === null || updatedIdx === undefined || updatedIdx < 0) return;
-    const slots = refineGetToggleSlots();
+    // If this session was in the special auto-match slot, promote it to normal slots
+    var specialSlot = refineGetActiveConvoSlot();
+    if (specialSlot === updatedIdx) refineSaveActiveConvoSlot(null);
+    var slots = refineGetToggleSlots();
     if (slots.includes(updatedIdx)) return; // already showing
-    const emptySlot = slots.indexOf(null);
+    var emptySlot = slots.indexOf(null);
     if (emptySlot !== -1) {
       slots[emptySlot] = updatedIdx;
     } else {
-      // All full: evict the OLDEST-updated among the showing slots.
-      const contexts = refineGetContexts();
-      let oldestIdx = -1, oldestTs = Infinity;
-      for (let i = 0; i < slots.length; i++) {
+      var contexts = refineGetContexts();
+      var oldestIdx = -1, oldestTs = Infinity;
+      for (var i = 0; i < slots.length; i++) {
         if (slots[i] === null) continue;
-        const ctx = contexts[slots[i]];
-        const ts = (ctx && typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
+        var ctx = contexts[slots[i]];
+        var ts = (ctx && typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
         if (ts < oldestTs) { oldestTs = ts; oldestIdx = i; }
       }
       if (oldestIdx !== -1) slots[oldestIdx] = updatedIdx;
     }
     refineSaveToggleSlots(slots);
   }
+  /** Render a single toggle square (extracted from refineRenderToggleRow). */
+  function renderToggleSquare(slotIdx, isSpecial, activeIdx, contexts, allTs, container) {
+    var ctx = contexts[slotIdx];
+    if (!ctx) return;
+    var isActive = (slotIdx === activeIdx);
+    var rings = refineSlotRingColors(ctx.lastUpdated, allTs);
+    var wrapper = document.createElement('span');
+    wrapper.className = 'refine-toggle-square-wrapper';
+    wrapper.style.cssText = 'display:inline-block; '
+      + (isActive ? 'border:3px solid #8b2020; border-radius:0; padding:6px; ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
+      + 'cursor:pointer;';
+    wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
+    wrapper.onclick = function() {
+      if (slotIdx !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
+      refineSetActiveContextIndex(slotIdx);
+      refineRenderToggleRow();
+    };
+    var inner = document.createElement('span');
+    inner.style.cssText = 'display:inline-block; padding:6px 12px; border-radius:14px; font-size:11px; '
+      + 'border:3px solid ' + rings.outer + '; '
+      + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
+      + 'background:#2a2a2a; color:#eee; white-space:nowrap; position:relative;';
+    var nameSpan = document.createElement('span');
+    nameSpan.textContent = ctx.name;
+    nameSpan.style.cssText = 'padding-right:20px;';
+    inner.appendChild(nameSpan);
+    var pen = document.createElement('span');
+    pen.textContent = ' \u270E';
+    pen.style.cssText = 'position:absolute; top:1px; right:3px; font-size:10px; opacity:0.6; cursor:pointer;';
+    pen.onclick = function(e) {
+      e.stopPropagation();
+      var nm = prompt('Name for slot ' + (slotIdx + 1) + ':', ctx.name);
+      if (nm && nm.trim()) {
+        var ctx2 = refineGetContexts();
+        ctx2[slotIdx].name = nm.trim();
+        refineSaveContexts(ctx2);
+        refineUpdateContextButtonLabel();
+        refineRenderToggleRow();
+      }
+    };
+    inner.appendChild(pen);
+    wrapper.appendChild(inner);
+    container.appendChild(wrapper);
+  }
+
   /** Render the toggle row from localStorage. Safe to call at any time (idempotent). */
   function refineRenderToggleRow() {
-    const row = document.getElementById('deepgram-refine-toggle-row');
+    var row = document.getElementById('deepgram-refine-toggle-row');
     if (!row) return;
-    // Clear existing squares (keep the +/- buttons).
-    row.querySelectorAll('.refine-toggle-square-wrapper').forEach(function(s) { s.remove(); });
-    const slots = refineGetToggleSlots();
-    const contexts = refineGetContexts();
-    const activeIdx = refineGetActiveContextIndex();
-    const allTs = contexts.map(function(s) { return (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0; });
-    const squaresContainer = document.getElementById('deepgram-refine-toggle-squares');
+    var squaresContainer = document.getElementById('deepgram-refine-toggle-squares');
+    squaresContainer.innerHTML = '';
+    var specialSlot = refineGetActiveConvoSlot();
+    var slots = refineGetToggleSlots();
+    var contexts = refineGetContexts();
+    var activeIdx = refineGetActiveContextIndex();
+    var allTs = contexts.map(function(s) { return (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0; });
+    // Render the special auto-match slot first (if set).
+    if (specialSlot !== null && specialSlot >= 0 && specialSlot < contexts.length) {
+      renderToggleSquare(specialSlot, true, activeIdx, contexts, allTs, squaresContainer);
+    }
+    // Render normal slots (skip duplicates of the special slot).
     slots.forEach(function(slotIdx) {
       if (slotIdx === null || slotIdx === undefined) return;
-      const ctx = contexts[slotIdx];
-      if (!ctx) return;
-      const isActive = (slotIdx === activeIdx);
-      const rings = refineSlotRingColors(ctx.lastUpdated, allTs);
-      // OUTER wrapper: dim dark red rectangular border when ACTIVE, transparent otherwise.
-      const wrapper = document.createElement('span');
-      wrapper.className = 'refine-toggle-square-wrapper';
-      wrapper.style.cssText = 'display:inline-block; '
-        + (isActive ? 'border:3px solid #8b2020; border-radius:0; padding:6px; ' : 'border:3px solid transparent; border-radius:0; padding:6px; ')
-        + 'cursor:pointer;';
-      wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
-      wrapper.onclick = function() {
-        refineSetActiveContextIndex(slotIdx);
-        refineRenderToggleRow();
-      };
-      // INNER: ring-decorated rectangle (same pattern as quick-switcher & modal rows).
-      const inner = document.createElement('span');
-      inner.style.cssText = 'display:inline-block; padding:6px 12px; border-radius:14px; font-size:11px; '
-        + 'border:3px solid ' + rings.outer + '; '
-        + 'box-shadow: inset 0 0 0 5px #2a2a2a, inset 0 0 0 7px ' + rings.inner + '; '
-        + 'background:#2a2a2a; color:#eee; white-space:nowrap; position:relative;';
-      const nameSpan = document.createElement('span');
-      nameSpan.textContent = ctx.name;
-      nameSpan.style.cssText = 'padding-right:20px;';
-      inner.appendChild(nameSpan);
-      // ✎ pencil (upper right — rename only).
-      const pen = document.createElement('span');
-      pen.textContent = ' \u270E';
-      pen.style.cssText = 'position:absolute; top:1px; right:3px; font-size:10px; opacity:0.6; cursor:pointer;';
-      pen.onclick = function(e) {
-        e.stopPropagation();
-        var nm = prompt('Name for slot ' + (slotIdx + 1) + ':', ctx.name);
-        if (nm && nm.trim()) {
-          var ctx2 = refineGetContexts();
-          ctx2[slotIdx].name = nm.trim();
-          refineSaveContexts(ctx2);
-          refineUpdateContextButtonLabel();
-          refineRenderToggleRow();
-        }
-      };
-      inner.appendChild(pen);
-      wrapper.appendChild(inner);
-      squaresContainer.appendChild(wrapper);
+      if (slotIdx === specialSlot) return;
+      renderToggleSquare(slotIdx, false, activeIdx, contexts, allTs, squaresContainer);
     });
-    // Plus/minus button states.
+    // Plus/minus button states (special slot counts toward visible).
     var visibleCount = slots.filter(function(s) { return s !== null; }).length;
+    if (specialSlot !== null) visibleCount++;
     var minusBtn = document.getElementById('deepgram-refine-toggle-minus');
     var plusBtn = document.getElementById('deepgram-refine-toggle-plus');
     if (plusBtn) plusBtn.disabled = (visibleCount >= 10);
@@ -2627,7 +2661,7 @@
       kb.style.display = len > 0 ? '' : 'none';
     }
     refineUpdateTailPreview();
-    checkChatSessionMatch();
+    updateMatchBorder();
   }
 
   /**
@@ -2697,7 +2731,7 @@
         row.appendChild(num); row.appendChild(nm);
         // Clicking the number or name SELECTS the slot (the row is no longer a single click target,
         // so the ✂½ button and char count to the right are independently clickable/readable).
-        const selectSlot = (e) => { if (e) e.stopPropagation(); refineSetActiveContextIndex(i); closePopup(); };
+        const selectSlot = (e) => { if (e) e.stopPropagation(); if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); } refineSetActiveContextIndex(i); closePopup(); };
         num.style.cursor = 'pointer'; num.onclick = selectSlot;
         nm.style.cursor = 'pointer'; nm.onclick = selectSlot;
         if (isActive) { const chk = document.createElement('span'); chk.textContent = '✓'; chk.style.cssText = 'flex:0 0 auto; color:#2e9b2e;'; chk.onclick = selectSlot; chk.style.cursor = 'pointer'; row.appendChild(chk); }
@@ -2857,9 +2891,8 @@
     return s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
-  /** The last '---'-delimited block of the active context session, normalized for comparison. */
-  function getSessionLastBlockNorm() {
-    var text = refineGetContext();
+  /** The last '---'-delimited block of any text, normalized for comparison. */
+  function getLastBlockNormForText(text) {
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
@@ -2874,6 +2907,11 @@
       if (/^-{3,}$/.test(lines[i].trim())) { blockStart = i + 1; break; }
     }
     return normalizeForChatMatch(lines.slice(blockStart).join(' '));
+  }
+
+  /** The last '---'-delimited block of the active context session, normalized for comparison. */
+  function getSessionLastBlockNorm() {
+    return getLastBlockNormForText(refineGetContext());
   }
 
   /** Text of the most recent chat turn in TypingMind, normalized (excludes details/tool-calls). */
@@ -2903,8 +2941,8 @@
     return normalizeForChatMatch(text);
   }
 
-  /** Compare session last block vs latest chat turn; apply/remove green border on tail label. */
-  function checkChatSessionMatch() {
+  /** Apply/remove the green match border on the tail label (both sides). */
+  function updateMatchBorder() {
     var el = document.getElementById('deepgram-refine-tail-label');
     if (!el) return;
     var sessionNorm = getSessionLastBlockNorm();
@@ -2912,15 +2950,57 @@
     var minLen = 10;
     var match = sessionNorm.length >= minLen && chatNorm.length >= minLen &&
       (sessionNorm.includes(chatNorm) || chatNorm.includes(sessionNorm) || sessionNorm === chatNorm);
-    // Debug: expose the comparison for console inspection.
     window.__chatMatchDebug = { session: sessionNorm, chat: chatNorm, match: match, ts: Date.now() };
     if (match) {
       el.style.borderLeft = '4px solid #28e05a';
+      el.style.borderRight = '4px solid #28e05a';
       el.style.paddingLeft = '8px';
+      el.style.paddingRight = '8px';
     } else {
       el.style.borderLeft = '';
+      el.style.borderRight = '';
       el.style.paddingLeft = '';
+      el.style.paddingRight = '';
     }
+  }
+
+  /** Auto-select the session matching the current conversation (if any), and update the border. */
+  function refineAutoSelectMatch() {
+    if (refineFrozenAutoSelect) { updateMatchBorder(); return; }
+    var chatNorm = getLatestChatTurnNorm();
+    if (!chatNorm || chatNorm.length < 10) {
+      lastAutoMatchIdx = -1;
+      if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
+      updateMatchBorder();
+      return;
+    }
+    var contexts = refineGetContexts();
+    var matchIdx = -1;
+    for (var i = 0; i < contexts.length; i++) {
+      var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
+      if (block.length >= 10 && (chatNorm.includes(block) || block.includes(chatNorm))) {
+        matchIdx = i;
+        break;
+      }
+    }
+    lastAutoMatchIdx = matchIdx;
+    if (matchIdx === -1) {
+      if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
+      updateMatchBorder();
+      return;
+    }
+    // Auto-select the matched session.
+    if (refineGetActiveContextIndex() !== matchIdx) {
+      refineSetActiveContextIndex(matchIdx);
+    }
+    // Check if it's in the visible toggle slots.
+    var slots = refineGetToggleSlots();
+    if (slots.includes(matchIdx)) {
+      if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
+    } else {
+      if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
+    }
+    updateMatchBorder();
   }
 
   var chatMatchTimer = null;
@@ -2932,13 +3012,13 @@
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
       if (chatMatchTimer) clearTimeout(chatMatchTimer);
-      chatMatchTimer = setTimeout(checkChatSessionMatch, 1000);
+      chatMatchTimer = setTimeout(refineAutoSelectMatch, 1000);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
     // Periodic fallback: re-check every 5s in case the observer detached (SPA navigation).
     if (chatMatchInterval) clearInterval(chatMatchInterval);
-    chatMatchInterval = setInterval(checkChatSessionMatch, 5000);
-    checkChatSessionMatch();
+    chatMatchInterval = setInterval(refineAutoSelectMatch, 5000);
+    refineAutoSelectMatch();
   }
 
   /**
@@ -3367,6 +3447,7 @@
             stashCurrentText();               // preserve unsaved edits of the slot we were on
             editingIndex = i;
             refineSetActiveContextIndex(i);   // makes it active + updates the main-widget label
+            if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
             ta.value = slots[i].text || '';
             editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
             refineSaveContexts(slots);
@@ -3383,6 +3464,7 @@
           stashCurrentText();
           editingIndex = i;
           refineSetActiveContextIndex(i);   // single-click activates (option A)
+          if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
           ta.value = slots[i].text || '';
           editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
           paintFullName();
@@ -6178,9 +6260,13 @@
           </button>
         </div>
 
+        <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
+
         <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
         <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
-          <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto;"></span>
+          <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto; flex-wrap:wrap;"></span>
+          <button id="deepgram-refine-freeze-btn" title="Auto-select active — click to freeze" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 5px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit; opacity:0.3;">❄️</button>
           <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
           <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
         </div>
@@ -6203,9 +6289,6 @@
             <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           </div>
         </div>
-
-        <!-- ✨ Refine: tail preview of the active context slot (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
@@ -6578,11 +6661,18 @@
     refineUpdateTimeLostLabel();
     refineInstallContextQuickSwitch();
 
-    // ✨ Refine toggle-row controls (+/− add/remove session squares)
+    // ✨ Refine toggle-row controls (+/− add/remove session squares, freeze auto-select)
     var togglePlusBtn = document.getElementById('deepgram-refine-toggle-plus');
     if (togglePlusBtn) togglePlusBtn.addEventListener('click', refineToggleRowAdd);
     var toggleMinusBtn = document.getElementById('deepgram-refine-toggle-minus');
     if (toggleMinusBtn) toggleMinusBtn.addEventListener('click', refineToggleRowRemove);
+    var freezeBtn = document.getElementById('deepgram-refine-freeze-btn');
+    if (freezeBtn) freezeBtn.addEventListener('click', function() {
+      refineFrozenAutoSelect = !refineFrozenAutoSelect;
+      refineUpdateFreezeButton();
+      if (!refineFrozenAutoSelect) refineAutoSelectMatch();
+    });
+    refineUpdateFreezeButton();
 
     // ElevenLabs Read-Aloud controls
     document.getElementById('deepgram-eleven-play-btn').addEventListener('click', readAloud);
