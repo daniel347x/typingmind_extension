@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.243',
+  VERSION: '3.244',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3020,6 +3020,7 @@
     }
     if (refineGetActiveContextIndex() !== matchIdx) {
       refineSetActiveContextIndex(matchIdx);
+      refineRenderToggleRow();  // always re-render so the red border follows the auto-selected pill
     }
     var slots = refineGetToggleSlots();
     if (slots.includes(matchIdx)) {
@@ -3042,17 +3043,36 @@
   var chatMatchTimer = null;
   var chatMatchObserver = null;
   var chatMatchInterval = null;
+  var quiescenceWindowTimer = null;  // 5s window for streaming detection
+  var quiescenceFlag = false;        // true while streaming (2nd+ mutation within window)
+
   function initChatMatchWatcher() {
     var container = document.querySelector('div.dynamic-chat-content-container');
     if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
-      setMatchingState(true);
-      if (chatMatchTimer) clearTimeout(chatMatchTimer);
-      chatMatchTimer = setTimeout(function() {
+      if (quiescenceWindowTimer !== null) {
+        // 2nd+ mutation within window: streaming detected.
+        quiescenceFlag = true;
+        clearTimeout(quiescenceWindowTimer);
+      } else {
+        // 1st mutation: no quiescence — fire search immediately.
+        setMatchingState(true);
         refineAutoSelectMatch();
         setMatchingState(false);
-      }, 500);
+      }
+      // (Re)start the 5s quiescence window.
+      quiescenceWindowTimer = setTimeout(function() {
+        var wasQuiescent = quiescenceFlag;
+        quiescenceFlag = false;
+        quiescenceWindowTimer = null;
+        if (wasQuiescent) {
+          // Streaming just ended: fire the final search with the complete text.
+          setMatchingState(true);
+          refineAutoSelectMatch();
+          setMatchingState(false);
+        }
+      }, 5000);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
     // Periodic fallback: re-check every 3s; also re-attach observer if container was replaced (SPA nav).
@@ -3064,7 +3084,10 @@
         chatMatchObserver.disconnect();
         chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
       }
-      refineAutoSelectMatch();
+      // Only run periodic check when not in a quiescence window (avoid competing with streaming).
+      if (quiescenceWindowTimer === null) {
+        refineAutoSelectMatch();
+      }
     }, 3000);
     refineAutoSelectMatch();
   }
