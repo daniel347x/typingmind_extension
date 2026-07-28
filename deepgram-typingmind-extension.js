@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.240',
+  VERSION: '3.241',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2666,6 +2666,7 @@
     }
     refineUpdateTailPreview();
     updateMatchBorder();
+    refineCheckDuplicateBlocks();
   }
 
   /**
@@ -2945,6 +2946,25 @@
     return normalizeForChatMatch(text);
   }
 
+  /** Check for duplicate last-blocks across sessions; show/hide the yellow warning bar. */
+  function refineCheckDuplicateBlocks() {
+    var el = document.getElementById('deepgram-refine-duplicate-warning');
+    if (!el) return;
+    var contexts = refineGetContexts();
+    var norms = [];
+    for (var i = 0; i < contexts.length; i++) {
+      var n = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
+      if (n.length >= 10) norms.push(n);
+    }
+    var hasDupe = false;
+    for (var i = 0; i < norms.length && !hasDupe; i++) {
+      for (var j = i + 1; j < norms.length; j++) {
+        if (norms[i] === norms[j]) { hasDupe = true; break; }
+      }
+    }
+    el.style.display = hasDupe ? '' : 'none';
+  }
+
   /** Apply/remove the green match border on the tail label (both sides). */
   function updateMatchBorder() {
     var el = document.getElementById('deepgram-refine-tail-label');
@@ -3005,6 +3025,7 @@
       if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
     }
     updateMatchBorder();
+    refineCheckDuplicateBlocks();
   }
 
   var chatMatchTimer = null;
@@ -6266,6 +6287,9 @@
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
         <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
+
+        <!-- ✨ Refine: duplicate-block warning (shown when two sessions share the same last block) -->
+        <div id="deepgram-refine-duplicate-warning" style="display:none; margin-top:4px; font-size:11px; line-height:1.3; color:#e6c200; background:rgba(230,194,0,0.08); border:1px solid rgba(230,194,0,0.25); border-radius:4px; padding:3px 8px;">⚠ Duplicate sessions found with the same block</div>
 
         <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
         <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
