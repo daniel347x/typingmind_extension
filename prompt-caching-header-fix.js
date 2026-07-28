@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.193
+// Version: 4.194
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +146,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.193';
+  const EXT_VERSION = '4.194';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1083,7 +1083,7 @@
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
   //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs.,
+  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs/check-cors.,
   //   kind=ast,
   // ]
   function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall) {
@@ -1095,8 +1095,11 @@
     try {
       const u = String(url || '').toLowerCase();
       const isTmCorsProxy = u.includes('typingmind.com/api/cors-proxy');
+      // v4.194: also exclude TypingMind's CORS-preflight probe. It calls its OWN backend via the
+      // RELATIVE path '/api/check-cors' (no domain, so the 'typingmind' substring check misses it),
+      // with the real provider endpoint only present in the body. No model/usage/cost — pure noise.
       if (!isTmCorsProxy &&
-          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io'))) {
+          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io') || u.includes('/api/check-cors'))) {
         return null;
       }
     } catch (e) {}
