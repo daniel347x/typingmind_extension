@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.239',
+  VERSION: '3.240',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2422,27 +2422,31 @@
       : 'Auto-select active — click to freeze (stop auto-selecting)';
   }
 
-  /** Called when a session's TEXT is updated: ensure that session is in the toggle row. */
+  /** Called when a session's TEXT is updated: ensure that session is in the toggle row.
+   *  RULE: updates ALWAYS evict the oldest showing session (never fill empty slots).
+   *  Only the +/- buttons change the visible count. */
   function refineSyncToggleSlots(updatedIdx) {
     if (updatedIdx === null || updatedIdx === undefined || updatedIdx < 0) return;
-    // If this session was in the special auto-match slot, promote it to normal slots
     var specialSlot = refineGetActiveConvoSlot();
     if (specialSlot === updatedIdx) refineSaveActiveConvoSlot(null);
     var slots = refineGetToggleSlots();
-    if (slots.includes(updatedIdx)) return; // already showing
-    var emptySlot = slots.indexOf(null);
-    if (emptySlot !== -1) {
-      slots[emptySlot] = updatedIdx;
+    if (slots.includes(updatedIdx)) return;
+    var visibleCount = 0;
+    for (var i = 0; i < slots.length; i++) { if (slots[i] !== null) visibleCount++; }
+    if (visibleCount === 0) {
+      // Nothing showing yet: fill the first slot.
+      slots[0] = updatedIdx;
     } else {
+      // Evict the oldest showing session (maintain current count).
       var contexts = refineGetContexts();
-      var oldestIdx = -1, oldestTs = Infinity;
+      var oldestPos = -1, oldestTs = Infinity;
       for (var i = 0; i < slots.length; i++) {
         if (slots[i] === null) continue;
         var ctx = contexts[slots[i]];
         var ts = (ctx && typeof ctx.lastUpdated === 'number') ? ctx.lastUpdated : 0;
-        if (ts < oldestTs) { oldestTs = ts; oldestIdx = i; }
+        if (ts < oldestTs) { oldestTs = ts; oldestPos = i; }
       }
-      if (oldestIdx !== -1) slots[oldestIdx] = updatedIdx;
+      if (oldestPos !== -1) slots[oldestPos] = updatedIdx;
     }
     refineSaveToggleSlots(slots);
   }
