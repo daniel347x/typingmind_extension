@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.250',
+  VERSION: '3.251',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3047,6 +3047,25 @@
       label.style.color = '#4da3ff';
     }
   }
+
+  /** Console debug: compare the ACTIVE session's last block vs recent chat turns, showing exactly
+   *  where each diverges (or whether one contains the other). Run __debugMatch() in DevTools. */
+  window.__debugMatch = function() {
+    var sessionNorm = getSessionLastBlockNorm();
+    console.log('[debugMatch] session last-block len:', sessionNorm.length,
+      '| head:', sessionNorm.slice(0, 60), '| tail:', sessionNorm.slice(-60));
+    var turnNorms = getRecentChatTurnNorms(10, 4);
+    console.log('[debugMatch] turns collected:', turnNorms.length);
+    turnNorms.forEach(function(c, t) {
+      var i = 0, minLen = Math.min(sessionNorm.length, c.length);
+      while (i < minLen && sessionNorm[i] === c[i]) i++;
+      var verdict;
+      if (i >= minLen) verdict = (sessionNorm.length === c.length) ? 'EXACT MATCH (should have matched!)' : 'PREFIX MATCH (one contains the other - should have matched!)';
+      else verdict = 'diverge@' + i + '  session:"...' + sessionNorm.slice(Math.max(0, i - 20), i + 20) + '..."  vs  chat:"...' + c.slice(Math.max(0, i - 20), i + 20) + '..."';
+      console.log('[debugMatch] turn', t, 'chatLen:', c.length, verdict);
+    });
+    return 'done';
+  };
 
   /** Pure scan: which sessions match any of the recent chat turns? No side effects. */
   function refineComputeMatches(turnNorms) {
