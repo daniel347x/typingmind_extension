@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.237',
+  VERSION: '3.238',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2894,7 +2894,7 @@
     (function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
-      if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') return;
+      if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
       var eid = node.getAttribute && node.getAttribute('data-element-id');
       if (eid && /action|tool/i.test(eid)) return;
       for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
