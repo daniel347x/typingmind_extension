@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.254 Changes:
+ * - Refine session pills: ONE shared manual-selection path (refineManualSelectSlot) now backs every
+ *   session-picking surface — the ✨ context: quick-switch popup, the Context-modal ribbon row, the
+ *   modal rename-activate, and the toggle pills themselves. Previously each hand-rolled its own logic
+ *   and they diverged: popup-selecting a non-visible session updated the label but showed NO pill (and
+ *   left the red ACTIVE border stale even on visible picks), while modal-Save EVICTED a primary pill.
+ *   New uniform semantics: selecting a session activates it (+ freezes auto-select when the pick
+ *   differs from the auto-match); if it is not one of the primary (recency) pills it is pinned in the
+ *   leftmost temp slot — NO eviction on mere selection (eviction via refineSyncToggleSlots is now
+ *   reserved for actual TEXT updates; modal Save only syncs when the text actually changed).
+ *
  * v3.220 Changes:
  * - Refine button now splits into two buttons during a request: ⏹ Cancel (with live countdown
  *   ticking every second, flashing red under 30s) and +30s (adds 30 seconds to the timeout
@@ -781,7 +792,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.253',
+  VERSION: '3.254',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2450,6 +2461,27 @@
     }
     refineSaveToggleSlots(slots);
   }
+  /**
+   * ONE shared manual-selection path for ALL session-picking surfaces (quick-switch popup row,
+   * Context-modal ribbon row, modal rename-activate, and the toggle pills themselves).
+   * Semantics: activate the session; freeze auto-select when the pick differs from the auto-match;
+   * and GUARANTEE the picked session is visible as a pill — if it is not one of the primary
+   * (recency) pills, pin it in the leftmost temp slot (NO eviction of primaries on mere selection;
+   * eviction is reserved for TEXT updates via refineSyncToggleSlots). Always re-renders so the red
+   * ACTIVE border follows the pick.
+   */
+  function refineManualSelectSlot(i) {
+    refineSetActiveContextIndex(i);
+    if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
+    if (refineGetToggleSlots().includes(i)) {
+      // Already a primary pill: tidy the invariant (the temp slot is only for non-primary sessions).
+      if (refineGetActiveConvoSlot() === i) refineSaveActiveConvoSlot(null);
+    } else {
+      // Not visible: pin in the leftmost temp slot (frozen keeps it there across conversation switches).
+      refineSaveActiveConvoSlot(i);
+    }
+    refineRenderToggleRow();
+  }
   /** Render a single toggle square (extracted from refineRenderToggleRow). */
   function renderToggleSquare(slotIdx, isSpecial, activeIdx, contexts, allTs, container) {
     var ctx = contexts[slotIdx];
@@ -2463,9 +2495,7 @@
       + 'cursor:pointer;';
     wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
     wrapper.onclick = function() {
-      if (slotIdx !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
-      refineSetActiveContextIndex(slotIdx);
-      refineRenderToggleRow();
+      refineManualSelectSlot(slotIdx);
     };
     var inner = document.createElement('span');
     inner.style.cssText = 'display:inline-block; padding:6px 12px; border-radius:14px; font-size:11px; '
@@ -2735,7 +2765,7 @@
         row.appendChild(num); row.appendChild(nm);
         // Clicking the number or name SELECTS the slot (the row is no longer a single click target,
         // so the ✂½ button and char count to the right are independently clickable/readable).
-        const selectSlot = (e) => { if (e) e.stopPropagation(); if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); } refineSetActiveContextIndex(i); closePopup(); };
+        const selectSlot = (e) => { if (e) e.stopPropagation(); refineManualSelectSlot(i); closePopup(); };
         num.style.cursor = 'pointer'; num.onclick = selectSlot;
         nm.style.cursor = 'pointer'; nm.onclick = selectSlot;
         if (isActive) { const chk = document.createElement('span'); chk.textContent = '✓'; chk.style.cssText = 'flex:0 0 auto; color:#2e9b2e;'; chk.onclick = selectSlot; chk.style.cursor = 'pointer'; row.appendChild(chk); }
@@ -3529,11 +3559,15 @@
     // Commit the textarea's current text into the working copy for the slot being edited.
     // Stamp lastUpdated ONLY when the text actually changed, so merely viewing/switching a slot
     // (which also calls stashCurrentText) never bumps its last-updated time.
+    // Returns true when the text actually changed (Save uses this to decide whether the toggle row
+    // needs a recency sync — selection alone no longer evicts a primary pill).
     const stashCurrentText = () => {
       if (slots[editingIndex] && slots[editingIndex].text !== ta.value) {
         slots[editingIndex].text = ta.value;
         refineTouchSlot(slots, editingIndex);
+        return true;
       }
+      return false;
     };
     const activeIdx = () => refineGetActiveContextIndex();
 
@@ -3613,8 +3647,7 @@
             // could rename an old slot but keep editing/deleting a DIFFERENT active slot by mistake.
             stashCurrentText();               // preserve unsaved edits of the slot we were on
             editingIndex = i;
-            refineSetActiveContextIndex(i);   // makes it active + updates the main-widget label
-            if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
+            refineManualSelectSlot(i);        // makes it active + visible (shared manual-select path)
             ta.value = slots[i].text || '';
             editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
             refineSaveContexts(slots);
@@ -3630,8 +3663,7 @@
           // working copy), then make the clicked slot ACTIVE and load it into the textarea.
           stashCurrentText();
           editingIndex = i;
-          refineSetActiveContextIndex(i);   // single-click activates (option A)
-          if (i !== lastAutoMatchIdx) { refineFrozenAutoSelect = true; refineUpdateFreezeButton(); }
+          refineManualSelectSlot(i);        // single-click activates (shared manual-select path)
           ta.value = slots[i].text || '';
           editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
           paintFullName();
@@ -3668,7 +3700,9 @@
     const cancel = mkBtn('Close', '#555');
     cancel.onclick = closeModal;
     const save = mkBtn('💾 Save all', '#2b7a2b');
-    save.onclick = () => { stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
+    // Eviction into the primary pills (refineSyncToggleSlots) is reserved for actual TEXT updates;
+    // mere selection pins the session in the temp slot instead (see refineManualSelectSlot, v3.254).
+    save.onclick = () => { const changed = stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); if (changed) refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
