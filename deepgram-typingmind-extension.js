@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.246',
+  VERSION: '3.247',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -888,9 +888,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 840,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 840,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 380,
+    DEFAULT_TRANSCRIPT_HEIGHT: 815,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 815,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 355,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
     TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 490
@@ -6699,6 +6699,11 @@
     if (localStorage.getItem('transcript_height_reset_v3232') !== '1') {
       localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
       localStorage.setItem('transcript_height_reset_v3232', '1');
+    }
+    // v3.247: reduce default transcript height by another 25px
+    if (localStorage.getItem('transcript_height_reset_v3247') !== '1') {
+      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
+      localStorage.setItem('transcript_height_reset_v3247', '1');
     }
 
     // Load saved widget dimensions
