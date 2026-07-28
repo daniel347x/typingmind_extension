@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.242',
+  VERSION: '3.243',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2961,24 +2961,28 @@
     var el = document.getElementById('deepgram-refine-tail-label');
     if (!el) return;
     var sessionNorm = getSessionLastBlockNorm();
+    if (sessionNorm.length < 5) {
+      el.style.borderLeft = ''; el.style.borderRight = '';
+      el.style.paddingLeft = ''; el.style.paddingRight = '';
+      el.style.color = '#e6c200';
+      return;
+    }
     var turnNorms = getRecentChatTurnNorms(10);
     var match = false;
-    if (sessionNorm.length >= 10) {
-      for (var t = 0; t < turnNorms.length; t++) {
-        if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; break; }
-      }
+    for (var t = 0; t < turnNorms.length; t++) {
+      if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; break; }
     }
     window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, ts: Date.now() };
     if (match) {
-      el.style.borderLeft = '4px solid #28e05a';
-      el.style.borderRight = '4px solid #28e05a';
-      el.style.paddingLeft = '8px';
-      el.style.paddingRight = '8px';
+      el.style.borderLeft = '12px solid #28e05a';
+      el.style.borderRight = '12px solid #28e05a';
+      el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
+      el.style.color = '#e6c200';
     } else {
-      el.style.borderLeft = '';
-      el.style.borderRight = '';
-      el.style.paddingLeft = '';
-      el.style.paddingRight = '';
+      el.style.borderLeft = '12px dashed #555';
+      el.style.borderRight = '12px dashed #555';
+      el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
+      el.style.color = '#4da3ff';
     }
   }
 
@@ -3000,7 +3004,7 @@
       var chatNorm = turnNorms[t];
       for (var i = 0; i < contexts.length; i++) {
         var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
-        if (block.length >= 10 && (chatNorm.includes(block) || block.includes(chatNorm))) {
+        if (block.length >= 5 && (chatNorm.includes(block) || block.includes(chatNorm))) {
           if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
           if (matchIdx === -1) matchIdx = i;
         }
@@ -3027,6 +3031,14 @@
     updateDuplicateWarning(matchedSessions);
   }
 
+  /** Dim/restore the toggle pills and tail text while a match check is in progress. */
+  function setMatchingState(inProgress) {
+    var sq = document.getElementById('deepgram-refine-toggle-squares');
+    var tail = document.getElementById('deepgram-refine-tail-label');
+    if (sq) sq.style.opacity = inProgress ? '0.3' : '';
+    if (tail) tail.style.opacity = inProgress ? '0.3' : '';
+  }
+
   var chatMatchTimer = null;
   var chatMatchObserver = null;
   var chatMatchInterval = null;
@@ -3035,8 +3047,12 @@
     if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
+      setMatchingState(true);
       if (chatMatchTimer) clearTimeout(chatMatchTimer);
-      chatMatchTimer = setTimeout(refineAutoSelectMatch, 500);
+      chatMatchTimer = setTimeout(function() {
+        refineAutoSelectMatch();
+        setMatchingState(false);
+      }, 500);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
     // Periodic fallback: re-check every 3s; also re-attach observer if container was replaced (SPA nav).
@@ -6308,7 +6324,7 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
 
         <!-- ✨ Refine: duplicate-block warning (shown when two sessions share the same last block) -->
         <div id="deepgram-refine-duplicate-warning" style="display:none; margin-top:4px; font-size:11px; line-height:1.3; color:#ff8c00; background:rgba(255,140,0,0.08); border:1px solid rgba(255,140,0,0.25); border-radius:4px; padding:3px 8px;">⚠ Duplicate sessions found with the same block</div>
