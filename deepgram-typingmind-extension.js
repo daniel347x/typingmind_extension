@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.241',
+  VERSION: '3.242',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2666,7 +2666,6 @@
     }
     refineUpdateTailPreview();
     updateMatchBorder();
-    refineCheckDuplicateBlocks();
   }
 
   /**
@@ -2919,50 +2918,42 @@
     return getLastBlockNormForText(refineGetContext());
   }
 
-  /** Text of the most recent chat turn in TypingMind, normalized (excludes details/tool-calls). */
-  function getLatestChatTurnNorm() {
+  /** Text of the last N chat turns in TypingMind, normalized (excludes details/tool-calls/buttons/svg/time). */
+  function getRecentChatTurnNorms(maxTurns) {
     var container = document.querySelector('div.dynamic-chat-content-container');
-    if (!container || !container.children.length) return '';
-    // Scan backward to find the last child that contains a response element (not a UI-only trailing element).
-    var lastTurn = null;
-    for (var i = container.children.length - 1; i >= 0; i--) {
+    if (!container || !container.children.length) return [];
+    var turns = [];
+    for (var i = container.children.length - 1; i >= 0 && turns.length < maxTurns; i--) {
       var child = container.children[i];
       if (child.querySelector && child.querySelector('[data-element-id*="response"], [data-element-id*="user"]')) {
-        lastTurn = child;
-        break;
+        var text = '';
+        (function walk(node) {
+          if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+          if (node.nodeType !== Node.ELEMENT_NODE) return;
+          if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
+          var eid = node.getAttribute && node.getAttribute('data-element-id');
+          if (eid && /action|tool/i.test(eid)) return;
+          for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
+          if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
+        })(child);
+        var norm = normalizeForChatMatch(text);
+        if (norm.length >= 10) turns.push(norm);
       }
     }
-    if (!lastTurn) return '';
-    var text = '';
-    (function walk(node) {
-      if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
-      if (node.nodeType !== Node.ELEMENT_NODE) return;
-      if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
-      var eid = node.getAttribute && node.getAttribute('data-element-id');
-      if (eid && /action|tool/i.test(eid)) return;
-      for (var i = 0; i < node.childNodes.length; i++) walk(node.childNodes[i]);
-      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
-    })(lastTurn);
-    return normalizeForChatMatch(text);
+    return turns;
   }
 
-  /** Check for duplicate last-blocks across sessions; show/hide the yellow warning bar. */
-  function refineCheckDuplicateBlocks() {
+  /** Text of the most recent chat turn in TypingMind, normalized (excludes details/tool-calls). */
+  function getLatestChatTurnNorm() {
+    var turns = getRecentChatTurnNorms(1);
+    return turns.length ? turns[0] : '';
+  }
+
+  /** Show/hide the duplicate-session warning bar. */
+  function updateDuplicateWarning(matchedSessions) {
     var el = document.getElementById('deepgram-refine-duplicate-warning');
     if (!el) return;
-    var contexts = refineGetContexts();
-    var norms = [];
-    for (var i = 0; i < contexts.length; i++) {
-      var n = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
-      if (n.length >= 10) norms.push(n);
-    }
-    var hasDupe = false;
-    for (var i = 0; i < norms.length && !hasDupe; i++) {
-      for (var j = i + 1; j < norms.length; j++) {
-        if (norms[i] === norms[j]) { hasDupe = true; break; }
-      }
-    }
-    el.style.display = hasDupe ? '' : 'none';
+    el.style.display = matchedSessions.length > 1 ? '' : 'none';
   }
 
   /** Apply/remove the green match border on the tail label (both sides). */
@@ -2970,11 +2961,14 @@
     var el = document.getElementById('deepgram-refine-tail-label');
     if (!el) return;
     var sessionNorm = getSessionLastBlockNorm();
-    var chatNorm = getLatestChatTurnNorm();
-    var minLen = 10;
-    var match = sessionNorm.length >= minLen && chatNorm.length >= minLen &&
-      (sessionNorm.includes(chatNorm) || chatNorm.includes(sessionNorm) || sessionNorm === chatNorm);
-    window.__chatMatchDebug = { session: sessionNorm, chat: chatNorm, match: match, ts: Date.now() };
+    var turnNorms = getRecentChatTurnNorms(10);
+    var match = false;
+    if (sessionNorm.length >= 10) {
+      for (var t = 0; t < turnNorms.length; t++) {
+        if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; break; }
+      }
+    }
+    window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, ts: Date.now() };
     if (match) {
       el.style.borderLeft = '4px solid #28e05a';
       el.style.borderRight = '4px solid #28e05a';
@@ -2991,33 +2985,38 @@
   /** Auto-select the session matching the current conversation (if any), and update the border. */
   function refineAutoSelectMatch() {
     if (refineFrozenAutoSelect) { updateMatchBorder(); return; }
-    var chatNorm = getLatestChatTurnNorm();
-    if (!chatNorm || chatNorm.length < 10) {
+    var turnNorms = getRecentChatTurnNorms(10);
+    if (!turnNorms.length) {
       lastAutoMatchIdx = -1;
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
+      updateDuplicateWarning([]);
       return;
     }
     var contexts = refineGetContexts();
     var matchIdx = -1;
-    for (var i = 0; i < contexts.length; i++) {
-      var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
-      if (block.length >= 10 && (chatNorm.includes(block) || block.includes(chatNorm))) {
-        matchIdx = i;
-        break;
+    var matchedSessions = [];
+    for (var t = 0; t < turnNorms.length; t++) {
+      var chatNorm = turnNorms[t];
+      for (var i = 0; i < contexts.length; i++) {
+        var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
+        if (block.length >= 10 && (chatNorm.includes(block) || block.includes(chatNorm))) {
+          if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
+          if (matchIdx === -1) matchIdx = i;
+        }
       }
+      if (matchIdx !== -1) break; // first matching turn wins
     }
     lastAutoMatchIdx = matchIdx;
     if (matchIdx === -1) {
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
+      updateDuplicateWarning([]);
       return;
     }
-    // Auto-select the matched session.
     if (refineGetActiveContextIndex() !== matchIdx) {
       refineSetActiveContextIndex(matchIdx);
     }
-    // Check if it's in the visible toggle slots.
     var slots = refineGetToggleSlots();
     if (slots.includes(matchIdx)) {
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
@@ -3025,7 +3024,7 @@
       if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
     }
     updateMatchBorder();
-    refineCheckDuplicateBlocks();
+    updateDuplicateWarning(matchedSessions);
   }
 
   var chatMatchTimer = null;
@@ -3037,12 +3036,20 @@
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
       if (chatMatchTimer) clearTimeout(chatMatchTimer);
-      chatMatchTimer = setTimeout(refineAutoSelectMatch, 1000);
+      chatMatchTimer = setTimeout(refineAutoSelectMatch, 500);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
-    // Periodic fallback: re-check every 5s in case the observer detached (SPA navigation).
+    // Periodic fallback: re-check every 3s; also re-attach observer if container was replaced (SPA nav).
     if (chatMatchInterval) clearInterval(chatMatchInterval);
-    chatMatchInterval = setInterval(refineAutoSelectMatch, 5000);
+    chatMatchInterval = setInterval(function() {
+      var current = document.querySelector('div.dynamic-chat-content-container');
+      if (current && current !== container) {
+        container = current;
+        chatMatchObserver.disconnect();
+        chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
+      }
+      refineAutoSelectMatch();
+    }, 3000);
     refineAutoSelectMatch();
   }
 
@@ -6285,21 +6292,7 @@
           </button>
         </div>
 
-        <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
-
-        <!-- ✨ Refine: duplicate-block warning (shown when two sessions share the same last block) -->
-        <div id="deepgram-refine-duplicate-warning" style="display:none; margin-top:4px; font-size:11px; line-height:1.3; color:#e6c200; background:rgba(230,194,0,0.08); border:1px solid rgba(230,194,0,0.25); border-radius:4px; padding:3px 8px;">⚠ Duplicate sessions found with the same block</div>
-
-        <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
-        <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
-          <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto; flex-wrap:wrap;"></span>
-          <button id="deepgram-refine-freeze-btn" title="Auto-select active — click to freeze" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 5px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit; opacity:0.3;">❄️</button>
-          <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
-          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
-        </div>
-
-        <!-- ✨ Refine: thin row — active context-slot name (left) + most-recent cost (right) -->
+        <!-- ✨ Refine: status row — scissors, context label, session name, KB, total cost, time lost, reset -->
         <div style="margin-top:6px; line-height:1.3; opacity:0.9;">
           <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
             <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
@@ -6312,10 +6305,26 @@
             <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <button id="deepgram-refine-total-reset-btn" title="Reset the running totals (cost AND time lost) to zero" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 5px; margin-left:4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">↺</button>
           </div>
-          <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:33px;">
-            <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-            <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
-          </div>
+        </div>
+
+        <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:2px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
+
+        <!-- ✨ Refine: duplicate-block warning (shown when two sessions share the same last block) -->
+        <div id="deepgram-refine-duplicate-warning" style="display:none; margin-top:4px; font-size:11px; line-height:1.3; color:#ff8c00; background:rgba(255,140,0,0.08); border:1px solid rgba(255,140,0,0.25); border-radius:4px; padding:3px 8px;">⚠ Duplicate sessions found with the same block</div>
+
+        <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
+        <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
+          <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto; flex-wrap:wrap;"></span>
+          <button id="deepgram-refine-freeze-btn" title="Auto-select active — click to freeze" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 5px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit; opacity:0.3;">❄️</button>
+          <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
+          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
+        </div>
+
+        <!-- ✨ Refine: most-recent cost + last: (standalone row, right-justified) -->
+        <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:8px; margin-top:4px;">
+          <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
+          <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
 
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
@@ -6331,10 +6340,10 @@
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:160px; color:#111; background:#fff; padding:0 3px;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:0; padding:3px 6px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:0; padding:3px 6px;">🗑️</button>
-          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px;">📝 Context</button>
           <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px; padding:3px 7px;">📜 Prompt</button>
           <button id="deepgram-refine-dict-btn" class="deepgram-btn deepgram-btn-secondary" title="Custom dictionary: protect your Wispr Flow canonical terms from being reverted by Refine (menu: copy agent instructions / paste JSON)" style="font-size:11px; padding:3px 7px;">📖 Dictionary</button>
           <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px; padding:3px 7px;">🔑 Key</button>
+          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px; color:#ff8c00;">📝 Context</button>
         </div>
 
         <!-- ElevenLabs Read-Aloud control row -->
