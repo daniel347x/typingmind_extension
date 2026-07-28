@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.251',
+  VERSION: '3.252',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2926,7 +2926,11 @@
     for (var i = lines.length - 2; i >= 0; i--) {
       if (/^-{3,}$/.test(lines[i].trim())) { blockStart = i + 1; break; }
     }
-    return normalizeForChatMatch(lines.slice(blockStart).join(' '));
+    // Strip leading ordered-list markers ('1. ', '16. ') from each line before normalizing. A copied
+    // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
+    // chat side too). Stripping here keeps session<->chat normalization aligned in both directions.
+    var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*\d{1,3}\.\s+/, ''); });
+    return normalizeForChatMatch(blockLines.join(' '));
   }
 
   /** The last '---'-delimited block of the active context session, normalized for comparison. */
@@ -2969,6 +2973,21 @@
         if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
         var eid = node.getAttribute && node.getAttribute('data-element-id');
         if (eid && /action|tool/i.test(eid)) return;
+        // Ordered lists: browsers render the item numbers visually but they are NOT DOM text, while a
+        // copied/pasted version of the same turn DOES include them. Inject the visible numbers so the
+        // two forms normalize identically (respects the 'start' attribute, e.g. <ol start="15">).
+        if (node.tagName === 'OL') {
+          var start = parseInt(node.getAttribute('start'), 10);
+          if (isNaN(start)) start = 1;
+          var liNum = 0;
+          for (var k = 0; k < node.children.length; k++) {
+            var li = node.children[k];
+            if (li.tagName === 'LI') { text += ' ' + String(start + liNum) + ' '; liNum++; walk(li); }
+            else walk(li);
+          }
+          text += ' ';
+          return;
+        }
         for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
         if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
       })(child);
