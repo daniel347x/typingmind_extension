@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.247',
+  VERSION: '3.248',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2845,10 +2845,11 @@
   }
 
   function refineUpdateTailPreview() {
-    var el = document.getElementById('deepgram-refine-tail-label');
+    var el = document.getElementById('deepgram-refine-tail-content');
     if (!el) return;
+    el.textContent = '';
     var text = refineGetContext();
-    if (!text || !text.trim()) { el.textContent = ''; return; }
+    if (!text || !text.trim()) return;
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
     // Drop trailing section-break (---) and blank lines.
@@ -2857,7 +2858,7 @@
       if (t === '' || /^-{3,}$/.test(t)) lines.pop();
       else break;
     }
-    if (!lines.length) { el.textContent = ''; return; }
+    if (!lines.length) return;
     var lastLine = lines[lines.length - 1];
     var n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
     var trailing = lastLine.length > n ? '\u2026' : '';
@@ -2880,16 +2881,25 @@
     }
     var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
     var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
-    // Turn-number overlay (shows how many turns back the match is; 0 = most recent = no overlay).
-    var turnOverlay = '';
-    if (lastMatchTurnIdx > 0) {
-      el.style.position = 'relative';
-      turnOverlay = '<span style="position:absolute; left:2px; top:50%; transform:translateY(-50%); font-size:9px; font-weight:700; color:#e6c200; z-index:1; pointer-events:none;">' + lastMatchTurnIdx + '</span>';
-    }
+    var mkDots = function() {
+      var d = document.createElement('div');
+      d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;';
+      d.textContent = '\u2026';
+      return d;
+    };
+    var mkLine = function(txt) {
+      var sp = document.createElement('span');
+      sp.style.whiteSpace = 'nowrap';
+      sp.textContent = txt;
+      return sp;
+    };
     if (firstPreview === lastPreview) {
-      el.innerHTML = turnOverlay + '<div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.appendChild(mkDots());
+      el.appendChild(mkLine(lastPreview));
     } else {
-      el.innerHTML = turnOverlay + '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.appendChild(mkLine(firstPreview));
+      el.appendChild(mkDots());
+      el.appendChild(mkLine(lastPreview));
     }
   }
 
@@ -2943,7 +2953,7 @@
           if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
         })(child);
         var norm = normalizeForChatMatch(text);
-        if (norm.length >= 10) turns.push(norm);
+        if (norm.length >= 5) turns.push(norm);
       }
     }
     return turns;
@@ -2964,17 +2974,22 @@
 
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
 
-  /** Apply/remove the green match border on the tail label (both sides). */
+  /** Apply the match/no-match rails + turn indicator on the tail label (explicit rail elements). */
   function updateMatchBorder() {
-    var el = document.getElementById('deepgram-refine-tail-label');
-    if (!el) return;
+    var label = document.getElementById('deepgram-refine-tail-label');
+    var ind = document.getElementById('deepgram-refine-turn-indicator');
+    var left = document.getElementById('deepgram-refine-left-rail');
+    var right = document.getElementById('deepgram-refine-right-rail');
+    if (!label || !ind || !left || !right) return;
+    var RAIL = 'flex:0 0 12px;';
     var sessionNorm = getSessionLastBlockNorm();
     if (sessionNorm.length < 5) {
-      el.style.borderLeft = ''; el.style.borderRight = '';
-      el.style.paddingLeft = ''; el.style.paddingRight = '';
-      el.style.color = '#e6c200';
-      el.style.background = '';
+      ind.style.cssText = RAIL + ' display:none;';
+      left.style.cssText = RAIL + ' display:none;';
+      right.style.cssText = RAIL + ' display:none;';
+      label.style.color = '#e6c200';
       lastMatchTurnIdx = -1;
+      window.__chatMatchDebug = { session: sessionNorm, turns: 0, match: false, turnIdx: -1, ts: Date.now() };
       return;
     }
     var turnNorms = getRecentChatTurnNorms(10);
@@ -2985,56 +3000,31 @@
     }
     lastMatchTurnIdx = matchTurnIdx;
     window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, turnIdx: matchTurnIdx, ts: Date.now() };
-    if (match && matchTurnIdx === 0) {
-      // Most recent turn: yellow hash bar + green vise.
-      el.style.borderLeft = '24px solid transparent';
-      el.style.borderRight = '12px solid #28e05a';
-      el.style.borderImage = 'none';
-      el.style.backgroundColor = 'transparent';
-      el.style.backgroundImage = 'repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px), linear-gradient(#28e05a, #28e05a)';
-      el.style.backgroundPosition = '0 0, 12px 0';
-      el.style.backgroundSize = '12px 100%, 12px 100%';
-      el.style.backgroundRepeat = 'no-repeat, no-repeat';
-      el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
-      el.style.color = '#e6c200';
-    } else if (match) {
-      // Older turn: dark bar + number + green vise.
-      el.style.borderLeft = '24px solid transparent';
-      el.style.borderRight = '12px solid #28e05a';
-      el.style.borderImage = 'none';
-      el.style.backgroundColor = 'transparent';
-      el.style.backgroundImage = 'linear-gradient(#333, #333), linear-gradient(#28e05a, #28e05a)';
-      el.style.backgroundPosition = '0 0, 12px 0';
-      el.style.backgroundSize = '12px 100%, 12px 100%';
-      el.style.backgroundRepeat = 'no-repeat, no-repeat';
-      el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
-      el.style.color = '#e6c200';
+    if (match) {
+      // Green vise rails on both sides.
+      left.style.cssText = RAIL + ' background:#28e05a;';
+      right.style.cssText = RAIL + ' background:#28e05a;';
+      label.style.color = '#e6c200';
+      if (matchTurnIdx === 0) {
+        // Most recent turn: yellow-on-black hash rail.
+        ind.textContent = '';
+        ind.style.cssText = RAIL + ' background:repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px);';
+      } else {
+        // Older turn: dark rail with the turn number centered in it.
+        ind.textContent = String(matchTurnIdx);
+        ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
+      }
     } else {
-      // No match: dashed gray + blue text.
-      el.style.borderLeft = '12px dashed #555';
-      el.style.borderRight = '12px dashed #555';
-      el.style.borderImage = 'none';
-      el.style.backgroundColor = '';
-      el.style.backgroundImage = '';
-      el.style.backgroundPosition = '';
-      el.style.backgroundSize = '';
-      el.style.backgroundRepeat = '';
-      el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
-      el.style.color = '#4da3ff';
+      // No match: gray dashed rails + blue text.
+      ind.style.cssText = RAIL + ' display:none;';
+      left.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
+      right.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
+      label.style.color = '#4da3ff';
     }
   }
 
-  /** Auto-select the session matching the current conversation (if any), and update the border. */
-  function refineAutoSelectMatch() {
-    if (refineFrozenAutoSelect) { updateMatchBorder(); return; }
-    var turnNorms = getRecentChatTurnNorms(10);
-    if (!turnNorms.length) {
-      lastAutoMatchIdx = -1;
-      if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
-      updateMatchBorder();
-      updateDuplicateWarning([]);
-      return;
-    }
+  /** Pure scan: which sessions match any of the recent chat turns? No side effects. */
+  function refineComputeMatches(turnNorms) {
     var contexts = refineGetContexts();
     var matchIdx = -1;
     var matchedSessions = [];
@@ -3049,6 +3039,26 @@
       }
       if (matchIdx !== -1) break; // first matching turn wins
     }
+    return { matchIdx: matchIdx, matchedSessions: matchedSessions };
+  }
+
+  /** Auto-select the session matching the current conversation (if any), and update the border. */
+  function refineAutoSelectMatch() {
+    var turnNorms = getRecentChatTurnNorms(10);
+    var m = refineComputeMatches(turnNorms);
+    if (refineFrozenAutoSelect) {
+      updateMatchBorder();
+      updateDuplicateWarning(m.matchedSessions);
+      return;
+    }
+    if (!turnNorms.length) {
+      lastAutoMatchIdx = -1;
+      if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
+      updateMatchBorder();
+      updateDuplicateWarning([]);
+      return;
+    }
+    var matchIdx = m.matchIdx;
     lastAutoMatchIdx = matchIdx;
     if (matchIdx === -1) {
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
@@ -3067,7 +3077,7 @@
       if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
     }
     updateMatchBorder();
-    updateDuplicateWarning(matchedSessions);
+    updateDuplicateWarning(m.matchedSessions);
   }
 
   /** Dim/restore the toggle pills and tail text while a match check is in progress. */
@@ -6385,7 +6395,12 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="margin-top:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; text-overflow:ellipsis;"></div>
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
+          <div id="deepgram-refine-turn-indicator" style="flex:0 0 12px; display:none;"></div>
+          <div id="deepgram-refine-left-rail" style="flex:0 0 12px; display:none;"></div>
+          <div id="deepgram-refine-tail-content" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; padding:0 8px;"></div>
+          <div id="deepgram-refine-right-rail" style="flex:0 0 12px; display:none;"></div>
+        </div>
 
         <!-- ✨ Refine: duplicate-block warning (shown when two sessions share the same last block) -->
         <div id="deepgram-refine-duplicate-warning" style="display:none; margin-top:4px; font-size:11px; line-height:1.3; color:#ff8c00; background:rgba(255,140,0,0.08); border:1px solid rgba(255,140,0,0.25); border-radius:4px; padding:3px 8px;">⚠ Duplicate sessions found with the same block</div>
