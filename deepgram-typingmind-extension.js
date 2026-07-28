@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.244',
+  VERSION: '3.245',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2459,7 +2459,7 @@
     var wrapper = document.createElement('span');
     wrapper.className = 'refine-toggle-square-wrapper';
     wrapper.style.cssText = 'display:inline-block; '
-      + (isActive ? 'border:3px solid #8b2020; border-radius:0; padding:6px; ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
+      + (isActive ? 'border:6px solid #8b2020; border-radius:0; padding:12px; ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
       + 'cursor:pointer;';
     wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
     wrapper.onclick = function() {
@@ -2880,10 +2880,16 @@
     }
     var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
     var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
+    // Turn-number overlay (shows how many turns back the match is; 0 = most recent = no overlay).
+    var turnOverlay = '';
+    if (lastMatchTurnIdx > 0) {
+      el.style.position = 'relative';
+      turnOverlay = '<span style="position:absolute; left:2px; top:50%; transform:translateY(-50%); font-size:9px; font-weight:700; color:#e6c200; z-index:1; pointer-events:none;">' + lastMatchTurnIdx + '</span>';
+    }
     if (firstPreview === lastPreview) {
-      el.innerHTML = '<div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = turnOverlay + '<div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     } else {
-      el.innerHTML = '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
+      el.innerHTML = turnOverlay + '<span style="white-space:nowrap;">' + firstPreview + '</span><div style="font-size:8px; line-height:0.8; opacity:0.45;">\u2026</div><span style="white-space:nowrap;">' + lastPreview + '</span>';
     }
   }
 
@@ -2956,6 +2962,8 @@
     el.style.display = matchedSessions.length > 1 ? '' : 'none';
   }
 
+  var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
+
   /** Apply/remove the green match border on the tail label (both sides). */
   function updateMatchBorder() {
     var el = document.getElementById('deepgram-refine-tail-label');
@@ -2965,22 +2973,44 @@
       el.style.borderLeft = ''; el.style.borderRight = '';
       el.style.paddingLeft = ''; el.style.paddingRight = '';
       el.style.color = '#e6c200';
+      el.style.background = '';
+      lastMatchTurnIdx = -1;
       return;
     }
     var turnNorms = getRecentChatTurnNorms(10);
     var match = false;
+    var matchTurnIdx = -1;
     for (var t = 0; t < turnNorms.length; t++) {
-      if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; break; }
+      if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; matchTurnIdx = t; break; }
     }
-    window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, ts: Date.now() };
-    if (match) {
-      el.style.borderLeft = '12px solid #28e05a';
+    lastMatchTurnIdx = matchTurnIdx;
+    window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, turnIdx: matchTurnIdx, ts: Date.now() };
+    if (match && matchTurnIdx === 0) {
+      // Most recent turn: yellow hash bar + green vise.
+      el.style.borderLeft = '24px solid transparent';
       el.style.borderRight = '12px solid #28e05a';
-      el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
+      el.style.borderImage = 'none';
+      el.style.background =
+        'repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px) 0 0 / 12px 100% no-repeat, ' +
+        'linear-gradient(#28e05a, #28e05a) 12px 0 / 12px 100% no-repeat';
+      el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
+      el.style.color = '#e6c200';
+    } else if (match) {
+      // Older turn: dark bar + number + green vise.
+      el.style.borderLeft = '24px solid transparent';
+      el.style.borderRight = '12px solid #28e05a';
+      el.style.borderImage = 'none';
+      el.style.background =
+        'linear-gradient(#333, #333) 0 0 / 12px 100% no-repeat, ' +
+        'linear-gradient(#28e05a, #28e05a) 12px 0 / 12px 100% no-repeat';
+      el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
       el.style.color = '#e6c200';
     } else {
+      // No match: dashed gray + blue text.
       el.style.borderLeft = '12px dashed #555';
       el.style.borderRight = '12px dashed #555';
+      el.style.borderImage = 'none';
+      el.style.background = '';
       el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
       el.style.color = '#4da3ff';
     }
@@ -6337,7 +6367,7 @@
             <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
             <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
               <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; position:relative; top:-1px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
-              <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:14px; color:#2e9b2e;"></span>
+              <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:19px; color:#4cd964;"></span>
               <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
             </span>
             <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
