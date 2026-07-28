@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.248',
+  VERSION: '3.249',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2934,27 +2934,52 @@
     return getLastBlockNormForText(refineGetContext());
   }
 
-  /** Text of the last N chat turns in TypingMind, normalized (excludes details/tool-calls/buttons/svg/time). */
-  function getRecentChatTurnNorms(maxTurns) {
+  /** Classify a top-level chat-turn child as 'user' | 'assistant' | 'tool' (null = not a turn). */
+  function classifyChatTurn(child, norm) {
+    if (!child || !child.querySelector) return null;
+    if (child.querySelector('[data-element-id="user-message"]')) return 'user';
+    if (child.querySelector('[data-element-id="ai-response"]')) {
+      // Standalone tool-call turn: ai-response holds ONLY tool/action UI (no prose text).
+      if (norm.length === 0 && child.querySelector('[data-element-id*="additional-actions"], .tm-tool-row-has-view, [data-tm-tool-modal-bound]')) return 'tool';
+      return 'assistant';
+    }
+    return null;
+  }
+
+  /** Text of the last chat turns in TypingMind, normalized (excludes details/tool-calls/buttons/svg/time).
+   *  March rule: walk back at least maxTurns turns (counting user/assistant/tool turns alike — an
+   *  expanded tool call counts as a turn) AND keep marching until minUserTurns USER turns have been
+   *  seen (or the start of the list). Only norms with length >= 5 are returned for matching, but
+   *  EVERY classified turn counts toward the march. */
+  function getRecentChatTurnNorms(maxTurns, minUserTurns) {
+    maxTurns = maxTurns || 10;
+    minUserTurns = minUserTurns || 0;
     var container = document.querySelector('div.dynamic-chat-content-container');
     if (!container || !container.children.length) return [];
     var turns = [];
-    for (var i = container.children.length - 1; i >= 0 && turns.length < maxTurns; i--) {
+    var totalTurns = 0;
+    var userTurns = 0;
+    for (var i = container.children.length - 1; i >= 0; i--) {
       var child = container.children[i];
-      if (child.querySelector && child.querySelector('[data-element-id*="response"], [data-element-id*="user"]')) {
-        var text = '';
-        (function walk(node) {
-          if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
-          if (node.nodeType !== Node.ELEMENT_NODE) return;
-          if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
-          var eid = node.getAttribute && node.getAttribute('data-element-id');
-          if (eid && /action|tool/i.test(eid)) return;
-          for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
-          if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
-        })(child);
-        var norm = normalizeForChatMatch(text);
-        if (norm.length >= 5) turns.push(norm);
-      }
+      if (!child || !child.querySelector) continue;
+      var text = '';
+      (function walk(node) {
+        if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+        if (node.nodeType !== Node.ELEMENT_NODE) return;
+        if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
+        var eid = node.getAttribute && node.getAttribute('data-element-id');
+        if (eid && /action|tool/i.test(eid)) return;
+        for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
+        if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
+      })(child);
+      var norm = normalizeForChatMatch(text);
+      var cls = classifyChatTurn(child, norm);
+      if (!cls) continue;
+      totalTurns++;
+      if (norm.length >= 5) turns.push(norm);
+      if (cls === 'user') userTurns++;
+      // Stop once we've marched at least maxTurns turns AND seen the required number of user turns.
+      if (totalTurns >= maxTurns && userTurns >= minUserTurns) break;
     }
     return turns;
   }
@@ -2992,7 +3017,7 @@
       window.__chatMatchDebug = { session: sessionNorm, turns: 0, match: false, turnIdx: -1, ts: Date.now() };
       return;
     }
-    var turnNorms = getRecentChatTurnNorms(10);
+    var turnNorms = getRecentChatTurnNorms(10, 4);
     var match = false;
     var matchTurnIdx = -1;
     for (var t = 0; t < turnNorms.length; t++) {
@@ -3044,7 +3069,7 @@
 
   /** Auto-select the session matching the current conversation (if any), and update the border. */
   function refineAutoSelectMatch() {
-    var turnNorms = getRecentChatTurnNorms(10);
+    var turnNorms = getRecentChatTurnNorms(10, 4);
     var m = refineComputeMatches(turnNorms);
     if (refineFrozenAutoSelect) {
       updateMatchBorder();
