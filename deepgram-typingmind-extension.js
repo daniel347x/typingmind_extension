@@ -781,7 +781,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.245',
+  VERSION: '3.246',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2990,9 +2990,11 @@
       el.style.borderLeft = '24px solid transparent';
       el.style.borderRight = '12px solid #28e05a';
       el.style.borderImage = 'none';
-      el.style.background =
-        'repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px) 0 0 / 12px 100% no-repeat, ' +
-        'linear-gradient(#28e05a, #28e05a) 12px 0 / 12px 100% no-repeat';
+      el.style.backgroundColor = 'transparent';
+      el.style.backgroundImage = 'repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px), linear-gradient(#28e05a, #28e05a)';
+      el.style.backgroundPosition = '0 0, 12px 0';
+      el.style.backgroundSize = '12px 100%, 12px 100%';
+      el.style.backgroundRepeat = 'no-repeat, no-repeat';
       el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
       el.style.color = '#e6c200';
     } else if (match) {
@@ -3000,9 +3002,11 @@
       el.style.borderLeft = '24px solid transparent';
       el.style.borderRight = '12px solid #28e05a';
       el.style.borderImage = 'none';
-      el.style.background =
-        'linear-gradient(#333, #333) 0 0 / 12px 100% no-repeat, ' +
-        'linear-gradient(#28e05a, #28e05a) 12px 0 / 12px 100% no-repeat';
+      el.style.backgroundColor = 'transparent';
+      el.style.backgroundImage = 'linear-gradient(#333, #333), linear-gradient(#28e05a, #28e05a)';
+      el.style.backgroundPosition = '0 0, 12px 0';
+      el.style.backgroundSize = '12px 100%, 12px 100%';
+      el.style.backgroundRepeat = 'no-repeat, no-repeat';
       el.style.paddingLeft = '32px'; el.style.paddingRight = '20px';
       el.style.color = '#e6c200';
     } else {
@@ -3010,7 +3014,11 @@
       el.style.borderLeft = '12px dashed #555';
       el.style.borderRight = '12px dashed #555';
       el.style.borderImage = 'none';
-      el.style.background = '';
+      el.style.backgroundColor = '';
+      el.style.backgroundImage = '';
+      el.style.backgroundPosition = '';
+      el.style.backgroundSize = '';
+      el.style.backgroundRepeat = '';
       el.style.paddingLeft = '8px'; el.style.paddingRight = '8px';
       el.style.color = '#4da3ff';
     }
