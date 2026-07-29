@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.268 Changes:
+ * - DIAGNOSTIC: tail-preview row bottom margin 10px → 50px to verify the margin mechanism is
+ *   live (the pills row below has margin-top:6px, and adjacent vertical margins COLLAPSE — the
+ *   gap is the max, not the sum — so 5px produced no change and 10px only +4px). Once confirmed,
+ *   this gets set to the final desired value.
+ *
  * v3.267 Changes:
  * - Tail-preview row (yellow text with the vise rails) bottom margin 5px → 10px (v3.265 added the
  *   first 5px; this adds 5 more).
@@ -902,7 +908,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.267',
+  VERSION: '3.268',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6741,7 +6747,7 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:10px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:50px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
           <div id="deepgram-refine-turn-indicator" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-left-rail" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-tail-content" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; padding:0 8px;"></div>
