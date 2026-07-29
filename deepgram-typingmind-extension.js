@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.267 Changes:
+ * - Tail-preview row (yellow text with the vise rails) bottom margin 5px → 10px (v3.265 added the
+ *   first 5px; this adds 5 more).
+ *
  * v3.266 Changes:
  * - Behind-pulse retuned after real use: the background's brightest point now comes only HALFWAY
  *   back up (#0e6673, was #117a8a) — at full brightness it momentarily looked "not breathing"
@@ -898,7 +902,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.266',
+  VERSION: '3.267',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6737,7 +6741,7 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:10px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
           <div id="deepgram-refine-turn-indicator" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-left-rail" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-tail-content" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; padding:0 8px;"></div>
