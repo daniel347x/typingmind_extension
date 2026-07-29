@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.270 Changes:
+ * - FIX: session⇄chat match could fail on blocks containing HTML entities. The chat side is
+ *   entity-DECODED by the browser (textContent: '&amp;' → '&', '&amp;amp;' → '&amp;'), while the
+ *   session side (clipboard markdown) keeps the literal entity text. Normalization strips
+ *   punctuation but keeps letters, so the session norm gained extra 'amp' insertions that broke
+ *   contiguity in BOTH includes() directions. getLastBlockNormForText now decodes ONE entity layer
+ *   (named + numeric refs; tags deliberately untouched so '#<u>…</u>' pill markup still aligns)
+ *   before normalizing — session-side only, since the chat side is already decoded.
+ *
  * v3.269 Changes:
  * - Tail-preview row bottom margin set to its final 15px (the 50px v3.268 diagnostic confirmed the
  *   mechanism was live; margin collapse against the pills row's 6px top margin had made the
@@ -913,7 +922,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.269',
+  VERSION: '3.270',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3062,7 +3071,25 @@
     return s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
-  /** The last '---'-delimited block of any text, normalized for comparison. */
+  /** Decode ONE layer of HTML entity references (named + numeric) WITHOUT touching tags (v3.270).
+   *  Used ONLY on the session/clipboard side of the chat-match comparison: the chat DOM side is
+   *  already entity-decoded by the browser (textContent), so a copied turn's literal '&amp;'
+   *  corresponds to the DOM's '&'. One layer here realigns the two sides ('&amp;' → '&',
+   *  '&amp;amp;' → '&amp;'). Deliberately NOT the textarea.innerHTML trick — that would parse
+   *  tag-pill markup like '#<u>…</u>' as real tags and strip the u-wrapper text the comparison
+   *  relies on. */
+  function decodeHtmlEntitiesOnce(s) {
+    if (!s) return s;
+    return s
+      .replace(/&(amp|lt|gt|quot|apos|nbsp);/g, function(m, e) {
+        return e === 'amp' ? '&' : e === 'lt' ? '<' : e === 'gt' ? '>' : e === 'quot' ? '"' : e === 'apos' ? "'" : ' ';
+      })
+      .replace(/&#(\d+);/g, function(m, d) { return String.fromCharCode(parseInt(d, 10)); })
+      .replace(/&#x([0-9a-fA-F]+);/g, function(m, h) { return String.fromCharCode(parseInt(h, 16)); });
+  }
+
+  /** The last '---'-delimited block of any text, normalized for comparison. One HTML-entity layer
+   *  is decoded before normalizing (session-side only — see decodeHtmlEntitiesOnce). */
   function getLastBlockNormForText(text) {
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
@@ -3081,7 +3108,7 @@
     // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
     // chat side too). Stripping here keeps session<->chat normalization aligned in both directions.
     var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*\d{1,3}\.\s+/, ''); });
-    return normalizeForChatMatch(blockLines.join(' '));
+    return normalizeForChatMatch(decodeHtmlEntitiesOnce(blockLines.join(' ')));
   }
 
   /** The last '---'-delimited block of the active context session, normalized for comparison. */
