@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.255 Changes:
+ * - The 2s post-Refine cooldown is now a visible "done" signal: the ✨ Refine button turns STANDOUT
+ *   YELLOW (full opacity, dark label) for the cooldown window instead of just dimming, so you can
+ *   catch "refinement complete" from the corner of your eye while looking elsewhere. The button
+ *   stays disabled the whole window (misclick race protection unchanged).
+ *
  * v3.254 Changes:
  * - Refine session pills: ONE shared manual-selection path (refineManualSelectSlot) now backs every
  *   session-picking surface — the ✨ context: quick-switch popup, the Context-modal ribbon row, the
@@ -792,7 +798,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.254',
+  VERSION: '3.255',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4478,16 +4484,22 @@
 
   // @carto-group id=client-group-8 label="Client group 8"
 
-  /** Start a 2s cooldown on the Refine button (disabled + dimmed) to prevent misclicks. */
+  /** Start a 2s cooldown on the Refine button (disabled) to prevent misclicks.
+   *  v3.255: the button turns STANDOUT YELLOW (full opacity, dark label) for the window — doubles as
+   *  an at-a-glance "refinement DONE" signal you can catch while looking elsewhere. Still disabled
+   *  the whole time. The button's normal look comes from the deepgram-btn-info CSS class (no inline
+   *  background/color), so clearing the inline styles on restore hands it straight back. */
   function refineStartCooldown() {
     const b = document.getElementById('deepgram-refine-btn');
     if (!b) return;
     b.disabled = true;
-    b.style.opacity = '0.55';
+    b.style.opacity = '';
+    b.style.background = '#ffd400';   // standout yellow = "done — hold on a beat"
+    b.style.color = '#1a1a1a';        // dark label for contrast on yellow
     if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
     window.__refineCooldownTimer = setTimeout(function(){
       const bb = document.getElementById('deepgram-refine-btn');
-      if (bb) { bb.disabled = false; bb.style.opacity = ''; }
+      if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.style.background = ''; bb.style.color = ''; }
       window.__refineCooldownTimer = null;
     }, 2000);
   }
