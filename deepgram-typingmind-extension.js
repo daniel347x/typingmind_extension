@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.275 Changes:
+ * - Rest-phase yellow text brightened: #ccaa00 (80%) → #e5be00 (90% bright).
+ *
  * v3.274 Changes:
  * - Rest-phase white text replaced with a dimmed yellow (#ccaa00, ~80% bright) — both ends of the
  *   behind-pulse are now yellow tones, neither ever matches the normal button's clean white.
@@ -945,7 +948,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.274',
+  VERSION: '3.275',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3287,7 +3290,7 @@
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
       btn.style.background = '#0e6673';
-      btn.style.color = '#ccaa00';
+      btn.style.color = '#e5be00';
       btn.style.fontSize = '14px';
       if (btn.style.animationName !== 'dgAppendBehindPulse') btn.style.animation = 'dgAppendBehindPulse 2s ease-in-out infinite';
     } else if (verdict === 'nomatch') {
@@ -5579,7 +5582,7 @@
          teal, muddy-yellow 14px text, 80%-faded border. Phase 50 (peak): bg deepest, white 16px
          text, bright yellow border. Font size pulses ±2px for an extra dimension of contrast. */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#0e6673; color:#ccaa00; border-color:#776e44; font-size:14px; }
+        0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; font-size:14px; }
         50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; }
       }
 
