@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.256 Changes:
+ * - FIX: the standout-yellow "refinement done" cooldown now actually shows on SUCCESS. v3.255 only
+ *   updated refineStartCooldown(), but the success and user-cancel paths each had their own
+ *   hand-rolled cooldown blocks (dim teal at 0.55 opacity) that never called it. ALL cooldown paths
+ *   now converge on the one helper, which takes an optional completion label ('✓ Refined' /
+ *   '✓ Replaced selection' / '✓ Canceled') shown in dark text on the yellow for the 2s window.
+ *   Also removed the dead write-only __refineSuccessFlash flag/timer.
+ *
  * v3.255 Changes:
  * - The 2s post-Refine cooldown is now a visible "done" signal: the ✨ Refine button turns STANDOUT
  *   YELLOW (full opacity, dark label) for the cooldown window instead of just dimming, so you can
@@ -798,7 +806,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.255',
+  VERSION: '3.256',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4405,39 +4413,16 @@
       try { resetAutoClipboardTimer(); } catch (e) {}
       updateStatus('✨ Refined ✓', 'success');
 
-      // Flash the button briefly to confirm replacement, then start 5s cooldown.
-      const rb = document.getElementById('deepgram-refine-btn');
-      if (rb) {
-        rb.innerHTML = usingSelection ? '✓ Replaced selection' : '✓ Refined';
-        rb.disabled = true;
-        rb.style.opacity = '0.55';
-        window.__refineSuccessFlash = true;
-        if (window.__refineSuccessFlashTimer) clearTimeout(window.__refineSuccessFlashTimer);
-        if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
-        window.__refineCooldownTimer = setTimeout(function(){
-          const bb = document.getElementById('deepgram-refine-btn');
-          if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.innerHTML = '✨ Refine'; }
-          window.__refineSuccessFlash = false;
-          window.__refineCooldownTimer = null;
-        }, 2000);
-      }
+      // Flash the button to confirm replacement: standout-yellow 2s cooldown with a ✓ completion
+      // label (v3.256 — the success path now shares the ONE cooldown helper instead of a hand-rolled
+      // dim block; the dead write-only __refineSuccessFlash flag/timer was removed).
+      refineStartCooldown(usingSelection ? '✓ Replaced selection' : '✓ Refined');
     } catch (err) {
       console.error('❌ Refine failed:', err);
       const status = err && err.status;
       if (err && err.userCanceled) {
         updateStatus('✨ Refine canceled', 'info');
-        const cb = document.getElementById('deepgram-refine-btn');
-        if (cb) {
-          cb.innerHTML = '✓ Canceled';
-          cb.disabled = true;
-          cb.style.opacity = '0.55';
-          if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
-          window.__refineCooldownTimer = setTimeout(function(){
-            const bb = document.getElementById('deepgram-refine-btn');
-            if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.innerHTML = '✨ Refine'; }
-            window.__refineCooldownTimer = null;
-          }, 2000);
-        }
+        refineStartCooldown('✓ Canceled');   // shared yellow cooldown + label (v3.256)
       } else if (status === 401 || status === 403) {
         const meta = refineProviderMeta(provider);
         localStorage.removeItem(meta.keyStorage);
@@ -4484,14 +4469,18 @@
 
   // @carto-group id=client-group-8 label="Client group 8"
 
-  /** Start a 2s cooldown on the Refine button (disabled) to prevent misclicks.
-   *  v3.255: the button turns STANDOUT YELLOW (full opacity, dark label) for the window — doubles as
-   *  an at-a-glance "refinement DONE" signal you can catch while looking elsewhere. Still disabled
-   *  the whole time. The button's normal look comes from the deepgram-btn-info CSS class (no inline
-   *  background/color), so clearing the inline styles on restore hands it straight back. */
-  function refineStartCooldown() {
+  /** Start a 2s cooldown on the Refine button (disabled) to prevent misclicks — THE one cooldown
+   *  path for every Refine exit (success, cancel, timeout, error). Pass an optional completion label
+   *  ('✓ Refined', '✓ Replaced selection', '✓ Canceled') to show it during the window (restored to
+   *  '✨ Refine' at the end).
+   *  v3.255/3.256: the button turns STANDOUT YELLOW (full opacity, dark label) for the window —
+   *  doubles as an at-a-glance "refinement DONE" signal you can catch while looking elsewhere.
+   *  Still disabled the whole time. The button's normal look comes from the deepgram-btn-info CSS
+   *  class (no inline background/color), so clearing the inline styles on restore hands it back. */
+  function refineStartCooldown(labelHtml) {
     const b = document.getElementById('deepgram-refine-btn');
     if (!b) return;
+    if (labelHtml) b.innerHTML = labelHtml;
     b.disabled = true;
     b.style.opacity = '';
     b.style.background = '#ffd400';   // standout yellow = "done — hold on a beat"
@@ -4499,7 +4488,13 @@
     if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
     window.__refineCooldownTimer = setTimeout(function(){
       const bb = document.getElementById('deepgram-refine-btn');
-      if (bb) { bb.disabled = false; bb.style.opacity = ''; bb.style.background = ''; bb.style.color = ''; }
+      if (bb) {
+        bb.disabled = false;
+        bb.style.opacity = '';
+        bb.style.background = '';
+        bb.style.color = '';
+        if (labelHtml) bb.innerHTML = '✨ Refine';
+      }
       window.__refineCooldownTimer = null;
     }, 2000);
   }
