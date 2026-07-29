@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.264 Changes:
+ * - 10px of bottom margin added below the primary button row (📎 Refine: Append / Send / Ellipsis /
+ *   Paste Markdown / ✨ Refine) — breathing room separating it from the Refine controls/pills below.
+ *
  * v3.263 Changes:
  * - 📎 Append "behind" state (active session matches this conversation but is BEHIND by N turns) is
  *   now impossible to miss: the resting teal is dimmed toward black (#117a8a), and a gentle 2s
@@ -877,7 +881,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.263',
+  VERSION: '3.264',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6675,7 +6679,7 @@
           </button>
         </div>
         
-        <div class="deepgram-buttons">
+        <div class="deepgram-buttons" style="margin-bottom:10px;">
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
