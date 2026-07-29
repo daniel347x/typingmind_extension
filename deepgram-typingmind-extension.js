@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.272 Changes:
+ * - Behind-pulse contrast deepened: the rest-phase text is now a muddy yellow-brown (#8b7a3a) instead
+ *   of the gray-yellow (#a89f72) — darker, muddier, far less likely to be mistaken for the normal
+ *   button's clean white text. The font also PULSES ±2px through the cycle (14px ↔ 16px), adding a
+ *   second independent dimension of distinctiveness so the breathing reads clearly at every moment.
+ *
  * v3.271 Changes:
  * - STRONGER entity fix: normalizeForChatMatch now loop-decodes HTML entities on BOTH sides until
  *   idempotent (safety cutoff 5 passes) before stripping. v3.270's one-layer, session-only decode
@@ -931,7 +937,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.271',
+  VERSION: '3.272',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3273,7 +3279,8 @@
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
       btn.style.background = '#0e6673';
-      btn.style.color = '#a89f72';
+      btn.style.color = '#8b7a3a';
+      btn.style.fontSize = '14px';
       if (btn.style.animationName !== 'dgAppendBehindPulse') btn.style.animation = 'dgAppendBehindPulse 2s ease-in-out infinite';
     } else if (verdict === 'nomatch') {
       btn.style.border = '4px solid #666';
@@ -5559,13 +5566,13 @@
         transform: none;
       }
 
-      /* 📎 Append "behind" pulse (v3.263, retuned v3.266): gentle 2s oscillation applied ONLY in
-         the 'match' (behind-by-N) verdict via inline el.style.animation. Phase 0/100 (rest): bg
-         only HALFWAY back up (#0e6673), darker gray-yellow text, 80%-faded yellow border. Phase 50
-         (peak): bg a further step toward black, brightest-white text, bright yellow border. */
+      /* 📎 Append "behind" pulse (v3.263, retuned v3.272): gentle 2s three-channel oscillation
+         applied ONLY in the 'match' (behind-by-N) verdict. Phase 0/100 (rest): bg only-HALFWAY-up
+         teal, muddy-yellow 14px text, 80%-faded border. Phase 50 (peak): bg deepest, white 16px
+         text, bright yellow border. Font size pulses ±2px for an extra dimension of contrast. */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#0e6673; color:#a89f72; border-color:#776e44; }
-        50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; }
+        0%, 100% { background-color:#0e6673; color:#8b7a3a; border-color:#776e44; font-size:14px; }
+        50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; font-size:16px; }
       }
 
       /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
