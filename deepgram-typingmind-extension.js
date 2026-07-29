@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.261 Changes:
+ * - Chat-match interval cadence 3s → 1s: the pill now catches up almost instantly when flipping
+ *   conversations. Per-tick cost is tiny (the tail-march walks only the last ~10-20 turns, never
+ *   the whole list; reads are layout-free textContent walks; string matches are few-KB scans),
+ *   so 1s is well within budget.
+ * - FIX: the 📎 Append button LOOKED re-enabled a few seconds into a Refine request (the periodic
+ *   match check's verdict styling restored full opacity over the disabled state — the button was
+ *   in fact still disabled). refineUpdateAppendBtnState now keeps the 0.5 disabled dim and skips
+ *   verdict styling while a request is in-flight; normal styling resumes via the finally block.
+ *
  * v3.260 Changes:
  * - FIX: pills no longer stay stuck on the OLD conversation when you switch to a BUSY (actively
  *   streaming) conversation. Root cause: the anti-bounce quiescence design suppressed ALL match
@@ -843,7 +853,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.260',
+  VERSION: '3.261',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3116,6 +3126,11 @@
   function refineUpdateAppendBtnState(verdict) {
     var btn = document.getElementById('deepgram-insert-btn');
     if (!btn) return;
+    // While a Refine request is in-flight the button is deliberately disabled (v3.259): keep the
+    // disabled dim and skip verdict styling — otherwise each periodic match check (which calls
+    // this) would restore full opacity a few seconds in and the button would LOOK enabled
+    // mid-flight (v3.261). refineAbortController is non-null for exactly the in-flight window.
+    if (refineAbortController) { btn.style.opacity = '0.5'; return; }
     if (verdict === 'match') {
       btn.style.border = '4px solid #ffd400';
       btn.style.borderRadius = '10px';
@@ -3337,7 +3352,7 @@
       if (quiescenceWindowTimer === null || inSettleWindow) {
         refineAutoSelectMatch();
       }
-    }, 3000);
+    }, 1000);   // 1s cadence (v3.261; was 3s) — per-tick cost is only a few ms (see changelog)
     refineAutoSelectMatch();
   }
 
