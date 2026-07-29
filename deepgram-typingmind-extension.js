@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.273 Changes:
+ * - Swapped: the muddy-yellow text is now at the LARGE-font (peak) end of the behind-pulse cycle
+ *   and bright white at the small-font rest end (the previous ordering was backwards).
+ *
  * v3.272 Changes:
  * - Behind-pulse contrast deepened: the rest-phase text is now a muddy yellow-brown (#8b7a3a) instead
  *   of the gray-yellow (#a89f72) — darker, muddier, far less likely to be mistaken for the normal
@@ -937,7 +941,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.272',
+  VERSION: '3.273',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3279,7 +3283,7 @@
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
       btn.style.background = '#0e6673';
-      btn.style.color = '#8b7a3a';
+      btn.style.color = '#ffffff';
       btn.style.fontSize = '14px';
       if (btn.style.animationName !== 'dgAppendBehindPulse') btn.style.animation = 'dgAppendBehindPulse 2s ease-in-out infinite';
     } else if (verdict === 'nomatch') {
@@ -5571,8 +5575,8 @@
          teal, muddy-yellow 14px text, 80%-faded border. Phase 50 (peak): bg deepest, white 16px
          text, bright yellow border. Font size pulses ±2px for an extra dimension of contrast. */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#0e6673; color:#8b7a3a; border-color:#776e44; font-size:14px; }
-        50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; font-size:16px; }
+        0%, 100% { background-color:#0e6673; color:#ffffff; border-color:#776e44; font-size:14px; }
+        50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; }
       }
 
       /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
