@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.262 Changes:
+ * - The "fully up-to-date" match state (the session's last block IS the conversation's most recent
+ *   turn — the yellow-hashing rail) now stands out on the 📎 Append button too: a yellow ✓ is
+ *   appended to the label, and the button's teal background shifts subtly toward green (#149a8a).
+ *   The behind-by-N match state (numbered rail) keeps the plain yellow border with NO ✓ — so
+ *   "right conversation but behind" and "right conversation AND current" are visually distinct at
+ *   a glance. The ✓ is a managed span; the append-flash restore re-applies it immediately via
+ *   updateMatchBorder() (no 1s gap).
+ * - The ACTIVE session pill's padding ring (the space between the big red rectangular border and
+ *   the green-ringed inner pill) gets a faint warm-yellow tint (rgba(255,214,0,0.08)). The spacing
+ *   itself is unchanged — only the background wash.
+ *
  * v3.261 Changes:
  * - Chat-match interval cadence 3s → 1s: the pill now catches up almost instantly when flipping
  *   conversations. Per-tick cost is tiny (the tail-march walks only the last ~10-20 turns, never
@@ -853,7 +865,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.261',
+  VERSION: '3.262',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2552,7 +2564,7 @@
     var wrapper = document.createElement('span');
     wrapper.className = 'refine-toggle-square-wrapper';
     wrapper.style.cssText = 'display:inline-block; '
-      + (isActive ? 'border:6px solid #8b2020; border-radius:0; padding:12px; ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
+      + (isActive ? 'border:6px solid #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
       + 'cursor:pointer;';
     wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
     wrapper.onclick = function() {
@@ -3117,7 +3129,9 @@
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
 
   /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
-   *  'match'         → thick rounded STANDOUT-YELLOW border (appending to the matched session).
+   *  'match-current' → up-to-date match (last block == most recent turn): yellow border + a yellow
+   *                    ✓ appended to the label + background shifted subtly toward green (v3.262).
+   *  'match'         → behind-by-N match: thick rounded STANDOUT-YELLOW border, no ✓.
    *  'nomatch'       → same border in dim gray + 0.8 opacity + darker blue (warning: the active
    *                    session does NOT match this conversation — legit for manual edits, so the
    *                    button is NEVER disabled; purely visual feedback).
@@ -3131,7 +3145,25 @@
     // this) would restore full opacity a few seconds in and the button would LOOK enabled
     // mid-flight (v3.261). refineAbortController is non-null for exactly the in-flight window.
     if (refineAbortController) { btn.style.opacity = '0.5'; return; }
-    if (verdict === 'match') {
+    // Up-to-date ✓ decoration (v3.262): a dedicated span so the append flash ('✓ Appended' →
+    // innerHTML restore) can wipe it and the next updateMatchBorder call re-adds it.
+    var chk = document.getElementById('deepgram-append-uptodate-check');
+    if (verdict === 'match-current' && !chk) {
+      chk = document.createElement('span');
+      chk.id = 'deepgram-append-uptodate-check';
+      chk.textContent = ' ✓';
+      chk.style.cssText = 'color:#ffd400; font-weight:700; text-shadow:0 0 3px rgba(0,0,0,0.65);';
+      btn.appendChild(chk);
+    } else if (verdict !== 'match-current' && chk) {
+      chk.remove();
+    }
+    if (verdict === 'match-current') {
+      btn.style.border = '4px solid #ffd400';
+      btn.style.borderRadius = '10px';
+      btn.style.opacity = '1';
+      btn.style.background = '#149a8a';   // class teal shifted subtly toward green = "up to date"
+      btn.style.color = '';
+    } else if (verdict === 'match') {
       btn.style.border = '4px solid #ffd400';
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
@@ -3188,12 +3220,13 @@
         // Most recent turn: yellow-on-black hash rail.
         ind.textContent = '';
         ind.style.cssText = RAIL + ' background:repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px);';
+        refineUpdateAppendBtnState('match-current');
       } else {
         // Older turn: dark rail with the turn number centered in it.
         ind.textContent = String(matchTurnIdx);
         ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
+        refineUpdateAppendBtnState('match');
       }
-      refineUpdateAppendBtnState('match');
     } else {
       // No match: gray dashed rails + blue text.
       ind.style.cssText = RAIL + ' display:none;';
@@ -4690,6 +4723,7 @@
         const b = document.getElementById('deepgram-insert-btn');
         if (b) b.innerHTML = '📎 Refine: Append';
         window.__refineAppendRestoreTimer = null;
+        try { updateMatchBorder(); } catch (e) {}   // re-apply the up-to-date ✓/styling immediately (v3.262)
       }, 1200);
     }
   }
