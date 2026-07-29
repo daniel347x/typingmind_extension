@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.259 Changes:
+ * - The 📎 Append button is now also disabled while a Refine request is in-flight (parity with Send,
+ *   which was already disabled). Its inline opacity is forced to 0.5 for the duration because the
+ *   v3.258 match-state inline opacity ('1' / '0.8') would otherwise override the :disabled class
+ *   dim; the finally block re-enables it and re-applies the current match verdict styling via
+ *   updateMatchBorder() (border/opacity/color restored correctly for whatever the state is then).
+ *
  * v3.258 Changes:
  * - NEW: the 📎 Append button now mirrors the conversation⇄session match state (in lockstep with the
  *   green/gray rails, driven by updateMatchBorder). MATCH: thick rounded STANDOUT-YELLOW border.
@@ -824,7 +831,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.258',
+  VERSION: '3.259',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4366,6 +4373,11 @@
       // Disable Send while a Refine is in-flight (prevents sending un-refined text).
       var sendBtn = document.getElementById('deepgram-send-btn');
       if (sendBtn) sendBtn.disabled = true;
+      // v3.259: also disable 📎 Append while in-flight (same class of race). Inline opacity forced
+      // to 0.5 because v3.258's match-state inline opacity ('1'/'0.8') would otherwise beat the
+      // .deepgram-btn:disabled class dim. Re-enabled + verdict styling restored in the finally.
+      var appendBtn = document.getElementById('deepgram-insert-btn');
+      if (appendBtn) { appendBtn.disabled = true; appendBtn.style.opacity = '0.5'; }
       // Also make the transcript read-only so typing doesn't re-enable Send.
       if (transcriptEl) transcriptEl.readOnly = true;
 
@@ -4514,6 +4526,11 @@
       if (refineAbortController === thisAbortController) refineAbortController = null;
       // Re-enable the Send button (its normal state is managed by updateInsertButtonState).
       try { updateInsertButtonState(); } catch (e) {}
+      // Re-enable the 📎 Append button (v3.259) and restore its match-state styling (border, opacity,
+      // color): updateMatchBorder recomputes the current verdict and reapplies it (rails too).
+      var appendBtn2 = document.getElementById('deepgram-insert-btn');
+      if (appendBtn2) appendBtn2.disabled = false;
+      try { updateMatchBorder(); } catch (e) {}
       // Re-enable editing in the transcript.
       if (transcriptEl) transcriptEl.readOnly = false;
     }
