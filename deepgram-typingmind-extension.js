@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.266 Changes:
+ * - Behind-pulse retuned after real use: the background's brightest point now comes only HALFWAY
+ *   back up (#0e6673, was #117a8a) — at full brightness it momentarily looked "not breathing"
+ *   right when you were about to click ("is it current already?"). The yellow-tinged rest text is
+ *   now a darker gray-yellow (#a89f72, was #e9dd9e). The alert half of the cycle (deepest bg,
+ *   brightest-white text, bright yellow border) is unchanged, so the breathing reads clearly at
+ *   every point in the 2s cycle and never impersonates the normal button.
+ *
  * v3.265 Changes:
  * - Cost blaze reworked into three acts (was: instant hazy glow + fade — eye-catching but the
  *   numbers were hard to read through the haze): (1) 0.25s blaze-UP from the normal green (soft
@@ -890,7 +898,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.265',
+  VERSION: '3.266',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3198,8 +3206,8 @@
       btn.style.border = '4px solid #776e44';
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
-      btn.style.background = '#117a8a';
-      btn.style.color = '#e9dd9e';
+      btn.style.background = '#0e6673';
+      btn.style.color = '#a89f72';
       if (btn.style.animationName !== 'dgAppendBehindPulse') btn.style.animation = 'dgAppendBehindPulse 2s ease-in-out infinite';
     } else if (verdict === 'nomatch') {
       btn.style.border = '4px solid #666';
@@ -5485,12 +5493,12 @@
         transform: none;
       }
 
-      /* 📎 Append "behind" pulse (v3.263): gentle 2s oscillation applied ONLY in the 'match'
-         (behind-by-N) verdict via inline el.style.animation. Phase 0/100 (rest): dimmed teal bg,
-         warm dim text, 80%-faded yellow border. Phase 50 (peak): bg a further 1/3 toward black,
-         brightest-white text, bright yellow border. Animations override the inline fallbacks. */
+      /* 📎 Append "behind" pulse (v3.263, retuned v3.266): gentle 2s oscillation applied ONLY in
+         the 'match' (behind-by-N) verdict via inline el.style.animation. Phase 0/100 (rest): bg
+         only HALFWAY back up (#0e6673), darker gray-yellow text, 80%-faded yellow border. Phase 50
+         (peak): bg a further step toward black, brightest-white text, bright yellow border. */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#117a8a; color:#e9dd9e; border-color:#776e44; }
+        0%, 100% { background-color:#0e6673; color:#a89f72; border-color:#776e44; }
         50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; }
       }
 
