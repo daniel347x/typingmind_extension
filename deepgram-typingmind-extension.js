@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.263 Changes:
+ * - 📎 Append "behind" state (active session matches this conversation but is BEHIND by N turns) is
+ *   now impossible to miss: the resting teal is dimmed toward black (#117a8a), and a gentle 2s
+ *   three-channel CSS pulse oscillates the background (a further 1/3 toward black), the label text
+ *   (warm dim-white ↔ brightest white), and the yellow border (bright #ffd400 ↔ 80% faded) — 1s
+ *   out, 1s in. The up-to-date state (✓) is unaffected, and the pulse is suppressed while a Refine
+ *   is in-flight (the button stays plainly disabled).
+ * - The "most recent cost" value no longer vanishes the instant you click Refine: the previous
+ *   value BLAZES (bright warm glow) and the label fades out over 2s before settling to the green
+ *   dash — the moment of clicking is exactly when you glance down at the prior cost. A completion
+ *   inside the 2s window simply overwrites with the real value (fade timer cancelled).
+ *
  * v3.262 Changes:
  * - The "fully up-to-date" match state (the session's last block IS the conversation's most recent
  *   turn — the yellow-hashing rail) now stands out on the 📎 Append button too: a yellow ✓ is
@@ -865,7 +877,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.262',
+  VERSION: '3.263',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3131,7 +3143,7 @@
   /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
    *  'match-current' → up-to-date match (last block == most recent turn): yellow border + a yellow
    *                    ✓ appended to the label + background shifted subtly toward green (v3.262).
-   *  'match'         → behind-by-N match: thick rounded STANDOUT-YELLOW border, no ✓.
+   *  'match'         → behind-by-N match: dimmer teal + gentle 2s three-channel pulse (v3.263), no ✓.
    *  'nomatch'       → same border in dim gray + 0.8 opacity + darker blue (warning: the active
    *                    session does NOT match this conversation — legit for manual edits, so the
    *                    button is NEVER disabled; purely visual feedback).
@@ -3144,7 +3156,9 @@
     // disabled dim and skip verdict styling — otherwise each periodic match check (which calls
     // this) would restore full opacity a few seconds in and the button would LOOK enabled
     // mid-flight (v3.261). refineAbortController is non-null for exactly the in-flight window.
-    if (refineAbortController) { btn.style.opacity = '0.5'; return; }
+    if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; return; }
+    // The behind-state pulse (v3.263) applies ONLY to the 'match' verdict; clear it for all others.
+    if (verdict !== 'match' && btn.style.animationName) btn.style.animation = '';
     // Up-to-date ✓ decoration (v3.262): a dedicated span so the append flash ('✓ Appended' →
     // innerHTML restore) can wipe it and the next updateMatchBorder call re-adds it.
     var chk = document.getElementById('deepgram-append-uptodate-check');
@@ -3164,11 +3178,16 @@
       btn.style.background = '#149a8a';   // class teal shifted subtly toward green = "up to date"
       btn.style.color = '';
     } else if (verdict === 'match') {
-      btn.style.border = '4px solid #ffd400';
+      // Behind-by-N (v3.263): dimmer teal at rest + a gentle 2s three-channel pulse (bg a further
+      // 1/3 toward black, text to brightest white, border to bright yellow) = "right conversation,
+      // but BEHIND". The keyframes do the oscillation; the inline values are the resting fallback.
+      // The assignment is guarded so the 1s match checks don't restart the phase mid-cycle.
+      btn.style.border = '4px solid #776e44';
       btn.style.borderRadius = '10px';
       btn.style.opacity = '1';
-      btn.style.background = '';
-      btn.style.color = '';
+      btn.style.background = '#117a8a';
+      btn.style.color = '#e9dd9e';
+      if (btn.style.animationName !== 'dgAppendBehindPulse') btn.style.animation = 'dgAppendBehindPulse 2s ease-in-out infinite';
     } else if (verdict === 'nomatch') {
       btn.style.border = '4px solid #666';
       btn.style.borderRadius = '10px';
@@ -3415,6 +3434,10 @@
   function refineUpdateCostLabel(cost, estimated) {
     const el = document.getElementById('deepgram-refine-cost-label');
     if (!el) return;
+    // Cancel any in-progress blaze-fade of the previous value (v3.263): a real render always wins.
+    if (window.__refineCostFadeTimer) { clearTimeout(window.__refineCostFadeTimer); window.__refineCostFadeTimer = null; }
+    el.style.transition = '';
+    el.style.opacity = '';
     if (cost === null || cost === undefined || isNaN(cost)) {
       el.textContent = '';
       return;
@@ -4484,11 +4507,36 @@
       // 'Time lost' tally: mark the request start; the finally block accumulates elapsed ms on ANY exit
       // (success, cancel, timeout, error) — this is the time Dan spends waiting on the model.
       refineRequestStartTs = Date.now();
-      // Reset 'last:' to zero and blank the cost label while the request is in-flight.
+      // Reset 'last:' to zero. Cost label (v3.263): instead of instantly blanking the PREVIOUS
+      // cost, BLAZE it (bright warm glow) and fade the label out over 2s — the moment of clicking
+      // Refine is exactly when Dan glances down to catch the prior cost. After the fade, the green
+      // dash settles in. A completion within 2s cancels the fade and overwrites with the real value.
       refineLastDurationMs = 0;
       try { refineUpdateLastDurationLabel(); } catch (e) {}
       var _costEl = document.getElementById('deepgram-refine-cost-label');
-      if (_costEl) _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
+      if (_costEl) {
+        var _prevSpan = _costEl.querySelector('span');
+        var _prevCost = _prevSpan ? _prevSpan.textContent.trim() : '';
+        if (_prevCost && _prevCost !== '—') {
+          _costEl.innerHTML = 'most recent cost: <span style="font-weight:700; color:#ffd76a; font-size:16px; text-shadow:0 0 10px rgba(255,214,0,0.95), 0 0 3px rgba(255,214,0,0.8);">' + _prevCost + '</span>';
+          _costEl.style.transition = 'opacity 2s ease-out';
+          _costEl.style.opacity = '1';
+          void _costEl.offsetWidth;   // force reflow so the fade transition registers
+          _costEl.style.opacity = '0';
+          if (window.__refineCostFadeTimer) clearTimeout(window.__refineCostFadeTimer);
+          window.__refineCostFadeTimer = setTimeout(function(){
+            var ce = document.getElementById('deepgram-refine-cost-label');
+            if (ce) {
+              ce.style.transition = '';
+              ce.style.opacity = '';
+              ce.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
+            }
+            window.__refineCostFadeTimer = null;
+          }, 2000);
+        } else {
+          _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
+        }
+      }
       if (refineCountdownTimer) clearInterval(refineCountdownTimer);
       refineCountdownTimer = setInterval(function(){
         const remaining = Math.max(0, Math.ceil((refineTimeoutEnd - Date.now()) / 1000));
@@ -5427,6 +5475,15 @@
       
       .deepgram-btn:disabled:hover {
         transform: none;
+      }
+
+      /* 📎 Append "behind" pulse (v3.263): gentle 2s oscillation applied ONLY in the 'match'
+         (behind-by-N) verdict via inline el.style.animation. Phase 0/100 (rest): dimmed teal bg,
+         warm dim text, 80%-faded yellow border. Phase 50 (peak): bg a further 1/3 toward black,
+         brightest-white text, bright yellow border. Animations override the inline fallbacks. */
+      @keyframes dgAppendBehindPulse {
+        0%, 100% { background-color:#117a8a; color:#e9dd9e; border-color:#776e44; }
+        50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; }
       }
       
       /* Info Section */
