@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.271 Changes:
+ * - STRONGER entity fix: normalizeForChatMatch now loop-decodes HTML entities on BOTH sides until
+ *   idempotent (safety cutoff 5 passes) before stripping. v3.270's one-layer, session-only decode
+ *   only aligned pairs at the SAME encoding layer; blocks that DISCUSS entities mix layers (the
+ *   chat may display the literal entity as technical text while the session holds the bare
+ *   symbol, or vice versa), and only converging both sides to the fixed point aligns all of them.
+ *   Over-decoding is harmless here — this is a match comparison key, not a render path (a rare
+ *   false positive is accepted by design).
+ *
  * v3.270 Changes:
  * - FIX: session⇄chat match could fail on blocks containing HTML entities. The chat side is
  *   entity-DECODED by the browser (textContent: '&amp;' → '&', '&amp;amp;' → '&amp;'), while the
@@ -922,7 +931,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.270',
+  VERSION: '3.271',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3065,19 +3074,17 @@
 
   /** Strip a string to pure alphanumeric, lowercase — comparison key. (Hyphens stripped too: they're
    *  formatting artifacts (table separators, etc.) that create false mismatches between Markdown source
-   *  and rendered HTML. The --- breaks are only used for block identification, not comparison.) */
+   *  and rendered HTML. The --- breaks are only used for block identification, not comparison.)
+   *  v3.271: HTML entities are first loop-decoded to idempotence (both sides — see
+   *  decodeHtmlEntitiesLoop), so any encoding-layer mix aligns. */
   function normalizeForChatMatch(s) {
     if (!s) return '';
-    return s.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    return decodeHtmlEntitiesLoop(s).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
   /** Decode ONE layer of HTML entity references (named + numeric) WITHOUT touching tags (v3.270).
-   *  Used ONLY on the session/clipboard side of the chat-match comparison: the chat DOM side is
-   *  already entity-decoded by the browser (textContent), so a copied turn's literal '&amp;'
-   *  corresponds to the DOM's '&'. One layer here realigns the two sides ('&amp;' → '&',
-   *  '&amp;amp;' → '&amp;'). Deliberately NOT the textarea.innerHTML trick — that would parse
-   *  tag-pill markup like '#<u>…</u>' as real tags and strip the u-wrapper text the comparison
-   *  relies on. */
+   *  Deliberately NOT the textarea.innerHTML trick — that would parse tag-pill markup like
+   *  '#<u>…</u>' as real tags and strip the u-wrapper text the comparison relies on. */
   function decodeHtmlEntitiesOnce(s) {
     if (!s) return s;
     return s
@@ -3088,8 +3095,25 @@
       .replace(/&#x([0-9a-fA-F]+);/g, function(m, h) { return String.fromCharCode(parseInt(h, 16)); });
   }
 
-  /** The last '---'-delimited block of any text, normalized for comparison. One HTML-entity layer
-   *  is decoded before normalizing (session-side only — see decodeHtmlEntitiesOnce). */
+  /** Loop decodeHtmlEntitiesOnce until idempotent — safety cutoff 5 passes (v3.271). Applied to
+   *  BOTH sides of the chat-match comparison (inside normalizeForChatMatch): each side may sit at
+   *  a DIFFERENT encoding layer (browser textContent is one layer down from source; a copied
+   *  markdown block may hold literal entities or bare symbols), and converging both to the fixed
+   *  point aligns every layer mix. This is a comparison key, not a render path, so over-decoding
+   *  is harmless. */
+  function decodeHtmlEntitiesLoop(s) {
+    if (!s) return s;
+    var prev = s, i = 0;
+    while (i < 5) {
+      var next = decodeHtmlEntitiesOnce(prev);
+      if (next === prev) break;
+      prev = next;
+      i++;
+    }
+    return prev;
+  }
+
+  /** The last '---'-delimited block of any text, normalized for comparison. */
   function getLastBlockNormForText(text) {
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
@@ -3108,7 +3132,7 @@
     // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
     // chat side too). Stripping here keeps session<->chat normalization aligned in both directions.
     var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*\d{1,3}\.\s+/, ''); });
-    return normalizeForChatMatch(decodeHtmlEntitiesOnce(blockLines.join(' ')));
+    return normalizeForChatMatch(blockLines.join(' '));
   }
 
   /** The last '---'-delimited block of the active context session, normalized for comparison. */
