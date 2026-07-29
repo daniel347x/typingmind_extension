@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.265 Changes:
+ * - Cost blaze reworked into three acts (was: instant hazy glow + fade — eye-catching but the
+ *   numbers were hard to read through the haze): (1) 0.25s blaze-UP from the normal green (soft
+ *   lead-in, no instant jump); (2) 1s legible hold — 17px, bright warm color, weight 800, NO
+ *   haze; (3) the original 2s glow-fade, with the font easing back down to 15px before the dash
+ *   settles. Total 3.25s, driven by one @keyframes block (dgCostBlaze) on the amount span.
+ * - +5px bottom margin under the yellow tail-preview row (the one flanked by the green vise
+ *   rails), separating it from what follows.
+ *
  * v3.264 Changes:
  * - 10px of bottom margin added below the primary button row (📎 Refine: Append / Send / Ellipsis /
  *   Paste Markdown / ✨ Refine) — breathing room separating it from the Refine controls/pills below.
@@ -881,7 +890,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.264',
+  VERSION: '3.265',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4522,21 +4531,16 @@
         var _prevSpan = _costEl.querySelector('span');
         var _prevCost = _prevSpan ? _prevSpan.textContent.trim() : '';
         if (_prevCost && _prevCost !== '—') {
-          _costEl.innerHTML = 'most recent cost: <span style="font-weight:700; color:#ffd76a; font-size:16px; text-shadow:0 0 10px rgba(255,214,0,0.95), 0 0 3px rgba(255,214,0,0.8);">' + _prevCost + '</span>';
-          _costEl.style.transition = 'opacity 2s ease-out';
-          _costEl.style.opacity = '1';
-          void _costEl.offsetWidth;   // force reflow so the fade transition registers
-          _costEl.style.opacity = '0';
+          // Three-act blaze (v3.265), driven by the dgCostBlaze keyframes on the amount span:
+          // 0.25s blaze-up from green (no haze) → 1s legible hold (17px, weight 800, still no
+          // haze) → the original 2s glow-fade with the font easing back to 15px; then the dash.
+          _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px; animation:dgCostBlaze 3.25s ease-in-out 1 both;">' + _prevCost + '</span>';
           if (window.__refineCostFadeTimer) clearTimeout(window.__refineCostFadeTimer);
           window.__refineCostFadeTimer = setTimeout(function(){
             var ce = document.getElementById('deepgram-refine-cost-label');
-            if (ce) {
-              ce.style.transition = '';
-              ce.style.opacity = '';
-              ce.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
-            }
+            if (ce) ce.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
             window.__refineCostFadeTimer = null;
-          }, 2000);
+          }, 3300);
         } else {
           _costEl.innerHTML = 'most recent cost: <span style="font-weight:600; color:#4cd964; font-size:15px;">—</span>';
         }
@@ -5488,6 +5492,18 @@
       @keyframes dgAppendBehindPulse {
         0%, 100% { background-color:#117a8a; color:#e9dd9e; border-color:#776e44; }
         50%      { background-color:#0b515c; color:#ffffff; border-color:#ffd400; }
+      }
+
+      /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
+         green (no haze), 1s legible hold (bigger font, bright warm, still NO haze), then the
+         original 2s glow-fade with the font easing back to 15px. Applied inline to the amount
+         span at request start; JS swaps in the green dash when it ends. */
+      @keyframes dgCostBlaze {
+        0%    { color:#4cd964; font-size:15px; font-weight:600; text-shadow:none; opacity:1; }
+        7.7%  { color:#ffd76a; font-size:17px; font-weight:800; text-shadow:none; opacity:1; }
+        38.5% { color:#ffd76a; font-size:17px; font-weight:800; text-shadow:none; opacity:1; }
+        46%   { color:#ffd76a; font-size:16.5px; font-weight:700; text-shadow:0 0 10px rgba(255,214,0,0.95), 0 0 3px rgba(255,214,0,0.8); opacity:1; }
+        100%  { color:#ffd76a; font-size:15px; font-weight:700; text-shadow:0 0 10px rgba(255,214,0,0.95), 0 0 3px rgba(255,214,0,0.8); opacity:0; }
       }
       
       /* Info Section */
@@ -6713,7 +6729,7 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:5px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
           <div id="deepgram-refine-turn-indicator" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-left-rail" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-tail-content" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; padding:0 8px;"></div>
