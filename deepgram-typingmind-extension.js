@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.258 Changes:
+ * - NEW: the 📎 Append button now mirrors the conversation⇄session match state (in lockstep with the
+ *   green/gray rails, driven by updateMatchBorder). MATCH: thick rounded STANDOUT-YELLOW border.
+ *   NO MATCH: same border in dim gray + 80% opacity + darker blue — an at-a-glance "you're about to
+ *   append to a session that doesn't match this conversation" warning (e.g. when you forgot freeze
+ *   is on). Append is NEVER disabled — manual cross-appends stay fully allowed; purely visual.
+ *   Indeterminate/empty-session state gets a transparent same-size border so geometry never jumps.
+ *
  * v3.257 Changes:
  * - Default widget height 25px shorter (790→765 collapsed, 330→305 expanded; the 490px mode delta is
  *   unchanged so both expanded views shrink by the same 25). Leaves headroom for the Refine
@@ -816,7 +824,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.257',
+  VERSION: '3.258',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3057,6 +3065,37 @@
 
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
 
+  /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
+   *  'match'         → thick rounded STANDOUT-YELLOW border (appending to the matched session).
+   *  'nomatch'       → same border in dim gray + 0.8 opacity + darker blue (warning: the active
+   *                    session does NOT match this conversation — legit for manual edits, so the
+   *                    button is NEVER disabled; purely visual feedback).
+   *  'indeterminate' → neutral class look with a transparent same-size border (no geometry jump).
+   *  Called from every branch of updateMatchBorder() so it stays in lockstep with the rails. */
+  function refineUpdateAppendBtnState(verdict) {
+    var btn = document.getElementById('deepgram-insert-btn');
+    if (!btn) return;
+    if (verdict === 'match') {
+      btn.style.border = '4px solid #ffd400';
+      btn.style.borderRadius = '10px';
+      btn.style.opacity = '1';
+      btn.style.background = '';
+      btn.style.color = '';
+    } else if (verdict === 'nomatch') {
+      btn.style.border = '4px solid #666';
+      btn.style.borderRadius = '10px';
+      btn.style.opacity = '0.8';
+      btn.style.background = '#0e5a75';   // darker blue than the class teal
+      btn.style.color = '';
+    } else {
+      btn.style.border = '4px solid transparent';
+      btn.style.borderRadius = '10px';
+      btn.style.opacity = '';
+      btn.style.background = '';
+      btn.style.color = '';
+    }
+  }
+
   /** Apply the match/no-match rails + turn indicator on the tail label (explicit rail elements). */
   function updateMatchBorder() {
     var label = document.getElementById('deepgram-refine-tail-label');
@@ -3072,6 +3111,7 @@
       right.style.cssText = RAIL + ' display:none;';
       label.style.color = '#e6c200';
       lastMatchTurnIdx = -1;
+      refineUpdateAppendBtnState('indeterminate');
       window.__chatMatchDebug = { session: sessionNorm, turns: 0, match: false, turnIdx: -1, ts: Date.now() };
       return;
     }
@@ -3097,12 +3137,14 @@
         ind.textContent = String(matchTurnIdx);
         ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
       }
+      refineUpdateAppendBtnState('match');
     } else {
       // No match: gray dashed rails + blue text.
       ind.style.cssText = RAIL + ' display:none;';
       left.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
       right.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
       label.style.color = '#4da3ff';
+      refineUpdateAppendBtnState('nomatch');
     }
   }
 
