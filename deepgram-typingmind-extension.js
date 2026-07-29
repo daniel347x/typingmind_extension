@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.269 Changes:
+ * - Tail-preview row bottom margin set to its final 15px (the 50px v3.268 diagnostic confirmed the
+ *   mechanism was live; margin collapse against the pills row's 6px top margin had made the
+ *   earlier 5px/10px values look like no-ops). Effective gap is now a true 15px.
+ *
  * v3.268 Changes:
  * - DIAGNOSTIC: tail-preview row bottom margin 10px → 50px to verify the margin mechanism is
  *   live (the pills row below has margin-top:6px, and adjacent vertical margins COLLAPSE — the
@@ -908,7 +913,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.268',
+  VERSION: '3.269',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6747,7 +6752,7 @@
         </div>
 
         <!-- ✨ Refine: tail preview (first line of most-recent entry + last line) -->
-        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:50px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
+        <div id="deepgram-refine-tail-label" title="First and last line of the most recent entry in the active context slot" style="display:flex; align-items:stretch; margin-top:5px; margin-bottom:15px; font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden;">
           <div id="deepgram-refine-turn-indicator" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-left-rail" style="flex:0 0 12px; display:none;"></div>
           <div id="deepgram-refine-tail-content" style="flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; padding:0 8px;"></div>
