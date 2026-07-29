@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.260 Changes:
+ * - FIX: pills no longer stay stuck on the OLD conversation when you switch to a BUSY (actively
+ *   streaming) conversation. Root cause: the anti-bounce quiescence design suppressed ALL match
+ *   re-checks while mutations kept arriving — a busy conversation (even its waiting spinner,
+ *   which ticks DOM text) mutates at least every 5s, so the quiescence window never closed and
+ *   the 3s interval fallback was suppressed indefinitely; the ONE immediate check on arrival
+ *   usually fired on a still-swapping DOM and missed. The watcher now tracks a conversation
+ *   SIGNATURE (the norm of the FIRST chat turn — stable during streaming, changes only on a
+ *   conversation switch); a signature change forces match re-checks for an 8s settle window even
+ *   inside quiescence. Same-conversation streaming keeps the original suppression (no bounce).
+ *   Also extracted extractChatTurnNorm(), shared by the tail-march and the new head-read.
+ *
  * v3.259 Changes:
  * - The 📎 Append button is now also disabled while a Refine request is in-flight (parity with Send,
  *   which was already disabled). Its inline opacity is forced to 0.5 for the duration because the
@@ -831,7 +843,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.259',
+  VERSION: '3.260',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3019,6 +3031,41 @@
     return null;
   }
 
+  /** Extract the normalized text + role classification of one top-level chat-turn child.
+   *  Shared by getRecentChatTurnNorms (tail march) and getChatSignature (head read). */
+  function extractChatTurnNorm(child) {
+    if (!child || !child.querySelector) return null;
+    var text = '';
+    (function walk(node) {
+      if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+      if (node.nodeType !== Node.ELEMENT_NODE) return;
+      if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
+      var eid = node.getAttribute && node.getAttribute('data-element-id');
+      if (eid && /action|tool/i.test(eid)) return;
+      for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
+      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
+    })(child);
+    var norm = normalizeForChatMatch(text);
+    var cls = classifyChatTurn(child, norm);
+    if (!cls) return null;
+    return { cls: cls, norm: norm };
+  }
+
+  /** Signature of the CURRENT conversation, for switch detection (v3.260): the norm of the FIRST
+   *  classifiable chat turn. Deliberately the HEAD, not the tail — the tail mutates constantly
+   *  during streaming, but the first turn is stable for the life of a conversation, so a
+   *  signature change reliably means "user switched conversations". */
+  function getChatSignature() {
+    var container = document.querySelector('div.dynamic-chat-content-container');
+    if (!container) return '';
+    var limit = Math.min(container.children.length, 8);
+    for (var i = 0; i < limit; i++) {
+      var r = extractChatTurnNorm(container.children[i]);
+      if (r && r.norm.length >= 5) return r.norm;
+    }
+    return '';
+  }
+
   /** Text of the last chat turns in TypingMind, normalized (excludes details/tool-calls/buttons/svg/time).
    *  March rule: walk back at least maxTurns turns (counting user/assistant/tool turns alike — an
    *  expanded tool call counts as a turn) AND keep marching until minUserTurns USER turns have been
@@ -3033,24 +3080,11 @@
     var totalTurns = 0;
     var userTurns = 0;
     for (var i = container.children.length - 1; i >= 0; i--) {
-      var child = container.children[i];
-      if (!child || !child.querySelector) continue;
-      var text = '';
-      (function walk(node) {
-        if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-        if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
-        var eid = node.getAttribute && node.getAttribute('data-element-id');
-        if (eid && /action|tool/i.test(eid)) return;
-        for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
-        if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
-      })(child);
-      var norm = normalizeForChatMatch(text);
-      var cls = classifyChatTurn(child, norm);
-      if (!cls) continue;
+      var r = extractChatTurnNorm(container.children[i]);
+      if (!r) continue;
       totalTurns++;
-      if (norm.length >= 5) turns.push(norm);
-      if (cls === 'user') userTurns++;
+      if (r.norm.length >= 5) turns.push(r.norm);
+      if (r.cls === 'user') userTurns++;
       // Stop once we've marched at least maxTurns turns AND seen the required number of user turns.
       if (totalTurns >= maxTurns && userTurns >= minUserTurns) break;
     }
@@ -3244,6 +3278,8 @@
   var chatMatchInterval = null;
   var quiescenceWindowTimer = null;  // 5s window for streaming detection
   var quiescenceFlag = false;        // true while streaming (2nd+ mutation within window)
+  var lastChatSignature = null;      // first-turn norm of the conversation we last saw (v3.260)
+  var lastSignatureChangeTs = 0;     // when the signature last changed (start of settle window)
 
   function initChatMatchWatcher() {
     var container = document.querySelector('div.dynamic-chat-content-container');
@@ -3283,8 +3319,22 @@
         chatMatchObserver.disconnect();
         chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
       }
-      // Only run periodic check when not in a quiescence window (avoid competing with streaming).
-      if (quiescenceWindowTimer === null) {
+      // Conversation-switch detection (v3.260): the FIRST chat turn is stable during
+      // streaming, so a signature change means the user switched conversations. Force match
+      // re-checks for an 8s settle window even inside a quiescence window (the freshly-switched
+      // conversation's DOM may still be rendering, and its streaming would otherwise suppress
+      // every re-check — the stuck-pill bug).
+      var sig = getChatSignature();
+      if (lastChatSignature === null) {
+        lastChatSignature = sig;
+      } else if (sig !== lastChatSignature) {
+        lastChatSignature = sig;
+        lastSignatureChangeTs = Date.now();
+      }
+      var inSettleWindow = (Date.now() - lastSignatureChangeTs) < 8000;
+      // Only run periodic check when not in a quiescence window (avoid competing with streaming)
+      // — EXCEPT during the post-switch settle window above.
+      if (quiescenceWindowTimer === null || inSettleWindow) {
         refineAutoSelectMatch();
       }
     }, 3000);
