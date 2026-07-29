@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.257 Changes:
+ * - Default widget height 25px shorter (790→765 collapsed, 330→305 expanded; the 490px mode delta is
+ *   unchanged so both expanded views shrink by the same 25). Leaves headroom for the Refine
+ *   session-pill row wrapping to a second row and other dynamic row growth, so the widget no longer
+ *   overlaps the widget above it. NOTE: a SAVED height in localStorage still wins over the new
+ *   default — clear 'transcript_textarea_height' or type 765 in the height field once to adopt it.
+ * - Yellow cooldown button is now TRULY full opacity: the .deepgram-btn:disabled class rule
+ *   (opacity: 0.5) was still dimming it (v3.256 only cleared the INLINE opacity); the inline
+ *   opacity is now forced to 1 for the window.
+ *
  * v3.256 Changes:
  * - FIX: the standout-yellow "refinement done" cooldown now actually shows on SUCCESS. v3.255 only
  *   updated refineStartCooldown(), but the success and user-cancel paths each had their own
@@ -806,7 +816,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.256',
+  VERSION: '3.257',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -913,9 +923,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 790,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 790,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 330,
+    DEFAULT_TRANSCRIPT_HEIGHT: 765,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 765,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 305,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
     TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 490
@@ -4482,7 +4492,7 @@
     if (!b) return;
     if (labelHtml) b.innerHTML = labelHtml;
     b.disabled = true;
-    b.style.opacity = '';
+    b.style.opacity = '1';            // force FULL opacity (the .deepgram-btn:disabled class rule is 0.5)
     b.style.background = '#ffd400';   // standout yellow = "done — hold on a beat"
     b.style.color = '#1a1a1a';        // dark label for contrast on yellow
     if (window.__refineCooldownTimer) clearTimeout(window.__refineCooldownTimer);
