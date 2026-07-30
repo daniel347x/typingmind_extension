@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.206
+// Version: 4.208
 // Issues Fixed:
+//   - v4.208: Anthropic tool-use ID sanitizer for cross-model transcript compatibility. Some
+//     non-Anthropic/OpenRouter models write tool_use IDs like 'search_web:0', but direct Anthropic
+//     requires ^[a-zA-Z0-9_-]+$ and rejects colons. repairAnthropicToolUseIds() now rewrites any
+//     non [A-Za-z0-9_-] char to underscore on BOTH assistant tool_use.id and paired user
+//     tool_result.tool_use_id across all Anthropic-shaped outbound payloads (direct Anthropic,
+//     OpenRouter /v1/messages skin, and TypingMind proxy -> Anthropic messages), before missing
+//     tool_result repair so all downstream logic sees canonical IDs. Also carries forward the
+//     v4.207 retry reset/backoff fix: successful responses unconditionally reset the per-identity
+//     429 counter and the retry clamp is 15s (max retries 20), preventing stale 30s backoff slog.
 //   - v4.206: Provider-routing dropdown now lives in the RING-BUFFER MODAL on the MOST RECENT
 //     entry of each identity (tracked by the canonical 4-part key, first occurrence in sort
 //     order). This makes routing controllable PER-SESSION immediately after a TypingMind refresh
@@ -246,7 +255,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.206';
+  const EXT_VERSION = '4.208';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3640,7 +3649,7 @@
   function tmDoneMarker() { return '[' + 'DONE' + ']'; }
 
   var TM_AUTO_RETRY_MAX = 20;       // (v4.204, Dan: walk-away runs should absorb, never surface) ~5-8 min coverage per chain
-  var TM_AUTO_RETRY_MAX_WAIT = 30;  // never wait longer than this many seconds per retry
+  var TM_AUTO_RETRY_MAX_WAIT = 15;  // (v4.207) clamp lowered 30->15s: 30s felt punishing when a healthy retry was one 1s bump away
 
   // (v4.203) PER-SESSION rate-limit backoff state. Keyed by the canonical routing identity
   // (sid::model::host::proxy). Consecutive 429s anywhere in the session escalate the wait
@@ -3683,16 +3692,19 @@
     try { status = Number(response.status) || 0; } catch (e) {}
     var looksError = (status >= 400) || (status === 0);
     if (!looksError) {
-      // (v4.203) Success: reset the per-session consecutive-failure counter for THIS identity and
-      // clear any stale error banner. The reset only computes the key when there WAS recent error
-      // activity, so normal turns pay no JSON.parse cost.
+      // (v4.207) UNCONDITIONAL per-identity reset. A successful response for an identity means
+      // its pool is healthy again, so the consecutive-429 backoff counter MUST drop to zero --
+      // regardless of whether an error banner happens to be showing. v4.203 gated this reset
+      // behind `if (tmMostRecentError)`, so ordinary successes between 429s never cleared the
+      // counter and the exponential wait stayed pinned at the 30s clamp indefinitely (Dan's
+      // 'it should be 1s retries but it's still 30s' slog). Compute the key cheaply and reset.
+      try {
+        var okBody = JSON.parse((args[1] && args[1].body) || '{}');
+        var okKey = tmComputeRoutingIdentityKey(okBody, args[0], args[1]);
+        if (okKey) tmResetRateLimitFails(okKey);
+      } catch (e) {}
       if (tmMostRecentError) {
         tmMostRecentError = null;
-        try {
-          var b2 = JSON.parse((args[1] && args[1].body) || '{}');
-          var k2 = tmComputeRoutingIdentityKey(b2, args[0], args[1]);
-          if (k2) tmResetRateLimitFails(k2);
-        } catch (e) {}
         try { renderGpt51UsageWidget(); } catch (e) {}
       }
       if (shouldSanitizeSolProUsage) { try { return Promise.resolve(tmWrapSolProResponse(response)); } catch (e) {} }
@@ -3729,7 +3741,10 @@
         try { if (reqBody) idKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
         var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
         var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
-        var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 5));
+        // (v4.207) Gentler escalation: cap the exponent reach at 4 (=> 1,2,4,8,16 then clamped to
+        // 15s), and it only climbs on TRULY consecutive fails since a success now always resets
+        // the counter to zero. Early retries stay short so a transient blip clears fast.
+        var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 4));
         var waitSec = Math.min(Math.max(hintSec, backoffSec), TM_AUTO_RETRY_MAX_WAIT);
         console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (429' + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
         return new Promise(function(resolve) {
@@ -4938,6 +4953,47 @@
     return changed;
   }
 
+  // (v4.208) Cross-model transcript compatibility for Anthropic-native payloads.
+  // Some non-Anthropic models serialize tool_use IDs such as "search_web:0". Direct Anthropic
+  // rejects those because tool_use.id must match ^[a-zA-Z0-9_-]+$ (colon is illegal). The payload
+  // history contains BOTH the assistant tool_use.id and the paired user tool_result.tool_use_id,
+  // so we sanitize them consistently on outbound: any non [A-Za-z0-9_-] char becomes underscore.
+  // This is intentionally limited to Anthropic-shaped bodies (messages[].content[] blocks), and is
+  // applied before missing-tool-result repair so all later logic sees the canonical sanitized IDs.
+  function repairAnthropicToolUseIds(body) {
+    if (!body || !Array.isArray(body.messages)) return 0;
+    var changed = 0;
+    function cleanId(v) {
+      if (v == null) return v;
+      return String(v).replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+    for (var i = 0; i < body.messages.length; i++) {
+      var msg = body.messages[i];
+      if (!msg || !Array.isArray(msg.content)) continue;
+      for (var j = 0; j < msg.content.length; j++) {
+        var block = msg.content[j];
+        if (!block || typeof block !== 'object') continue;
+        if (block.type === 'tool_use' && block.id != null) {
+          var nextId = cleanId(block.id);
+          if (nextId !== block.id) {
+            console.log('🩹 [v' + EXT_VERSION + '] Sanitized Anthropic tool_use.id: ' + block.id + ' -> ' + nextId);
+            block.id = nextId;
+            changed++;
+          }
+        }
+        if (block.type === 'tool_result' && block.tool_use_id != null) {
+          var nextResultId = cleanId(block.tool_use_id);
+          if (nextResultId !== block.tool_use_id) {
+            console.log('🩹 [v' + EXT_VERSION + '] Sanitized Anthropic tool_result.tool_use_id: ' + block.tool_use_id + ' -> ' + nextResultId);
+            block.tool_use_id = nextResultId;
+            changed++;
+          }
+        }
+      }
+    }
+    return changed;
+  }
+
   function tmInjectCacheControlOnMessage(msg, label) {
     // Inject cache_control: {type:'ephemeral'} on a single message's content.
     // Handles string content (wraps to multipart) and array content (tags last text block).
@@ -5866,6 +5922,8 @@
             });
           }
 
+          var directToolIdSanitized = repairAnthropicToolUseIds(body) || 0;
+          if (directToolIdSanitized) modified = true;
           tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
           if (tally.historicToolInputs) modified = true;
           tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
@@ -6025,10 +6083,11 @@
           }
 
           // Repair tools/content issues (same as direct Anthropic)
+          var toolIdSanitized = repairAnthropicToolUseIds(body) || 0;
           tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
           tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
           tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
-          if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+          if (toolIdSanitized || tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
           repairTallyForThisCall = tally;
 
           if (modified) {
@@ -6208,10 +6267,11 @@
             }
 
             // Crash-prevention repairs (each returns a COUNT of items repaired as of v4.62).
+            var proxyToolIdSanitized = repairAnthropicToolUseIds(body) || 0;
             tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
             tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
             tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
-            if (tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+            if (proxyToolIdSanitized || tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
 
             // Prompt caching on the proxy path (v4.70).
             // ...
