@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.205
+// Version: 4.206
 // Issues Fixed:
+//   - v4.206: Provider-routing dropdown now lives in the RING-BUFFER MODAL on the MOST RECENT
+//     entry of each identity (tracked by the canonical 4-part key, first occurrence in sort
+//     order). This makes routing controllable PER-SESSION immediately after a TypingMind refresh
+//     and across parallel conversations -- the persistent widget only ever shows the single
+//     most-recent identity and only after first traffic. The dropdown builder and change handler
+//     are now SHARED (tmBuildProviderRoutingDropdown / tmHandleProviderRoutingChange) between the
+//     widget model row and the ring modal; the modal's existing 'change' listener delegates.
+//     Ring dropdowns also lazily kick off live endpoint discovery per model.
 //   - v4.205: LIVE provider discovery. The widget now lazily fetches OpenRouter's Endpoints API
 //     per model (12h localStorage cache, tm_provider_live_v1) so NEW providers -- and new models
 //     like DeepSeek -- appear in the dropdown/set-modal automatically with no source edit. The
@@ -238,7 +246,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.205';
+  const EXT_VERSION = '4.206';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2452,39 +2460,9 @@
             ev.stopPropagation();
             return;
           }
-          // (Fix 16, v4.200) Provider routing dropdown -- onchange handler.
+          // (Fix 16, v4.200) Provider routing dropdown -- shared handler (v4.206).
           if (target.dataset.action === 'set-provider-routing') {
-            var routeVal = target.value;
-            var routeIdKey = target.dataset.identityKey || '';
-            if (routeVal === '__auto') {
-              // Unlock: clear the lock. Next turn floats (fallbacks on), first success re-locks.
-              tmClearProviderLock(routeIdKey);
-              console.log('🔓 [v' + EXT_VERSION + '] Provider lock cleared for ' + routeIdKey + ' — auto-lock on next hit');
-            } else if (routeVal === '__float') {
-              // Float: clear the lock AND mark as float so AUTO mode doesn't re-stamp.
-              // We use a special lock entry with slug='__float' to signal float mode.
-              tmSetProviderLock(routeIdKey, '__float', 'Float', true);
-              console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
-            } else if (routeVal === '__set') {
-              // (Fix 18, v4.204) Open the multi-select set modal; re-render so the dropdown
-              // snaps back to showing current state while the modal is up.
-              try { tmShowProviderSetModal(routeIdKey, (routeIdKey.split('::')[1]) || ''); } catch (e) {}
-            } else if (routeVal) {
-              // Manual lock to a specific provider. This is the informed switch — costs 1 cache write.
-              // (v4.201 AUDIT FIX B) derive the model from the identity key (sid::model::host::proxy)
-              // -- GLM's v4.200 referenced `modelForDisplay`, which is scoped to renderGpt51UsageWidget
-              // and is NOT visible inside this ensureGpt51UsageWidget click handler (ReferenceError,
-              // silently crashing manual switches).
-              var routeModel = (routeIdKey.split('::')[1]) || '';
-              var routeSeed = tmGetProviderEntries(routeModel);
-              var routeLabel = routeVal;
-              for (var ri = 0; ri < routeSeed.length; ri++) {
-                if (routeSeed[ri].slug === routeVal) { routeLabel = routeSeed[ri].label; break; }
-              }
-              tmSetProviderLock(routeIdKey, routeVal, routeLabel, true);
-              console.log('🔒 [v' + EXT_VERSION + '] Provider manually locked to ' + routeLabel + ' (' + routeVal + ') for ' + routeIdKey);
-            }
-            renderGpt51UsageWidget();
+            tmHandleProviderRoutingChange(target);
             ev.stopPropagation();
             return;
           }
@@ -2871,39 +2849,10 @@
           }
         } catch (e) {}
         if (tmIsMultiProviderModel(_rModel)) {
-          // (v4.201 AUDIT FIX) use the CANONICAL stamped identity key directly. GLM's v4.200
-          // reconstructed it from the lowercased/suffix-stripped _rModel, which drifts from the
-          // request/response-side keys whenever the raw model differs (case or :nitro suffix).
+          // (v4.201) canonical stamped identity key; (v4.206) shared dropdown builder (also used
+          // by the ring-buffer modal's most-recent entry per identity).
           var _rIdKey = (widgetIdentity && widgetIdentity.key) || '';
-          var _rLock = tmGetProviderLock(_rIdKey);
-          var _rSeed = tmGetProviderEntries(_rModel);
-          var _rIsFloat = _rLock && _rLock.slug === '__float';
-          var _rIsSet = _rLock && _rLock.mode === 'set';
-          var _rLockGlyph = _rIsSet ? '\uD83C\uDFAF' : (_rIsFloat ? '\uD83C\uDF0A' : (_rLock ? '\uD83D\uDD12' : '\uD83D\uDD13'));
-          var _rLockLabel = _rIsSet ? ('Set(' + _rLock.slugs.length + ')') : (_rLock ? _rLock.label : (providerForDisplay || 'auto'));
-          // Build dropdown options
-          var _rOpts = [];
-          _rOpts.push('<option value="__auto">' + (_rLock ? '\uD83D\uDD13 Auto-lock on first hit' : '\uD83D\uDD13 Auto (no lock yet)') + '</option>');
-          _rOpts.push('<option value="__float">\uD83C\uDF0A Float (never lock)</option>');
-          _rOpts.push('<option value="__set">\uD83C\uDFAF Multi-select set…</option>');
-          if (_rLock && !_rIsFloat && !_rIsSet) {
-            _rOpts.push('<option value="' + escapeHtml(_rLock.slug) + '" selected>\uD83D\uDD12 Locked: ' + escapeHtml(_rLock.label) + '</option>');
-          }
-          if (_rIsSet) {
-            _rOpts.push('<option value="__set" selected>\uD83C\uDFAF Set: ' + escapeHtml((_rLock.labels || _rLock.slugs).join('+')) + '</option>');
-          }
-          _rOpts.push('<option value="" disabled>── switch (costs 1 cache write) ──</option>');
-          for (var si = 0; si < _rSeed.length; si++) {
-            var se = _rSeed[si];
-            var badge = se.cache ? '\uD83D\uDFE2' : '\u26D4';
-            var optLabel = badge + ' ' + escapeHtml(se.label) + ' \u00b7 ' + escapeHtml(se.note || '');
-            if (_rLock && !_rIsFloat && !_rIsSet && _rLock.slug === se.slug) continue; // already shown above
-            _rOpts.push('<option value="' + escapeHtml(se.slug) + '">' + optLabel + '</option>');
-          }
-          routingDropdown = ' <select data-action="set-provider-routing" data-identity-key="' + escapeHtml(_rIdKey) + '" title="Provider routing" style="font-size:9px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:0 2px;margin-left:4px;">' +
-            '<option value="" disabled selected>' + _rLockGlyph + ' ' + escapeHtml(_rLockLabel) + '</option>' +
-            _rOpts.join('') +
-            '</select>';
+          routingDropdown = tmBuildProviderRoutingDropdown(_rIdKey, _rModel, providerForDisplay);
         }
       } catch (e) {}
       lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
@@ -3550,6 +3499,12 @@
     // v4.162: Change handler for Sol reasoning effort dropdown + v4.163: identity filter dropdown.
     overlay.addEventListener('change', function(ev) {
       var t = ev.target;
+      // (v4.206) Provider-routing dropdowns now live in the ring modal too (shared handler).
+      if (t && t.dataset && t.dataset.action === 'set-provider-routing') {
+        tmHandleProviderRoutingChange(t);
+        ev.stopPropagation();
+        return;
+      }
       if (t && t.dataset && t.dataset.action === 'set-sol-reasoning-effort') {
         var newLevel = t.value;
         if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
@@ -3834,6 +3789,67 @@
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(overlay);
+  }
+
+  // (v4.206) Shared builder for the provider-routing <select>, used by BOTH the persistent widget
+  // model row AND the ring-buffer modal (most-recent entry per identity). Identical semantics.
+  function tmBuildProviderRoutingDropdown(idKey, model, providerLabel) {
+    var lock = tmGetProviderLock(idKey);
+    var seed = tmGetProviderEntries(model);
+    var isFloat = lock && lock.slug === '__float';
+    var isSet = lock && lock.mode === 'set';
+    var lockGlyph = isSet ? '\uD83C\uDFAF' : (isFloat ? '\uD83C\uDF0A' : (lock ? '\uD83D\uDD12' : '\uD83D\uDD13'));
+    var lockLabel = isSet ? ('Set(' + lock.slugs.length + ')') : (lock ? lock.label : (providerLabel || 'auto'));
+    var opts = [];
+    opts.push('<option value="__auto">' + (lock ? '\uD83D\uDD13 Auto-lock on first hit' : '\uD83D\uDD13 Auto (no lock yet)') + '</option>');
+    opts.push('<option value="__float">\uD83C\uDF0A Float (never lock)</option>');
+    opts.push('<option value="__set">\uD83C\uDFAF Multi-select set…</option>');
+    if (lock && !isFloat && !isSet) {
+      opts.push('<option value="' + escapeHtml(lock.slug) + '" selected>\uD83D\uDD12 Locked: ' + escapeHtml(lock.label) + '</option>');
+    }
+    if (isSet) {
+      opts.push('<option value="__set" selected>\uD83C\uDFAF Set: ' + escapeHtml((lock.labels || lock.slugs).join('+')) + '</option>');
+    }
+    opts.push('<option value="" disabled>── switch (costs 1 cache write) ──</option>');
+    for (var si = 0; si < seed.length; si++) {
+      var se = seed[si];
+      var badge = se.cache ? '\uD83D\uDFE2' : '\u26D4';
+      var optLabel = badge + ' ' + escapeHtml(se.label) + ' \u00b7 ' + escapeHtml(se.note || '');
+      if (lock && !isFloat && !isSet && lock.slug === se.slug) continue; // already shown above
+      opts.push('<option value="' + escapeHtml(se.slug) + '">' + optLabel + '</option>');
+    }
+    return ' <select data-action="set-provider-routing" data-identity-key="' + escapeHtml(idKey) + '" title="Provider routing" style="font-size:9px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:0 2px;margin-left:4px;max-width:170px;">' +
+      '<option value="" disabled selected>' + lockGlyph + ' ' + escapeHtml(lockLabel) + '</option>' +
+      opts.join('') +
+      '</select>';
+  }
+
+  // (v4.206) Shared change handler for any set-provider-routing <select> (widget OR ring modal).
+  function tmHandleProviderRoutingChange(target) {
+    if (!target || !target.dataset) return false;
+    var routeVal = target.value;
+    var routeIdKey = target.dataset.identityKey || '';
+    if (routeVal === '__auto') {
+      tmClearProviderLock(routeIdKey);
+      console.log('🔓 [v' + EXT_VERSION + '] Provider lock cleared for ' + routeIdKey + ' — auto-lock on next hit');
+    } else if (routeVal === '__float') {
+      tmSetProviderLock(routeIdKey, '__float', 'Float', true);
+      console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
+    } else if (routeVal === '__set') {
+      try { tmShowProviderSetModal(routeIdKey, (routeIdKey.split('::')[1]) || ''); } catch (e) {}
+    } else if (routeVal) {
+      var routeModel = (routeIdKey.split('::')[1]) || '';
+      var routeSeed = tmGetProviderEntries(routeModel);
+      var routeLabel = routeVal;
+      for (var ri = 0; ri < routeSeed.length; ri++) {
+        if (routeSeed[ri].slug === routeVal) { routeLabel = routeSeed[ri].label; break; }
+      }
+      tmSetProviderLock(routeIdKey, routeVal, routeLabel, true);
+      console.log('🔒 [v' + EXT_VERSION + '] Provider manually locked to ' + routeLabel + ' (' + routeVal + ') for ' + routeIdKey);
+    }
+    try { renderGpt51UsageWidget(); } catch (e) {}
+    try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+    return true;
   }
 
   // (Fix 18, v4.204) Multi-select modal: choose the curated set of providers OpenRouter may
@@ -4390,6 +4406,10 @@
     // (v4.145) Session costs are stamped onto each capture row at response receipt.
     // No live recomputation from ring entries here; avoids double-counting and preserves history.
 
+    // (v4.206) Track which identities already got a provider-routing dropdown, so only the MOST
+    // RECENT entry per identity (first occurrence in the current sort) carries the control.
+    var seenRouteIdentities = {};
+
     items.forEach((cap, idx) => {
       if (!cap) return;
       const ts = escapeHtml(cap.ts_local || cap.ts || '');
@@ -4473,6 +4493,21 @@
               '</span>' +
               (capModelHtml ? (' <span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
+
+      // (v4.206) Provider-routing dropdown on the MOST RECENT ring entry of each identity --
+      // controllable per-session right after a refresh / across parallel sessions, BEFORE any
+      // new message is sent. Lazily kicks off live endpoint discovery for the model too.
+      var capRouteIdKey = '';
+      try { capRouteIdKey = tmCapIdentityKey(cap) || ''; } catch (e) {}
+      if (capRouteIdKey && !seenRouteIdentities[capRouteIdKey]) {
+        seenRouteIdentities[capRouteIdKey] = true;
+        var capRouteModel = (capRouteIdKey.split('::')[1]) || capModel || '';
+        if (tmIsMultiProviderModel(capRouteModel)) {
+          try { tmMaybeFetchProviderEndpoints(capRouteModel); } catch (e) {}
+          var capRouteProv = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
+          html += '<div style="margin-top:2px;font-size:10px;opacity:0.95;" title="Provider routing for this session">' + tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv) + '</div>';
+        }
+      }
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
       html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
