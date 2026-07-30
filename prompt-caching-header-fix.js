@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.198
+// Version: 4.199
 // Issues Fixed:
+//   - v4.199: Fix 15 — tool-schema type repair. TypingMind's MCP->OpenAI tools conversion DROPS
+//     any JSON-Schema `type` whose value is an ARRAY (e.g. FastMCP Optional served as
+//     `type:["string","null"]`), leaving a property with default/description/title and NO type.
+//     Lax providers (Moonshot/OpenAI/Anthropic) tolerate it; Fireworks' strict validator 400s the
+//     whole request ('JSON Schema not supported: could not understand the instance ...'). Confirmed
+//     live on lightning_rod.comment. tmRepairToolSchemas() now walks body.tools and re-injects a
+//     single-string type into any typeless property (universal, before canonicalization). Restores
+//     portability across ALL providers; one expected cache miss on first post-deploy turn (tools
+//     bytes change once), stable thereafter.
 //   - v4.198: (a) Raw Seg button now appears on FAILURE rows. Provider 400s (e.g. Fireworks
 //     'JSON Schema not supported') return a single error-only SSE chunk with no usage, which
 //     previously was dropped — the row showed a provider but had NO Raw Seg button. Now error
@@ -163,7 +172,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.198';
+  const EXT_VERSION = '4.199';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4385,6 +4394,100 @@
     return x;
   }
 
+  // ==================== TOOL SCHEMA TYPE REPAIR (Fix 15, v4.199) ====================
+  // TypingMind's MCP->OpenAI tools conversion DROPS any JSON-Schema `type` whose value is an
+  // ARRAY (e.g. a FastMCP Optional param served as `"type": ["string","null"]`), because
+  // OpenAI's strict function-calling subset only allows a single-string type. It passes
+  // `anyOf` unions through untouched, but a plain array-type is deleted outright — leaving a
+  // property with `default`/`description`/`title` and NO type at all. Moonshot / OpenAI /
+  // Anthropic tolerate the naked property; Fireworks' strict validator REJECTS the whole
+  // request with a 400 ('JSON Schema not supported: could not understand the instance ...').
+  // Confirmed live: lightning_rod.comment went out as {default:null,description,title} — the
+  // ONLY typeless property in the tool — and crashed on Fireworks while every anyOf-shaped
+  // sibling survived. This repair re-injects a single-string `type` into any property that
+  // lost it, restoring portability across ALL providers. Semantic-preserving for the common
+  // Optional[str] case; conservative single-string inference from `default` otherwise.
+  //
+  // Returns the number of properties repaired (0 = nothing changed).
+  function tmInferSchemaType(propObj) {
+    // Only called for a property that has NO type descriptor of any kind. Infer a single
+    // JSON-Schema string type from the default value; fall back to 'string' (the dominant
+    // FastMCP Optional[str] case, and the safest OpenAI-strict-compatible choice).
+    if (propObj && Object.prototype.hasOwnProperty.call(propObj, 'default')) {
+      var d = propObj.default;
+      if (typeof d === 'boolean') return 'boolean';
+      if (typeof d === 'number') return (Number.isInteger(d) ? 'integer' : 'number');
+      if (typeof d === 'string') return 'string';
+      // d === null (Optional[...] with no non-null default) or object/array default:
+      // 'string' is the overwhelmingly-common Optional[str] intent and is strict-safe.
+    }
+    return 'string';
+  }
+
+  function tmRepairSchemaTypesDeep(node) {
+    // Walk a JSON-Schema subtree. Repair each `properties` map: any property object that has
+    // NO type indicator (no `type`, `anyOf`, `oneOf`, `allOf`, `$ref`, `enum`, or `const`)
+    // gets a single inferred string `type`. Recurse into nested schemas so deep params
+    // (items, nested object properties, anyOf branches) are covered too.
+    var repaired = 0;
+    if (!node || typeof node !== 'object') return 0;
+    if (Array.isArray(node)) {
+      for (var i = 0; i < node.length; i++) repaired += tmRepairSchemaTypesDeep(node[i]);
+      return repaired;
+    }
+    if (node.properties && typeof node.properties === 'object') {
+      var keys = Object.keys(node.properties);
+      for (var k = 0; k < keys.length; k++) {
+        var prop = node.properties[keys[k]];
+        if (prop && typeof prop === 'object' && !Array.isArray(prop)) {
+          var hasType = Object.prototype.hasOwnProperty.call(prop, 'type')
+            || Object.prototype.hasOwnProperty.call(prop, 'anyOf')
+            || Object.prototype.hasOwnProperty.call(prop, 'oneOf')
+            || Object.prototype.hasOwnProperty.call(prop, 'allOf')
+            || Object.prototype.hasOwnProperty.call(prop, '$ref')
+            || Object.prototype.hasOwnProperty.call(prop, 'enum')
+            || Object.prototype.hasOwnProperty.call(prop, 'const');
+          if (!hasType) {
+            prop.type = tmInferSchemaType(prop);
+            repaired++;
+          }
+          // Recurse regardless (nested object/array schemas may also have naked props).
+          repaired += tmRepairSchemaTypesDeep(prop);
+        }
+      }
+    }
+    // Recurse into common nested-schema carriers.
+    if (node.items) repaired += tmRepairSchemaTypesDeep(node.items);
+    var branchKeys = ['anyOf', 'oneOf', 'allOf'];
+    for (var b = 0; b < branchKeys.length; b++) {
+      if (Array.isArray(node[branchKeys[b]])) repaired += tmRepairSchemaTypesDeep(node[branchKeys[b]]);
+    }
+    return repaired;
+  }
+
+  // Repair tool-parameter schemas in body.tools IN PLACE. Returns true if anything changed.
+  function tmRepairToolSchemas(body) {
+    try {
+      if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
+      var total = 0;
+      for (var t = 0; t < body.tools.length; t++) {
+        var tool = body.tools[t];
+        var params = tool && tool.function && tool.function.parameters;
+        if (params && typeof params === 'object') {
+          total += tmRepairSchemaTypesDeep(params);
+        }
+      }
+      if (total > 0) {
+        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' typeless tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type; fixes Fireworks/strict-provider 400s).');
+        return true;
+      }
+      return false;
+    } catch (e) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] tmRepairToolSchemas failed (leaving tools untouched):', e);
+      return false;
+    }
+  }
+
   // Canonicalize body.tools in place (key-sorted, array order preserved). Returns true if the
   // serialized form actually changed (i.e., TypingMind had emitted non-sorted keys this turn).
   // Applied UNIVERSALLY to all OpenRouter requests (both Claude and OpenAI-family) so the
@@ -4857,6 +4960,12 @@
       if (options && typeof options.body === 'string') {
         var tmUniversalBody = JSON.parse(options.body);
         var tmUniversalChanged = false;
+        // (Fix 15, v4.199) Repair typeless tool-schema properties BEFORE canonicalization, so the
+        // key-sort then runs over the completed schema and the cache-stable ordering still holds.
+        // Universal (every endpoint) since a naked schema is a portability bug, not OpenRouter-only.
+        if (tmRepairToolSchemas(tmUniversalBody)) {
+          tmUniversalChanged = true;
+        }
         if (tmStabilizeToolsOrdering(tmUniversalBody)) {
           tmUniversalChanged = true;
         }
