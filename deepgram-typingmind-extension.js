@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.276 Changes:
+ * - FIX: busy→busy conversation switches didn't move the pill (quiesced→busy worked). Root cause
+ *   candidates in the v3.260 signature path — the ONLY path busy→busy depends on (the immediate
+ *   first-mutation match is suppressed by the already-open quiescence window when coming FROM a
+ *   busy conversation): (1) TypingMind can keep recently-viewed conversations mounted in HIDDEN
+ *   containers, and a bare querySelector returns the first in DOM order regardless of visibility
+ *   (a STALE conversation); (2) getChatSignature only scanned the first 8 children, so a trimmed
+ *   conversation with >8 non-turn elements up top yielded an EMPTY signature for BOTH
+ *   conversations ('' === '' → no change ever detected). New getChatContainer() prefers the
+ *   VISIBLE container among all matches; getChatSignature now scans ALL children. A console.log
+ *   fires on every detected signature change for live verification.
+ *
  * v3.275 Changes:
  * - Rest-phase yellow text brightened: #ccaa00 (80%) → #e5be00 (90% bright).
  *
@@ -948,7 +960,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.275',
+  VERSION: '3.276',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3189,15 +3201,31 @@
     return { cls: cls, norm: norm };
   }
 
+  /** The chat content container that is actually VISIBLE (v3.276). TypingMind may keep
+   *  recently-viewed conversations mounted in HIDDEN containers for fast switching; a bare
+   *  querySelector returns the first in DOM order regardless of visibility — which can be a
+   *  STALE conversation (a prime suspect in the busy→busy stuck-pill bug). */
+  function getChatContainer() {
+    var els = document.querySelectorAll('div.dynamic-chat-content-container');
+    if (!els.length) return null;
+    if (els.length === 1) return els[0];
+    for (var i = 0; i < els.length; i++) {
+      if (els[i].offsetParent !== null) return els[i];   // visible (not display:none on self/ancestor)
+    }
+    return els[els.length - 1];   // fallback: last mounted (most recent)
+  }
+
   /** Signature of the CURRENT conversation, for switch detection (v3.260): the norm of the FIRST
    *  classifiable chat turn. Deliberately the HEAD, not the tail — the tail mutates constantly
    *  during streaming, but the first turn is stable for the life of a conversation, so a
-   *  signature change reliably means "user switched conversations". */
+   *  signature change reliably means "user switched conversations".
+   *  v3.276: reads the VISIBLE container (getChatContainer) and scans ALL children — a trimmed
+   *  conversation can have >8 non-turn elements up top, and an empty signature is identical for
+   *  every conversation (the other busy→busy suspect). */
   function getChatSignature() {
-    var container = document.querySelector('div.dynamic-chat-content-container');
+    var container = getChatContainer();
     if (!container) return '';
-    var limit = Math.min(container.children.length, 8);
-    for (var i = 0; i < limit; i++) {
+    for (var i = 0; i < container.children.length; i++) {
       var r = extractChatTurnNorm(container.children[i]);
       if (r && r.norm.length >= 5) return r.norm;
     }
@@ -3212,7 +3240,7 @@
   function getRecentChatTurnNorms(maxTurns, minUserTurns) {
     maxTurns = maxTurns || 10;
     minUserTurns = minUserTurns || 0;
-    var container = document.querySelector('div.dynamic-chat-content-container');
+    var container = getChatContainer();
     if (!container || !container.children.length) return [];
     var turns = [];
     var totalTurns = 0;
@@ -3454,7 +3482,7 @@
   var lastSignatureChangeTs = 0;     // when the signature last changed (start of settle window)
 
   function initChatMatchWatcher() {
-    var container = document.querySelector('div.dynamic-chat-content-container');
+    var container = getChatContainer();
     if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
@@ -3485,7 +3513,7 @@
     // Periodic fallback: re-check every 3s; also re-attach observer if container was replaced (SPA nav).
     if (chatMatchInterval) clearInterval(chatMatchInterval);
     chatMatchInterval = setInterval(function() {
-      var current = document.querySelector('div.dynamic-chat-content-container');
+      var current = getChatContainer();
       if (current && current !== container) {
         container = current;
         chatMatchObserver.disconnect();
@@ -3502,6 +3530,7 @@
       } else if (sig !== lastChatSignature) {
         lastChatSignature = sig;
         lastSignatureChangeTs = Date.now();
+        console.log(ts(), '🔀 Conversation switch detected (signature changed) — forcing match settle');
       }
       var inSettleWindow = (Date.now() - lastSignatureChangeTs) < 8000;
       // Only run periodic check when not in a quiescence window (avoid competing with streaming)
