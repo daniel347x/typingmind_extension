@@ -10,6 +10,10 @@
 //     single-string type into any typeless property (universal, before canonicalization). Restores
 //     portability across ALL providers; one expected cache miss on first post-deploy turn (tools
 //     bytes change once), stable thereafter.
+//   - v4.199: Fix 13 order changed to FIREWORKS-FIRST (speed over cache-stickiness) since Moonshot
+//     is molasses under launch load. order:['fireworks','moonshotai','together','modal'],
+//     allow_fallbacks:true. Watch the inline provider badge: a turn that bounces off Fireworks to
+//     another provider will cost a cache write (the speed/cache tradeoff, by design).
 //   - v4.198: (a) Raw Seg button now appears on FAILURE rows. Provider 400s (e.g. Fireworks
 //     'JSON Schema not supported') return a single error-only SSE chunk with no usage, which
 //     previously was dropped — the row showed a provider but had NO Raw Seg button. Now error
@@ -4615,7 +4619,14 @@
     // (a rare cache miss) rather than hard-failing the conversation. Merge-not-clobber: preserve
     // any provider fields TypingMind (or a future fix) may already have set.
     if (tmIsKimiModel(body.model)) {
-      var KIMI_ORDER = ['moonshotai', 'fireworks', 'together', 'modal'];
+      // (v4.199) FIREWORKS FIRST (speed-first ordering, per Dan 2026-07). Moonshot's official
+      // endpoint has the best cache-hit rate (~92%) but has been catastrophically SLOW under
+      // launch-week load (one-token-every-3-seconds), so speed wins for interactive use: prefer
+      // Fireworks (~32-64 tps), then fall back to Moonshot / Together / Modal. TRADEOFF: with
+      // allow_fallbacks:true this optimizes for SPEED, not cache-stickiness — a Fireworks wobble
+      // can bounce a turn onto Moonshot and cost a cache write. For a cache-locked background
+      // mode instead, use order:['fireworks'] + allow_fallbacks:false (hard-fails if down).
+      var KIMI_ORDER = ['fireworks', 'moonshotai', 'together', 'modal'];
       var KIMI_IGNORE = ['baseten', 'nebius', 'morph', 'digitalocean'];
       if (!body.provider || typeof body.provider !== 'object') body.provider = {};
       var provChanged = false;
