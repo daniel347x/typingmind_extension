@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.197
+// Version: 4.198
 // Issues Fixed:
+//   - v4.198: (a) Raw Seg button now appears on FAILURE rows. Provider 400s (e.g. Fireworks
+//     'JSON Schema not supported') return a single error-only SSE chunk with no usage, which
+//     previously was dropped — the row showed a provider but had NO Raw Seg button. Now error
+//     chunks are preserved as segments, and the button falls back to a raw-response-head dump
+//     (in_raw_head) so it is never dead on a crashed turn. (b) Persistent widget model row now
+//     shows the serving provider after a pipe (model | provider), matching the ring-buffer row.
 //   - v4.197: Fix 13 — Kimi provider pinning. OpenRouter post-open-weights load balancing began
 //     landing long-idle Kimi K3 sessions on non-caching providers (Baseten ~41%, Nebius 0.0%),
 //     causing full-price prompt-cache misses every turn. tmEnsureOpenRouterAccountingAndSession
@@ -157,7 +163,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.197';
+  const EXT_VERSION = '4.198';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1420,7 +1426,13 @@
                   if (!sseProvider && parsed2 && typeof parsed2.provider === 'string' && parsed2.provider) {
                     sseProvider = parsed2.provider;
                   }
-                  // (v4.96) Save the raw JSON blob for any segment that carried usage/cost evidence.
+                  // (v4.198) ALSO preserve ERROR-bearing segments (provider 400s / schema rejections),
+                  // which carry NO usage. Previously these were dropped, so a crashed turn showed a
+                  // provider (extracted above) but had NO Raw Seg button — you couldn't see the error
+                  // without opening the network tab. A chunk with an `error` field is exactly the
+                  // diagnostic you want, so mark it as worth keeping.
+                  if (parsed2 && parsed2.error) { hit = true; }
+                  // (v4.96) Save the raw JSON blob for any segment that carried usage/cost/error evidence.
                   if (hit) { usageSegments.push(jsonStr); }
                 } catch (parseErr) {}
               }
@@ -1476,6 +1488,10 @@
                 var idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
                 var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
                 tmMostRecentPayloadStatus.identity = identity;
+                // (v4.198) Carry the serving provider onto the most-recent status so the persistent
+                // widget can show it next to the model name. Prefer the captured provider string;
+                // fall back to the endpoint host so something useful shows for older/edge captures.
+                tmMostRecentPayloadStatus.provider = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
                 tmUpdateCaptureRecord(captureId, { _identity: identity });
                 // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
                 try {
@@ -2456,12 +2472,24 @@
     }
 
     // v4.192: model row — active session's model string in the session identity color
+    // v4.198: + serving provider appended (pipe-separated, light green) so you can see WHICH
+    // OpenRouter endpoint (Moonshot vs Fireworks vs Baseten) served the most-recent turn at a
+    // glance, right in the persistent widget — no need to open the ring-buffer modal.
     var modelForDisplay = '';
     try {
       if (widgetIdentity && widgetIdentity.model) modelForDisplay = widgetIdentity.model;
     } catch (e) {}
+    var providerForDisplay = '';
+    try {
+      var _st = tmMostRecentPayloadStatus || {};
+      if (_st.provider) providerForDisplay = String(_st.provider);
+      else if (widgetIdentity && widgetIdentity.host) providerForDisplay = String(widgetIdentity.host);
+    } catch (e) {}
     if (modelForDisplay) {
-      lines.push('<div title="active model" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + '</div>');
+      var providerSuffix = providerForDisplay
+        ? (' <span style="opacity:0.5;">|</span> <span title="serving provider" style="color:#8ef0a0;">' + escapeHtml(providerForDisplay) + '</span>')
+        : '';
+      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + '</div>');
     }
 
     if (collapsed) {
@@ -3357,13 +3385,24 @@
       };
       label = 'Response payload (skeleton)';
     } else if (part === 'in_usage_segments') {
-      // Raw JSON blobs from SSE segments that carried usage/cost evidence.
+      // Raw JSON blobs from SSE segments that carried usage/cost/error evidence.
       var segs = cap.response_usage_segments;
       if (!segs || !segs.length) return;
       var pretty = segs.map(function(s) {
         try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
       });
       copyTextToClipboard(pretty.join('\n'), 'Raw usage segments (' + segs.length + ')');
+      return;
+    } else if (part === 'in_raw_head') {
+      // (v4.198) Fallback raw-response dump for FAILURE rows that produced neither a parsed
+      // response_body nor any usage/error segment (e.g. a one-shot provider 400 whose single
+      // chunk we couldn't classify). Emits whatever raw response text we preserved, so the
+      // Raw Seg button is NEVER dead on a crashed turn.
+      var rawHead = (typeof cap.response_body_head === 'string' && cap.response_body_head)
+        ? cap.response_body_head
+        : (cap.response_body != null ? (function(){ try { return JSON.stringify(cap.response_body, null, 2); } catch (e) { return String(cap.response_body); } })() : '');
+      if (!rawHead) return;
+      copyTextToClipboard(rawHead, 'Raw response head');
       return;
     }
 
@@ -3677,7 +3716,22 @@
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_headers" style="' + inBtnStyle + btnDisabled + '">In Hdrs</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload" style="' + inBtnStyle + btnDisabled + '">In Body</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_payload_skeleton" style="background:#2a4b7c;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;' + btnDisabled + '">In Skel</button>' +
-              (cap.response_usage_segments && cap.response_usage_segments.length && isRich ? ('<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="in_usage_segments" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Raw Seg</button>') : '') +
+              (function(){
+                // (v4.198) Raw Seg button: show it for ANY row that has raw response evidence, not
+                // just usage-bearing ones. Prefer the captured usage/error segments; otherwise fall
+                // back to the raw response head/body (in_raw_head) so a crashed provider-400 turn is
+                // NEVER left without a way to view its raw segment from the ring buffer.
+                if (!isRich) return '';
+                var hasSegs = cap.response_usage_segments && cap.response_usage_segments.length;
+                var hasRawHead = (typeof cap.response_body_head === 'string' && cap.response_body_head) || cap.response_body != null;
+                if (!hasSegs && !hasRawHead) return '';
+                var segPart = hasSegs ? 'in_usage_segments' : 'in_raw_head';
+                var segLabel = hasSegs
+                  ? ('Raw Seg' + (cap.response_usage_segments.length > 1 ? (' (' + cap.response_usage_segments.length + ')') : ''))
+                  : 'Raw Seg⚠';
+                var segTitle = hasSegs ? 'Copy raw usage/error SSE segment(s)' : 'Copy raw response head (failure row — no parsed segment)';
+                return '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="' + segPart + '" title="' + segTitle + '" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">' + segLabel + '</button>';
+              })() +
               disabledNote +
               '</div>';
 
