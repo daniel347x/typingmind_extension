@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.212
+// Version: 4.213
 // Issues Fixed:
+//   - v4.213: SESSION INITIALIZATION. New '🌱 Init session' row in the ring-buffer modal: paste a
+//     Session ID and pick a model+provider (or provider set) from MEMORY (distinct model/provider
+//     pairs from successful ring entries + existing set locks), saved as the single global entry
+//     tm_provider_init_v1. On the FIRST outbound payload carrying that pasted Session ID (Tier-1
+//     deriveConversationIdFromBody) with NO provider lock anywhere for that session, the stored
+//     choice is persisted as that identity's lock and applied to THAT request; from then on the
+//     standard lock machinery (and the dropdowns) own it. Model MISMATCH => a once-per-session
+//     blocking alert and the init is NOT applied (request proceeds unrouted). Lets Dan pre-seed
+//     routing for a brand-new conversation before any traffic exists.
 //   - v4.211: Persistent-widget error hygiene + cache-badge repair (Dan's 'leave all values the
 //     same on a 429' spec). (1) WIDGET-FEED GATE: error responses (HTTP>=400 OR an error chunk in
 //     the body) no longer rebuild tmMostRecentPayloadStatus -- the widget keeps the LAST
@@ -287,7 +296,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.212';
+  const EXT_VERSION = '4.213';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -494,6 +503,101 @@
       locks[identityKey] = { mode: 'set', slugs: slugs.slice(), labels: (labels || slugs).slice(), ts: Date.now(), manual: true, _session_id: identityKey.split('::')[0] };
       localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
     } catch (e) {}
+  }
+
+  // ==================== SESSION INITIALIZATION (v4.213) ====================
+  // Lets Dan PRE-SEED a provider choice for a conversation that doesn't exist yet: he pastes a
+  // Session ID into the ring-modal init row, picks a model+provider (or set) from memory, and
+  // saves ONE global entry. On the FIRST outbound payload carrying that pasted Session ID (with
+  // no lock anywhere for that session), the choice becomes that session's provider lock.
+  var TM_PROVIDER_INIT_KEY = 'tm_provider_init_v1';
+  var tmInitMismatchWarned = {};  // memoize the model-mismatch alert (once per session per load)
+
+  function tmGetProviderInit() {
+    try { var r = localStorage.getItem(TM_PROVIDER_INIT_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  }
+  function tmSetProviderInit(entry) {
+    try { localStorage.setItem(TM_PROVIDER_INIT_KEY, JSON.stringify(entry)); } catch (e) {}
+  }
+  function tmClearProviderInit() {
+    try { localStorage.removeItem(TM_PROVIDER_INIT_KEY); } catch (e) {}
+  }
+
+  // Build the init-row dropdown options from MEMORY: distinct (model, provider) pairs from
+  // successful (non-429) ring entries, plus existing SET locks as set options.
+  function tmBuildProviderInitOptions() {
+    var opts = [];
+    var seen = {};
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var cap = ring[i];
+        if (!cap || tmIsRetryRow(cap)) continue;
+        var model = '';
+        try { model = tmCaptureModel(cap); } catch (e) {}
+        var prov = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : null;
+        if (!model || !prov) continue;
+        var slug = tmProviderNameToSlug(prov);
+        var key = model + '|' + slug;
+        if (seen[key]) continue;
+        seen[key] = true;
+        opts.push({ model: model, provider: { mode: 'single', slug: slug, label: prov }, label: model + ' — ' + prov });
+      }
+    } catch (e) {}
+    try {
+      var locks = tmGetProviderLocks();
+      for (var k in locks) {
+        if (!Object.prototype.hasOwnProperty.call(locks, k)) continue;
+        var L = locks[k];
+        if (L && L.mode === 'set' && Array.isArray(L.slugs) && L.slugs.length) {
+          var m = k.split('::')[1] || '';
+          var skey = m + '|set:' + L.slugs.join('+');
+          if (seen[skey]) continue;
+          seen[skey] = true;
+          opts.unshift({ model: m, provider: { mode: 'set', slugs: L.slugs.slice(), labels: (L.labels || L.slugs).slice() }, label: m + ' — 🎯 Set: ' + (L.labels || L.slugs).join('+') });
+        }
+      }
+    } catch (e) {}
+    return opts;
+  }
+
+  // The init engine, called from tmApplyProviderRouting when NO lock exists for this identity.
+  // Returns the applied lock, '__mismatch' on model mismatch (alerts once), or null if N/A.
+  function tmMaybeInitProviderSession(body, idKey) {
+    try {
+      var init = tmGetProviderInit();
+      if (!init || !init.sessionId || !init.provider) return null;
+      var pasted = null;
+      try { pasted = deriveConversationIdFromBody(body); } catch (e) {}
+      if (!pasted || String(pasted) !== String(init.sessionId)) return null;
+      // Only if NO lock exists for this session ID anywhere (any model/host/proxy).
+      var locks = tmGetProviderLocks();
+      var prefix = String(init.sessionId) + '::';
+      for (var k in locks) {
+        if (Object.prototype.hasOwnProperty.call(locks, k) && k.indexOf(prefix) === 0) return null;
+      }
+      // Model check (suffix/case-normalized both sides).
+      var bodyModel = String(body.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      var initModel = String(init.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      if (bodyModel !== initModel) {
+        if (!tmInitMismatchWarned[pasted]) {
+          tmInitMismatchWarned[pasted] = true;
+          try { alert('⚠ Provider-init mismatch: session "' + init.sessionId + '" was initialized for "' + init.model + '" but this conversation is sending "' + body.model + '". The init was NOT applied. Fix or clear it in the ring-buffer modal (🌱 Init session row).'); } catch (e) {}
+        }
+        return '__mismatch';
+      }
+      // Apply: persist the lock for THIS identity so the standard machinery owns it from here.
+      var prov = init.provider;
+      if (prov.mode === 'set' && Array.isArray(prov.slugs) && prov.slugs.length) {
+        tmSetProviderSetLock(idKey, prov.slugs.slice(), (prov.labels || prov.slugs).slice());
+      } else if (prov.slug) {
+        tmSetProviderLock(idKey, prov.slug, prov.label || prov.slug, true);
+      } else {
+        return null;
+      }
+      console.log('🌱 [v' + EXT_VERSION + '] Session-init applied: ' + init.sessionId + ' -> ' + init.model + ' [' + (prov.mode === 'set' ? ('Set: ' + prov.slugs.join('+')) : prov.slug) + '] for ' + idKey);
+      return tmGetProviderLock(idKey);
+    } catch (e) { return null; }
   }
 
   // Check if a model has multiple providers (live entries preferred; seed-table fallback).
@@ -3587,6 +3691,37 @@
         return;
       }
 
+      // (v4.213) Session-init apply/clear.
+      if (t.dataset && t.dataset.action === 'apply-provider-init') {
+        var sidInput = document.getElementById('tm-init-session-input');
+        var selInput = document.getElementById('tm-init-provider-select');
+        var sidVal = sidInput ? String(sidInput.value || '').trim() : '';
+        var selVal = selInput ? String(selInput.value || '') : '';
+        if (!sidVal || selVal === '') {
+          alert('Paste a Session ID and choose a model + provider first.');
+          ev.stopPropagation();
+          return;
+        }
+        var initOptsNow = tmBuildProviderInitOptions();
+        var chosen = initOptsNow[Number(selVal)];
+        if (!chosen) {
+          alert('That provider choice is no longer in memory — pick another.');
+          ev.stopPropagation();
+          return;
+        }
+        tmSetProviderInit({ sessionId: sidVal, model: chosen.model, provider: chosen.provider, ts: Date.now() });
+        console.log('🌱 [v' + EXT_VERSION + '] Session-init saved: ' + sidVal + ' -> ' + chosen.model + ' [' + (chosen.provider.mode === 'set' ? ('Set: ' + chosen.provider.slugs.join('+')) : chosen.provider.slug) + ']');
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+        return;
+      }
+      if (t.dataset && t.dataset.action === 'clear-provider-init') {
+        tmClearProviderInit();
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+        return;
+      }
+
       if (t.dataset && t.dataset.action === 'copy-payload-capture') {
         const capId = t.dataset.captureId;
         const part = t.dataset.part;
@@ -4661,9 +4796,42 @@
       : 'background:#5a3a6e;color:#fff;border:1px solid #7a5aae;';
     var retryToggleHtml = '<button data-action="toggle-hide-retries" title="Toggle visibility of auto-retry / 429 rows" style="' + retryBtnStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:8px;">' + retryBtnLabel + '</button>';
 
+    // (v4.213) Session-init row: paste a Session ID + pick a model+provider (or set) from MEMORY,
+    // saved as the single global init entry (tm_provider_init_v1). On the FIRST outbound payload
+    // carrying that pasted Session ID with no existing lock, the choice becomes the session's
+    // provider lock automatically (model mismatch => blocking alert, not applied).
+    var initEntry = tmGetProviderInit();
+    var initOpts = tmBuildProviderInitOptions();
+    var initRowHtml = '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(24,34,28,0.7);border:1px solid #2a3a2a;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:10px;">' +
+      '<span style="opacity:0.85;">🌱 Init session:</span>' +
+      '<input id="tm-init-session-input" type="text" placeholder="paste Session ID" value="' + escapeHtml((initEntry && initEntry.sessionId) || '') + '" style="width:150px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;" />' +
+      '<select id="tm-init-provider-select" style="font-size:10px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:1px 4px;max-width:300px;">';
+    if (!initOpts.length) {
+      initRowHtml += '<option value="">(no providers in memory yet)</option>';
+    } else {
+      initRowHtml += '<option value="">— choose model + provider —</option>';
+      for (var io = 0; io < initOpts.length; io++) {
+        var iopt = initOpts[io];
+        var isSel = false;
+        if (initEntry && initEntry.provider) {
+          if (initEntry.provider.mode === 'set' && iopt.provider.mode === 'set' && initEntry.model === iopt.model && initEntry.provider.slugs.join('+') === iopt.provider.slugs.join('+')) isSel = true;
+          if (initEntry.provider.mode !== 'set' && iopt.provider.mode !== 'set' && initEntry.model === iopt.model && initEntry.provider.slug === iopt.provider.slug) isSel = true;
+        }
+        initRowHtml += '<option value="' + io + '"' + (isSel ? ' selected' : '') + '>' + escapeHtml(iopt.label) + '</option>';
+      }
+    }
+    initRowHtml += '</select>' +
+      '<button data-action="apply-provider-init" title="Save this Session ID + provider choice as the init entry" style="background:#245f36;color:#fff;border:none;border-radius:3px;padding:1px 8px;font-size:10px;cursor:pointer;">Apply</button>' +
+      (initEntry
+        ? ('<span style="opacity:0.75;">init: ' + escapeHtml(initEntry.sessionId) + ' → ' + escapeHtml(initEntry.model) + ' [' + escapeHtml(initEntry.provider.mode === 'set' ? ('Set: ' + initEntry.provider.slugs.join('+')) : initEntry.provider.slug) + ']</span>' +
+           '<button data-action="clear-provider-init" title="Clear the init entry" style="background:#5a2a2a;color:#fff;border:none;border-radius:3px;padding:1px 8px;font-size:10px;cursor:pointer;">Clear</button>')
+        : '<span style="opacity:0.5;">(no init entry set)</span>') +
+      '</div>';
+
     html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
       solSelectHtml + pillsHtml + filterHtml + retryToggleHtml +
       '</div>';
+    html += initRowHtml;
 
     if (!items.length) {
       if (!tmCaptureEnabled()) {
@@ -5836,6 +6004,14 @@
     var idKey = idKeyOverride || tmComputeRoutingIdentityKey(body, null, null) || '';
     if (!idKey) return false;
     var lock = tmGetProviderLock(idKey);
+    // (v4.213) Session-init: when NO lock exists for this session and the payload carries the
+    // pasted Session ID matching the global init entry, persist + apply the stored choice now
+    // (model mismatch => alert, not applied, request proceeds unrouted).
+    if (!lock) {
+      var initResult = tmMaybeInitProviderSession(body, idKey);
+      if (initResult === '__mismatch') return false;
+      if (initResult) lock = initResult;
+    }
     var seed = tmGetProviderEntries(model);
     var changed = false;
 
