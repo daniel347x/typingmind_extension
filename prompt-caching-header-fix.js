@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.208
+// Version: 4.209
 // Issues Fixed:
+//   - v4.209: HTTP-200 STREAMED provider errors are now caught. OpenRouter can deliver a provider
+//     error as a chat.completion.chunk with an `error` field INSIDE an HTTP 200 SSE stream
+//     (observed: Together 429 with bare {error_type} metadata -- Dan's 'blazing red error and it
+//     died' case that slipped the >=400 gate). tmPeekStreamForError reads ONLY the first SSE data
+//     event (<=4KB / <=4s cap, comment/heartbeat-safe) from the live stream; healthy streams are
+//     REBUILT byte-for-byte (prefix chunks + remainder via the same reader) so token streaming is
+//     never buffered or delayed; error streams are cancelled and routed into the SAME backoff/
+//     auto-retry core (tmHandleOpenRouterError) as HTTP>=400, with a synthetic prefix-only
+//     response as the safe fallback for every non-retry outcome (NEVER a partially-read
+//     original). Error parser now also reads the chunk's top-level `provider` field so bare
+//     Format-A blobs name the provider in the widget error row.
 //   - v4.208: Anthropic tool-use ID sanitizer for cross-model transcript compatibility. Some
 //     non-Anthropic/OpenRouter models write tool_use IDs like 'search_web:0', but direct Anthropic
 //     requires ^[a-zA-Z0-9_-]+$ and rejects colons. repairAnthropicToolUseIds() now rewrites any
@@ -255,7 +266,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.208';
+  const EXT_VERSION = '4.209';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3623,7 +3634,9 @@
       found = {
         code: (e.code != null ? e.code : null),
         message: (e.message != null ? String(e.message) : ''),
-        provider: (md.provider_name != null ? String(md.provider_name) : null),
+        // (v4.209) Format-A error chunks carry `provider` at the CHUNK ROOT (no provider_name in
+        // metadata), so fall back to obj.provider -- the widget row can name Together/Fireworks.
+        provider: (md.provider_name != null ? String(md.provider_name) : (typeof obj.provider === 'string' ? obj.provider : null)),
         raw: (md.raw != null ? String(md.raw) : null),
         remedy_hint: (md.remedy_hint != null ? String(md.remedy_hint) : null),
         retryAfter: (md.retry_after_seconds != null ? Number(md.retry_after_seconds) : null),
@@ -3684,6 +3697,143 @@
     } catch (e) {}
   }
 
+  // (v4.209) Healthy-return path for OpenRouter 2xx responses: unconditionally reset the
+  // per-identity 429 counter (a success = healthy pool), clear any error banner, apply the Sol
+  // Pro guard, return the (possibly rebuilt) response.
+  function tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage) {
+    try {
+      var okBody = JSON.parse((args[1] && args[1].body) || '{}');
+      var okKey = tmComputeRoutingIdentityKey(okBody, args[0], args[1]);
+      if (okKey) tmResetRateLimitFails(okKey);
+    } catch (e) {}
+    if (tmMostRecentError) {
+      tmMostRecentError = null;
+      try { renderGpt51UsageWidget(); } catch (e) {}
+    }
+    if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(response); } catch (e) {} }
+    return response;
+  }
+
+  // (v4.209) Shared error core for BOTH HTTP>=400 bodies and HTTP-200 streamed error chunks.
+  // Stamps the widget error banner, then either auto-retries (429 with per-session backoff) or
+  // returns `passThrough` (a SAFE, unread response -- NEVER a partially-read original).
+  function tmHandleOpenRouterError(response, err, status, args, shouldSanitizeSolProUsage, attempt, passThrough) {
+    var reqBody = null;
+    try { reqBody = JSON.parse((args[1] && args[1].body) || '{}'); } catch (e) {}
+    if (err) {
+      tmMostRecentError = {
+        ts: Date.now(), model: (reqBody && reqBody.model) || '', provider: err.provider, code: err.code,
+        message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
+        retryAfter: err.retryAfter, full: err.full, attempt: attempt
+      };
+      try { renderGpt51UsageWidget(); } catch (e) {}
+    }
+    var is429 = (err && Number(err.code) === 429) || (status === 429);
+    if (is429 && attempt < TM_AUTO_RETRY_MAX) {
+      var idKey = null;
+      try { if (reqBody) idKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
+      var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
+      var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
+      var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 4));
+      var waitSec = Math.min(Math.max(hintSec, backoffSec), TM_AUTO_RETRY_MAX_WAIT);
+      console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (429' + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
+      return new Promise(function(resolve) {
+        setTimeout(function() {
+          var retryCapId = null;
+          try { retryCapId = tmCaptureFetchCall(args[0], args[1] || {}, null, 'openrouter-retry', null); } catch (e) {}
+          originalFetch.apply(window, args).then(function(r2) {
+            if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
+            resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
+          }).catch(function() { resolve(passThrough || response); });
+        }, waitSec * 1000);
+      });
+    }
+    var out = passThrough || response;
+    if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(out); } catch (e) {} }
+    return out;
+  }
+
+  // (v4.209) HTTP-200 STREAMED-ERROR peek. OpenRouter can deliver a provider error as a
+  // chat.completion.chunk with an `error` field INSIDE an HTTP 200 SSE stream (observed live:
+  // Together 429 with bare {error_type} metadata). The HTTP-status gate never sees these. We read
+  // only the FIRST SSE data event (<=4KB, <=4s cap; keeps reading through comment/heartbeat lines
+  // until a data: line completes) from the live stream. Healthy streams are REBUILT byte-for-byte
+  // (prefix chunks + remainder via the same reader) and passed through with zero buffering of the
+  // token flow. Error streams are cancelled and routed into the shared error/retry core, with a
+  // synthetic prefix-only response as the safe fallback for every non-retry outcome.
+  var TM_STREAM_SNIFF_BYTES = 4096;
+  var TM_STREAM_SNIFF_MS = 4000;
+
+  function tmSyntheticStreamResponse(text, original) {
+    try {
+      return new Response(text, { status: 200, statusText: 'OK', headers: { 'Content-Type': 'text/event-stream' } });
+    } catch (e) { return original; }
+  }
+
+  function tmPeekStreamForError(response, args, shouldSanitizeSolProUsage, attempt) {
+    var reader;
+    try { reader = response.body.getReader(); } catch (e) {
+      return Promise.resolve(tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage));
+    }
+    var decoder = new TextDecoder();
+    var prefixChunks = [];
+    var prefixText = '';
+    var startTs = Date.now();
+    var NL = String.fromCharCode(10);
+
+    function rebuildResponse() {
+      var rebuiltBody = new ReadableStream({
+        start: function(controller) {
+          for (var i = 0; i < prefixChunks.length; i++) controller.enqueue(prefixChunks[i]);
+        },
+        pull: function(controller) {
+          return reader.read().then(function(res) {
+            if (res.done) { controller.close(); }
+            else { controller.enqueue(res.value); }
+          }).catch(function(e) { controller.error(e); });
+        },
+        cancel: function(reason) { try { reader.cancel(reason); } catch (e) {} }
+      });
+      return new Response(rebuiltBody, { status: response.status, statusText: response.statusText, headers: response.headers });
+    }
+
+    function loop() {
+      if (prefixText.length >= TM_STREAM_SNIFF_BYTES) return Promise.resolve(null);
+      var remaining = TM_STREAM_SNIFF_MS - (Date.now() - startTs);
+      if (remaining <= 0) return Promise.resolve(null);
+      return Promise.race([
+        reader.read(),
+        new Promise(function(r) { setTimeout(function() { r(null); }, remaining); })
+      ]).then(function(res) {
+        if (!res || res.done) return null;
+        prefixChunks.push(res.value);
+        prefixText += decoder.decode(res.value, { stream: true });
+        // Stop as soon as one complete data: line has arrived (error or first content event).
+        var hasDataLine = (prefixText.indexOf('data: ') !== -1) && (prefixText.indexOf(NL) !== -1);
+        if (hasDataLine) return null;
+        return loop();
+      });
+    }
+
+    return loop().then(function() {
+      var err = tmParseOpenRouterError(prefixText);
+      if (err) {
+        try { reader.cancel(); } catch (e) {}
+        var synthetic = tmSyntheticStreamResponse(prefixText, response);
+        return tmHandleOpenRouterError(response, err, 200, args, shouldSanitizeSolProUsage, attempt, synthetic);
+      }
+      return tmHealthyOpenRouterReturn(rebuildResponse(), args, shouldSanitizeSolProUsage);
+    }).catch(function() {
+      // The peek itself failed (e.g. network abort mid-read). If we already consumed chunks, hand
+      // back the rebuilt stream rather than a partially-read original.
+      try { reader.cancel(); } catch (e) {}
+      if (prefixChunks.length > 0) {
+        try { return tmHealthyOpenRouterReturn(rebuildResponse(), args, shouldSanitizeSolProUsage); } catch (e2) {}
+      }
+      return tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage);
+    });
+  }
+
   // Given a (possibly error) response, decide whether to surface + auto-retry. Returns a promise
   // resolving to a response. Non-error responses pass straight through untouched (never buffered).
   function tmMaybeAutoRetry(response, args, captureId, shouldSanitizeSolProUsage, attempt) {
@@ -3692,25 +3842,15 @@
     try { status = Number(response.status) || 0; } catch (e) {}
     var looksError = (status >= 400) || (status === 0);
     if (!looksError) {
-      // (v4.207) UNCONDITIONAL per-identity reset. A successful response for an identity means
-      // its pool is healthy again, so the consecutive-429 backoff counter MUST drop to zero --
-      // regardless of whether an error banner happens to be showing. v4.203 gated this reset
-      // behind `if (tmMostRecentError)`, so ordinary successes between 429s never cleared the
-      // counter and the exponential wait stayed pinned at the 30s clamp indefinitely (Dan's
-      // 'it should be 1s retries but it's still 30s' slog). Compute the key cheaply and reset.
-      try {
-        var okBody = JSON.parse((args[1] && args[1].body) || '{}');
-        var okKey = tmComputeRoutingIdentityKey(okBody, args[0], args[1]);
-        if (okKey) tmResetRateLimitFails(okKey);
-      } catch (e) {}
-      if (tmMostRecentError) {
-        tmMostRecentError = null;
-        try { renderGpt51UsageWidget(); } catch (e) {}
+      // (v4.209) HTTP 200 is NOT proof of health: OpenRouter can stream a provider error as a
+      // mid-stream SSE chunk (observed: Together 429 as chat.completion.chunk with choices:[]).
+      // Peek the first SSE data event; healthy streams are rebuilt byte-identically.
+      if (response && response.body && typeof response.body.getReader === 'function') {
+        return tmPeekStreamForError(response, args, shouldSanitizeSolProUsage, attempt);
       }
-      if (shouldSanitizeSolProUsage) { try { return Promise.resolve(tmWrapSolProResponse(response)); } catch (e) {} }
-      return Promise.resolve(response);
+      return Promise.resolve(tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage));
     }
-    // Error path: clone + read the (small) body to parse the OpenRouter error.
+    // Error status: clone + read the (small) body, then run the shared error core.
     var clone;
     try { clone = response.clone(); } catch (e) { return Promise.resolve(response); }
     return clone.text().then(function(text) {
@@ -3720,49 +3860,7 @@
       if (!err && status >= 400) {
         err = { code: status, message: 'HTTP ' + status, provider: null, raw: null, remedy_hint: null, retryAfter: null, full: null };
       }
-      var reqBody = null;
-      try { reqBody = JSON.parse((args[1] && args[1].body) || '{}'); } catch (e) {}
-      if (err) {
-        tmMostRecentError = {
-          ts: Date.now(), model: (reqBody && reqBody.model) || '', provider: err.provider, code: err.code,
-          message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
-          retryAfter: err.retryAfter, full: err.full, attempt: attempt
-        };
-        try { renderGpt51UsageWidget(); } catch (e) {}
-      }
-      // (v4.203) Retry ANY 429 -- with or without retry_after_seconds. Providers omit the field
-      // constantly (observed: Moonshot & Fireworks both send bare {error_type} metadata). When the
-      // hint exists we honor it, but never LESS than our own exponential backoff, because the hint
-      // is often a hardcoded 1s that just re-hammers the pool (Dan's skepticism, encoded):
-      //   wait = min( max(hint, 2^(consecutiveFails-1)), 30s )
-      var is429 = (err && Number(err.code) === 429) || (status === 429);
-      if (is429 && attempt < TM_AUTO_RETRY_MAX) {
-        var idKey = null;
-        try { if (reqBody) idKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
-        var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
-        var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
-        // (v4.207) Gentler escalation: cap the exponent reach at 4 (=> 1,2,4,8,16 then clamped to
-        // 15s), and it only climbs on TRULY consecutive fails since a success now always resets
-        // the counter to zero. Early retries stay short so a transient blip clears fast.
-        var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 4));
-        var waitSec = Math.min(Math.max(hintSec, backoffSec), TM_AUTO_RETRY_MAX_WAIT);
-        console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (429' + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
-        return new Promise(function(resolve) {
-          setTimeout(function() {
-            var retryCapId = null;
-            try { retryCapId = tmCaptureFetchCall(args[0], args[1] || {}, null, 'openrouter-retry', null); } catch (e) {}
-            // (v4.203) apply(window,...) -- 'this' inside setTimeout is undefined in strict mode,
-            // which would kill the retry with an illegal-invocation TypeError (silent catch).
-            originalFetch.apply(window, args).then(function(r2) {
-              if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
-              resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
-            }).catch(function() { resolve(response); });
-          }, waitSec * 1000);
-        });
-      }
-      // Not retryable: hand back the original error response unchanged.
-      if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(response); } catch (e) {} }
-      return response;
+      return tmHandleOpenRouterError(response, err, status, args, shouldSanitizeSolProUsage, attempt, response);
     }).catch(function() { return response; });
   }
 
