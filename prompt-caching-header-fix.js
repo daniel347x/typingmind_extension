@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.209
+// Version: 4.210
 // Issues Fixed:
+//   - v4.210: Ring-buffer modal retry-visibility toggle. With auto-retry absorbing most 429s, the
+//     ring modal was drowning in retry-attempt rows, hiding the real turns. New '⏳ Retries:
+//     hidden/shown' button in the control row (next to sort pills + identity filter) filters out
+//     auto-retry/429 rows -- detected three ways for robustness: vendor tag 'openrouter-retry',
+//     HTTP status 429, or a captured response that parses to an OpenRouter 429 error (covers
+//     200-streamed 429s too). DEFAULT: hidden (spam gone immediately). Persisted in localStorage
+//     (tm_ring_hide_retries_v1) across refresh; button shows live hidden-count. Identity+retry
+//     filters hoisted ahead of the banner so the count renders in the control row.
 //   - v4.209: HTTP-200 STREAMED provider errors are now caught. OpenRouter can deliver a provider
 //     error as a chat.completion.chunk with an `error` field INSIDE an HTTP 200 SSE stream
 //     (observed: Together 429 with bare {error_type} metadata -- Dan's 'blazing red error and it
@@ -266,7 +274,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.209';
+  const EXT_VERSION = '4.210';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3478,6 +3486,14 @@
         return;
       }
 
+      // (v4.210) Toggle retry/429 row visibility and re-render.
+      if (t.dataset && t.dataset.action === 'toggle-hide-retries') {
+        tmSetHideRetries(!tmGetHideRetries());
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+        return;
+      }
+
       if (t.dataset && t.dataset.action === 'copy-payload-capture') {
         const capId = t.dataset.captureId;
         const part = t.dataset.part;
@@ -4278,6 +4294,36 @@
   var tmModalSortMode = 'chronological';  // 'chronological' | 'turn-cost' | 'session-cost'
   var tmModalFilterIdentity = null;        // null = no filter, or an identity key string
 
+  // (v4.210) Ring-modal retry-visibility toggle. When ON (default), rows that are auto-retry
+  // attempts (429s we fired, or any 429-bearing row) are HIDDEN so the modal isn't spammed with
+  // backoff noise and the real turns stay visible. Persisted so it survives refresh.
+  var TM_HIDE_RETRIES_KEY = 'tm_ring_hide_retries_v1';
+  function tmGetHideRetries() {
+    try { return localStorage.getItem(TM_HIDE_RETRIES_KEY) !== 'false'; } catch (e) { return true; }
+  }
+  function tmSetHideRetries(v) {
+    try { localStorage.setItem(TM_HIDE_RETRIES_KEY, v ? 'true' : 'false'); } catch (e) {}
+  }
+
+  // True if this capture row is a 429/auto-retry row (vendor-tagged retry attempt, or its captured
+  // response parses to an OpenRouter 429 error -- which also covers a 200-streamed 429).
+  function tmIsRetryRow(cap) {
+    try {
+      if (!cap) return false;
+      if (cap.vendorHint === 'openrouter-retry') return true;
+      if (cap.response_status === 429) return true;
+      var err = null;
+      if (typeof cap.response_body_head === 'string' && cap.response_body_head) {
+        err = tmParseOpenRouterError(cap.response_body_head);
+      }
+      if (!err && cap.response_body != null) {
+        try { err = tmParseOpenRouterError(JSON.stringify(cap.response_body)); } catch (e) {}
+      }
+      if (err && Number(err.code) === 429) return true;
+    } catch (e) {}
+    return false;
+  }
+
   // v4.163: Extract the identity key for a capture, preferring stamped _identity.
   function tmCapIdentityKey(cap) {
     if (cap._identity) return cap._identity.key || '';
@@ -4412,6 +4458,19 @@
     const ring = tmReadCaptureRing();
     var items = ring.slice().reverse(); // most recent first
 
+    // (v4.210) Apply identity filter + retry-visibility filter BEFORE building any HTML, so
+    // hiddenRetryCount is available to the toggle button in the control row below. (Moved ahead
+    // of the banner; the sort call stays in its original spot further down.)
+    if (tmModalFilterIdentity) {
+      items = items.filter(function(cap) { return cap && tmCapIdentityKey(cap) === tmModalFilterIdentity; });
+    }
+    var hiddenRetryCount = 0;
+    if (tmGetHideRetries()) {
+      var beforeHide = items.length;
+      items = items.filter(function(cap) { return !tmIsRetryRow(cap); });
+      hiddenRetryCount = beforeHide - items.length;
+    }
+
     // Status banner first, in ALL states.
     let html = tmBuildCaptureStatusBanner();
 
@@ -4485,8 +4544,19 @@
     }
     filterHtml += '</select>';
 
+    // (v4.210) Retry-visibility toggle button. Default ON (hide retry/429 rows) to kill backoff
+    // spam; click to reveal them. Shows a live count of hidden rows when hiding is active.
+    var hideRetries = tmGetHideRetries();
+    var retryBtnLabel = hideRetries
+      ? ('⏳ Retries: hidden' + (hiddenRetryCount > 0 ? (' (' + hiddenRetryCount + ')') : ''))
+      : '⏳ Retries: shown';
+    var retryBtnStyle = hideRetries
+      ? 'background:#3a3a3a;color:#bbb;border:1px solid #555;'
+      : 'background:#5a3a6e;color:#fff;border:1px solid #7a5aae;';
+    var retryToggleHtml = '<button data-action="toggle-hide-retries" title="Toggle visibility of auto-retry / 429 rows" style="' + retryBtnStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:8px;">' + retryBtnLabel + '</button>';
+
     html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
-      solSelectHtml + pillsHtml + filterHtml +
+      solSelectHtml + pillsHtml + filterHtml + retryToggleHtml +
       '</div>';
 
     if (!items.length) {
@@ -4511,9 +4581,8 @@
             '</div>';
 
     // v4.163: Apply identity filter first, then sort
-    if (tmModalFilterIdentity) {
-      items = items.filter(function(cap) { return cap && tmCapIdentityKey(cap) === tmModalFilterIdentity; });
-    }
+    // (v4.210) identity + retry filters were moved up ahead of the banner so hiddenRetryCount is
+    // available to the toggle button; only the sort remains here.
     tmSortModalItems(items);
 
     // (v4.145) Session costs are stamped onto each capture row at response receipt.
