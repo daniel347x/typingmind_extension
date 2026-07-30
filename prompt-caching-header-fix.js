@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.204
+// Version: 4.205
 // Issues Fixed:
+//   - v4.205: LIVE provider discovery. The widget now lazily fetches OpenRouter's Endpoints API
+//     per model (12h localStorage cache, tm_provider_live_v1) so NEW providers -- and new models
+//     like DeepSeek -- appear in the dropdown/set-modal automatically with no source edit. The
+//     fetch carries the tm_passthrough=1 sentinel so OUR OWN hook passes it verbatim (no capture
+//     row, no auto-retry, no injection); any failure (CORS/network/404) silently keeps the seed
+//     table. tmMergeSeedKnowledge preserves curated seed order/notes/toxic flags (base-slug
+//     tolerant: seed 'moonshotai' matches live 'moonshotai/mxfp4') and appends new providers with
+//     live values (cache flag from input_cache_read pricing -- Nebius's 0%-cache confession is
+//     machine-readable). tmIsMultiProviderModel / dropdown / set-modal / AUTO-order all read live
+//     entries. ALSO: on TypingMind refresh the widget provider label now reads the last ring
+//     entry's response_provider (captured since v4.197) before degrading to the bare host.
 //   - v4.204: Fix 18 -- multi-select allowed-provider SET. Dropdown gains '🎯 Multi-select set…',
 //     opening a checkbox modal of the model's providers (cache/toxic badges, current set
 //     pre-checked). Apply writes a SET lock ({mode:'set', slugs, labels}) keyed by the canonical
@@ -227,7 +238,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.204';
+  const EXT_VERSION = '4.205';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -436,11 +447,13 @@
     } catch (e) {}
   }
 
-  // Check if a model has multiple providers (seed-table lookup; phase 2 adds live API).
+  // Check if a model has multiple providers (live entries preferred; seed-table fallback).
   function tmIsMultiProviderModel(model) {
     if (!model) return false;
     var m = String(model).toLowerCase();
     m = m.replace(/:(nitro|floor|free)$/i, '');
+    var live = tmGetLiveProviderEntries(m);
+    if (live) return live.length >= 2;
     return TM_PROVIDER_SEED.hasOwnProperty(m);
   }
 
@@ -450,6 +463,107 @@
     var m = String(model).toLowerCase();
     m = m.replace(/:(nitro|floor|free)$/i, '');
     return TM_PROVIDER_SEED[m] || [];
+  }
+
+  // ==================== LIVE PROVIDER DISCOVERY (v4.205) ====================
+  // Fetches OpenRouter's Endpoints API per model and caches the provider list for 12h, so NEW
+  // providers (and new models like DeepSeek) appear in the dropdown/set-modal automatically --
+  // no source edit, no deploy. The fetch carries the tm_passthrough=1 sentinel so OUR OWN hook
+  // passes it through verbatim (no capture row, no auto-retry, no injection). Any failure (CORS,
+  // network, 404) silently keeps the seed table -- the user never sees an error.
+  var TM_PROVIDER_LIVE_KEY = 'tm_provider_live_v1';
+  var TM_PROVIDER_LIVE_TTL = 12 * 3600 * 1000;
+  var tmProviderFetchInFlight = {};
+
+  function tmReadProviderLive() {
+    try { var r = localStorage.getItem(TM_PROVIDER_LIVE_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+
+  function tmGetLiveProviderEntries(model) {
+    try {
+      var m = String(model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      var rec = tmReadProviderLive()[m];
+      if (!rec || !Array.isArray(rec.entries)) return null;
+      if (Date.now() - Number(rec.ts || 0) > TM_PROVIDER_LIVE_TTL) return null;
+      return rec.entries;
+    } catch (e) { return null; }
+  }
+
+  // Build seed-shaped entries from the Endpoints API response. cache = has input_cache_read
+  // pricing (Nebius famously OMITS it -- the 0%-cache confession, machine-readable).
+  function tmBuildLiveProviderEntries(endpoints) {
+    var out = [];
+    var seen = {};
+    for (var i = 0; i < endpoints.length; i++) {
+      var ep = endpoints[i];
+      if (!ep || !ep.tag) continue;
+      var slug = String(ep.tag);
+      if (seen[slug]) continue;
+      seen[slug] = true;
+      var hasCache = !!(ep.pricing && ep.pricing.input_cache_read != null);
+      var parts = [];
+      if (ep.quantization && ep.quantization !== 'unknown') parts.push(String(ep.quantization));
+      if (typeof ep.uptime_last_30m === 'number') parts.push(Math.round(ep.uptime_last_30m) + '% up');
+      out.push({ slug: slug, label: ep.provider_name || slug, cache: hasCache, note: parts.join(' · '), toxic: !hasCache });
+    }
+    return out;
+  }
+
+  // Merge live entries with the curated seed: seed ORDER and curated notes/toxic flags win for
+  // known slugs (base-slug tolerant: seed 'moonshotai' matches live 'moonshotai/mxfp4'); brand-new
+  // providers unknown to the seed are appended with live values. Seed slugs that vanished from
+  // the API are dropped (live truth).
+  function tmMergeSeedKnowledge(model, liveEntries) {
+    var seed = TM_PROVIDER_SEED[model] || [];
+    if (!seed.length) return liveEntries;
+    var bySlug = {};
+    for (var i = 0; i < liveEntries.length; i++) bySlug[liveEntries[i].slug] = liveEntries[i];
+    function findLive(slug) {
+      if (bySlug[slug]) return bySlug[slug];
+      for (var k in bySlug) { if (Object.prototype.hasOwnProperty.call(bySlug, k) && k.indexOf(slug + '/') === 0) return bySlug[k]; }
+      return null;
+    }
+    var merged = [];
+    for (var j = 0; j < seed.length; j++) {
+      var s = seed[j];
+      var lv = findLive(s.slug);
+      if (lv) {
+        merged.push({ slug: lv.slug, label: lv.label || s.label, cache: lv.cache, note: s.note || lv.note, toxic: !!(s.toxic || lv.toxic) });
+        delete bySlug[lv.slug];
+      }
+    }
+    for (var k2 in bySlug) { if (Object.prototype.hasOwnProperty.call(bySlug, k2)) merged.push(bySlug[k2]); }
+    return merged;
+  }
+
+  // Live-aware entry list: fresh live entries win; otherwise the seed.
+  function tmGetProviderEntries(model) {
+    if (!model) return [];
+    var live = tmGetLiveProviderEntries(model);
+    if (live && live.length) return live;
+    return tmGetProviderSeed(model);
+  }
+
+  // Fire the endpoints fetch for a model if we have no fresh live record and none is in flight.
+  function tmMaybeFetchProviderEndpoints(model) {
+    try {
+      if (!model) return;
+      var m = String(model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      if (tmGetLiveProviderEntries(m)) return;
+      if (tmProviderFetchInFlight[m]) return;
+      tmProviderFetchInFlight[m] = true;
+      var url = 'https://openrouter.ai/api/v1/models/' + m + '/endpoints?tm_passthrough=1';
+      fetch(url).then(function(r) { return r.ok ? r.json() : null; }).then(function(j) {
+        delete tmProviderFetchInFlight[m];
+        var eps = j && j.data && Array.isArray(j.data.endpoints) ? j.data.endpoints : null;
+        if (!eps || !eps.length) return;
+        var entries = tmMergeSeedKnowledge(m, tmBuildLiveProviderEntries(eps));
+        var s2 = tmReadProviderLive();
+        s2[m] = { ts: Date.now(), entries: entries };
+        try { localStorage.setItem(TM_PROVIDER_LIVE_KEY, JSON.stringify(s2)); } catch (e) {}
+        try { renderGpt51UsageWidget(); } catch (e) {}
+      }).catch(function() { delete tmProviderFetchInFlight[m]; });
+    } catch (e) {}
   }
 
   // @beacon[
@@ -2362,7 +2476,7 @@
               // and is NOT visible inside this ensureGpt51UsageWidget click handler (ReferenceError,
               // silently crashing manual switches).
               var routeModel = (routeIdKey.split('::')[1]) || '';
-              var routeSeed = tmGetProviderSeed(routeModel);
+              var routeSeed = tmGetProviderEntries(routeModel);
               var routeLabel = routeVal;
               for (var ri = 0; ri < routeSeed.length; ri++) {
                 if (routeSeed[ri].slug === routeVal) { routeLabel = routeSeed[ri].label; break; }
@@ -2729,7 +2843,16 @@
     try {
       var _st = tmMostRecentPayloadStatus || {};
       if (_st.provider) providerForDisplay = String(_st.provider);
-      else if (widgetIdentity && widgetIdentity.host) providerForDisplay = String(widgetIdentity.host);
+      else {
+        // (v4.205) Refresh fallback: read the SERVING provider off the last ring entry (captured
+        // since v4.197) before degrading to the bare endpoint host ('openrouter.ai').
+        try {
+          var _ring = tmReadCaptureRing();
+          var _last = _ring.length > 0 ? _ring[_ring.length - 1] : null;
+          if (_last && _last.response_provider) providerForDisplay = String(_last.response_provider);
+        } catch (e2) {}
+        if (!providerForDisplay && widgetIdentity && widgetIdentity.host) providerForDisplay = String(widgetIdentity.host);
+      }
     } catch (e) {}
     if (modelForDisplay) {
       var providerSuffix = providerForDisplay
@@ -2739,13 +2862,21 @@
       var routingDropdown = '';
       try {
         var _rModel = String(modelForDisplay).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        // (v4.205) Kick off a lazy Endpoints-API discovery for OpenRouter-routed models so new
+        // providers/models appear in the dropdown automatically (silent seed fallback).
+        try {
+          var _rHost2 = (widgetIdentity && widgetIdentity.host) || '';
+          if (_rHost2.indexOf('openrouter') !== -1 || (!_rHost2 && _rModel.indexOf('/') !== -1)) {
+            tmMaybeFetchProviderEndpoints(_rModel);
+          }
+        } catch (e) {}
         if (tmIsMultiProviderModel(_rModel)) {
           // (v4.201 AUDIT FIX) use the CANONICAL stamped identity key directly. GLM's v4.200
           // reconstructed it from the lowercased/suffix-stripped _rModel, which drifts from the
           // request/response-side keys whenever the raw model differs (case or :nitro suffix).
           var _rIdKey = (widgetIdentity && widgetIdentity.key) || '';
           var _rLock = tmGetProviderLock(_rIdKey);
-          var _rSeed = tmGetProviderSeed(_rModel);
+          var _rSeed = tmGetProviderEntries(_rModel);
           var _rIsFloat = _rLock && _rLock.slug === '__float';
           var _rIsSet = _rLock && _rLock.mode === 'set';
           var _rLockGlyph = _rIsSet ? '\uD83C\uDFAF' : (_rIsFloat ? '\uD83C\uDF0A' : (_rLock ? '\uD83D\uDD12' : '\uD83D\uDD13'));
@@ -3709,7 +3840,7 @@
   // route among for this session identity. Apply writes a set lock via tmSetProviderSetLock.
   function tmShowProviderSetModal(idKey, model) {
     if (typeof document === 'undefined' || !idKey) return;
-    var seed = tmGetProviderSeed(model);
+    var seed = tmGetProviderEntries(model);
     if (!seed.length) return;
     var lock = tmGetProviderLock(idKey);
     var cur = (lock && lock.mode === 'set' && Array.isArray(lock.slugs)) ? lock.slugs : [];
@@ -5336,7 +5467,7 @@
     var idKey = idKeyOverride || tmComputeRoutingIdentityKey(body, null, null) || '';
     if (!idKey) return false;
     var lock = tmGetProviderLock(idKey);
-    var seed = tmGetProviderSeed(model);
+    var seed = tmGetProviderEntries(model);
     var changed = false;
 
     // FLOAT mode: the user explicitly chose Float. Inject nothing at all.
