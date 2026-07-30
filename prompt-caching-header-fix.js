@@ -1,5 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.196
+// Version: 4.197
+// Issues Fixed:
+//   - v4.197: Fix 13 — Kimi provider pinning. OpenRouter post-open-weights load balancing began
+//     landing long-idle Kimi K3 sessions on non-caching providers (Baseten ~41%, Nebius 0.0%),
+//     causing full-price prompt-cache misses every turn. tmEnsureOpenRouterAccountingAndSession
+//     now injects body.provider {order:[moonshotai,fireworks,together,modal], ignore:[baseten,
+//     nebius,morph,digitalocean], allow_fallbacks:true} for Kimi/Moonshot models only. order
+//     disables OpenRouter load balancing; ignore is a hard floor. Merge-not-clobber.
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -146,7 +153,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.196';
+  const EXT_VERSION = '4.197';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4421,6 +4428,36 @@
       console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': injected usage.{include:true} for streaming cost/cache tracking');
     }
 
+    // (Fix 13, v4.197) KIMI PROVIDER PINNING. Kimi/Moonshot only. Pin to the high-cache-hit
+    // providers in preference order and hard-ignore the non-caching / coin-flip ones, so a
+    // long-idle session can no longer be load-balanced onto Baseten/Nebius (full-price misses).
+    // order alone disables OpenRouter load balancing; ignore is a belt-and-suspenders floor.
+    // allow_fallbacks stays true so a total outage of the good providers still returns an answer
+    // (a rare cache miss) rather than hard-failing the conversation. Merge-not-clobber: preserve
+    // any provider fields TypingMind (or a future fix) may already have set.
+    if (tmIsKimiModel(body.model)) {
+      var KIMI_ORDER = ['moonshotai', 'fireworks', 'together', 'modal'];
+      var KIMI_IGNORE = ['baseten', 'nebius', 'morph', 'digitalocean'];
+      if (!body.provider || typeof body.provider !== 'object') body.provider = {};
+      var provChanged = false;
+      if (!Array.isArray(body.provider.order) || body.provider.order.length === 0) {
+        body.provider.order = KIMI_ORDER.slice();
+        provChanged = true;
+      }
+      if (!Array.isArray(body.provider.ignore) || body.provider.ignore.length === 0) {
+        body.provider.ignore = KIMI_IGNORE.slice();
+        provChanged = true;
+      }
+      if (typeof body.provider.allow_fallbacks !== 'boolean') {
+        body.provider.allow_fallbacks = true;
+        provChanged = true;
+      }
+      if (provChanged) {
+        changed = true;
+        console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': Fix 13 pinned Kimi providers →', JSON.stringify(body.provider));
+      }
+    }
+
     return changed;
   }
 
@@ -4510,6 +4547,21 @@
     if (tmIsSolProModel(m)) return false;
     // Recognize 'sol' as a distinct segment delimited by /, -, _, or string boundaries.
     return /(?:^|[\/_-])sol(?:$|[\/_-])/.test(m);
+  }
+
+  // ==================== KIMI PROVIDER PINNING (Fix 13, v4.197) ====================
+  // OpenRouter serves Kimi K3 from 8+ providers with WILDLY different prompt-cache hit
+  // rates (Moonshot ~92%, Fireworks ~82%, Together ~79%, Modal ~76% ... but Baseten ~41%,
+  // Nebius 0.0%). Post open-weights release, the load balancer began landing long-idle
+  // sessions on non-caching providers (Baseten confirmed live), producing full-price
+  // misses on EVERY turn (~$1.50/turn at ~500K ctx). Setting provider.order DISABLES
+  // OpenRouter load balancing and pins to the high-cache providers in preference order;
+  // provider.ignore is a hard floor so a fallback can never land on a 0%/coin-flip host.
+  // Scoped to Kimi/Moonshot models only — other models have different good-provider sets.
+  function tmIsKimiModel(model) {
+    if (!model) return false;
+    var m = String(model).toLowerCase();
+    return m.startsWith('moonshotai/') || m.includes('kimi') || m.includes('moonshot');
   }
 
   // v4.161: Ensure plain-Sol requests carry reasoning.effort = 'high' at the top level.
