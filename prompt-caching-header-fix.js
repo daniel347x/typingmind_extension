@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.202
+// Version: 4.203
 // Issues Fixed:
+//   - v4.203: Fix 17 hardening. (1) Retry ANY 429, not just those carrying retry_after_seconds --
+//     providers omit it constantly (observed: Moonshot sends bare {error_type:rate_limit_exceeded};
+//     Fireworks sends {provider_error_code} with NO retry_after). v4.202 required the field and so
+//     silently did nothing on those. (2) EXPONENTIAL BACKOFF with a PER-SESSION consecutive-failure
+//     counter (tm_ratelimit_state_v1, keyed by canonical sid::model::host::proxy identity): wait =
+//     min(max(hint, 2^(fails-1)), 30s), so a hardcoded-1s hint can't re-hammer a hot pool. Counter
+//     RESETS on a successful response for the same identity; entries self-expire after 1h. (3) Any
+//     HTTP>=400 with an unparseable body still raises the widget error row (never a silent generic).
+//     (4) BUGFIX: originalFetch.apply(this,...) inside setTimeout -> apply(window,...); 'this' is
+//     undefined in strict mode and would kill the retry with an illegal-invocation TypeError.
 //   - v4.202: Fix 17 -- OpenRouter error surfacing + auto-retry. (a) tmParseOpenRouterError reads
 //     the rich error segment (429 rate-limit / provider errors) that TypingMind flattens into a
 //     useless generic error. (b) A clickable red error row on the persistent widget opens a popup
@@ -206,7 +216,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.202';
+  const EXT_VERSION = '4.203';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3517,17 +3527,59 @@
   var TM_AUTO_RETRY_MAX = 5;        // cap total auto-retries per request
   var TM_AUTO_RETRY_MAX_WAIT = 30;  // never wait longer than this many seconds per retry
 
+  // (v4.203) PER-SESSION rate-limit backoff state. Keyed by the canonical routing identity
+  // (sid::model::host::proxy). Consecutive 429s anywhere in the session escalate the wait
+  // exponentially (1,2,4,8,16,30s); a successful response for the SAME identity resets it.
+  // Entries self-expire after 1h so stale failures never poison a later session.
+  var TM_RATELIMIT_STATE_KEY = 'tm_ratelimit_state_v1';
+  var TM_RATELIMIT_STALE_MS = 3600000;
+  function tmReadRateLimitMap() {
+    try { var r = localStorage.getItem(TM_RATELIMIT_STATE_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+  function tmGetRateLimitFails(key) {
+    try {
+      var m = tmReadRateLimitMap(); var e = m[key];
+      if (!e) return 0;
+      if (Date.now() - Number(e.ts || 0) > TM_RATELIMIT_STALE_MS) return 0;
+      return Number(e.fails) || 0;
+    } catch (e) { return 0; }
+  }
+  function tmBumpRateLimitFails(key) {
+    try {
+      var m = tmReadRateLimitMap();
+      var f = tmGetRateLimitFails(key) + 1;
+      m[key] = { fails: f, ts: Date.now() };
+      localStorage.setItem(TM_RATELIMIT_STATE_KEY, JSON.stringify(m));
+      return f;
+    } catch (e) { return 1; }
+  }
+  function tmResetRateLimitFails(key) {
+    try {
+      var m = tmReadRateLimitMap();
+      if (m[key]) { delete m[key]; localStorage.setItem(TM_RATELIMIT_STATE_KEY, JSON.stringify(m)); }
+    } catch (e) {}
+  }
+
   // Given a (possibly error) response, decide whether to surface + auto-retry. Returns a promise
   // resolving to a response. Non-error responses pass straight through untouched (never buffered).
   function tmMaybeAutoRetry(response, args, captureId, shouldSanitizeSolProUsage, attempt) {
     attempt = attempt || 0;
-    // Fast path: a healthy response (2xx) is passed through with no buffering. Streaming intact.
     var status = 0;
     try { status = Number(response.status) || 0; } catch (e) {}
     var looksError = (status >= 400) || (status === 0);
     if (!looksError) {
-      // Success: clear any stale error banner and honor the Sol Pro guard, exactly as before.
-      if (tmMostRecentError) { tmMostRecentError = null; try { renderGpt51UsageWidget(); } catch (e) {} }
+      // (v4.203) Success: reset the per-session consecutive-failure counter for THIS identity and
+      // clear any stale error banner. The reset only computes the key when there WAS recent error
+      // activity, so normal turns pay no JSON.parse cost.
+      if (tmMostRecentError) {
+        tmMostRecentError = null;
+        try {
+          var b2 = JSON.parse((args[1] && args[1].body) || '{}');
+          var k2 = tmComputeRoutingIdentityKey(b2, args[0], args[1]);
+          if (k2) tmResetRateLimitFails(k2);
+        } catch (e) {}
+        try { renderGpt51UsageWidget(); } catch (e) {}
+      }
       if (shouldSanitizeSolProUsage) { try { return Promise.resolve(tmWrapSolProResponse(response)); } catch (e) {} }
       return Promise.resolve(response);
     }
@@ -3536,33 +3588,49 @@
     try { clone = response.clone(); } catch (e) { return Promise.resolve(response); }
     return clone.text().then(function(text) {
       var err = tmParseOpenRouterError(text);
+      // (v4.203) Synthesize a minimal error for ANY HTTP >= 400 even when the body doesn't parse,
+      // so the widget error row ALWAYS appears on a hard failure (never a silent generic).
+      if (!err && status >= 400) {
+        err = { code: status, message: 'HTTP ' + status, provider: null, raw: null, remedy_hint: null, retryAfter: null, full: null };
+      }
+      var reqBody = null;
+      try { reqBody = JSON.parse((args[1] && args[1].body) || '{}'); } catch (e) {}
       if (err) {
-        var model = '';
-        try { var b = JSON.parse((args[1] && args[1].body) || '{}'); model = b.model || ''; } catch (e) {}
         tmMostRecentError = {
-          ts: Date.now(), model: model, provider: err.provider, code: err.code,
+          ts: Date.now(), model: (reqBody && reqBody.model) || '', provider: err.provider, code: err.code,
           message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
           retryAfter: err.retryAfter, full: err.full, attempt: attempt
         };
         try { renderGpt51UsageWidget(); } catch (e) {}
-        // Auto-retry only transient 429s that explicitly tell us to retry.
-        var isRetryable = (Number(err.code) === 429) && (err.retryAfter != null) && (attempt < TM_AUTO_RETRY_MAX);
-        if (isRetryable) {
-          var waitSec = Math.min(Math.max(Number(err.retryAfter) || 1, 1), TM_AUTO_RETRY_MAX_WAIT);
-          console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' after ' + waitSec + 's (429 from ' + (err.provider || 'provider') + ')');
-          return new Promise(function(resolve) {
-            setTimeout(function() {
-              var retryCapId = null;
-              try { retryCapId = tmCaptureFetchCall(args[0], args[1] || {}, null, 'openrouter-retry', null); } catch (e) {}
-              originalFetch.apply(this, args).then(function(r2) {
-                if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
-                resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
-              }).catch(function() { resolve(response); });
-            }, waitSec * 1000);
-          });
-        }
       }
-      // Not retryable (or no parseable error): hand back the original error response unchanged.
+      // (v4.203) Retry ANY 429 -- with or without retry_after_seconds. Providers omit the field
+      // constantly (observed: Moonshot & Fireworks both send bare {error_type} metadata). When the
+      // hint exists we honor it, but never LESS than our own exponential backoff, because the hint
+      // is often a hardcoded 1s that just re-hammers the pool (Dan's skepticism, encoded):
+      //   wait = min( max(hint, 2^(consecutiveFails-1)), 30s )
+      var is429 = (err && Number(err.code) === 429) || (status === 429);
+      if (is429 && attempt < TM_AUTO_RETRY_MAX) {
+        var idKey = null;
+        try { if (reqBody) idKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
+        var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
+        var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
+        var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 5));
+        var waitSec = Math.min(Math.max(hintSec, backoffSec), TM_AUTO_RETRY_MAX_WAIT);
+        console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (429' + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
+        return new Promise(function(resolve) {
+          setTimeout(function() {
+            var retryCapId = null;
+            try { retryCapId = tmCaptureFetchCall(args[0], args[1] || {}, null, 'openrouter-retry', null); } catch (e) {}
+            // (v4.203) apply(window,...) -- 'this' inside setTimeout is undefined in strict mode,
+            // which would kill the retry with an illegal-invocation TypeError (silent catch).
+            originalFetch.apply(window, args).then(function(r2) {
+              if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
+              resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
+            }).catch(function() { resolve(response); });
+          }, waitSec * 1000);
+        });
+      }
+      // Not retryable: hand back the original error response unchanged.
       if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(response); } catch (e) {} }
       return response;
     }).catch(function() { return response; });
