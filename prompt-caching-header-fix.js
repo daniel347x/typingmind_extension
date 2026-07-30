@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.199
+// Version: 4.200
 // Issues Fixed:
+//   - v4.200: Fix 16 — generic provider routing with auto-lock. Replaces the hardcoded Fix 13
+//     Kimi block with a model-agnostic 3-mode system: LOCKED (hard-pin to one provider,
+//     allow_fallbacks:false — visible hard-fail, never a silent $0.65 bounce), AUTO (preference
+//     order from seed, allow_fallbacks:true — first success auto-stamps a lock), FLOAT (inject
+//     nothing — escape hatch). Dropdown on the persistent widget model row shows lock state
+//     (glyph + label) and lets you switch/unlock/float. Only renders for multi-provider models
+//     (seed table today; live Endpoints API fetch in phase 2). Lock store keyed by canonical
+//     4-part identity, integrated into the session-scoped prune/touch lifecycle. Provider
+//     slug normalization handles display-name to slug (Moonshot AI -> moonshotai, BaseTen ->
+//     baseten, etc.) including spelling drift. Error-only responses never auto-stamp a lock.
 //   - v4.199: Fix 15 — tool-schema type repair. TypingMind's MCP->OpenAI tools conversion DROPS
 //     any JSON-Schema `type` whose value is an ARRAY (e.g. FastMCP Optional served as
 //     `type:["string","null"]`), leaving a property with default/description/title and NO type.
@@ -176,7 +186,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.199';
+  const EXT_VERSION = '4.200';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -272,6 +282,7 @@
     pruneMap('tm_session_names', true);
     pruneMap(TM_SESSION_HUES_KEY, true);
     pruneMap('gpt51_conv_usage', true);
+    pruneMap(TM_PROVIDER_LOCKS_KEY, false);
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -295,6 +306,101 @@
   // (v4.106) Per-session cost tracking.
   // v4.153 keys by session ID + model + resolved endpoint host + proxy/direct flag.
   const TM_SESSION_COSTS_KEY = 'tm_session_costs_v2';
+
+  // ==================== PROVIDER ROUTING (Fix 16, v4.200) ====================
+  // Per-conversation provider lock store. Keyed by the canonical 4-part identity
+  // (sid::model::host::proxy|direct). Value: {slug, label, ts, manual}.
+  // When a lock exists, tmApplyProviderRouting injects order:[slug], allow_fallbacks:false --
+  // guaranteeing the same provider every turn so prompt caching actually works.
+  // A lock failure (provider down/400) hard-fails visibly and FREE (no tokens served) rather
+  // than silently bouncing to a $0.65 miss on a different provider. The human sees the failure,
+  // opens the dropdown, and manually switches -- informed consent to exactly one cache write.
+  const TM_PROVIDER_LOCKS_KEY = 'tm_provider_locks_v1';
+
+  // Seed table: models known to have multiple OpenRouter providers. Used to build the dropdown
+  // menu and as the preference-order fallback when no lock exists. Each entry: slug -> {label,
+  // cache (bool), note}. Phase 2 replaces this with a live Endpoints API fetch; the seed table
+  // guarantees offline functionality today.
+  var TM_PROVIDER_SEED = {
+    'moonshotai/kimi-k3': [
+      { slug: 'fireworks',      label: 'Fireworks',       cache: true,  note: '~82% hit / fast' },
+      { slug: 'fireworks/fast', label: 'Fireworks Fast',  cache: true,  note: '64 tps / $0.45 cache' },
+      { slug: 'moonshotai',     label: 'Moonshot AI',     cache: true,  note: 'official / ~92% hit / slow under load' },
+      { slug: 'together',       label: 'Together',        cache: true,  note: '~79% hit' },
+      { slug: 'modal',          label: 'Modal',           cache: true,  note: '~76% hit / mxfp4' },
+      { slug: 'baseten',        label: 'Baseten',         cache: false, note: 'poor cache ~41%', toxic: true },
+      { slug: 'nebius',         label: 'Nebius',          cache: false, note: 'no cache / fp4 / 47% up', toxic: true },
+      { slug: 'morph',          label: 'Morph',           cache: false, note: 'poor cache ~44%', toxic: true },
+      { slug: 'digitalocean',   label: 'DigitalOcean',    cache: false, note: '~60% hit', toxic: true }
+    ]
+    // Phase 2: live Endpoints API fetch will populate this per-model at runtime.
+    // DeepSeek, GLM, etc. will be auto-discovered; the seed is a launch-day fallback.
+  };
+
+  // Normalize a provider display name from the response (e.g. "Moonshot AI", "Fireworks",
+  // "BaseTen") to an injection slug ("moonshotai", "fireworks", "baseten"). Tolerant of
+  // case and the BaseTen/Baseten spelling drift seen in the live API.
+  var TM_PROVIDER_SLUG_ALIASES = {
+    'moonshot ai': 'moonshotai', 'moonshot': 'moonshotai', 'moonshotai': 'moonshotai',
+    'fireworks': 'fireworks', 'fireworks fast': 'fireworks/fast', 'fireworks/fast': 'fireworks/fast',
+    'together': 'together',
+    'modal': 'modal',
+    'baseten': 'baseten', 'baseten': 'baseten',
+    'nebius': 'nebius', 'nebius token factory': 'nebius',
+    'morph': 'morph',
+    'digitalocean': 'digitalocean', 'digital ocean': 'digitalocean'
+  };
+
+  function tmProviderNameToSlug(name) {
+    if (!name) return null;
+    var key = String(name).toLowerCase().trim();
+    if (TM_PROVIDER_SLUG_ALIASES.hasOwnProperty(key)) return TM_PROVIDER_SLUG_ALIASES[key];
+    return key;
+  }
+
+  function tmGetProviderLocks() {
+    try {
+      var raw = localStorage.getItem(TM_PROVIDER_LOCKS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) { return {}; }
+  }
+
+  function tmGetProviderLock(identityKey) {
+    var locks = tmGetProviderLocks();
+    return (locks && locks[identityKey]) || null;
+  }
+
+  function tmSetProviderLock(identityKey, slug, label, manual) {
+    try {
+      var locks = tmGetProviderLocks();
+      locks[identityKey] = { slug: slug, label: label, ts: Date.now(), manual: !!manual, _session_id: identityKey.split('::')[0] };
+      localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
+    } catch (e) {}
+  }
+
+  function tmClearProviderLock(identityKey) {
+    try {
+      var locks = tmGetProviderLocks();
+      delete locks[identityKey];
+      localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
+    } catch (e) {}
+  }
+
+  // Check if a model has multiple providers (seed-table lookup; phase 2 adds live API).
+  function tmIsMultiProviderModel(model) {
+    if (!model) return false;
+    var m = String(model).toLowerCase();
+    m = m.replace(/:(nitro|floor|free)$/i, '');
+    return TM_PROVIDER_SEED.hasOwnProperty(m);
+  }
+
+  // Get the seed entry list for a model (returns [] if unknown).
+  function tmGetProviderSeed(model) {
+    if (!model) return [];
+    var m = String(model).toLowerCase();
+    m = m.replace(/:(nitro|floor|free)$/i, '');
+    return TM_PROVIDER_SEED[m] || [];
+  }
 
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmGetSessionCosts-fnas,
@@ -490,6 +596,7 @@
     touchMap('tm_session_names', 'name');
     touchMap(TM_SESSION_HUES_KEY, 'hue');
     touchMap('gpt51_conv_usage', 'gpt51');
+    touchMap(TM_PROVIDER_LOCKS_KEY, false);
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -1506,6 +1613,37 @@
                 // fall back to the endpoint host so something useful shows for older/edge captures.
                 tmMostRecentPayloadStatus.provider = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
                 tmUpdateCaptureRecord(captureId, { _identity: identity });
+                // (Fix 16, v4.200) AUTO-STAMP provider lock. If this is a multi-provider model, the
+                // response had a real provider (not an error-only chunk), and no lock exists yet for
+                // this conversation identity, stamp one now. From this point on, every subsequent
+                // turn hard-pins to this provider -- no more silent bouncing to a $0.65 miss.
+                try {
+                  var lockProvider = patch.response_provider || (capRec && capRec.response_provider) || null;
+                  var lockSlug = lockProvider ? tmProviderNameToSlug(lockProvider) : null;
+                  // Only stamp if the response was NOT an error (check for error-only chunks:
+                  // choices is empty and error field present in response_body_head or segments).
+                  var hadError = false;
+                  try {
+                    if (capRec && capRec.response_usage_segments) {
+                      for (var si = 0; si < capRec.response_usage_segments.length; si++) {
+                        try {
+                          var seg = JSON.parse(capRec.response_usage_segments[si]);
+                          if (seg && seg.error) { hadError = true; break; }
+                        } catch (e) {}
+                      }
+                    }
+                  } catch (e2) {}
+                  if (lockSlug && !hadError && tmIsMultiProviderModel(idModel)) {
+                    var existingLock = tmGetProviderLock(idKey);
+                    if (!existingLock || existingLock.slug === '__auto') {
+                      // Don't auto-stamp if the user explicitly chose Float.
+                      if (!existingLock || existingLock.slug !== '__float') {
+                        tmSetProviderLock(idKey, lockSlug, lockProvider, false);
+                        console.log('🔒 [v' + EXT_VERSION + '] Auto-stamped provider lock: ' + lockProvider + ' (' + lockSlug + ') for ' + idKey);
+                      }
+                    }
+                  }
+                } catch (lockErr) {}
                 // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
                 try {
                   var cacheHit = tmIsSignificantCacheHit(capRec);
@@ -2143,6 +2281,33 @@
             ev.stopPropagation();
             return;
           }
+          // (Fix 16, v4.200) Provider routing dropdown -- onchange handler.
+          if (target.dataset.action === 'set-provider-routing') {
+            var routeVal = target.value;
+            var routeIdKey = target.dataset.identityKey || '';
+            if (routeVal === '__auto') {
+              // Unlock: clear the lock. Next turn floats (fallbacks on), first success re-locks.
+              tmClearProviderLock(routeIdKey);
+              console.log('🔓 [v' + EXT_VERSION + '] Provider lock cleared for ' + routeIdKey + ' — auto-lock on next hit');
+            } else if (routeVal === '__float') {
+              // Float: clear the lock AND mark as float so AUTO mode doesn't re-stamp.
+              // We use a special lock entry with slug='__float' to signal float mode.
+              tmSetProviderLock(routeIdKey, '__float', 'Float', true);
+              console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
+            } else if (routeVal) {
+              // Manual lock to a specific provider. This is the informed switch — costs 1 cache write.
+              var routeSeed = tmGetProviderSeed(modelForDisplay || '');
+              var routeLabel = routeVal;
+              for (var ri = 0; ri < routeSeed.length; ri++) {
+                if (routeSeed[ri].slug === routeVal) { routeLabel = routeSeed[ri].label; break; }
+              }
+              tmSetProviderLock(routeIdKey, routeVal, routeLabel, true);
+              console.log('🔒 [v' + EXT_VERSION + '] Provider manually locked to ' + routeLabel + ' (' + routeVal + ') for ' + routeIdKey);
+            }
+            renderGpt51UsageWidget();
+            ev.stopPropagation();
+            return;
+          }
           // Close (hide) a specific conversation from the list
           if (target.dataset.convId) {
             const convId = target.dataset.convId;
@@ -2488,6 +2653,8 @@
     // v4.198: + serving provider appended (pipe-separated, light green) so you can see WHICH
     // OpenRouter endpoint (Moonshot vs Fireworks vs Baseten) served the most-recent turn at a
     // glance, right in the persistent widget — no need to open the ring-buffer modal.
+    // v4.200: + provider routing dropdown (Fix 16) for multi-provider models. Shows lock state
+    // with a glyph and lets you switch/lock/float/unlock. Only renders for multi-provider models.
     var modelForDisplay = '';
     try {
       if (widgetIdentity && widgetIdentity.model) modelForDisplay = widgetIdentity.model;
@@ -2502,7 +2669,41 @@
       var providerSuffix = providerForDisplay
         ? (' <span style="opacity:0.5;">|</span> <span title="serving provider" style="color:#8ef0a0;">' + escapeHtml(providerForDisplay) + '</span>')
         : '';
-      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + '</div>');
+      // (Fix 16, v4.200) Provider routing dropdown for multi-provider models.
+      var routingDropdown = '';
+      try {
+        var _rModel = String(modelForDisplay).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        if (tmIsMultiProviderModel(_rModel)) {
+          var _rSid = (widgetIdentity && widgetIdentity.sid) || '';
+          var _rHost = (widgetIdentity && widgetIdentity.host) || '';
+          var _rProxy = (widgetIdentity && widgetIdentity.proxy) || false;
+          var _rIdKey = tmBuildSessionCostKey(_rSid, _rModel, _rHost, _rProxy);
+          var _rLock = tmGetProviderLock(_rIdKey);
+          var _rSeed = tmGetProviderSeed(_rModel);
+          var _rLockGlyph = _rLock ? '\uD83D\uDD12' : '\uD83D\uDD13'; // locked or unlocked
+          var _rLockLabel = _rLock ? _rLock.label : (providerForDisplay || 'auto');
+          // Build dropdown options
+          var _rOpts = [];
+          _rOpts.push('<option value="__auto">' + (_rLock ? '\uD83D\uDD13 Auto-lock on first hit' : '\uD83D\uDD13 Auto (no lock yet)') + '</option>');
+          _rOpts.push('<option value="__float">\uD83C\uDf30 Float (never lock)</option>');
+          if (_rLock) {
+            _rOpts.push('<option value="' + escapeHtml(_rLock.slug) + '" selected>\uD83D\uDD12 Locked: ' + escapeHtml(_rLock.label) + '</option>');
+          }
+          _rOpts.push('<option value="" disabled>── switch (costs 1 cache write) ──</option>');
+          for (var si = 0; si < _rSeed.length; si++) {
+            var se = _rSeed[si];
+            var badge = se.cache ? '\uD83D\uDFE2' : '\u26D4';
+            var optLabel = badge + ' ' + escapeHtml(se.label) + ' \u00b7 ' + escapeHtml(se.note || '');
+            if (_rLock && _rLock.slug === se.slug) continue; // already shown above
+            _rOpts.push('<option value="' + escapeHtml(se.slug) + '">' + optLabel + '</option>');
+          }
+          routingDropdown = ' <select data-action="set-provider-routing" data-identity-key="' + escapeHtml(_rIdKey) + '" title="Provider routing" style="font-size:9px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:0 2px;margin-left:4px;">' +
+            '<option value="" disabled selected>' + _rLockGlyph + ' ' + escapeHtml(_rLockLabel) + '</option>' +
+            _rOpts.join('') +
+            '</select>';
+        }
+      } catch (e) {}
+      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
     }
 
     if (collapsed) {
@@ -4611,41 +4812,11 @@
       console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': injected usage.{include:true} for streaming cost/cache tracking');
     }
 
-    // (Fix 13, v4.197) KIMI PROVIDER PINNING. Kimi/Moonshot only. Pin to the high-cache-hit
-    // providers in preference order and hard-ignore the non-caching / coin-flip ones, so a
-    // long-idle session can no longer be load-balanced onto Baseten/Nebius (full-price misses).
-    // order alone disables OpenRouter load balancing; ignore is a belt-and-suspenders floor.
-    // allow_fallbacks stays true so a total outage of the good providers still returns an answer
-    // (a rare cache miss) rather than hard-failing the conversation. Merge-not-clobber: preserve
-    // any provider fields TypingMind (or a future fix) may already have set.
-    if (tmIsKimiModel(body.model)) {
-      // (v4.199) FIREWORKS FIRST (speed-first ordering, per Dan 2026-07). Moonshot's official
-      // endpoint has the best cache-hit rate (~92%) but has been catastrophically SLOW under
-      // launch-week load (one-token-every-3-seconds), so speed wins for interactive use: prefer
-      // Fireworks (~32-64 tps), then fall back to Moonshot / Together / Modal. TRADEOFF: with
-      // allow_fallbacks:true this optimizes for SPEED, not cache-stickiness — a Fireworks wobble
-      // can bounce a turn onto Moonshot and cost a cache write. For a cache-locked background
-      // mode instead, use order:['fireworks'] + allow_fallbacks:false (hard-fails if down).
-      var KIMI_ORDER = ['fireworks', 'moonshotai', 'together', 'modal'];
-      var KIMI_IGNORE = ['baseten', 'nebius', 'morph', 'digitalocean'];
-      if (!body.provider || typeof body.provider !== 'object') body.provider = {};
-      var provChanged = false;
-      if (!Array.isArray(body.provider.order) || body.provider.order.length === 0) {
-        body.provider.order = KIMI_ORDER.slice();
-        provChanged = true;
-      }
-      if (!Array.isArray(body.provider.ignore) || body.provider.ignore.length === 0) {
-        body.provider.ignore = KIMI_IGNORE.slice();
-        provChanged = true;
-      }
-      if (typeof body.provider.allow_fallbacks !== 'boolean') {
-        body.provider.allow_fallbacks = true;
-        provChanged = true;
-      }
-      if (provChanged) {
-        changed = true;
-        console.log('✅ [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': Fix 13 pinned Kimi providers →', JSON.stringify(body.provider));
-      }
+    // (Fix 16, v4.200) GENERIC provider routing. Replaces the hardcoded Fix 13 Kimi block.
+    // Works for any multi-provider model. Checks the lock store; injects order/ignore/allow_fallbacks
+    // accordingly. No-op for single-provider models (Claude, GPT, etc.).
+    if (tmApplyProviderRouting(body, label)) {
+      changed = true;
     }
 
     return changed;
@@ -4752,6 +4923,82 @@
     if (!model) return false;
     var m = String(model).toLowerCase();
     return m.startsWith('moonshotai/') || m.includes('kimi') || m.includes('moonshot');
+  }
+
+  // ==================== GENERIC PROVIDER ROUTING (Fix 16, v4.200) ====================
+  // Replaces the hardcoded Kimi-only Fix 13 block. Works for ANY multi-provider model.
+  // Three modes, driven by the lock store:
+  //   LOCKED  (manual or auto-stamped): order:[slug], allow_fallbacks:false -- hard-pin, same
+  //           provider every turn. Cache works. A provider failure hard-fails (visible, free)
+  //           instead of silently bouncing to a $0.65 miss. The human switches manually.
+  //   AUTO    (no lock, multi-provider model): order = seed preference list, allow_fallbacks:true.
+  //           First successful response auto-stamps a lock in tmCaptureResponse.
+  //   FLOAT   (no lock, lock cleared): inject nothing at all -- OpenRouter load-balances freely.
+  //           Escape hatch for when you want the old pre-Fix-16 behavior.
+  // Non-multi-provider models (Claude, GPT, single-endpoint): always no-op.
+  function tmApplyProviderRouting(body, label) {
+    if (!body || !body.model) return false;
+    var model = String(body.model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+    if (!tmIsMultiProviderModel(model)) return false;
+
+    // Build the identity key the same way the rest of the system does.
+    var sid = body.session_id || tmDeriveStableSessionId(body) || '';
+    var host = '';
+    try {
+      if (label && label.indexOf('Proxy') >= 0) host = 'proxy';
+    } catch (e) {}
+    var isProxy = (host === 'proxy');
+    var idKey = tmBuildSessionCostKey(sid, model, host, isProxy);
+
+    var lock = tmGetProviderLock(idKey);
+    var seed = tmGetProviderSeed(model);
+    var changed = false;
+
+    // FLOAT mode: the user explicitly chose Float. Inject nothing at all.
+    if (lock && lock.slug === '__float') {
+      return false;
+    }
+
+    if (lock && lock.slug && lock.slug !== '__float') {
+      // LOCKED: hard-pin to the locked provider. allow_fallbacks:false = visible hard-fail, not
+      // a silent bounce. This is the whole point: you NEVER get a surprise $0.65 miss.
+      if (!body.provider || typeof body.provider !== 'object') body.provider = {};
+      body.provider.order = [lock.slug];
+      body.provider.allow_fallbacks = false;
+      // Remove any stale ignore list -- we are pinning to exactly one provider.
+      delete body.provider.ignore;
+      changed = true;
+      console.log('🔒 [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': provider LOCKED to ' + lock.label + ' (' + lock.slug + ') for ' + model);
+    } else {
+      // AUTO: no lock. Inject preference order from seed (good providers first, toxic ignored).
+      // allow_fallbacks:true so the FIRST turn can't spuriously fail -- it needs to succeed to
+      // stamp the lock. Once stamped, subsequent turns switch to the hard-pin above.
+      var goodOrder = [];
+      var ignoreList = [];
+      for (var i = 0; i < seed.length; i++) {
+        if (seed[i].toxic) { ignoreList.push(seed[i].slug); }
+        else { goodOrder.push(seed[i].slug); }
+      }
+      if (goodOrder.length > 0) {
+        if (!body.provider || typeof body.provider !== 'object') body.provider = {};
+        if (!Array.isArray(body.provider.order) || body.provider.order.length === 0) {
+          body.provider.order = goodOrder;
+          changed = true;
+        }
+        if (ignoreList.length > 0 && (!Array.isArray(body.provider.ignore) || body.provider.ignore.length === 0)) {
+          body.provider.ignore = ignoreList;
+          changed = true;
+        }
+        if (typeof body.provider.allow_fallbacks !== 'boolean') {
+          body.provider.allow_fallbacks = true;
+          changed = true;
+        }
+        if (changed) {
+          console.log('🌊 [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': provider AUTO (no lock yet) for ' + model + ' ->', JSON.stringify(body.provider));
+        }
+      }
+    }
+    return changed;
   }
 
   // v4.161: Ensure plain-Sol requests carry reasoning.effort = 'high' at the top level.
