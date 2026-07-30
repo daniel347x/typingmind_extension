@@ -7,6 +7,10 @@
 //     now injects body.provider {order:[moonshotai,fireworks,together,modal], ignore:[baseten,
 //     nebius,morph,digitalocean], allow_fallbacks:true} for Kimi/Moonshot models only. order
 //     disables OpenRouter load balancing; ignore is a hard floor. Merge-not-clobber.
+//   - v4.197: Capture response `provider` string (from SSE chunk / JSON response) onto the capture
+//     record as response_provider, and display it inline (light green) at the right end of each
+//     payload-capture modal row's cost/repair/cache line — so the serving provider is visible at a
+//     glance (Moonshot vs Baseten) without opening the raw segment. Falls back to endpoint host.
 // Purpose: 
 //   1. Inject missing prompt-caching-2024-07-31 beta flag into Anthropic API requests
 //   2. Strip non-standard "name" field from tool_result content blocks
@@ -1357,6 +1361,10 @@
             // Non-streaming provider responses: surface any known cache/cost evidence too.
             var jsonUsage = tmExtractKnownUsageEvidence(parsed);
             if (jsonUsage) patch.response_usage = jsonUsage;
+            // (v4.197) Capture the top-level provider string for inline modal display.
+            if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
+              patch.response_provider = parsed.provider;
+            }
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
@@ -1370,6 +1378,7 @@
               var lastUsage = null;
               var anthropicUsage = null;
               var usageSegments = [];
+              var sseProvider = null; // (v4.197) top-level provider string carried by each SSE chunk
               for (var li = 0; li < lines.length; li++) {
                 var line = lines[li].trim();
                 if (!line.startsWith('data: ')) continue;
@@ -1406,6 +1415,11 @@
                     for (var k in du) { if (Object.prototype.hasOwnProperty.call(du, k)) { anthropicUsage[k] = du[k]; } }
                     hit = true;
                   }
+                  // (v4.197) Capture the top-level provider string (e.g. 'Moonshot AI', 'Baseten')
+                  // so the modal row can show it inline without opening the raw segment.
+                  if (!sseProvider && parsed2 && typeof parsed2.provider === 'string' && parsed2.provider) {
+                    sseProvider = parsed2.provider;
+                  }
                   // (v4.96) Save the raw JSON blob for any segment that carried usage/cost evidence.
                   if (hit) { usageSegments.push(jsonStr); }
                 } catch (parseErr) {}
@@ -1413,6 +1427,7 @@
               if (usageSegments.length > 0) { patch.response_usage_segments = usageSegments; }
               if (lastUsage) { patch.response_usage = lastUsage; }
               if (anthropicUsage) { patch.response_anthropic_usage = anthropicUsage; }
+              if (sseProvider) { patch.response_provider = sseProvider; }
             } catch (usageErr) {}
           }
           tmUpdateCaptureRecord(captureId, patch);
@@ -3703,7 +3718,14 @@
         ? ('<span title="inference cost" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">·</span> ')
         : '';
 
-      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + '</div>';
+      // (v4.197) Inline provider badge (light green) at the right end of the cost/repair/cache row,
+      // so the serving provider is visible at a glance without opening the raw segment JSON. Falls
+      // back to the resolved endpoint host for captures taken before provider capture existed.
+      var capProvider = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
+      var providerHtml = capProvider
+        ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
+        : '';
+      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + '</div>';
 
 
 
