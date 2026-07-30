@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.210
+// Version: 4.211
 // Issues Fixed:
+//   - v4.211: Persistent-widget error hygiene + cache-badge repair (Dan's 'leave all values the
+//     same on a 429' spec). (1) WIDGET-FEED GATE: error responses (HTTP>=400 OR an error chunk in
+//     the body) no longer rebuild tmMostRecentPayloadStatus -- the widget keeps the LAST
+//     SUCCESSFUL turn's cost/cache/provider instead of being wiped by an empty error turn.
+//     (2) 429s are NO LONGER written to the per-identity cache ledger as misses -- consecutive-
+//     hit streaks and miss totals now count real turns only. (3) Widget badges read the
+//     cache-outcome LEDGER (tmGetCacheOutcomeForIdentity) instead of the ephemeral
+//     status.cacheStats, plus a last-successful-usage fallback (tmLastSuccessfulUsage) -- so
+//     badges finally render after refresh AND after error turns (they lived inside the
+//     turn-cost span, which vanished whenever cost was 0). (4) IDENTITY GUARD: the red error row
+//     only renders when the error's identity matches the widget's displayed identity, and a
+//     success clears only its OWN session's banner -- parallel conversations no longer overwrite
+//     each other's widget.
 //   - v4.210: Ring-buffer modal retry-visibility toggle. With auto-retry absorbing most 429s, the
 //     ring modal was drowning in retry-attempt rows, hiding the real turns. New '⏳ Retries:
 //     hidden/shown' button in the control row (next to sort pills + identity filter) filters out
@@ -274,7 +287,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.210';
+  const EXT_VERSION = '4.211';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -798,6 +811,38 @@
     touchMap('gpt51_conv_usage', 'gpt51');
     touchMap(TM_PROVIDER_LOCKS_KEY, false);
     try { tmSessionHueCache = null; } catch (e) {}
+  }
+
+  // (v4.211) Read the per-identity cache-outcome ledger entry (fields live on the
+  // tm_session_costs_v2 record: _cache_hits / _cache_misses / _cache_streak / _cache_last).
+  // The widget badges read THIS instead of the ephemeral tmMostRecentPayloadStatus.cacheStats,
+  // so they survive TypingMind refresh and are unaffected by error turns.
+  function tmGetCacheOutcomeForIdentity(idKey) {
+    try {
+      if (!idKey) return null;
+      var costs = tmGetSessionCosts();
+      var e = costs[idKey];
+      if (!e || typeof e !== 'object') return null;
+      return e;
+    } catch (e) { return null; }
+  }
+
+  // (v4.211) Find the most recent ring entry that actually carried usage (a successful turn), so
+  // the widget status line can render cost/cache-report/badges even after a refresh wiped the
+  // live status. Bounded scan for safety.
+  function tmLastSuccessfulUsage() {
+    try {
+      var ring = tmReadCaptureRing();
+      var budget = 60;
+      for (var i = ring.length - 1; i >= 0 && budget > 0; i--, budget--) {
+        var cap = ring[i];
+        if (!cap) continue;
+        if (cap.response_anthropic_usage || cap.response_usage) {
+          return { au: cap.response_anthropic_usage || null, oru: cap.response_usage || null };
+        }
+      }
+    } catch (e) {}
+    return null;
   }
 
   // (v4.122) Determine if a capture represents a significant cache hit.
@@ -1674,6 +1719,10 @@
       clone.text().then(
         function(text) {
           const patch = { response_body_chars: (typeof text === 'string' ? text.length : null) };
+          // (v4.211) Track whether this response carried an ERROR (HTTP>=400 or an error chunk),
+          // so the widget-feed gate below can leave the last SUCCESSFUL turn's values untouched.
+          var capHadError = false;
+          try { capHadError = (Number(response.status) >= 400); } catch (e) {}
           try {
             // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
@@ -1691,6 +1740,8 @@
             if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
               patch.response_provider = parsed.provider;
             }
+            // (v4.211) A top-level error object marks this as an error response.
+            if (parsed && parsed.error) { capHadError = true; }
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
@@ -1751,7 +1802,8 @@
                   // provider (extracted above) but had NO Raw Seg button — you couldn't see the error
                   // without opening the network tab. A chunk with an `error` field is exactly the
                   // diagnostic you want, so mark it as worth keeping.
-                  if (parsed2 && parsed2.error) { hit = true; }
+                  // (v4.211) ...and flag the capture as an error response for the widget-feed gate.
+                  if (parsed2 && parsed2.error) { hit = true; capHadError = true; }
                   // (v4.96) Save the raw JSON blob for any segment that carried usage/cost/error evidence.
                   if (hit) { usageSegments.push(jsonStr); }
                 } catch (parseErr) {}
@@ -1767,7 +1819,14 @@
           // (v4.63) Feed the always-visible widget header with this (most-recent) payload's status.
           try {
             var capRec = getCaptureById(captureId);
-            tmMostRecentPayloadStatus = {
+            // (v4.211) WIDGET-FEED GATE: on ERROR responses (HTTP>=400 or an error chunk in the
+            // body) the persistent widget must keep showing the LAST SUCCESSFUL turn's values.
+            // capWidgetFeed gates the status rebuild, store-touch, status identity/provider
+            // assignment, cache-outcome ledger write, cost accumulation, and widget render below.
+            // (The capture's own _identity stamp further down stays UNGATED: the ring modal
+            // and provider dropdowns want identity even on error captures.)
+            var capWidgetFeed = !capHadError;
+            tmMostRecentPayloadStatus = capWidgetFeed ? {
               ts: Date.now(),
               repairTally: (capRec && capRec.repair_tally) || null,
               anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
@@ -1786,11 +1845,11 @@
                 } catch (e) {}
                 return null;
               })()
-            };
+            } : tmMostRecentPayloadStatus;
             // Touch any stored session-derived metadata for this session, even if this
             // particular response carries no billable cost.
             try {
-              tmTouchSessionScopedStores(tmMostRecentPayloadStatus.sessionId || tmMostRecentPayloadStatus.pastedSessionId, Date.now());
+              if (capWidgetFeed) tmTouchSessionScopedStores(tmMostRecentPayloadStatus.sessionId || tmMostRecentPayloadStatus.pastedSessionId, Date.now());
             } catch (e) {}
             // v4.157: Resolve + stamp identity UNCONDITIONALLY (independent of cost), so every
             // response — zero-cost, no-usage, or errored — carries a canonical identity for hue/cost.
@@ -1807,11 +1866,11 @@
                 try { idIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
                 var idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
                 var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
-                tmMostRecentPayloadStatus.identity = identity;
+                if (capWidgetFeed) tmMostRecentPayloadStatus.identity = identity;
                 // (v4.198) Carry the serving provider onto the most-recent status so the persistent
                 // widget can show it next to the model name. Prefer the captured provider string;
                 // fall back to the endpoint host so something useful shows for older/edge captures.
-                tmMostRecentPayloadStatus.provider = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
+                if (capWidgetFeed) tmMostRecentPayloadStatus.provider = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
                 tmUpdateCaptureRecord(captureId, { _identity: identity });
                 // (Fix 16, v4.200) AUTO-STAMP provider lock. If this is a multi-provider model, the
                 // response had a real provider (not an error-only chunk), and no lock exists yet for
@@ -1846,7 +1905,9 @@
                   }
                 } catch (lockErr) {}
                 // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
-                try {
+                // (v4.211) GATED: an error response is NOT a cache miss -- it must not break the
+                // hit streak or inflate the miss total, so the ledger is never touched on errors.
+                if (capWidgetFeed) try {
                   var cacheHit = tmIsSignificantCacheHit(capRec);
                   var cacheStats = tmRecordIdentityCacheOutcome(idSid, idModel, idHost, idIsProxy, cacheHit);
                   tmMostRecentPayloadStatus.cacheHit = cacheHit;
@@ -1856,7 +1917,8 @@
               }
             } catch (e) {}
             // (v4.72) Accumulate per-turn cost into the running total.
-            try {
+            // (v4.211) GATED to successful responses only.
+            if (capWidgetFeed) try {
               var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
               if (turnCost > 0) {
                 tmSetTotalCost(tmGetTotalCost() + turnCost);
@@ -1872,7 +1934,7 @@
                 } catch (e) {}
               }
             } catch (e) {}
-            renderGpt51UsageWidget();
+            if (capWidgetFeed) renderGpt51UsageWidget();
           } catch (e) {}
         },
         function(err) {
@@ -2704,12 +2766,33 @@
 
     var au = st.anthropicUsage;
     var oru = st.orUsage;
+    // (v4.211) Fallback when the live status is empty (post-refresh, or the last turn was an
+    // error): use the most recent SUCCESSFUL turn's usage from the ring, so cost + cache report
+    // + badges still render instead of going blank.
+    if (!au && !oru) {
+      try {
+        var lastOk = tmLastSuccessfulUsage();
+        if (lastOk) { au = lastOk.au; oru = lastOk.oru; }
+      } catch (e) {}
+    }
     // v4.168: Per-turn cost is now rendered inline here (not via tmRenderCacheReport's tiny gray badge)
     // so it can be the flashpoint — larger font, orange-red, bold.
     var turnCostVal = tmExtractCostVal(au, oru);
     // v4.169: Cache hit/miss badges around the cost.
-    var cacheHit = !!st.cacheHit;
-    var stats = st.cacheStats || {};
+    // (v4.211) Read the per-identity cache-outcome LEDGER (survives refresh; error turns no
+    // longer stamp tmMostRecentPayloadStatus, so status.cacheStats alone would go stale/blank).
+    var ledgerStats = null;
+    try {
+      var identKey = (st.identity && st.identity.key) || '';
+      if (!identKey) {
+        var _r2 = tmReadCaptureRing();
+        var _l2 = _r2.length > 0 ? _r2[_r2.length - 1] : null;
+        if (_l2 && _l2._identity && _l2._identity.key) identKey = _l2._identity.key;
+      }
+      if (identKey) ledgerStats = tmGetCacheOutcomeForIdentity(identKey);
+    } catch (e) {}
+    var stats = ledgerStats || (st.cacheStats || {});
+    var cacheHit = (st.cacheHit != null) ? !!st.cacheHit : !!(stats && stats._cache_last === 'hit');
     var streak = Number(stats._cache_streak || 0);
     var totalHits = Number(stats._cache_hits || 0);
     var totalMisses = Number(stats._cache_misses || 0);
@@ -2889,12 +2972,22 @@
     // (Fix 17, v4.202) Error row: when the most-recent response carried an OpenRouter error,
     // show a compact clickable red row. Click opens a popup with the full raw error JSON.
     // Auto-cleared on the next successful response (see tmMaybeAutoRetry fast path).
+    // (v4.211) IDENTITY GUARD: only show the banner when the error's identity matches the
+    // identity the widget is currently displaying -- a parallel conversation's 429 must NOT
+    // append a red row to THIS session's widget. (If the widget shows no identity, show it.)
     try {
       if (tmMostRecentError) {
-        var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
-        var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
-        var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
-        lines.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:9px;font-family:monospace;margin-bottom:2px;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⚠ err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' — click</div>');
+        var errMatches = true;
+        try {
+          var wKey = (widgetIdentity && widgetIdentity.key) || '';
+          if (wKey && tmMostRecentError.idKey && tmMostRecentError.idKey !== wKey) errMatches = false;
+        } catch (e) {}
+        if (errMatches) {
+          var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
+          var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
+          var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
+          lines.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:9px;font-family:monospace;margin-bottom:2px;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⚠ err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' — click</div>');
+        }
       }
     } catch (e) {}
 
@@ -3717,14 +3810,23 @@
   // per-identity 429 counter (a success = healthy pool), clear any error banner, apply the Sol
   // Pro guard, return the (possibly rebuilt) response.
   function tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage) {
+    var okKey = null;
     try {
       var okBody = JSON.parse((args[1] && args[1].body) || '{}');
-      var okKey = tmComputeRoutingIdentityKey(okBody, args[0], args[1]);
+      okKey = tmComputeRoutingIdentityKey(okBody, args[0], args[1]);
       if (okKey) tmResetRateLimitFails(okKey);
     } catch (e) {}
+    // (v4.211) Clear the error banner ONLY when this success belongs to the SAME identity that
+    // errored -- a parallel conversation's success must not clear another session's banner.
     if (tmMostRecentError) {
-      tmMostRecentError = null;
-      try { renderGpt51UsageWidget(); } catch (e) {}
+      var canClear = true;
+      try {
+        if (tmMostRecentError.idKey && okKey && tmMostRecentError.idKey !== okKey) canClear = false;
+      } catch (e) {}
+      if (canClear) {
+        tmMostRecentError = null;
+        try { renderGpt51UsageWidget(); } catch (e) {}
+      }
     }
     if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(response); } catch (e) {} }
     return response;
@@ -3736,18 +3838,22 @@
   function tmHandleOpenRouterError(response, err, status, args, shouldSanitizeSolProUsage, attempt, passThrough) {
     var reqBody = null;
     try { reqBody = JSON.parse((args[1] && args[1].body) || '{}'); } catch (e) {}
+    // (v4.211) Compute the error's identity ONCE and carry it on the banner, so the widget can
+    // refuse to show banners from OTHER (parallel) conversations, and a success can clear only
+    // its OWN banner.
+    var errIdKey = null;
+    try { if (reqBody) errIdKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
     if (err) {
       tmMostRecentError = {
         ts: Date.now(), model: (reqBody && reqBody.model) || '', provider: err.provider, code: err.code,
         message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
-        retryAfter: err.retryAfter, full: err.full, attempt: attempt
+        retryAfter: err.retryAfter, full: err.full, attempt: attempt, idKey: errIdKey
       };
       try { renderGpt51UsageWidget(); } catch (e) {}
     }
     var is429 = (err && Number(err.code) === 429) || (status === 429);
     if (is429 && attempt < TM_AUTO_RETRY_MAX) {
-      var idKey = null;
-      try { if (reqBody) idKey = tmComputeRoutingIdentityKey(reqBody, args[0], args[1]); } catch (e) {}
+      var idKey = errIdKey;
       var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
       var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
       var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 4));
