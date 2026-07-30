@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.203
+// Version: 4.204
 // Issues Fixed:
+//   - v4.204: Fix 18 -- multi-select allowed-provider SET. Dropdown gains '🎯 Multi-select set…',
+//     opening a checkbox modal of the model's providers (cache/toxic badges, current set
+//     pre-checked). Apply writes a SET lock ({mode:'set', slugs, labels}) keyed by the canonical
+//     identity; injection then sends provider.only=[slugs] with NO order (OpenRouter smart-
+//     balances WITHIN the set, routing around hot pools => fewer 429s) and allow_fallbacks:true
+//     (fallbacks stay inside the set). Each set member keeps its own prompt cache warm across
+//     interleaved turns (observed live). Single-lock path now also clears any stale provider.only.
+//     Widget shows 🎯 glyph + Set(N)/Set: A+B in the dropdown. Auto-stamp skips set locks for
+//     free (a lock exists). ALSO: TM_AUTO_RETRY_MAX raised 5 -> 20 per Dan: for a walk-away run,
+//     'came back to an error' and 'came back to a retry loop' cost the same, but only one can
+//     still finish -- ~5-8 min absorption per chain, subsequent chains ride the 30s clamp.
 //   - v4.203: Fix 17 hardening. (1) Retry ANY 429, not just those carrying retry_after_seconds --
 //     providers omit it constantly (observed: Moonshot sends bare {error_type:rate_limit_exceeded};
 //     Fireworks sends {provider_error_code} with NO retry_after). v4.202 required the field and so
@@ -216,7 +227,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.203';
+  const EXT_VERSION = '4.204';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -412,6 +423,15 @@
     try {
       var locks = tmGetProviderLocks();
       delete locks[identityKey];
+      localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
+    } catch (e) {}
+  }
+
+  // (Fix 18, v4.204) Write a SET lock: the curated list of providers OpenRouter may route among.
+  function tmSetProviderSetLock(identityKey, slugs, labels) {
+    try {
+      var locks = tmGetProviderLocks();
+      locks[identityKey] = { mode: 'set', slugs: slugs.slice(), labels: (labels || slugs).slice(), ts: Date.now(), manual: true, _session_id: identityKey.split('::')[0] };
       localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
     } catch (e) {}
   }
@@ -2331,6 +2351,10 @@
               // We use a special lock entry with slug='__float' to signal float mode.
               tmSetProviderLock(routeIdKey, '__float', 'Float', true);
               console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
+            } else if (routeVal === '__set') {
+              // (Fix 18, v4.204) Open the multi-select set modal; re-render so the dropdown
+              // snaps back to showing current state while the modal is up.
+              try { tmShowProviderSetModal(routeIdKey, (routeIdKey.split('::')[1]) || ''); } catch (e) {}
             } else if (routeVal) {
               // Manual lock to a specific provider. This is the informed switch — costs 1 cache write.
               // (v4.201 AUDIT FIX B) derive the model from the identity key (sid::model::host::proxy)
@@ -2723,21 +2747,26 @@
           var _rLock = tmGetProviderLock(_rIdKey);
           var _rSeed = tmGetProviderSeed(_rModel);
           var _rIsFloat = _rLock && _rLock.slug === '__float';
-          var _rLockGlyph = _rIsFloat ? '\uD83C\uDF0A' : (_rLock ? '\uD83D\uDD12' : '\uD83D\uDD13');
-          var _rLockLabel = _rLock ? _rLock.label : (providerForDisplay || 'auto');
+          var _rIsSet = _rLock && _rLock.mode === 'set';
+          var _rLockGlyph = _rIsSet ? '\uD83C\uDFAF' : (_rIsFloat ? '\uD83C\uDF0A' : (_rLock ? '\uD83D\uDD12' : '\uD83D\uDD13'));
+          var _rLockLabel = _rIsSet ? ('Set(' + _rLock.slugs.length + ')') : (_rLock ? _rLock.label : (providerForDisplay || 'auto'));
           // Build dropdown options
           var _rOpts = [];
           _rOpts.push('<option value="__auto">' + (_rLock ? '\uD83D\uDD13 Auto-lock on first hit' : '\uD83D\uDD13 Auto (no lock yet)') + '</option>');
           _rOpts.push('<option value="__float">\uD83C\uDF0A Float (never lock)</option>');
-          if (_rLock && !_rIsFloat) {
+          _rOpts.push('<option value="__set">\uD83C\uDFAF Multi-select set…</option>');
+          if (_rLock && !_rIsFloat && !_rIsSet) {
             _rOpts.push('<option value="' + escapeHtml(_rLock.slug) + '" selected>\uD83D\uDD12 Locked: ' + escapeHtml(_rLock.label) + '</option>');
+          }
+          if (_rIsSet) {
+            _rOpts.push('<option value="__set" selected>\uD83C\uDFAF Set: ' + escapeHtml((_rLock.labels || _rLock.slugs).join('+')) + '</option>');
           }
           _rOpts.push('<option value="" disabled>── switch (costs 1 cache write) ──</option>');
           for (var si = 0; si < _rSeed.length; si++) {
             var se = _rSeed[si];
             var badge = se.cache ? '\uD83D\uDFE2' : '\u26D4';
             var optLabel = badge + ' ' + escapeHtml(se.label) + ' \u00b7 ' + escapeHtml(se.note || '');
-            if (_rLock && !_rIsFloat && _rLock.slug === se.slug) continue; // already shown above
+            if (_rLock && !_rIsFloat && !_rIsSet && _rLock.slug === se.slug) continue; // already shown above
             _rOpts.push('<option value="' + escapeHtml(se.slug) + '">' + optLabel + '</option>');
           }
           routingDropdown = ' <select data-action="set-provider-routing" data-identity-key="' + escapeHtml(_rIdKey) + '" title="Provider routing" style="font-size:9px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:0 2px;margin-left:4px;">' +
@@ -3524,7 +3553,7 @@
   // The literal SSE done marker, built without brackets in source to stay escape-safe.
   function tmDoneMarker() { return '[' + 'DONE' + ']'; }
 
-  var TM_AUTO_RETRY_MAX = 5;        // cap total auto-retries per request
+  var TM_AUTO_RETRY_MAX = 20;       // (v4.204, Dan: walk-away runs should absorb, never surface) ~5-8 min coverage per chain
   var TM_AUTO_RETRY_MAX_WAIT = 30;  // never wait longer than this many seconds per retry
 
   // (v4.203) PER-SESSION rate-limit backoff state. Keyed by the canonical routing identity
@@ -3672,6 +3701,90 @@
     function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
     overlay.addEventListener('click', function() { close(); });
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
+  }
+
+  // (Fix 18, v4.204) Multi-select modal: choose the curated set of providers OpenRouter may
+  // route among for this session identity. Apply writes a set lock via tmSetProviderSetLock.
+  function tmShowProviderSetModal(idKey, model) {
+    if (typeof document === 'undefined' || !idKey) return;
+    var seed = tmGetProviderSeed(model);
+    if (!seed.length) return;
+    var lock = tmGetProviderLock(idKey);
+    var cur = (lock && lock.mode === 'set' && Array.isArray(lock.slugs)) ? lock.slugs : [];
+    var existing = document.getElementById('tm-provider-set-overlay');
+    if (existing) existing.parentNode.removeChild(existing);
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-provider-set-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'min-width:360px;max-width:90vw;max-height:80vh;overflow:auto;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);font-family:monospace;';
+    var title = document.createElement('div');
+    title.style.cssText = 'color:#8ef0a0;font-weight:bold;font-size:13px;margin-bottom:6px;';
+    title.textContent = '🎯 Allowed provider set';
+    var sub = document.createElement('div');
+    sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
+    sub.textContent = 'Only checked providers may serve this session. OpenRouter smart-balances within the set; each keeps its own prompt cache warm. 429s auto-retry with backoff.';
+    box.appendChild(title);
+    box.appendChild(sub);
+    var listWrap = document.createElement('div');
+    listWrap.style.cssText = 'margin-bottom:10px;';
+    seed.forEach(function(se) {
+      var row = document.createElement('label');
+      row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;color:' + (se.toxic ? '#ff9d9d' : '#d0d0d8') + ';padding:3px 0;cursor:pointer;';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.value = se.slug;
+      cb.checked = cur.indexOf(se.slug) !== -1;
+      row.appendChild(cb);
+      var txt = document.createElement('span');
+      txt.textContent = (se.cache ? '🟢' : '⛔') + ' ' + se.label + (se.note ? (' · ' + se.note) : '');
+      row.appendChild(txt);
+      listWrap.appendChild(row);
+    });
+    box.appendChild(listWrap);
+    var warn = document.createElement('div');
+    warn.style.cssText = 'color:#ff6b6b;font-size:11px;margin-bottom:8px;display:none;';
+    warn.textContent = 'Pick at least one provider.';
+    box.appendChild(warn);
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'background:#333;color:#ccc;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;';
+    var okBtn = document.createElement('button');
+    okBtn.textContent = 'Apply set';
+    okBtn.style.cssText = 'background:#245f36;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:bold;';
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(okBtn);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    overlay.addEventListener('click', function() { close(); });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    cancelBtn.addEventListener('click', function(ev) { ev.stopPropagation(); close(); });
+    okBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      var checked = [];
+      var labels = [];
+      var boxes = listWrap.querySelectorAll('input[type=checkbox]');
+      for (var i = 0; i < boxes.length; i++) {
+        if (boxes[i].checked) {
+          checked.push(boxes[i].value);
+          for (var j = 0; j < seed.length; j++) { if (seed[j].slug === boxes[i].value) { labels.push(seed[j].label); break; } }
+        }
+      }
+      if (!checked.length) { warn.style.display = 'block'; return; }
+      tmSetProviderSetLock(idKey, checked, labels);
+      console.log('🎯 [v' + EXT_VERSION + '] Provider SET locked to [' + checked.join(', ') + '] for ' + idKey);
+      try { renderGpt51UsageWidget(); } catch (e) {}
+      close();
+    });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(overlay);
   }
@@ -5231,14 +5344,31 @@
       return false;
     }
 
+    // (Fix 18, v4.204) SET mode: lock.mode==='set' with slugs[]. Inject provider.only=[slugs] so
+    // OpenRouter can ONLY route within the curated set -- NO order (let it smart-balance within
+    // the set, which routes around hot pools and reduces 429s), allow_fallbacks:true (within set).
+    // Each set member keeps its own prompt cache warm across interleaved turns (observed live:
+    // Fireworks cached back several turns despite Together turns in between). And when a 429 does
+    // slip through, the v4.203 backoff retry absorbs it inside the set.
+    if (lock && lock.mode === 'set' && Array.isArray(lock.slugs) && lock.slugs.length) {
+      if (!body.provider || typeof body.provider !== 'object') body.provider = {};
+      body.provider.only = lock.slugs.slice();
+      delete body.provider.order;
+      delete body.provider.ignore;
+      body.provider.allow_fallbacks = true;
+      console.log('🎯 [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': provider SET [' + lock.slugs.join(', ') + '] for ' + model + ' (smart-balance within set)');
+      return true;
+    }
+
     if (lock && lock.slug && lock.slug !== '__float') {
       // LOCKED: hard-pin to the locked provider. allow_fallbacks:false = visible hard-fail, not
       // a silent bounce. This is the whole point: you NEVER get a surprise $0.65 miss.
       if (!body.provider || typeof body.provider !== 'object') body.provider = {};
       body.provider.order = [lock.slug];
       body.provider.allow_fallbacks = false;
-      // Remove any stale ignore list -- we are pinning to exactly one provider.
+      // Remove any stale ignore/only list -- we are pinning to exactly one provider.
       delete body.provider.ignore;
+      delete body.provider.only;
       changed = true;
       console.log('🔒 [v' + EXT_VERSION + '] ' + (label || 'OpenRouter') + ': provider LOCKED to ' + lock.label + ' (' + lock.slug + ') for ' + model);
     } else {
