@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.200
+// Version: 4.201
 // Issues Fixed:
+//   - v4.201: Fix 16 AUDIT FIXES (Opus 4.8 audit of GLM-5.2's v4.200). BUG A (critical): three
+//     surfaces computed the lock identity key three ways -- injector used host='' (-> 'unknown'),
+//     stamp used tmExtractEndpointHost ('openrouter.ai'), widget used widgetIdentity -- so stamped
+//     locks were INVISIBLE to the injector and AUTO never engaged. Now ONE shared builder
+//     (tmComputeRoutingIdentityKey, url+headers at call sites) mirrors the capture-side key
+//     byte-for-byte; widget uses the canonical stamped identity.key directly. BUG B (critical):
+//     dropdown change handler referenced modelForDisplay (scoped to renderGpt51UsageWidget) from
+//     inside ensureGpt51UsageWidget -> ReferenceError crashed manual switches; model now derived
+//     from the identity key. BUG C: float mode showed lock glyph + wrong wave emoji (U+1F330
+//     chestnut -> U+1F30A wave). BUG D: duplicate 'baseten' alias key. BUG E: dead '__auto'
+//     sentinel in stamp simplified to a single !existingLock check (a Float lock EXISTS, so it
+//     blocks re-stamping for free).
 //   - v4.200: Fix 16 — generic provider routing with auto-lock. Replaces the hardcoded Fix 13
 //     Kimi block with a model-agnostic 3-mode system: LOCKED (hard-pin to one provider,
 //     allow_fallbacks:false — visible hard-fail, never a silent $0.65 bounce), AUTO (preference
@@ -186,7 +198,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.200';
+  const EXT_VERSION = '4.201';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -345,7 +357,7 @@
     'fireworks': 'fireworks', 'fireworks fast': 'fireworks/fast', 'fireworks/fast': 'fireworks/fast',
     'together': 'together',
     'modal': 'modal',
-    'baseten': 'baseten', 'baseten': 'baseten',
+    'baseten': 'baseten',
     'nebius': 'nebius', 'nebius token factory': 'nebius',
     'morph': 'morph',
     'digitalocean': 'digitalocean', 'digital ocean': 'digitalocean'
@@ -1635,12 +1647,13 @@
                   } catch (e2) {}
                   if (lockSlug && !hadError && tmIsMultiProviderModel(idModel)) {
                     var existingLock = tmGetProviderLock(idKey);
-                    if (!existingLock || existingLock.slug === '__auto') {
-                      // Don't auto-stamp if the user explicitly chose Float.
-                      if (!existingLock || existingLock.slug !== '__float') {
-                        tmSetProviderLock(idKey, lockSlug, lockProvider, false);
-                        console.log('🔒 [v' + EXT_VERSION + '] Auto-stamped provider lock: ' + lockProvider + ' (' + lockSlug + ') for ' + idKey);
-                      }
+                    // (v4.201 AUDIT FIX E) stamp ONLY when no lock exists. A Float lock entry EXISTS,
+                    // so this single check simultaneously (a) never overwrites a real lock and
+                    // (b) never re-stamps after the user chose Float. GLM's '__auto' sentinel was
+                    // dead code -- nothing ever stores it.
+                    if (!existingLock) {
+                      tmSetProviderLock(idKey, lockSlug, lockProvider, false);
+                      console.log('🔒 [v' + EXT_VERSION + '] Auto-stamped provider lock: ' + lockProvider + ' (' + lockSlug + ') for ' + idKey);
                     }
                   }
                 } catch (lockErr) {}
@@ -2296,7 +2309,12 @@
               console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
             } else if (routeVal) {
               // Manual lock to a specific provider. This is the informed switch — costs 1 cache write.
-              var routeSeed = tmGetProviderSeed(modelForDisplay || '');
+              // (v4.201 AUDIT FIX B) derive the model from the identity key (sid::model::host::proxy)
+              // -- GLM's v4.200 referenced `modelForDisplay`, which is scoped to renderGpt51UsageWidget
+              // and is NOT visible inside this ensureGpt51UsageWidget click handler (ReferenceError,
+              // silently crashing manual switches).
+              var routeModel = (routeIdKey.split('::')[1]) || '';
+              var routeSeed = tmGetProviderSeed(routeModel);
               var routeLabel = routeVal;
               for (var ri = 0; ri < routeSeed.length; ri++) {
                 if (routeSeed[ri].slug === routeVal) { routeLabel = routeSeed[ri].label; break; }
@@ -2674,19 +2692,20 @@
       try {
         var _rModel = String(modelForDisplay).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
         if (tmIsMultiProviderModel(_rModel)) {
-          var _rSid = (widgetIdentity && widgetIdentity.sid) || '';
-          var _rHost = (widgetIdentity && widgetIdentity.host) || '';
-          var _rProxy = (widgetIdentity && widgetIdentity.proxy) || false;
-          var _rIdKey = tmBuildSessionCostKey(_rSid, _rModel, _rHost, _rProxy);
+          // (v4.201 AUDIT FIX) use the CANONICAL stamped identity key directly. GLM's v4.200
+          // reconstructed it from the lowercased/suffix-stripped _rModel, which drifts from the
+          // request/response-side keys whenever the raw model differs (case or :nitro suffix).
+          var _rIdKey = (widgetIdentity && widgetIdentity.key) || '';
           var _rLock = tmGetProviderLock(_rIdKey);
           var _rSeed = tmGetProviderSeed(_rModel);
-          var _rLockGlyph = _rLock ? '\uD83D\uDD12' : '\uD83D\uDD13'; // locked or unlocked
+          var _rIsFloat = _rLock && _rLock.slug === '__float';
+          var _rLockGlyph = _rIsFloat ? '\uD83C\uDF0A' : (_rLock ? '\uD83D\uDD12' : '\uD83D\uDD13');
           var _rLockLabel = _rLock ? _rLock.label : (providerForDisplay || 'auto');
           // Build dropdown options
           var _rOpts = [];
           _rOpts.push('<option value="__auto">' + (_rLock ? '\uD83D\uDD13 Auto-lock on first hit' : '\uD83D\uDD13 Auto (no lock yet)') + '</option>');
-          _rOpts.push('<option value="__float">\uD83C\uDf30 Float (never lock)</option>');
-          if (_rLock) {
+          _rOpts.push('<option value="__float">\uD83C\uDF0A Float (never lock)</option>');
+          if (_rLock && !_rIsFloat) {
             _rOpts.push('<option value="' + escapeHtml(_rLock.slug) + '" selected>\uD83D\uDD12 Locked: ' + escapeHtml(_rLock.label) + '</option>');
           }
           _rOpts.push('<option value="" disabled>── switch (costs 1 cache write) ──</option>');
@@ -2694,7 +2713,7 @@
             var se = _rSeed[si];
             var badge = se.cache ? '\uD83D\uDFE2' : '\u26D4';
             var optLabel = badge + ' ' + escapeHtml(se.label) + ' \u00b7 ' + escapeHtml(se.note || '');
-            if (_rLock && _rLock.slug === se.slug) continue; // already shown above
+            if (_rLock && !_rIsFloat && _rLock.slug === se.slug) continue; // already shown above
             _rOpts.push('<option value="' + escapeHtml(se.slug) + '">' + optLabel + '</option>');
           }
           routingDropdown = ' <select data-action="set-provider-routing" data-identity-key="' + escapeHtml(_rIdKey) + '" title="Provider routing" style="font-size:9px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:0 2px;margin-left:4px;">' +
@@ -4790,7 +4809,7 @@
   //   comment=OpenRouter injector: session_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
   //   kind=ast,
   // ]
-  function tmEnsureOpenRouterAccountingAndSession(body, label) {
+  function tmEnsureOpenRouterAccountingAndSession(body, label, routingIdKey) {
     // (v4.104) Universal OpenRouter injection: session_id for sticky routing + usage.{include:true}
     // for streaming cost/cache tracking. Called on every OpenRouter path (direct or proxy).
     var changed = false;
@@ -4815,7 +4834,8 @@
     // (Fix 16, v4.200) GENERIC provider routing. Replaces the hardcoded Fix 13 Kimi block.
     // Works for any multi-provider model. Checks the lock store; injects order/ignore/allow_fallbacks
     // accordingly. No-op for single-provider models (Claude, GPT, etc.).
-    if (tmApplyProviderRouting(body, label)) {
+    // (v4.201) routingIdKey comes from tmComputeRoutingIdentityKey at the call site (has url+options).
+    if (tmApplyProviderRouting(body, label, routingIdKey)) {
       changed = true;
     }
 
@@ -4936,20 +4956,37 @@
   //   FLOAT   (no lock, lock cleared): inject nothing at all -- OpenRouter load-balances freely.
   //           Escape hatch for when you want the old pre-Fix-16 behavior.
   // Non-multi-provider models (Claude, GPT, single-endpoint): always no-op.
-  function tmApplyProviderRouting(body, label) {
+  //
+  // (v4.201 AUDIT FIX) Compute the routing identity key at REQUEST time, mirroring EXACTLY how
+  // tmCaptureResponse builds it at RESPONSE time: sid::RAWmodel::host::proxy|direct, with host
+  // from tmExtractEndpointHost(url+headers) and proxy from tmIsProxyCapture. GLM's v4.200 built
+  // the request-side key with host='' (-> 'unknown') while the stamp used 'openrouter.ai', so
+  // the stamped lock was INVISIBLE to the injector and AUTO mode never engaged the lock.
+  function tmComputeRoutingIdentityKey(body, url, options) {
+    try {
+      if (!body || !body.model) return null;
+      var model = String(body.model); // RAW model -- byte-for-byte identical to the capture-side key
+      var sid = body.session_id || tmDeriveStableSessionId(body) || '';
+      var hdrs = {};
+      try { hdrs = tmNormalizeHeaders(options && options.headers); } catch (e) {}
+      var capLike = { url: url, headers: hdrs };
+      var host = '';
+      try { host = tmExtractEndpointHost(capLike); } catch (e) {}
+      var isProxy = false;
+      try { isProxy = tmIsProxyCapture(capLike); } catch (e) {}
+      return tmBuildIdentityKey(sid, model, host, isProxy);
+    } catch (e) { return null; }
+  }
+
+  function tmApplyProviderRouting(body, label, idKeyOverride) {
     if (!body || !body.model) return false;
     var model = String(body.model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
     if (!tmIsMultiProviderModel(model)) return false;
 
-    // Build the identity key the same way the rest of the system does.
-    var sid = body.session_id || tmDeriveStableSessionId(body) || '';
-    var host = '';
-    try {
-      if (label && label.indexOf('Proxy') >= 0) host = 'proxy';
-    } catch (e) {}
-    var isProxy = (host === 'proxy');
-    var idKey = tmBuildSessionCostKey(sid, model, host, isProxy);
-
+    // The identity key MUST come from the shared request-time builder (or be passed in from a
+    // call site that has url+options). Never reconstruct ad hoc -- that was BUG A.
+    var idKey = idKeyOverride || tmComputeRoutingIdentityKey(body, null, null) || '';
+    if (!idKey) return false;
     var lock = tmGetProviderLock(idKey);
     var seed = tmGetProviderSeed(model);
     var changed = false;
@@ -5452,7 +5489,7 @@
           }
 
           // (v4.98/v4.104) Inject usage accounting + session_id for all OpenRouter traffic.
-          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter Anthropic Skin')) {
+          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter Anthropic Skin', tmComputeRoutingIdentityKey(body, url, options))) {
             modified = true;
           }
 
@@ -5532,7 +5569,7 @@
           }
 
           // (v4.104) Universal session_id + usage accounting for ALL OpenRouter models on this path.
-          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter')) {
+          if (tmEnsureOpenRouterAccountingAndSession(body, 'OpenRouter', tmComputeRoutingIdentityKey(body, url, options))) {
             modified = true;
           }
 
@@ -5656,7 +5693,7 @@
               modified = true;
             }
 
-            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
+            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter', tmComputeRoutingIdentityKey(body, url, options))) {
                 modified = true;
               }
             }
@@ -5716,7 +5753,7 @@
             const body = JSON.parse(options.body);
             let modified = false;
 
-            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter')) {
+            if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter', tmComputeRoutingIdentityKey(body, url, options))) {
               modified = true;
             }
 
