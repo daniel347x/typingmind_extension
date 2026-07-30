@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.201
+// Version: 4.202
 // Issues Fixed:
+//   - v4.202: Fix 17 -- OpenRouter error surfacing + auto-retry. (a) tmParseOpenRouterError reads
+//     the rich error segment (429 rate-limit / provider errors) that TypingMind flattens into a
+//     useless generic error. (b) A clickable red error row on the persistent widget opens a popup
+//     with the full raw error JSON + remedy_hint; auto-cleared on the next successful response.
+//     (c) tmMaybeAutoRetry auto-retries transient 429s per retry_after_seconds (cap 5, max 30s
+//     each) so a walk-away background run finishes in real time instead of stalling on a 1s blip
+//     until the human types 'continue'. Runs ONLY on OpenRouter URLs and ONLY buffers error
+//     responses (>=400) -- successful streaming responses are never buffered or delayed.
 //   - v4.201: Fix 16 AUDIT FIXES (Opus 4.8 audit of GLM-5.2's v4.200). BUG A (critical): three
 //     surfaces computed the lock identity key three ways -- injector used host='' (-> 'unknown'),
 //     stamp used tmExtractEndpointHost ('openrouter.ai'), widget used widgetIdentity -- so stamped
@@ -198,7 +206,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.201';
+  const EXT_VERSION = '4.202';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2294,6 +2302,12 @@
             ev.stopPropagation();
             return;
           }
+          // (Fix 17, v4.202) Open the error popup with the full raw error JSON.
+          if (target.dataset.action === 'open-error-popup') {
+            try { tmShowErrorPopup(); } catch (e) {}
+            ev.stopPropagation();
+            return;
+          }
           // (Fix 16, v4.200) Provider routing dropdown -- onchange handler.
           if (target.dataset.action === 'set-provider-routing') {
             var routeVal = target.value;
@@ -2724,6 +2738,18 @@
       } catch (e) {}
       lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
     }
+
+    // (Fix 17, v4.202) Error row: when the most-recent response carried an OpenRouter error,
+    // show a compact clickable red row. Click opens a popup with the full raw error JSON.
+    // Auto-cleared on the next successful response (see tmMaybeAutoRetry fast path).
+    try {
+      if (tmMostRecentError) {
+        var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
+        var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
+        var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
+        lines.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:9px;font-family:monospace;margin-bottom:2px;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⚠ err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' — click</div>');
+      }
+    } catch (e) {}
 
     if (collapsed) {
       el.innerHTML = lines.join('');
@@ -3439,6 +3465,147 @@
 
     walk(bodyObj, 'body');
     return out;
+  }
+
+  // ==================== OPENROUTER ERROR SURFACING + AUTO-RETRY (Fix 17, v4.202) ====================
+  // OpenRouter returns rich, actionable error segments (429 rate-limit / provider errors) that
+  // TypingMind flattens into a useless generic error. We already CAPTURE the raw error segment.
+  // Fix 17: (a) parse it, (b) surface it on the persistent widget as a clickable row + JSON popup,
+  // (c) AUTO-RETRY transient 429s (per retry_after_seconds) so a walk-away run finishes in real
+  // time instead of stalling on a 1s blip until the human types 'continue'.
+  var tmMostRecentError = null;
+
+  // Scan raw response text (SSE or bare JSON) for an OpenRouter-style error object.
+  // Returns a structured summary or null. Uses fromCharCode(10) for newline to avoid escapes.
+  function tmParseOpenRouterError(text) {
+    if (!text || typeof text !== 'string') return null;
+    var NL = String.fromCharCode(10);
+    var found = null;
+    function consider(obj) {
+      if (found || !obj || typeof obj !== 'object') return;
+      var e = obj.error;
+      if (!e || typeof e !== 'object') return;
+      var md = e.metadata || {};
+      found = {
+        code: (e.code != null ? e.code : null),
+        message: (e.message != null ? String(e.message) : ''),
+        provider: (md.provider_name != null ? String(md.provider_name) : null),
+        raw: (md.raw != null ? String(md.raw) : null),
+        remedy_hint: (md.remedy_hint != null ? String(md.remedy_hint) : null),
+        retryAfter: (md.retry_after_seconds != null ? Number(md.retry_after_seconds) : null),
+        full: obj
+      };
+    }
+    try {
+      var lines = text.split(NL);
+      for (var i = 0; i < lines.length && !found; i++) {
+        var ln = lines[i].trim();
+        if (ln.indexOf('data: ') === 0) {
+          var js = ln.slice(6).trim();
+          if (!js || js === tmDoneMarker()) continue;
+          try { consider(JSON.parse(js)); } catch (e2) {}
+        }
+      }
+      if (!found) { try { consider(JSON.parse(text)); } catch (e3) {} }
+    } catch (e4) {}
+    return found;
+  }
+
+  // The literal SSE done marker, built without brackets in source to stay escape-safe.
+  function tmDoneMarker() { return '[' + 'DONE' + ']'; }
+
+  var TM_AUTO_RETRY_MAX = 5;        // cap total auto-retries per request
+  var TM_AUTO_RETRY_MAX_WAIT = 30;  // never wait longer than this many seconds per retry
+
+  // Given a (possibly error) response, decide whether to surface + auto-retry. Returns a promise
+  // resolving to a response. Non-error responses pass straight through untouched (never buffered).
+  function tmMaybeAutoRetry(response, args, captureId, shouldSanitizeSolProUsage, attempt) {
+    attempt = attempt || 0;
+    // Fast path: a healthy response (2xx) is passed through with no buffering. Streaming intact.
+    var status = 0;
+    try { status = Number(response.status) || 0; } catch (e) {}
+    var looksError = (status >= 400) || (status === 0);
+    if (!looksError) {
+      // Success: clear any stale error banner and honor the Sol Pro guard, exactly as before.
+      if (tmMostRecentError) { tmMostRecentError = null; try { renderGpt51UsageWidget(); } catch (e) {} }
+      if (shouldSanitizeSolProUsage) { try { return Promise.resolve(tmWrapSolProResponse(response)); } catch (e) {} }
+      return Promise.resolve(response);
+    }
+    // Error path: clone + read the (small) body to parse the OpenRouter error.
+    var clone;
+    try { clone = response.clone(); } catch (e) { return Promise.resolve(response); }
+    return clone.text().then(function(text) {
+      var err = tmParseOpenRouterError(text);
+      if (err) {
+        var model = '';
+        try { var b = JSON.parse((args[1] && args[1].body) || '{}'); model = b.model || ''; } catch (e) {}
+        tmMostRecentError = {
+          ts: Date.now(), model: model, provider: err.provider, code: err.code,
+          message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
+          retryAfter: err.retryAfter, full: err.full, attempt: attempt
+        };
+        try { renderGpt51UsageWidget(); } catch (e) {}
+        // Auto-retry only transient 429s that explicitly tell us to retry.
+        var isRetryable = (Number(err.code) === 429) && (err.retryAfter != null) && (attempt < TM_AUTO_RETRY_MAX);
+        if (isRetryable) {
+          var waitSec = Math.min(Math.max(Number(err.retryAfter) || 1, 1), TM_AUTO_RETRY_MAX_WAIT);
+          console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' after ' + waitSec + 's (429 from ' + (err.provider || 'provider') + ')');
+          return new Promise(function(resolve) {
+            setTimeout(function() {
+              var retryCapId = null;
+              try { retryCapId = tmCaptureFetchCall(args[0], args[1] || {}, null, 'openrouter-retry', null); } catch (e) {}
+              originalFetch.apply(this, args).then(function(r2) {
+                if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
+                resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
+              }).catch(function() { resolve(response); });
+            }, waitSec * 1000);
+          });
+        }
+      }
+      // Not retryable (or no parseable error): hand back the original error response unchanged.
+      if (shouldSanitizeSolProUsage) { try { return tmWrapSolProResponse(response); } catch (e) {} }
+      return response;
+    }).catch(function() { return response; });
+  }
+
+  // (Fix 17, v4.202) Minimal popup showing the full raw error JSON for the most-recent error.
+  function tmShowErrorPopup() {
+    if (typeof document === 'undefined' || !tmMostRecentError) return;
+    var existing = document.getElementById('tm-error-popup-overlay');
+    if (existing) { existing.parentNode.removeChild(existing); }
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-error-popup-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'max-width:80vw;max-height:80vh;overflow:auto;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:13px;margin-bottom:8px;font-family:monospace;';
+    var e = tmMostRecentError;
+    hdr.textContent = 'Error ' + (e.code != null ? e.code : '?') + (e.provider ? (' from ' + e.provider) : '') + (e.attempt > 0 ? (' (auto-retried x' + e.attempt + ')') : '');
+    var pre = document.createElement('pre');
+    pre.style.cssText = 'color:#d0d0d8;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;';
+    var jsonText = '';
+    try { jsonText = JSON.stringify(e.full != null ? e.full : e, null, 2); } catch (x) { jsonText = String(e.raw || e.message || 'error'); }
+    pre.textContent = jsonText;
+    var hint = document.createElement('div');
+    hint.style.cssText = 'color:#8ef0a0;font-size:11px;margin-top:8px;font-family:monospace;';
+    hint.textContent = e.remedy_hint ? ('remedy: ' + e.remedy_hint) : '';
+    var foot = document.createElement('div');
+    foot.style.cssText = 'color:#888;font-size:10px;margin-top:10px;';
+    foot.textContent = 'click anywhere or press Esc to close';
+    box.appendChild(hdr); box.appendChild(pre);
+    if (e.remedy_hint) box.appendChild(hint);
+    box.appendChild(foot);
+    overlay.appendChild(box);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    overlay.addEventListener('click', function() { close(); });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
   }
 
   function tmFnv1a32(str) {
@@ -5846,6 +6013,16 @@
       if (captureId) {
         try { tmCaptureResponse(captureId, response); } catch (e) {}
       }
+      // (Fix 17, v4.202) Detect an OpenRouter error in the response and, if it is a transient
+      // 429 carrying retry_after_seconds, AUTO-RETRY the SAME modified request up to a cap. This
+      // runs ONLY for OpenRouter URLs and ONLY when the response body is small (errors are tiny),
+      // so successful streaming responses are never buffered or delayed. Returns a promise that
+      // resolves to either a fresh (retried) response or the original error response.
+      try {
+        if (typeof url === 'string' && url.indexOf('openrouter.ai') !== -1) {
+          return tmMaybeAutoRetry(response, args, captureId, shouldSanitizeSolProUsage);
+        }
+      } catch (e) {}
       // v4.158: Sol Pro usage guard — rewrite the SSE usage event before TypingMind sees it.
       if (shouldSanitizeSolProUsage) {
         return tmWrapSolProResponse(response);
