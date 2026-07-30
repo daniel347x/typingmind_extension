@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.211
+// Version: 4.212
 // Issues Fixed:
 //   - v4.211: Persistent-widget error hygiene + cache-badge repair (Dan's 'leave all values the
 //     same on a 429' spec). (1) WIDGET-FEED GATE: error responses (HTTP>=400 OR an error chunk in
@@ -287,7 +287,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.211';
+  const EXT_VERSION = '4.212';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4725,10 +4725,26 @@
       const hasResp = cap.response_status != null || cap.response_headers != null || cap.response_body != null;
       const inDisabled = hasResp ? '' : 'opacity:0.45;cursor:not-allowed;pointer-events:none;';
 
+      // (v4.212) Compute the provider-routing dropdown HERE (before the button row) so it can be
+      // appended inline to the right of the last button, instead of as a separate overlapping div.
+      var capRouteDropdown = '';
+      var capRouteIdKey = '';
+      try { capRouteIdKey = tmCapIdentityKey(cap) || ''; } catch (e) {}
+      if (capRouteIdKey && !seenRouteIdentities[capRouteIdKey]) {
+        seenRouteIdentities[capRouteIdKey] = true;
+        var capRouteModel = (capRouteIdKey.split('::')[1]) || capModel || '';
+        if (tmIsMultiProviderModel(capRouteModel)) {
+          try { tmMaybeFetchProviderEndpoints(capRouteModel); } catch (e) {}
+          var capRouteProv = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
+          capRouteDropdown = tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv);
+        }
+      }
+
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
 
       // (v4.111) Button row at the very top of each entry.
-      html += '<div style="margin-bottom:3px;">' +
+      // (v4.212) Provider-routing dropdown appended to the RIGHT of the last button (inline).
+      html += '<div style="margin-bottom:3px;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="summary" style="background:#555;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;' + btnDisabled + '">Summary</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_headers" style="' + outBtnStyle + btnDisabled + '">Out Hdrs</button>' +
               '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="out_payload" style="' + outBtnStyle + btnDisabled + '">Out Body</button>' +
@@ -4753,6 +4769,7 @@
                 return '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="' + segPart + '" title="' + segTitle + '" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">' + segLabel + '</button>';
               })() +
               disabledNote +
+              capRouteDropdown +
               '</div>';
 
       // (v4.111) Title row: #N (fixed-width, very left) + HIT/MISS + cost + model + hash.
@@ -4782,20 +4799,8 @@
               (capModelHtml ? (' <span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
-      // (v4.206) Provider-routing dropdown on the MOST RECENT ring entry of each identity --
-      // controllable per-session right after a refresh / across parallel sessions, BEFORE any
-      // new message is sent. Lazily kicks off live endpoint discovery for the model too.
-      var capRouteIdKey = '';
-      try { capRouteIdKey = tmCapIdentityKey(cap) || ''; } catch (e) {}
-      if (capRouteIdKey && !seenRouteIdentities[capRouteIdKey]) {
-        seenRouteIdentities[capRouteIdKey] = true;
-        var capRouteModel = (capRouteIdKey.split('::')[1]) || capModel || '';
-        if (tmIsMultiProviderModel(capRouteModel)) {
-          try { tmMaybeFetchProviderEndpoints(capRouteModel); } catch (e) {}
-          var capRouteProv = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
-          html += '<div style="margin-top:2px;font-size:10px;opacity:0.95;" title="Provider routing for this session">' + tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv) + '</div>';
-        }
-      }
+      // (v4.206) Provider-routing dropdown -- MOVED into the button row above (v4.212).
+      // (Old standalone div removed; capRouteIdKey/seenRouteIdentities computed before the button row.)
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
       html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
