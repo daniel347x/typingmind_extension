@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.217
+// Version: 4.218
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.217';
+  const EXT_VERSION = '4.218';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1812,6 +1812,13 @@
       var write = firstNum(obj, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens', 'cache_write_input_tokens', 'cacheWriteInputTokens']);
       if (write == null && details) write = firstNum(details, ['cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens']);
       var cost = firstNum(obj, ['cost', 'estimated_cost', 'estimatedCost']);
+      // (v4.218) OpenRouter can report cost:0 at the top level when the real charge is nested in
+      // cost_details.upstream_inference_cost (observed on a 502 streamed error with real usage).
+      // Prefer the real upstream cost over a zero top-level cost so error responses still log cost.
+      if ((cost == null || cost === 0) && obj.cost_details) {
+        var uic = firstNum(obj.cost_details, ['upstream_inference_cost', 'upstreamInferenceCost']);
+        if (uic != null && uic > 0) cost = uic;
+      }
       setIfAbsent('cache_read_input_tokens', read);
       setIfAbsent('cache_creation_input_tokens', write);
       setIfAbsent('cost', cost);
@@ -2091,21 +2098,46 @@
               }
             } catch (e) {}
             // (v4.72) Accumulate per-turn cost into the running total.
-            // (v4.211) GATED to successful responses only.
-            if (capWidgetFeed) try {
-              var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
-              if (turnCost > 0) {
-                tmSetTotalCost(tmGetTotalCost() + turnCost);
-                // (v4.110) Record per-session cost to persistent storage (survives ring-buffer eviction).
-                // Reuse capRec + the identity resolved just above instead of re-deriving.
+            // (v4.218) UNGATED: error responses can carry real usage/cost (e.g. a 502 streamed
+            // error with upstream_inference_cost). The tokens were consumed and the provider
+            // charged for them regardless of error status. Widget STATUS rebuild and cache-ledger
+            // write stay gated on capWidgetFeed (above), but cost accumulation must not be.
+            // Read from the CURRENT capture's patch (not tmMostRecentPayloadStatus, which keeps
+            // the last successful turn's values on error).
+            try {
+              var errTurnCost = tmExtractCostVal(patch.response_anthropic_usage, patch.response_usage);
+              if (errTurnCost > 0) {
+                tmSetTotalCost(tmGetTotalCost() + errTurnCost);
                 try {
                   if (capRec) {
-                    var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
-                    if (newSessionTotal > 0) {
-                      tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: idModel });
+                    var errSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, errTurnCost);
+                    if (errSessionTotal > 0) {
+                      tmUpdateCaptureRecord(captureId, { session_cost_total: errSessionTotal, _model: idModel });
                     }
                   }
                 } catch (e) {}
+              }
+            } catch (e) {}
+            // Also accumulate cost on successful responses (original path, gated).
+            if (capWidgetFeed) try {
+              var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
+              if (turnCost > 0) {
+                // Avoid double-counting: the ungated block above already recorded this cost.
+                // Only record if the ungated block missed it (e.g. patch had no usage but
+                // tmMostRecentPayloadStatus did from a prior capture in this same response).
+                var alreadyRecorded = (patch.response_usage && tmExtractCostVal(null, patch.response_usage) === turnCost) ||
+                                      (patch.response_anthropic_usage && tmExtractCostVal(patch.response_anthropic_usage, null) === turnCost);
+                if (!alreadyRecorded) {
+                  tmSetTotalCost(tmGetTotalCost() + turnCost);
+                  try {
+                    if (capRec) {
+                      var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
+                      if (newSessionTotal > 0) {
+                        tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: idModel });
+                      }
+                    }
+                  } catch (e) {}
+                }
               }
             } catch (e) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
