@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.281 Changes:
+ * - FIX: marker-strip regexes now tolerate leading HEADING markers ('## 1. Foo') on BOTH sides.
+ *   A numbered heading renders in the chat DOM as <h2> whose text starts with a bare '1. ' (the
+ *   '##' was consumed as formatting), which the v3.277 atLineStart strip removes — but the
+ *   session-side raw line starts with '#', so its strip refused (found byte-exact: digits
+ *   '1','2','3' in a 3397-char key). All three strip sites (session per-line, chat embedded-\n,
+ *   chat node-start) now accept 0-6 leading '#' before the emphasis/digit marker, kept exactly
+ *   symmetric. Safe: 3-digit cap blocks '## 2026. Roadmap'; 'C# 1. x' unaffected (hashes must
+ *   lead); '# 1. Install' shell comments strip identically on both sides.
+ *
  * v3.280 Changes:
  * - FIX: chat-side walk now strips ordered-list markers after EMBEDDED newlines within text
  *   nodes, not just at node starts. A plain-text USER turn is one raw blob with literal '\n1. '
@@ -1000,7 +1010,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.280',
+  VERSION: '3.281',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3209,7 +3219,10 @@
       // the session side must drop the '(url)' part too — otherwise link-dense blocks (Sources
       // sections) diverge by every URL. Bare URLs are left alone (the DOM keeps them as text too).
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
-      return l.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+      // (v3.281) Also tolerate leading HEADING markers ('## 1. Foo'): the chat DOM consumes '##'
+      // into the <h2> tag so its text starts with a bare '1. ' which the chat side strips — the
+      // session side must strip the same marker or numbered headings diverge by exactly the digit.
+      return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
     });
     return normalizeForChatMatch(blockLines.join(' '));
   }
@@ -3249,8 +3262,8 @@
         // node-start strip never fires mid-blob while the session side strips those same lines.
         // An embedded '\n' IS a line boundary in both representations (user blobs, <pre> code),
         // so strip there unconditionally — same regex as the session side (emphasis-tolerant).
-        t = t.replace(/(\n)\s*(?:[*_]{1,3})?\d{1,3}\.\s+/g, '$1');
-        if (atLineStart) t = t.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+        t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/g, '$1');
+        if (atLineStart) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
         text += t;
         if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
         return;
