@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.213
+// Version: 4.214
 // Issues Fixed:
+//   - v4.214: Provider display labels now resolve through the lock store. When a lock exists
+//     for an identity, its label (e.g. 'Fireworks Fast') is shown instead of the bare
+//     response_provider string (always just 'Fireworks' for both variants). Applied to all
+//     three display points: persistent widget model row, ring-modal row badge, and the
+//     ring-modal routing dropdown. Shared helper tmResolveProviderLabel(idKey, fallback).
 //   - v4.213: SESSION INITIALIZATION. New '🌱 Init session' row in the ring-buffer modal: paste a
 //     Session ID and pick a model+provider (or provider set) from MEMORY (distinct model/provider
 //     pairs from successful ring entries + existing set locks), saved as the single global entry
@@ -296,7 +301,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.213';
+  const EXT_VERSION = '4.214';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -503,6 +508,22 @@
       locks[identityKey] = { mode: 'set', slugs: slugs.slice(), labels: (labels || slugs).slice(), ts: Date.now(), manual: true, _session_id: identityKey.split('::')[0] };
       localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
     } catch (e) {}
+  }
+
+  // (v4.214) Resolve the DISPLAY label for a provider: when a lock exists for this identity,
+  // use the lock's label (which carries the full 'Fireworks Fast' distinction) instead of the
+  // bare response_provider string (which is always just 'Fireworks' for both variants).
+  function tmResolveProviderLabel(idKey, fallbackProvider) {
+    try {
+      if (idKey) {
+        var lock = tmGetProviderLock(idKey);
+        if (lock) {
+          if (lock.mode === 'set' && Array.isArray(lock.labels)) return 'Set: ' + lock.labels.join('+');
+          if (lock.label) return lock.label;
+        }
+      }
+    } catch (e) {}
+    return fallbackProvider || '';
   }
 
   // ==================== SESSION INITIALIZATION (v4.213) ====================
@@ -3047,6 +3068,12 @@
         if (!providerForDisplay && widgetIdentity && widgetIdentity.host) providerForDisplay = String(widgetIdentity.host);
       }
     } catch (e) {}
+    // (v4.214) When a lock exists, use its label (e.g. 'Fireworks Fast') instead of the bare
+    // response_provider ('Fireworks') so the distinction is visible in the widget.
+    try {
+      var _wIdKey = (widgetIdentity && widgetIdentity.key) || '';
+      if (_wIdKey) providerForDisplay = tmResolveProviderLabel(_wIdKey, providerForDisplay);
+    } catch (e) {}
     if (modelForDisplay) {
       var providerSuffix = providerForDisplay
         ? (' <span style="opacity:0.5;">|</span> <span title="serving provider" style="color:#8ef0a0;">' + escapeHtml(providerForDisplay) + '</span>')
@@ -4904,6 +4931,8 @@
         if (tmIsMultiProviderModel(capRouteModel)) {
           try { tmMaybeFetchProviderEndpoints(capRouteModel); } catch (e) {}
           var capRouteProv = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
+          // (v4.214) Use the lock label for the dropdown's display text too.
+          capRouteProv = tmResolveProviderLabel(capRouteIdKey, capRouteProv);
           capRouteDropdown = tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv);
         }
       }
@@ -4984,6 +5013,11 @@
       // so the serving provider is visible at a glance without opening the raw segment JSON. Falls
       // back to the resolved endpoint host for captures taken before provider capture existed.
       var capProvider = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
+      // (v4.214) Use the lock label when available (e.g. 'Fireworks Fast' vs bare 'Fireworks').
+      try {
+        var _ringIdKey = tmCapIdentityKey(cap) || '';
+        if (_ringIdKey) capProvider = tmResolveProviderLabel(_ringIdKey, capProvider);
+      } catch (e) {}
       var providerHtml = capProvider
         ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
         : '';
