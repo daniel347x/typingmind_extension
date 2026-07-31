@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.214
+// Version: 4.215
 // Issues Fixed:
+//   - v4.215: Retry 5xx server errors, not just 429s. A 503 'upstream connect error' (or any
+//     500-599) is usually a momentary blip that clears on resubmit, so it now joins the same
+//     backoff auto-retry loop. 4xx client errors (400/401/403/404/422) are still never retried
+//     (deterministic failures). Log line now shows the actual error code instead of hardcoded 429.
 //   - v4.214: Provider display labels now resolve through the lock store. When a lock exists
 //     for an identity, its label (e.g. 'Fireworks Fast') is shown instead of the bare
 //     response_provider string (always just 'Fireworks' for both variants). Applied to all
@@ -301,7 +305,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.214';
+  const EXT_VERSION = '4.215';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4013,14 +4017,18 @@
       };
       try { renderGpt51UsageWidget(); } catch (e) {}
     }
-    var is429 = (err && Number(err.code) === 429) || (status === 429);
-    if (is429 && attempt < TM_AUTO_RETRY_MAX) {
+    // (v4.215) Retry transient errors: 429 (rate limit) AND 5xx (server errors like 503
+    // 'upstream connect error' -- usually a momentary blip that clears on resubmit, as Dan hit).
+    // Do NOT retry 4xx client errors (400/401/403/404/422 -- deterministic, would just fail again).
+    var retryCode = (err && err.code != null && !isNaN(Number(err.code))) ? Number(err.code) : status;
+    var isRetryable = (retryCode === 429) || (retryCode >= 500 && retryCode < 600);
+    if (isRetryable && attempt < TM_AUTO_RETRY_MAX) {
       var idKey = errIdKey;
       var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
       var hintSec = (err && err.retryAfter != null) ? Math.max(Number(err.retryAfter) || 1, 1) : 0;
       var backoffSec = Math.pow(2, Math.min(Math.max(failsTotal - 1, 0), 4));
       var waitSec = Math.min(Math.max(hintSec, backoffSec), TM_AUTO_RETRY_MAX_WAIT);
-      console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (429' + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
+      console.warn('⏳ [v' + EXT_VERSION + '] Auto-retry ' + (attempt + 1) + '/' + TM_AUTO_RETRY_MAX + ' in ' + waitSec + 's (' + retryCode + (err && err.provider ? ' ' + err.provider : '') + ', consecutive fail #' + failsTotal + ')');
       return new Promise(function(resolve) {
         setTimeout(function() {
           var retryCapId = null;
