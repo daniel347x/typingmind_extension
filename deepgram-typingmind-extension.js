@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.280 Changes:
+ * - FIX: chat-side walk now strips ordered-list markers after EMBEDDED newlines within text
+ *   nodes, not just at node starts. A plain-text USER turn is one raw blob with literal '\n1. '
+ *   lines (no block elements at all), so v3.277's node-start strip never fired mid-blob while
+ *   the session side stripped those same lines per-line (found byte-exact: digits '1','2','3'
+ *   in a 2468-char key). An embedded '\n' IS a line boundary in both representations (user
+ *   blobs, <pre> code), so it's stripped unconditionally; the atLineStart gate still protects
+ *   mid-paragraph '6. '-style text at inline-element boundaries. Both strips are now
+ *   emphasis-tolerant ('**1. '), matching the session side's v3.278 regex.
+ *
  * v3.279 Changes:
  * - FIX: session-side block normalization now collapses markdown links/images to their VISIBLE
  *   text ('[text](url)' -> 'text') before the list-marker strip. The chat DOM renders only the
@@ -990,7 +1000,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.279',
+  VERSION: '3.280',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3234,7 +3244,13 @@
     (function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) {
         var t = node.textContent;
-        if (atLineStart) t = t.replace(/^\s*\d{1,3}\.\s+/, '');
+        // (v3.280) Strip ordered-list markers after EMBEDDED newlines too. A plain-text user turn
+        // is ONE raw text blob with literal '\n1. ' lines (no block elements), so v3.277's
+        // node-start strip never fires mid-blob while the session side strips those same lines.
+        // An embedded '\n' IS a line boundary in both representations (user blobs, <pre> code),
+        // so strip there unconditionally — same regex as the session side (emphasis-tolerant).
+        t = t.replace(/(\n)\s*(?:[*_]{1,3})?\d{1,3}\.\s+/g, '$1');
+        if (atLineStart) t = t.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
         text += t;
         if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
         return;
