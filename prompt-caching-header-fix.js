@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.219
+// Version: 4.220
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.219';
+  const EXT_VERSION = '4.220';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4547,6 +4547,52 @@
     };
   }
 
+  // (v4.220) Pretty-print helper for the JSON viewer: re-parse + re-indent when the text is
+  // JSON; otherwise show the raw text verbatim (raw SSE heads, multi-segment joins).
+  function tmPrettyPrintMaybeJson(text) {
+    if (typeof text !== 'string') { try { return JSON.stringify(text, null, 2); } catch (e) { return String(text); } }
+    var t = text.trim();
+    if (!t) return text;
+    if (t[0] === '{' || t[0] === '[') {
+      try { return JSON.stringify(JSON.parse(t), null, 2); } catch (e) { return text; }
+    }
+    return text;
+  }
+
+  // (v4.220) Read-only JSON viewer modal, shown alongside every ring-buffer copy-button click.
+  // The text is what was just copied; selectable (user-select:text) but read-only. Escape or
+  // click-outside closes ONLY the viewer -- capture-phase keydown + tmPromptActive keep the ring
+  // modal's own Escape handler from firing underneath (same pattern as tmShowErrorPopup).
+  function tmShowJsonViewerModal(text, label) {
+    if (typeof document === 'undefined') return;
+    var existing = document.getElementById('tm-json-viewer-overlay');
+    if (existing) { existing.parentNode.removeChild(existing); }
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-json-viewer-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:85vw;max-width:1100px;height:85vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:12px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'color:#8ef0a0;font-weight:bold;font-size:12px;margin-bottom:8px;font-family:monospace;display:flex;justify-content:space-between;align-items:center;gap:12px;';
+    hdr.innerHTML = '<span>' + escapeHtml(label || 'Payload') + ' \u2014 copied to clipboard</span><span style="opacity:0.55;font-weight:normal;">read-only \u00b7 selectable \u00b7 Esc / click outside to close</span>';
+    var pre = document.createElement('pre');
+    pre.style.cssText = 'flex:1;overflow:auto;background:#0d0d11;border:1px solid #2a2a2a;border-radius:6px;color:#d0d0d8;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;padding:10px;user-select:text;cursor:text;';
+    pre.textContent = tmPrettyPrintMaybeJson(text);
+    box.appendChild(hdr); box.appendChild(pre);
+    overlay.appendChild(box);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPromptActive = false;
+    }
+    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    overlay.addEventListener('click', function() { close(); });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+  }
+
   function copyPayloadCapturePart(captureId, part) {
     const cap = getCaptureById(captureId);
     if (!cap) return;
@@ -4620,7 +4666,9 @@
       var pretty = segs.map(function(s) {
         try { return JSON.stringify(JSON.parse(s), null, 2); } catch (e) { return s; }
       });
-      copyTextToClipboard(pretty.join('\n'), 'Raw usage segments (' + segs.length + ')');
+      var segText = pretty.join('\n');
+      copyTextToClipboard(segText, 'Raw usage segments (' + segs.length + ')');
+      tmShowJsonViewerModal(segText, 'Raw usage segments (' + segs.length + ')');
       return;
     } else if (part === 'in_raw_head') {
       // (v4.198) Fallback raw-response dump for FAILURE rows that produced neither a parsed
@@ -4632,11 +4680,14 @@
         : (cap.response_body != null ? (function(){ try { return JSON.stringify(cap.response_body, null, 2); } catch (e) { return String(cap.response_body); } })() : '');
       if (!rawHead) return;
       copyTextToClipboard(rawHead, 'Raw response head');
+      tmShowJsonViewerModal(rawHead, 'Raw response head');
       return;
     }
 
     if (obj == null) return;
-    copyTextToClipboard(JSON.stringify(obj, null, 2), label);
+    var jsonText = JSON.stringify(obj, null, 2);
+    copyTextToClipboard(jsonText, label);
+    tmShowJsonViewerModal(jsonText, label);
   }
 
   // Persistent status banner shown at the TOP of the capture modal in EVERY state
