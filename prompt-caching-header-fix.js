@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.215
+// Version: 4.216
 // Issues Fixed:
+//   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
+//     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
+//     the bug was UPSTREAM in the label source: v4.205 live discovery labeled every endpoint
+//     with provider_name, which is IDENTICAL across variants ('Fireworks' for both 'fireworks'
+//     and 'fireworks/fast'), and tmMergeSeedKnowledge preferred that live label over the seed's
+//     curated 'Fireworks Fast'. So locks stored bare 'Fireworks' for either variant and the
+//     display faithfully showed it. Fixes: (1) tmBuildLiveProviderEntries now derives the
+//     variant from the tag slug and appends it ('fireworks/fast' -> 'Fireworks Fast');
+//     (2) tmMergeSeedKnowledge prefers the curated seed label for known slugs; (3) bumped the
+//     live cache key v1->v2 to drop stale 12h-cached labels; (4) one-time
+//     tmRepairLockLabelsFromEntries() migration repairs existing lock labels on load.
 //   - v4.215: Retry 5xx server errors, not just 429s. A 503 'upstream connect error' (or any
 //     500-599) is usually a momentary blip that clears on resubmit, so it now joins the same
 //     backoff auto-retry loop. 4xx client errors (400/401/403/404/422) are still never retried
@@ -305,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.215';
+  const EXT_VERSION = '4.216';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -649,7 +660,7 @@
   // no source edit, no deploy. The fetch carries the tm_passthrough=1 sentinel so OUR OWN hook
   // passes it through verbatim (no capture row, no auto-retry, no injection). Any failure (CORS,
   // network, 404) silently keeps the seed table -- the user never sees an error.
-  var TM_PROVIDER_LIVE_KEY = 'tm_provider_live_v1';
+  var TM_PROVIDER_LIVE_KEY = 'tm_provider_live_v2';  // (v4.216) bumped v1->v2 to invalidate stale 'Fireworks'-only labels
   var TM_PROVIDER_LIVE_TTL = 12 * 3600 * 1000;
   var tmProviderFetchInFlight = {};
 
@@ -682,7 +693,15 @@
       var parts = [];
       if (ep.quantization && ep.quantization !== 'unknown') parts.push(String(ep.quantization));
       if (typeof ep.uptime_last_30m === 'number') parts.push(Math.round(ep.uptime_last_30m) + '% up');
-      out.push({ slug: slug, label: ep.provider_name || slug, cache: hasCache, note: parts.join(' · '), toxic: !hasCache });
+      // (v4.216 AUDIT FIX) provider_name is the SAME for endpoint variants ('Fireworks' for both
+      // 'fireworks' and 'fireworks/fast'), so derive the variant from the tag slug and append it
+      // to the label -- otherwise every variant renders as the bare provider name and the user
+      // cannot tell them apart (the exact bug reported: picked 'Fireworks Fast', saw 'Fireworks').
+      var tagParts = slug.split('/');
+      var variant = tagParts.length > 1 ? tagParts.slice(1).join('/') : '';
+      var baseLabel = ep.provider_name || tagParts[0];
+      var label = variant ? (baseLabel + ' ' + variant.charAt(0).toUpperCase() + variant.slice(1)) : baseLabel;
+      out.push({ slug: slug, label: label, cache: hasCache, note: parts.join(' · '), toxic: !hasCache });
     }
     return out;
   }
@@ -706,12 +725,40 @@
       var s = seed[j];
       var lv = findLive(s.slug);
       if (lv) {
-        merged.push({ slug: lv.slug, label: lv.label || s.label, cache: lv.cache, note: s.note || lv.note, toxic: !!(s.toxic || lv.toxic) });
+        // (v4.216 AUDIT FIX) prefer the CURATED SEED label over the live label for known slugs.
+        // The live label (provider_name) is identical across variants ('Fireworks' for both
+        // 'fireworks' and 'fireworks/fast'), so preferring it discarded the seed's richer
+        // 'Fireworks Fast' distinction -- the reported bug. Seed label wins; live fills the rest.
+        merged.push({ slug: lv.slug, label: s.label || lv.label, cache: lv.cache, note: s.note || lv.note, toxic: !!(s.toxic || lv.toxic) });
         delete bySlug[lv.slug];
       }
     }
     for (var k2 in bySlug) { if (Object.prototype.hasOwnProperty.call(bySlug, k2)) merged.push(bySlug[k2]); }
     return merged;
+  }
+
+  // (v4.216) One-time migration: repair stale lock labels (e.g. a 'fireworks/fast' lock stored
+  // as bare 'Fireworks' before variant-aware labels existed) from the current entry tables.
+  function tmRepairLockLabelsFromEntries() {
+    try {
+      var locks = tmGetProviderLocks();
+      var changed = false;
+      for (var k in locks) {
+        if (!Object.prototype.hasOwnProperty.call(locks, k)) continue;
+        var L = locks[k];
+        if (!L || L.mode === 'set' || !L.slug) continue;
+        var model = k.split('::')[1] || '';
+        var entries = tmGetProviderEntries(model);
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].slug === L.slug && entries[i].label && entries[i].label !== L.label) {
+            L.label = entries[i].label;
+            changed = true;
+            break;
+          }
+        }
+      }
+      if (changed) localStorage.setItem(TM_PROVIDER_LOCKS_KEY, JSON.stringify(locks));
+    } catch (e) {}
   }
 
   // Live-aware entry list: fresh live entries win; otherwise the seed.
@@ -6997,6 +7044,7 @@
   // Initial render from any persisted usage in localStorage so widget appears on load
   try {
     if (typeof document !== 'undefined') {
+      try { tmRepairLockLabelsFromEntries(); } catch (e) {}  // (v4.216) repair stale lock labels once on load
       renderGpt51UsageWidget();
     }
   } catch (e) {
