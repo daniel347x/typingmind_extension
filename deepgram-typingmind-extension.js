@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.279 Changes:
+ * - FIX: session-side block normalization now collapses markdown links/images to their VISIBLE
+ *   text ('[text](url)' -> 'text') before the list-marker strip. The chat DOM renders only the
+ *   link text (the URL lives in the href ATTRIBUTE, which the text walk never reads), so a
+ *   link-dense last block (e.g. a Sources section) diverged from the chat key by every URL
+ *   (~350 chars across 7 links in the failing turn). Bare URLs are untouched (the DOM renders
+ *   them as text = URL, so both sides keep them). Found byte-exact via the diff harness.
+ *
  * v3.278 Changes:
  * - FIX: session-side list-marker strip now tolerates leading emphasis ('**1. ', '__2. ', '*3. ').
  *   A turn numbering its items as BOLD lines ('**1. Stamp...**') renders in the chat DOM with the
@@ -982,7 +990,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.278',
+  VERSION: '3.279',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3185,7 +3193,14 @@
     // (v3.278) Tolerate leading emphasis ('**1. ', '__2. ') — a bold-numbered line renders in the chat
     // DOM with the marker as literal text inside <strong>, which the v3.277 chat-side strip removes;
     // the session side must strip it too or the keys diverge by exactly the marker digits.
-    var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, ''); });
+    var blockLines = lines.slice(blockStart).map(function(l) {
+      // (v3.279) Collapse markdown links/images to their VISIBLE text first: '[text](url)' -> 'text'.
+      // The chat DOM renders only the link text (the URL is in the href attribute, never walked), so
+      // the session side must drop the '(url)' part too — otherwise link-dense blocks (Sources
+      // sections) diverge by every URL. Bare URLs are left alone (the DOM keeps them as text too).
+      l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
+      return l.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+    });
     return normalizeForChatMatch(blockLines.join(' '));
   }
 
