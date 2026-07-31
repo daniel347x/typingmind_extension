@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.278 Changes:
+ * - FIX: session-side list-marker strip now tolerates leading emphasis ('**1. ', '__2. ', '*3. ').
+ *   A turn numbering its items as BOLD lines ('**1. Stamp...**') renders in the chat DOM with the
+ *   '1. ' as literal text inside <strong> — the v3.277 chat-side walk strips it (formatting
+ *   elements are transparent), but the session-side raw-text strip saw the leading '**' (not a
+ *   digit) and refused. Found byte-exact: 3 digits ('1','2','3') in a 2404-char key. Phase-1
+ *   (structural marker strip, needs line context) must catch the marker before Phase-2
+ *   (normalizeForChatMatch's non-alphanumeric strip) erases the evidence — emphasis is Phase-2's
+ *   job, digits+period+space are Phase-1's.
+ *
  * v3.277 Changes:
  * - FIX: chat<->session match failed on continuation-numbered list items. TypingMind's renderer
  *   only opens a real <ol> for lists starting at 1; items numbered 6+, 10+, etc. render as
@@ -972,7 +982,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.277',
+  VERSION: '3.278',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3172,7 +3182,10 @@
     // Strip leading ordered-list markers ('1. ', '16. ') from each line before normalizing. A copied
     // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
     // chat side too). Stripping here keeps session<->chat normalization aligned in both directions.
-    var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*\d{1,3}\.\s+/, ''); });
+    // (v3.278) Tolerate leading emphasis ('**1. ', '__2. ') — a bold-numbered line renders in the chat
+    // DOM with the marker as literal text inside <strong>, which the v3.277 chat-side strip removes;
+    // the session side must strip it too or the keys diverge by exactly the marker digits.
+    var blockLines = lines.slice(blockStart).map(function(l) { return l.replace(/^\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, ''); });
     return normalizeForChatMatch(blockLines.join(' '));
   }
 
