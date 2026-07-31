@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.220
+// Version: 4.221
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.220';
+  const EXT_VERSION = '4.221';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4583,12 +4583,36 @@
     function close() {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
-      tmPromptActive = false;
+      document.removeEventListener('keyup', onKeyUp, true);
+      // (v4.221) The ring modal closes on a window-CAPTURE **keyup** handler (registered long
+      // before this viewer, so it always fires first). v4.220 reset tmPromptActive SYNCHRONOUSLY
+      // here, so the trailing Escape keyup of the same keypress fell through and closed the ring
+      // modal too. Mirror the rename-prompt's proven triple guard (line ~3877): 1500ms
+      // tmPayloadCaptureSuppressEscapeUntil window + 100ms DELAYED tmPromptActive reset, so the
+      // trailing keyup (and short held-key repeats) are eaten from every angle.
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = false; }, 100);
     }
-    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    function onKey(ev) {
+      if (ev.key === 'Escape' || ev.keyCode === 27 || ev.code === 'Escape') {
+        ev.stopPropagation();
+        if (ev.preventDefault) ev.preventDefault();
+        close();
+      }
+    }
+    function onKeyUp(ev) {
+      // While the viewer is open, eat Escape keyups outright -- a second wall in front of the
+      // ring modal's window-capture keyup handler (tmPromptActive already guards it, but belt
+      // and suspenders costs nothing here).
+      if (ev.key === 'Escape' || ev.keyCode === 27 || ev.code === 'Escape') {
+        ev.stopPropagation();
+        if (ev.preventDefault) ev.preventDefault();
+      }
+    }
     overlay.addEventListener('click', function() { close(); });
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     document.addEventListener('keydown', onKey, true);
+    document.addEventListener('keyup', onKeyUp, true);
     tmPromptActive = true;
     document.body.appendChild(overlay);
   }
