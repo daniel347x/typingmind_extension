@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.218
+// Version: 4.219
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.218';
+  const EXT_VERSION = '4.219';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2085,6 +2085,25 @@
                     }
                   }
                 } catch (lockErr) {}
+                // (v4.219) Stamp the serving-provider label onto the capture record itself, so the
+                // ring-modal badge can show per-turn HISTORY instead of resolving every row through
+                // the CURRENT lock (v4.214's side effect: changing the lock rewrote every historical
+                // row's provider label, making per-provider hit/miss comparison impossible). Rule: a
+                // pinned single provider's lock.label IS what served (allow_fallbacks:false); for
+                // SET / FLOAT / no-lock the response's own provider string names what actually
+                // served (for SET, the actual member). Underscore fields survive rich->compact
+                // stripping (same as _model / _identity).
+                try {
+                  var _histProvLabel = null;
+                  var _histLock = idKey ? tmGetProviderLock(idKey) : null;
+                  if (_histLock && _histLock.mode !== 'set' && _histLock.slug && _histLock.slug !== '__float' && _histLock.label) {
+                    _histProvLabel = _histLock.label;
+                  }
+                  if (!_histProvLabel) {
+                    _histProvLabel = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
+                  }
+                  if (_histProvLabel) tmUpdateCaptureRecord(captureId, { _provider_label: _histProvLabel });
+                } catch (e) {}
                 // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
                 // (v4.211) GATED: an error response is NOT a cache miss -- it must not break the
                 // hit streak or inflate the miss total, so the ledger is never touched on errors.
@@ -5018,7 +5037,10 @@
           var capRouteProv = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
           // (v4.214) Use the lock label for the dropdown's display text too.
           capRouteProv = tmResolveProviderLabel(capRouteIdKey, capRouteProv);
-          capRouteDropdown = tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv);
+          // (v4.219) The dropdown controls FUTURE routing (it appears only on the most-recent row
+          // per identity). A static label makes that explicit and visually decouples the control
+          // from the historical provider badge each row now shows (stamped per-turn above).
+          capRouteDropdown = '<span style="font-size:9px;opacity:0.7;margin-left:6px;white-space:nowrap;" title="The provider the NEXT call will use -- historical rows show what actually served each turn">Next call will use:</span>' + tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv);
         }
       }
 
@@ -5097,12 +5119,12 @@
       // (v4.197) Inline provider badge (light green) at the right end of the cost/repair/cache row,
       // so the serving provider is visible at a glance without opening the raw segment JSON. Falls
       // back to the resolved endpoint host for captures taken before provider capture existed.
-      var capProvider = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || '');
-      // (v4.214) Use the lock label when available (e.g. 'Fireworks Fast' vs bare 'Fireworks').
-      try {
-        var _ringIdKey = tmCapIdentityKey(cap) || '';
-        if (_ringIdKey) capProvider = tmResolveProviderLabel(_ringIdKey, capProvider);
-      } catch (e) {}
+      // (v4.219) HISTORICAL badge: prefer the per-turn label stamped at capture time
+      // (cap._provider_label) -- NOT the current lock. Resolving every row through the live lock
+      // (v4.214) rewrote all historical rows' labels whenever the lock changed. Pre-v4.219 entries
+      // (no stamp) fall back to the captured response_provider (honest history, minus variant).
+      var capProvider = (typeof cap._provider_label === 'string' && cap._provider_label) ? cap._provider_label
+        : ((typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : (capHost || ''));
       var providerHtml = capProvider
         ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
         : '';
