@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.216
+// Version: 4.217
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.216';
+  const EXT_VERSION = '4.217';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -606,12 +606,10 @@
       var pasted = null;
       try { pasted = deriveConversationIdFromBody(body); } catch (e) {}
       if (!pasted || String(pasted) !== String(init.sessionId)) return null;
-      // Only if NO lock exists for this session ID anywhere (any model/host/proxy).
-      var locks = tmGetProviderLocks();
-      var prefix = String(init.sessionId) + '::';
-      for (var k in locks) {
-        if (Object.prototype.hasOwnProperty.call(locks, k) && k.indexOf(prefix) === 0) return null;
-      }
+      // (v4.217) Removed the 'no locks for this session' guard. The caller already ensures no
+      // lock exists for THIS identity (sid::model::host::proxy). The old guard blocked session-init
+      // from firing when a NEW model entered an EXISTING session -- the exact gap. Now the init
+      // entry fires per-identity: model match => lock applied; mismatch => alert reminder.
       // Model check (suffix/case-normalized both sides).
       var bodyModel = String(body.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
       var initModel = String(init.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
