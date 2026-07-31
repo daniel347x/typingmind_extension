@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.277 Changes:
+ * - FIX: chat<->session match failed on continuation-numbered list items. TypingMind's renderer
+ *   only opens a real <ol> for lists starting at 1; items numbered 6+, 10+, etc. render as
+ *   <br>-flattened paragraph text, so their markers ('6. ', '10. ') are LITERAL DOM text. The
+ *   session side strips those markers per line (getLastBlockNormForText); the chat side did not,
+ *   so the two normalized keys diverged by exactly the marker digits (found byte-exact: 5 marker
+ *   runs '6','7','8','9','10' in a 2009-char key). extractChatTurnNorm now tracks line-start
+ *   (atLineStart) and strips the SAME /^\s*\d{1,3}\.\s+/ marker pattern the session side strips,
+ *   at the same logical positions (walk start + after P/DIV/LI/H1-6/BR/BLOCKQUOTE/UL/OL/PRE
+ *   boundaries). Whitespace-only text nodes do not clear the line-start flag. '11-19.'-style
+ *   ranges (en-dash, no period after digits) are untouched on BOTH sides (already consistent).
+ *
  * v3.276 Changes:
  * - FIX: busy→busy conversation switches didn't move the pill (quiesced→busy worked). Root cause
  *   candidates in the v3.260 signature path — the ONLY path busy→busy depends on (the immediate
@@ -960,7 +972,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.276',
+  VERSION: '3.277',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3186,14 +3198,25 @@
   function extractChatTurnNorm(child) {
     if (!child || !child.querySelector) return null;
     var text = '';
+    // (v3.277) Line-start tracking for ordered-list marker stripping. A continuation-numbered
+    // list item ('6. ', '10. ') is literal DOM text on the chat side (the renderer can't open an
+    // <ol> above 1), while the session side strips the same marker per line — so both sides now
+    // strip identically at line boundaries. Mirrors getLastBlockNormForText's regex exactly.
+    var atLineStart = true;
     (function walk(node) {
-      if (node.nodeType === Node.TEXT_NODE) { text += node.textContent; return; }
+      if (node.nodeType === Node.TEXT_NODE) {
+        var t = node.textContent;
+        if (atLineStart) t = t.replace(/^\s*\d{1,3}\.\s+/, '');
+        text += t;
+        if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
+        return;
+      }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
       if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
       var eid = node.getAttribute && node.getAttribute('data-element-id');
       if (eid && /action|tool/i.test(eid)) return;
       for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
-      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) text += ' ';
+      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) { text += ' '; atLineStart = true; }
     })(child);
     var norm = normalizeForChatMatch(text);
     var cls = classifyChatTurn(child, norm);
