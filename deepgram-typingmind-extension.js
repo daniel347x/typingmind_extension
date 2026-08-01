@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.289 Changes:
+ * - FIX: reverse-direction matches (session block CONTAINS turn norm) now require the turn norm
+ *   to be at least 30% of the block length. A 6-char turn like "deploy" was matching a 93-char
+ *   block purely by coincidental prefix — a false positive. The forward direction (turn contains
+ *   the entire block) needs no threshold. Applied via new shared isSessionTurnMatch() helper in
+ *   refineComputeMatches, updateMatchBorder, and all debug functions.
+ *
  * v3.288 Changes:
  * - __debugAllSessions now prints BOTH full norms (session block AND turn) for matching pairs,
  *   so you can see exactly what text is on each side of a match. Also prints the full turn norm
@@ -1051,7 +1058,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.288',
+  VERSION: '3.289',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3535,7 +3542,7 @@
     var match = false;
     var matchTurnIdx = -1;
     for (var t = 0; t < turnNorms.length; t++) {
-      if (turnNorms[t].includes(sessionNorm) || sessionNorm.includes(turnNorms[t])) { match = true; matchTurnIdx = t; break; }
+      if (isSessionTurnMatch(sessionNorm, turnNorms[t])) { match = true; matchTurnIdx = t; break; }
     }
     lastMatchTurnIdx = matchTurnIdx;
     window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, turnIdx: matchTurnIdx, ts: Date.now() };
@@ -3575,10 +3582,10 @@
     var turnNorms = getRecentChatTurnNorms(10, 4);
     console.log('[debugMatch] turns collected:', turnNorms.length);
     turnNorms.forEach(function(c, t) {
-      var fwd = c.includes(sessionNorm);
-      var rev = sessionNorm.includes(c);
+      var match = isSessionTurnMatch(sessionNorm, c);
       var verdict;
-      if (fwd || rev) {
+      if (match) {
+        var fwd = c.includes(sessionNorm);
         var pos = fwd ? c.indexOf(sessionNorm) : sessionNorm.indexOf(c);
         var matched = fwd ? sessionNorm : c;
         verdict = '*** MATCH *** ' + (fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos)
@@ -3605,9 +3612,8 @@
       var matched = false;
       for (var t = 0; t < turnNorms.length; t++) {
         var c = turnNorms[t];
-        var fwd = c.includes(block);
-        var rev = block.includes(c);
-        if (fwd || rev) {
+        if (isSessionTurnMatch(block, c)) {
+          var fwd = c.includes(block);
           var pos = fwd ? c.indexOf(block) : block.indexOf(c);
           console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): *** MATCH *** turn', t,
             fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos);
@@ -3633,6 +3639,16 @@
     return 'done';
   };
 
+  /** The one shared session⇄turn match predicate (v3.289). Forward direction (turn contains the
+   *  entire session block) always qualifies. Reverse direction (session block contains the turn
+   *  norm) requires the turn norm to be at least 30% of the block length — a coincidental short
+   *  prefix like "deploy" (6 chars) must not match a 93-char block. */
+  function isSessionTurnMatch(sessionNorm, turnNorm) {
+    if (!sessionNorm || sessionNorm.length < 5 || !turnNorm) return false;
+    if (turnNorm.includes(sessionNorm)) return true;
+    return turnNorm.length >= Math.floor(sessionNorm.length * 0.3) && sessionNorm.includes(turnNorm);
+  }
+
   /** Pure scan: which sessions match any of the recent chat turns? No side effects. */
   function refineComputeMatches(turnNorms) {
     var contexts = refineGetContexts();
@@ -3642,7 +3658,7 @@
       var chatNorm = turnNorms[t];
       for (var i = 0; i < contexts.length; i++) {
         var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
-        if (block.length >= 5 && (chatNorm.includes(block) || block.includes(chatNorm))) {
+        if (isSessionTurnMatch(block, chatNorm)) {
           if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
           if (matchIdx === -1) matchIdx = i;
         }
