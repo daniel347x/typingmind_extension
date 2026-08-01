@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.224
+// Version: 4.225
 // Issues Fixed:
+//   - v4.225: Per-entry 12h and 24h block cost snapshots. Each ring entry now stamps
+//     _cost_12h and _cost_24h at response receipt — the aggregate per-turn cost for the
+//     session identity within the current 12-hour block (and current+prior 12h block).
+//     Displayed in the ring modal title row to the right of the total session cost
+//     (which got a font bump from 9px to 11px). Two distinct colors (light blue / lavender)
+//     distinguish the two values.
 //   - v4.224: Time-window filter for the ring-buffer modal. A dropdown next to the sort pills
 //     offers three options: Current 12h block (since the last noon or midnight boundary),
 //     Current 24h block (current 12h + the previous full 12h block), or All. Applies to ALL
@@ -326,7 +332,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.224';
+  const EXT_VERSION = '4.225';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2286,9 +2292,13 @@
                 try {
                   if (capRec) {
                     var errSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, errTurnCost);
-                    if (errSessionTotal > 0) {
-                      tmUpdateCaptureRecord(captureId, { session_cost_total: errSessionTotal, _model: idModel });
-                    }
+                    var errBlockStamp = { _model: idModel };
+                    if (errSessionTotal > 0) errBlockStamp.session_cost_total = errSessionTotal;
+                    // (v4.225) Snapshot 12h/24h block costs.
+                    var errBlockStart = tmGetCurrentBlockStart();
+                    errBlockStamp._cost_12h = tmComputeBlockCost(idKey, errBlockStart);
+                    errBlockStamp._cost_24h = tmComputeBlockCost(idKey, errBlockStart - (12 * 60 * 60 * 1000));
+                    tmUpdateCaptureRecord(captureId, errBlockStamp);
                   }
                 } catch (e) {}
               }
@@ -2307,9 +2317,13 @@
                   try {
                     if (capRec) {
                       var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
-                      if (newSessionTotal > 0) {
-                        tmUpdateCaptureRecord(captureId, { session_cost_total: newSessionTotal, _model: idModel });
-                      }
+                      var okBlockStamp = { _model: idModel };
+                      if (newSessionTotal > 0) okBlockStamp.session_cost_total = newSessionTotal;
+                      // (v4.225) Snapshot 12h/24h block costs.
+                      var okBlockStart = tmGetCurrentBlockStart();
+                      okBlockStamp._cost_12h = tmComputeBlockCost(idKey, okBlockStart);
+                      okBlockStamp._cost_24h = tmComputeBlockCost(idKey, okBlockStart - (12 * 60 * 60 * 1000));
+                      tmUpdateCaptureRecord(captureId, okBlockStamp);
                     }
                   } catch (e) {}
                 }
@@ -5221,6 +5235,30 @@
     return { label: label, host: host, isProxy: isProxy, key: tmCapIdentityKey(cap), model: model, sid: sid };
   }
 
+  // (v4.225) Compute aggregate cost for a session identity within a time window.
+  // Walks the ring, summing per-turn costs for entries matching the identity
+  // whose timestamp falls within [cutoffMs, now]. Called at response-stamp time to
+  // snapshot the 12h and 24h block costs onto each capture record.
+  function tmComputeBlockCost(identityKey, cutoffMs) {
+    var ring = tmReadCaptureRing();
+    var total = 0;
+    for (var i = 0; i < ring.length; i++) {
+      var cap = ring[i];
+      if (!cap) continue;
+      var capIdKey = tmCapIdentityKey(cap);
+      if (capIdKey !== identityKey) continue;
+      var ts = cap.ts_local || cap.ts;
+      if (!ts) continue;
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) continue;
+      if (d.getTime() >= cutoffMs) {
+        var cost = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+        if (cost > 0) total += cost;
+      }
+    }
+    return total;
+  }
+
   // (v4.224) Time-window filter helpers for the ring modal.
   function tmGetCurrentBlockStart() {
     var now = new Date();
@@ -5668,7 +5706,15 @@
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
-      var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:9px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
+      var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:11px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
+      var cost12h = (typeof cap._cost_12h === 'number') ? cap._cost_12h : null;
+      var cost24h = (typeof cap._cost_24h === 'number') ? cap._cost_24h : null;
+      var cost12hStr = (cost12h != null && cost12h > 0)
+        ? '<span title="cost in current 12h block" style="color:#a0d0ff;font-size:10px;padding-right:6px;">12h:$' + cost12h.toFixed(2) + '</span>'
+        : '';
+      var cost24hStr = (cost24h != null && cost24h > 0)
+        ? '<span title="cost in current+prior 12h blocks" style="color:#c0b0ff;font-size:10px;padding-right:6px;">24h:$' + cost24h.toFixed(2) + '</span>'
+        : '';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
       var modelColorTooltip = escapeHtml((capIdentity ? capIdentity.key : tmBuildIdentityKey(capSessionId, capModel, capHost, capIsProxy)) + ' — ' + modelColor);
@@ -5679,6 +5725,7 @@
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               '</span>' +
+              cost12hStr + cost24hStr +
               (capModelHtml ? (' <span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
