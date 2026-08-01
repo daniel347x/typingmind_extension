@@ -11,6 +11,10 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.285 Changes:
+ * - Session name in the Append button's top row now mirrors the tail-label vise-bar colors: yellow
+ *   (#e6c200) when the session matches the current conversation, blue (#4da3ff) when it doesn't.
+ *
  * v3.284 Changes:
  * - 📎 Append button relaid out as TWO ROWS: top row = the active Context Session name (11px,
  *   ellipsis-cropped with a yellow colon at the end), bottom row = "📎 Append" (13px) + the
@@ -1027,7 +1031,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.284',
+  VERSION: '3.285',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3431,6 +3435,14 @@
     if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; return; }
     // The behind-state pulse (v3.263) applies ONLY to the 'match' verdict; clear it for all others.
     if (verdict !== 'match' && btn.style.animationName) btn.style.animation = '';
+    // Session-name row color (v3.285): yellow when matching, blue when not — mirrors the tail-label
+    // vise-bar row colors (#e6c200 match, #4da3ff nomatch). Falls back to inherited on indeterminate.
+    var nameRow = btn.querySelector('div > div:first-child');
+    if (nameRow) {
+      if (verdict === 'match' || verdict === 'match-current') nameRow.style.color = '#e6c200';
+      else if (verdict === 'nomatch') nameRow.style.color = '#4da3ff';
+      else nameRow.style.color = '';
+    }
     // Up-to-date ✓ decoration (v3.262): a dedicated span in the bottom row ("📎 Append").
     var row2 = btn.querySelector('#deepgram-append-row2') || btn;   // v3.284: ✓ goes in row 2
     var chk = document.getElementById('deepgram-append-uptodate-check');
