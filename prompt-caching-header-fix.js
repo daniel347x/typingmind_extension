@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.222
+// Version: 4.223
 // Issues Fixed:
+//   - v4.223: Timeline separators in the ring-buffer modal (chronological sort only). When
+//     scrolling through captures in chronological mode, a dim gray horizontal rule with a
+//     date label is inserted at each day boundary (showing "Monday, June 23 → Tuesday, June 24")
+//     and at each noon crossing on the same day (showing "Monday, June 26, 2026  AM → PM").
+//     Makes it easy to visually navigate the timeline of captures at a glance.
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
 //     the bug was UPSTREAM in the label source: v4.205 live discovery labeled every endpoint
@@ -316,7 +321,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.222';
+  const EXT_VERSION = '4.223';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5276,6 +5281,63 @@
     items.forEach(function(cap) { delete cap._tmpSortIdx; });
   }
 
+  // ── Timeline separator helpers (chronological sort mode only) ──────────────
+
+  // Formats a Date as "Monday, June 23, 2026".
+  function tmFormatTimelineDate(d) {
+    var days = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+    var months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    return days[d.getDay()] + ', ' + months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+  }
+
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildTimelineSeparator-t1m3,
+  //   role=__lambdao_1.tmBuildTimelineSeparator,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Timeline separator for the ring-buffer modal in chronological sort mode. Inserts a dim gray horizontal rule with a date label when the day changes or AM/PM crosses noon.,
+  // ]
+  function tmBuildTimelineSeparator(prevCap, curCap) {
+    // Items are most-recent-first in chronological mode, so prevCap (above) is newer, curCap (below) is older.
+    var prevTs = prevCap.ts_local || prevCap.ts;
+    var curTs = curCap.ts_local || curCap.ts;
+    if (!prevTs || !curTs) return null;
+
+    var prevDate = new Date(prevTs);
+    var curDate = new Date(curTs);
+    if (isNaN(prevDate.getTime()) || isNaN(curDate.getTime())) return null;
+
+    var prevDayKey = prevDate.getFullYear() + '-' + prevDate.getMonth() + '-' + prevDate.getDate();
+    var curDayKey = curDate.getFullYear() + '-' + curDate.getMonth() + '-' + curDate.getDate();
+
+    if (prevDayKey !== curDayKey) {
+      // Day boundary crossed. Show chronologically: older date → newer date (forward-time arrow).
+      var olderDate = curDate;   // below (older)
+      var newerDate = prevDate;  // above (newer)
+      var label = tmFormatTimelineDate(olderDate) + ' \u2192 ' + tmFormatTimelineDate(newerDate);
+      return '<div style="margin:10px 0 10px 0;padding:0;">' +
+        '<span style="font-size:11px;color:#888;font-weight:500;letter-spacing:0.3px;display:block;margin-bottom:3px;">' +
+        escapeHtml(label) + '</span>' +
+        '<hr style="border:none;border-top:1px solid #555;opacity:0.35;margin:0;">' +
+        '</div>';
+    }
+
+    // Same day — check AM/PM boundary (noon crossing).
+    var prevIsPM = prevDate.getHours() >= 12;
+    var curIsPM = curDate.getHours() >= 12;
+    if (prevIsPM !== curIsPM) {
+      // In a newest-first list: prev (above) is PM, cur (below) is AM. The noon boundary is "AM → PM".
+      var label = tmFormatTimelineDate(curDate) + '  AM \u2192 PM';
+      return '<div style="margin:10px 0 10px 0;padding:0;">' +
+        '<span style="font-size:11px;color:#888;font-weight:500;letter-spacing:0.3px;display:block;margin-bottom:3px;">' +
+        escapeHtml(label) + '</span>' +
+        '<hr style="border:none;border-top:1px solid #555;opacity:0.35;margin:0;">' +
+        '</div>';
+    }
+
+    return null;
+  }
+
   // @beacon[
   //   id=None,
   //   role=__lambdao_1.renderPayloadCaptureModal,
@@ -5458,6 +5520,16 @@
 
     items.forEach((cap, idx) => {
       if (!cap) return;
+
+      // (v4.223) Timeline separator — only in chronological sort mode.
+      if (tmModalSortMode === 'chronological' && idx > 0) {
+        var prevCap = items[idx - 1];
+        if (prevCap) {
+          var sepHtml = tmBuildTimelineSeparator(prevCap, cap);
+          if (sepHtml) html += sepHtml;
+        }
+      }
+
       const ts = escapeHtml(cap.ts_local || cap.ts || '');
       const url = escapeHtml(cap.url || '');
       const protocol = escapeHtml(cap.protocol || 'unknown');
