@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.291 Changes:
+ * - The duplicate-session warning now shows match STRENGTH per session in a parenthetical:
+ *   "(current matching block matches on 707 characters; other matching blocks: 6 characters)".
+ *   A weak coincidental match (6 chars) is instantly distinguishable from a genuine one (707 chars).
+ *
  * v3.290 Changes:
  * - REVERTED the v3.289 30% reverse-direction threshold (brittle — could filter legitimate prefix
  *   matches). REPLACED with match-strength comparison in refineComputeMatches: every matching
@@ -1071,7 +1076,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.290',
+  VERSION: '3.291',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3451,11 +3456,22 @@
     return turns.length ? turns[0] : '';
   }
 
-  /** Show/hide the duplicate-session warning bar. */
-  function updateDuplicateWarning(matchedSessions) {
+  /** Show/hide the duplicate-session warning bar. v3.291: includes match strength per session
+   *  so a weak coincidental match (6 chars) is distinguishable from a genuine one (707 chars). */
+  function updateDuplicateWarning(matchedSessions, strengths, matchIdx) {
     var el = document.getElementById('deepgram-refine-duplicate-warning');
     if (!el) return;
-    el.style.display = matchedSessions.length > 1 ? '' : 'none';
+    if (!matchedSessions || matchedSessions.length <= 1) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    if (strengths && matchIdx !== undefined && matchIdx !== -1) {
+      var curStr = (strengths[matchIdx] || 0).toLocaleString();
+      var otherStrs = matchedSessions.filter(function(si) { return si !== matchIdx; })
+        .map(function(si) { return (strengths[si] || 0).toLocaleString() + ' characters'; })
+        .join(', ');
+      el.textContent = '⚠ Duplicate sessions found with the same block (current matching block matches on ' + curStr + ' characters; other matching blocks: ' + otherStrs + ')';
+    } else {
+      el.textContent = '⚠ Duplicate sessions found with the same block';
+    }
   }
 
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
@@ -3669,6 +3685,7 @@
     var contexts = refineGetContexts();
     var bestIdx = -1, bestStrength = 0;
     var matchedSessions = [];
+    var strengths = {};   // v3.291: session index → best (max) match strength across all turns
     for (var t = 0; t < turnNorms.length; t++) {
       var chatNorm = turnNorms[t];
       for (var i = 0; i < contexts.length; i++) {
@@ -3676,11 +3693,12 @@
         if (isSessionTurnMatch(block, chatNorm)) {
           if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
           var strength = Math.min(block.length, chatNorm.length);
+          if (!strengths[i] || strength > strengths[i]) strengths[i] = strength;
           if (strength > bestStrength) { bestStrength = strength; bestIdx = i; }
         }
       }
     }
-    return { matchIdx: bestIdx, matchedSessions: matchedSessions };
+    return { matchIdx: bestIdx, matchedSessions: matchedSessions, strengths: strengths };
   }
 
   /** Auto-select the session matching the current conversation (if any), and update the border. */
@@ -3689,7 +3707,7 @@
     var m = refineComputeMatches(turnNorms);
     if (refineFrozenAutoSelect) {
       updateMatchBorder();
-      updateDuplicateWarning(m.matchedSessions);
+      updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx);
       return;
     }
     if (!turnNorms.length) {
@@ -3718,7 +3736,7 @@
       if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
     }
     updateMatchBorder();
-    updateDuplicateWarning(m.matchedSessions);
+    updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx);
   }
 
   /** Dim/restore the toggle pills and tail text while a match check is in progress. */
