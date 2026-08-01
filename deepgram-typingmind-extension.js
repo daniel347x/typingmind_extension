@@ -11,6 +11,19 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.290 Changes:
+ * - REVERTED the v3.289 30% reverse-direction threshold (brittle — could filter legitimate prefix
+ *   matches). REPLACED with match-strength comparison in refineComputeMatches: every matching
+ *   (session, turn) pair is scored as min(block.length, turnNorm.length) — the length of the
+ *   SHORTER side — and the STRONGEST match wins across all turns and sessions. A 6-char "deploy"
+ *   matching a 93-char block (strength 6) always loses to a genuine 707-char match. No arbitrary
+ *   cutoff.
+ * - Block delimiter changed from '---' (3 hyphens) to '---------' (9 hyphens) in
+ *   refineAppendFromClipboard. A chat turn containing a '---' line was being mistaken for a block
+ *   boundary, truncating the extracted last block. 9 hyphens is vanishingly unlikely in natural
+ *   prose. getLastBlockNormForText / refinePruneSlotToHalf / refineUpdateTailPreview already match
+ *   3+ hyphens, so legacy '---' breaks remain recognized (backward compatible).
+ *
  * v3.289 Changes:
  * - FIX: reverse-direction matches (session block CONTAINS turn norm) now require the turn norm
  *   to be at least 30% of the block length. A 6-char turn like "deploy" was matching a 93-char
@@ -1058,7 +1071,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.289',
+  VERSION: '3.290',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3641,18 +3654,20 @@
 
   /** The one shared session⇄turn match predicate (v3.289). Forward direction (turn contains the
    *  entire session block) always qualifies. Reverse direction (session block contains the turn
-   *  norm) requires the turn norm to be at least 30% of the block length — a coincidental short
-   *  prefix like "deploy" (6 chars) must not match a 93-char block. */
+   *  norm) also qualifies — the v3.289 30% threshold was REVERTED in v3.290 in favor of
+   *  match-strength comparison in refineComputeMatches (strongest match wins, no arbitrary cutoff). */
   function isSessionTurnMatch(sessionNorm, turnNorm) {
     if (!sessionNorm || sessionNorm.length < 5 || !turnNorm) return false;
-    if (turnNorm.includes(sessionNorm)) return true;
-    return turnNorm.length >= Math.floor(sessionNorm.length * 0.3) && sessionNorm.includes(turnNorm);
+    return turnNorm.includes(sessionNorm) || sessionNorm.includes(turnNorm);
   }
 
-  /** Pure scan: which sessions match any of the recent chat turns? No side effects. */
+  /** Pure scan: which sessions match any of the recent chat turns? No side effects.
+   *  v3.290: match-strength comparison — the STRONGEST match wins (not the first). Strength =
+   *  min(block.length, turnNorm.length): the length of the shorter side. A 6-char "deploy"
+   *  matching a 93-char block (strength 6) always loses to a genuine full-length match. */
   function refineComputeMatches(turnNorms) {
     var contexts = refineGetContexts();
-    var matchIdx = -1;
+    var bestIdx = -1, bestStrength = 0;
     var matchedSessions = [];
     for (var t = 0; t < turnNorms.length; t++) {
       var chatNorm = turnNorms[t];
@@ -3660,12 +3675,12 @@
         var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
         if (isSessionTurnMatch(block, chatNorm)) {
           if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
-          if (matchIdx === -1) matchIdx = i;
+          var strength = Math.min(block.length, chatNorm.length);
+          if (strength > bestStrength) { bestStrength = strength; bestIdx = i; }
         }
       }
-      if (matchIdx !== -1) break; // first matching turn wins
     }
-    return { matchIdx: matchIdx, matchedSessions: matchedSessions };
+    return { matchIdx: bestIdx, matchedSessions: matchedSessions };
   }
 
   /** Auto-select the session matching the current conversation (if any), and update the border. */
@@ -5109,16 +5124,18 @@
     const i = refineGetActiveContextIndex();
     const existing = (slots[i] && slots[i].text) || '';
 
-    // Build the new context: <existing> [\n\n---\n\n] <clip>, guaranteeing exactly one spaced break.
+    // Build the new context: <existing> [\n\n---------\n\n] <clip>, guaranteeing exactly one spaced
+    // break. (v3.290: the delimiter is now NINE hyphens, not three — a chat turn containing a '---'
+    // line was being mistaken for a block boundary, truncating the extracted last block.)
     let base = existing.replace(/\s+$/, '');   // trim trailing whitespace
     let combined;
     if (!base) {
       combined = clip.replace(/\s+$/, '');
-    } else if (/\n---\s*$/.test(base) || /^---\s*$/.test(base)) {
-      // Already ends in a '---' break — don't add a second one; just space + append.
+    } else if (/\n-{3,}\s*$/.test(base) || /^-{3,}\s*$/.test(base)) {
+      // Already ends in a break (3+ hyphens) — don't add a second one; just space + append.
       combined = base + '\n\n' + clip.replace(/\s+$/, '');
     } else {
-      combined = base + '\n\n---\n\n' + clip.replace(/\s+$/, '');
+      combined = base + '\n\n---------\n\n' + clip.replace(/\s+$/, '');
     }
 
     slots[i].text = combined;
