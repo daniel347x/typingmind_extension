@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.292 Changes:
+ * - Behind-pulse breathing RESTORED via transform:scale on the inner content (the v3.284 two-row
+ *   restructure gave the inner divs explicit font-sizes that overrode the inherited font-size
+ *   animation). A new dgAppendBehindPulseInner keyframes breathes the content 0.94 ↔ 1.06.
+ * - NEW: an outer breathing YELLOW OUTLINE (outline + outline-offset) on the behind-pulse — a
+ *   halo with a 4px gap that breathes in sync, like the red border's blank space on pills.
+ * - The ✓ moved from the bottom row to the TOP row, after the colon with a gap. The name row is
+ *   now a flex row: [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
+ *
  * v3.291 Changes:
  * - The duplicate-session warning now shows match STRENGTH per session in a parenthetical:
  *   "(current matching block matches on 707 characters; other matching blocks: 6 characters)".
@@ -1076,7 +1085,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.291',
+  VERSION: '3.292',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3002,9 +3011,12 @@
     var name = refineGetActiveContextName() || '';
     // Escape HTML in the session name so it renders literally.
     name = String(name).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    btn.innerHTML = '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
-      + '<div style="font-size:11px; line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; text-align:center; opacity:0.85; padding:0 2px;">'
-      + name + '<span style="color:#ffd400; font-weight:700;">:</span>'
+    // v3.286: row1 is now a flex row — [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
+    // The ✓ is managed by refineUpdateAppendBtnState (appended to #deepgram-append-row1 after the colon).
+    btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
+      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:11px; line-height:1.15; opacity:0.85; padding:0 2px;">'
+      + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
+      + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
       + '<div id="deepgram-append-row2" style="font-size:13px; line-height:1.2; white-space:nowrap;">📎 Append</div>'
       + '</div>';
@@ -3495,23 +3507,33 @@
     if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; return; }
     // The behind-state pulse (v3.263) applies ONLY to the 'match' verdict; clear it for all others.
     if (verdict !== 'match' && btn.style.animationName) btn.style.animation = '';
-    // Session-name row color (v3.285): yellow when matching, blue when not — mirrors the tail-label
+    // Session-name color (v3.285): yellow when matching, blue when not — mirrors the tail-label
     // vise-bar row colors (#e6c200 match, #4da3ff nomatch). Falls back to inherited on indeterminate.
-    var nameRow = btn.querySelector('div > div:first-child');
-    if (nameRow) {
-      if (verdict === 'match' || verdict === 'match-current') nameRow.style.color = '#e6c200';
-      else if (verdict === 'nomatch') nameRow.style.color = '#4da3ff';
-      else nameRow.style.color = '';
+    var nameSpan = btn.querySelector('#deepgram-append-name');
+    if (nameSpan) {
+      if (verdict === 'match' || verdict === 'match-current') nameSpan.style.color = '#e6c200';
+      else if (verdict === 'nomatch') nameSpan.style.color = '#4da3ff';
+      else nameSpan.style.color = '';
     }
-    // Up-to-date ✓ decoration (v3.262): a dedicated span in the bottom row ("📎 Append").
-    var row2 = btn.querySelector('#deepgram-append-row2') || btn;   // v3.284: ✓ goes in row 2
+    // Inner-content scale breathing (v3.286): restored via transform:scale on the content wrapper.
+    var content = btn.querySelector('#deepgram-append-content');
+    if (content) {
+      if (verdict === 'match') {
+        if (content.style.animationName !== 'dgAppendBehindPulseInner')
+          content.style.animation = 'dgAppendBehindPulseInner 2s ease-in-out infinite';
+      } else {
+        if (content.style.animationName) content.style.animation = '';
+      }
+    }
+    // Up-to-date ✓ decoration (v3.262, v3.286 moved to row1 after the colon with a gap).
+    var row1 = btn.querySelector('#deepgram-append-row1') || btn;
     var chk = document.getElementById('deepgram-append-uptodate-check');
     if (verdict === 'match-current' && !chk) {
       chk = document.createElement('span');
       chk.id = 'deepgram-append-uptodate-check';
-      chk.textContent = ' ✓';
-      chk.style.cssText = 'color:#ffd400; font-weight:700; text-shadow:0 0 3px rgba(0,0,0,0.65);';
-      row2.appendChild(chk);
+      chk.textContent = '✓';
+      chk.style.cssText = 'flex:0 0 auto; color:#ffd400; font-weight:700; margin-left:5px; text-shadow:0 0 3px rgba(0,0,0,0.65);';
+      row1.appendChild(chk);
     } else if (verdict !== 'match-current' && chk) {
       chk.remove();
     }
@@ -5887,8 +5909,14 @@
          teal, muddy-yellow 14px text, 80%-faded border. Phase 50 (peak): bg deepest, white 16px
          text, bright yellow border. Font size pulses ±2px for an extra dimension of contrast. */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; font-size:14px; }
-        50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; }
+        0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; font-size:14px; outline:2px solid rgba(255,212,0,0.15); outline-offset:4px; }
+        50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; outline:3px solid rgba(255,212,0,0.75); outline-offset:5px; }
+      }
+      /* Inner-content scale breathing (v3.286): the two-row content scales gently in/out, restoring
+         the font-size breathing lost when the inner divs got explicit font-sizes in v3.284. */
+      @keyframes dgAppendBehindPulseInner {
+        0%, 100% { transform: scale(0.94); }
+        50%      { transform: scale(1.06); }
       }
 
       /* Frost-breathing border for the frozen pills row + freeze button (v3.282: row border
