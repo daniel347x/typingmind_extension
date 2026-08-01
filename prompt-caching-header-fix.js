@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.225
+// Version: 4.226
 // Issues Fixed:
 //   - v4.225: Per-entry 12h and 24h block cost snapshots. Each ring entry now stamps
 //     _cost_12h and _cost_24h at response receipt — the aggregate per-turn cost for the
@@ -332,7 +332,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.225';
+  const EXT_VERSION = '4.226';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -584,102 +584,89 @@
     return fallbackProvider || '';
   }
 
-  // ==================== SESSION INITIALIZATION (v4.213) ====================
-  // Lets Dan PRE-SEED a provider choice for a conversation that doesn't exist yet: he pastes a
-  // Session ID into the ring-modal init row, picks a model+provider (or set) from memory, and
-  // saves ONE global entry. On the FIRST outbound payload carrying that pasted Session ID (with
-  // no lock anywhere for that session), the choice becomes that session's provider lock.
-  var TM_PROVIDER_INIT_KEY = 'tm_provider_init_v1';
-  var tmInitMismatchWarned = {};  // memoize the model-mismatch alert (once per session per load)
+  // ==================== MODEL → PROVIDER MAP (v4.226) ====================
+  // Replaces the old v4.213 session-init system. The ring-buffer modal now has a row with
+  // two dropdowns: Model (aggregated from ring entries) → Provider (from tmGetProviderEntries,
+  // the live-discovery + seed list). The selection is saved as a simple key-value map:
+  //   localStorage[tm_model_provider_map_v1] = { "moonshotai/kimi-k3": "moonshotai", ... }
+  // One provider per model. When a NEW outbound payload creates a new session identity
+  // (sid::model::host::proxy not yet in tm_session_costs_v2), the model→provider map is
+  // consulted: if the model has a mapped provider, that provider is auto-locked for the
+  // identity. This means every new session automatically gets the pre-chosen provider.
+  var TM_MODEL_PROVIDER_MAP_KEY = 'tm_model_provider_map_v1';
 
-  function tmGetProviderInit() {
-    try { var r = localStorage.getItem(TM_PROVIDER_INIT_KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; }
+  function tmGetModelProviderMap() {
+    try { var r = localStorage.getItem(TM_MODEL_PROVIDER_MAP_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
   }
-  function tmSetProviderInit(entry) {
-    try { localStorage.setItem(TM_PROVIDER_INIT_KEY, JSON.stringify(entry)); } catch (e) {}
+  function tmSetModelProvider(model, slug) {
+    try {
+      var map = tmGetModelProviderMap();
+      map[model] = slug;
+      localStorage.setItem(TM_MODEL_PROVIDER_MAP_KEY, JSON.stringify(map));
+    } catch (e) {}
   }
-  function tmClearProviderInit() {
-    try { localStorage.removeItem(TM_PROVIDER_INIT_KEY); } catch (e) {}
+  function tmGetModelProvider(model) {
+    try {
+      var map = tmGetModelProviderMap();
+      return map[model] || null;
+    } catch (e) { return null; }
   }
 
-  // Build the init-row dropdown options from MEMORY: distinct (model, provider) pairs from
-  // successful (non-429) ring entries, plus existing SET locks as set options.
-  function tmBuildProviderInitOptions() {
-    var opts = [];
+  // Collect all unique model names from the ring buffer entries.
+  function tmCollectRingModels() {
+    var models = [];
     var seen = {};
     try {
       var ring = tmReadCaptureRing();
       for (var i = ring.length - 1; i >= 0; i--) {
         var cap = ring[i];
-        if (!cap || tmIsRetryRow(cap)) continue;
+        if (!cap) continue;
         var model = '';
         try { model = tmCaptureModel(cap); } catch (e) {}
-        var prov = (typeof cap.response_provider === 'string' && cap.response_provider) ? cap.response_provider : null;
-        if (!model || !prov) continue;
-        var slug = tmProviderNameToSlug(prov);
-        var key = model + '|' + slug;
-        if (seen[key]) continue;
-        seen[key] = true;
-        opts.push({ model: model, provider: { mode: 'single', slug: slug, label: prov }, label: model + ' — ' + prov });
+        if (!model) continue;
+        if (seen[model]) continue;
+        seen[model] = true;
+        models.push(model);
       }
     } catch (e) {}
-    try {
-      var locks = tmGetProviderLocks();
-      for (var k in locks) {
-        if (!Object.prototype.hasOwnProperty.call(locks, k)) continue;
-        var L = locks[k];
-        if (L && L.mode === 'set' && Array.isArray(L.slugs) && L.slugs.length) {
-          var m = k.split('::')[1] || '';
-          var skey = m + '|set:' + L.slugs.join('+');
-          if (seen[skey]) continue;
-          seen[skey] = true;
-          opts.unshift({ model: m, provider: { mode: 'set', slugs: L.slugs.slice(), labels: (L.labels || L.slugs).slice() }, label: m + ' — 🎯 Set: ' + (L.labels || L.slugs).join('+') });
-        }
-      }
-    } catch (e) {}
-    return opts;
+    return models;
   }
 
-  // The init engine, called from tmApplyProviderRouting when NO lock exists for this identity.
-  // Returns the applied lock, '__mismatch' on model mismatch (alerts once), or null if N/A.
+  // The auto-lock engine, called from tmApplyProviderRouting when NO lock exists for the
+  // identity. Checks if this is a NEW session (not yet in tm_session_costs_v2). If so, looks
+  // up the model in the model→provider map. If found, locks that provider for the identity.
+  // Returns the applied lock, or null if N/A.
   // @beacon[
-  //   id=auto-beacon@__lambdao_1.tmMaybeInitProviderSession-32lx,
-  //   role=__lambdao_1.tmMaybeInitProviderSession,
+  //   id=auto-beacon@__lambdao_1.tmMaybeAutoLockFromModelMap-z9k2,
+  //   role=__lambdao_1.tmMaybeAutoLockFromModelMap,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Session-init engine (v4.213/4.217): a payload carrying the pasted Session ID with NO lock for this identity gets the saved model+provider choice persisted as that identity's lock; model mismatch alerts once and skips.,
+  //   comment=v4.226: auto-locks the model→provider map's provider for a NEW session identity (one that has no entry in tm_session_costs_v2 yet). Replaces the old v4.213 session-init engine.
   // ]
-  function tmMaybeInitProviderSession(body, idKey) {
+  function tmMaybeAutoLockFromModelMap(body, idKey) {
     try {
-      var init = tmGetProviderInit();
-      if (!init || !init.sessionId || !init.provider) return null;
-      var pasted = null;
-      try { pasted = deriveConversationIdFromBody(body); } catch (e) {}
-      if (!pasted || String(pasted) !== String(init.sessionId)) return null;
-      // (v4.217) Removed the 'no locks for this session' guard. The caller already ensures no
-      // lock exists for THIS identity (sid::model::host::proxy). The old guard blocked session-init
-      // from firing when a NEW model entered an EXISTING session -- the exact gap. Now the init
-      // entry fires per-identity: model match => lock applied; mismatch => alert reminder.
-      // Model check (suffix/case-normalized both sides).
-      var bodyModel = String(body.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-      var initModel = String(init.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-      if (bodyModel !== initModel) {
-        if (!tmInitMismatchWarned[pasted]) {
-          tmInitMismatchWarned[pasted] = true;
-          try { alert('⚠ Provider-init mismatch: session "' + init.sessionId + '" was initialized for "' + init.model + '" but this conversation is sending "' + body.model + '". The init was NOT applied. Fix or clear it in the ring-buffer modal (🌱 Init session row).'); } catch (e) {}
+      if (!body || !body.model || !idKey) return null;
+      // Check if this identity already exists in tm_session_costs_v2. If it does, this is
+      // an existing session — don't auto-lock (it already has its own lock or AUTO mode).
+      var costs = tmGetSessionCosts();
+      if (costs && costs[idKey]) return null; // session already exists — leave it alone
+
+      // New session: look up the model in the model→provider map.
+      var model = String(body.model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      var slug = tmGetModelProvider(model);
+      if (!slug) return null;
+
+      // Find the label from provider entries for this model.
+      var label = slug;
+      try {
+        var entries = tmGetProviderEntries(model);
+        for (var i = 0; i < entries.length; i++) {
+          if (entries[i].slug === slug) { label = entries[i].label; break; }
         }
-        return '__mismatch';
-      }
-      // Apply: persist the lock for THIS identity so the standard machinery owns it from here.
-      var prov = init.provider;
-      if (prov.mode === 'set' && Array.isArray(prov.slugs) && prov.slugs.length) {
-        tmSetProviderSetLock(idKey, prov.slugs.slice(), (prov.labels || prov.slugs).slice());
-      } else if (prov.slug) {
-        tmSetProviderLock(idKey, prov.slug, prov.label || prov.slug, true);
-      } else {
-        return null;
-      }
-      console.log('🌱 [v' + EXT_VERSION + '] Session-init applied: ' + init.sessionId + ' -> ' + init.model + ' [' + (prov.mode === 'set' ? ('Set: ' + prov.slugs.join('+')) : prov.slug) + '] for ' + idKey);
+      } catch (e) {}
+
+      tmSetProviderLock(idKey, slug, label, false);
+      console.log('🌱 [v' + EXT_VERSION + '] Auto-locked provider from model→provider map: ' + model + ' -> ' + label + ' (' + slug + ') for ' + idKey);
       return tmGetProviderLock(idKey);
     } catch (e) { return null; }
   }
@@ -4025,7 +4012,7 @@
   //   role=__lambdao_1.ensurePayloadCaptureModal,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Builds the ring-buffer modal DOM including the session-init row, retry-visibility toggle, and per-entry copy buttons.,
+  //   comment=Builds the ring-buffer modal DOM including the model→provider map row, retry-visibility toggle, and per-entry copy buttons.,
   // ]
   function ensurePayloadCaptureModal() {
     if (payloadCaptureModalEl) return payloadCaptureModalEl;
@@ -4107,36 +4094,7 @@
         return;
       }
 
-      // (v4.213) Session-init apply/clear.
-      if (t.dataset && t.dataset.action === 'apply-provider-init') {
-        var sidInput = document.getElementById('tm-init-session-input');
-        var selInput = document.getElementById('tm-init-provider-select');
-        var sidVal = sidInput ? String(sidInput.value || '').trim() : '';
-        var selVal = selInput ? String(selInput.value || '') : '';
-        if (!sidVal || selVal === '') {
-          alert('Paste a Session ID and choose a model + provider first.');
-          ev.stopPropagation();
-          return;
-        }
-        var initOptsNow = tmBuildProviderInitOptions();
-        var chosen = initOptsNow[Number(selVal)];
-        if (!chosen) {
-          alert('That provider choice is no longer in memory — pick another.');
-          ev.stopPropagation();
-          return;
-        }
-        tmSetProviderInit({ sessionId: sidVal, model: chosen.model, provider: chosen.provider, ts: Date.now() });
-        console.log('🌱 [v' + EXT_VERSION + '] Session-init saved: ' + sidVal + ' -> ' + chosen.model + ' [' + (chosen.provider.mode === 'set' ? ('Set: ' + chosen.provider.slugs.join('+')) : chosen.provider.slug) + ']');
-        renderPayloadCaptureModal();
-        ev.stopPropagation();
-        return;
-      }
-      if (t.dataset && t.dataset.action === 'clear-provider-init') {
-        tmClearProviderInit();
-        renderPayloadCaptureModal();
-        ev.stopPropagation();
-        return;
-      }
+      // (v4.226) Model→Provider map dropdown handlers are handled in the change listener below.
 
       if (t.dataset && t.dataset.action === 'copy-payload-capture') {
         const capId = t.dataset.captureId;
@@ -4203,6 +4161,40 @@
       if (t && t.dataset && t.dataset.action === 'set-modal-time-filter') {
         tmModalTimeFilter = t.value || 'all';
         renderPayloadCaptureModal();
+        ev.stopPropagation();
+      }
+      // (v4.226) Model→Provider map: model dropdown changed — populate provider dropdown.
+      if (t && t.dataset && t.dataset.action === 'set-mpm-model') {
+        var mpmModel = t.value || '';
+        var mpmProviderSelect = document.getElementById('tm-mpm-provider-select');
+        if (mpmProviderSelect && mpmModel) {
+          // Kick off live discovery for this model so the provider list is fresh.
+          try { tmMaybeFetchProviderEndpoints(mpmModel); } catch (e) {}
+          var mpmEntries = tmGetProviderEntries(mpmModel);
+          var mpmHtml = '<option value="">— select provider —</option>';
+          var mpmCurrentSlug = tmGetModelProvider(mpmModel.toLowerCase().replace(/:(nitro|floor|free)$/i, ''));
+          for (var mpei = 0; mpei < mpmEntries.length; mpei++) {
+            var mpe = mpmEntries[mpei];
+            var badge = mpe.cache ? '\uD83D\uDFE2' : '\u26D4';
+            var mpmSel = (mpmCurrentSlug === mpe.slug) ? ' selected' : '';
+            mpmHtml += '<option value="' + escapeHtml(mpe.slug) + '"' + mpmSel + '>' + badge + ' ' + escapeHtml(mpe.label) + '</option>';
+          }
+          mpmProviderSelect.innerHTML = mpmHtml;
+        }
+        ev.stopPropagation();
+      }
+      // (v4.226) Model→Provider map: provider dropdown changed — save the mapping.
+      if (t && t.dataset && t.dataset.action === 'set-mpm-provider') {
+        var mpmSlug = t.value || '';
+        var mpmModelSel = document.getElementById('tm-mpm-model-select');
+        var mpmSelectedModel = mpmModelSel ? String(mpmModelSel.value || '') : '';
+        if (mpmSelectedModel && mpmSlug) {
+          var mpmNormModel = mpmSelectedModel.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+          tmSetModelProvider(mpmNormModel, mpmSlug);
+          console.log('🌱 [v' + EXT_VERSION + '] Model→Provider map saved: ' + mpmNormModel + ' -> ' + mpmSlug);
+          // Re-render to reflect the updated mapping in the model dropdown labels.
+          renderPayloadCaptureModal();
+        }
         ev.stopPropagation();
       }
     });
@@ -5239,6 +5231,13 @@
   // Walks the ring, summing per-turn costs for entries matching the identity
   // whose timestamp falls within [cutoffMs, now]. Called at response-stamp time to
   // snapshot the 12h and 24h block costs onto each capture record.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmComputeBlockCost-v0m5,
+  //   role=__lambdao_1.tmComputeBlockCost,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Compute aggregate cost for a session identity within a time window (12h or 24h block). Walks the ring, matches identity, sums per-turn costs. Called at response-stamp time to snapshot block costs onto each capture record.,
+  // ]
   function tmComputeBlockCost(identityKey, cutoffMs) {
     var ring = tmReadCaptureRing();
     var total = 0;
@@ -5526,37 +5525,31 @@
       : 'background:#5a3a6e;color:#fff;border:1px solid #7a5aae;';
     var retryToggleHtml = '<button data-action="toggle-hide-retries" title="Toggle visibility of auto-retry / 429 rows" style="' + retryBtnStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:8px;">' + retryBtnLabel + '</button>';
 
-    // (v4.213) Session-init row: paste a Session ID + pick a model+provider (or set) from MEMORY,
-    // saved as the single global init entry (tm_provider_init_v1). On the FIRST outbound payload
-    // carrying that pasted Session ID with no existing lock, the choice becomes the session's
-    // provider lock automatically (model mismatch => blocking alert, not applied).
-    var initEntry = tmGetProviderInit();
-    var initOpts = tmBuildProviderInitOptions();
+    // (v4.226) Model→Provider map row: two dropdowns. Left = model (aggregated from ring
+    // buffer entries). Right = provider (dynamically populated from tmGetProviderEntries for the
+    // selected model). Saving writes to localStorage[tm_model_provider_map_v1] = {model: slug}.
+    var ringModels = tmCollectRingModels();
+    var modelProviderMap = tmGetModelProviderMap();
     var initRowHtml = '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(24,34,28,0.7);border:1px solid #2a3a2a;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:10px;">' +
-      '<span style="opacity:0.85;">🌱 Init session:</span>' +
-      '<input id="tm-init-session-input" type="text" placeholder="paste Session ID" value="' + escapeHtml((initEntry && initEntry.sessionId) || '') + '" style="width:150px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;" />' +
-      '<select id="tm-init-provider-select" style="font-size:10px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:1px 4px;max-width:300px;">';
-    if (!initOpts.length) {
-      initRowHtml += '<option value="">(no providers in memory yet)</option>';
+      '<span style="opacity:0.85;">🌱 Model→Provider:</span>' +
+      '<select id="tm-mpm-model-select" data-action="set-mpm-model" style="font-size:10px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:1px 4px;max-width:220px;">';
+    if (!ringModels.length) {
+      initRowHtml += '<option value="">(no models in ring yet)</option>';
     } else {
-      initRowHtml += '<option value="">— choose model + provider —</option>';
-      for (var io = 0; io < initOpts.length; io++) {
-        var iopt = initOpts[io];
-        var isSel = false;
-        if (initEntry && initEntry.provider) {
-          if (initEntry.provider.mode === 'set' && iopt.provider.mode === 'set' && initEntry.model === iopt.model && initEntry.provider.slugs.join('+') === iopt.provider.slugs.join('+')) isSel = true;
-          if (initEntry.provider.mode !== 'set' && iopt.provider.mode !== 'set' && initEntry.model === iopt.model && initEntry.provider.slug === iopt.provider.slug) isSel = true;
-        }
-        initRowHtml += '<option value="' + io + '"' + (isSel ? ' selected' : '') + '>' + escapeHtml(iopt.label) + '</option>';
+      initRowHtml += '<option value="">— select model —</option>';
+      for (var mi = 0; mi < ringModels.length; mi++) {
+        var ringModel = ringModels[mi];
+        var mappedSlug = modelProviderMap[ringModel.toLowerCase().replace(/:(nitro|floor|free)$/i, '')] || '';
+        var mpmLabel = ringModel + (mappedSlug ? (' → ' + mappedSlug) : '');
+        initRowHtml += '<option value="' + escapeHtml(ringModel) + '">' + escapeHtml(mpmLabel) + '</option>';
       }
     }
-    initRowHtml += '</select>' +
-      '<button data-action="apply-provider-init" title="Save this Session ID + provider choice as the init entry" style="background:#245f36;color:#fff;border:none;border-radius:3px;padding:1px 8px;font-size:10px;cursor:pointer;">Apply</button>' +
-      (initEntry
-        ? ('<span style="opacity:0.75;">init: ' + escapeHtml(initEntry.sessionId) + ' → ' + escapeHtml(initEntry.model) + ' [' + escapeHtml(initEntry.provider.mode === 'set' ? ('Set: ' + initEntry.provider.slugs.join('+')) : initEntry.provider.slug) + ']</span>' +
-           '<button data-action="clear-provider-init" title="Clear the init entry" style="background:#5a2a2a;color:#fff;border:none;border-radius:3px;padding:1px 8px;font-size:10px;cursor:pointer;">Clear</button>')
-        : '<span style="opacity:0.5;">(no init entry set)</span>') +
-      '</div>';
+    initRowHtml += '</select>';
+    // Provider dropdown — initially empty; populated dynamically when a model is selected.
+    initRowHtml += '<select id="tm-mpm-provider-select" data-action="set-mpm-provider" style="font-size:10px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:1px 4px;max-width:200px;">';
+    initRowHtml += '<option value="">(select model first)</option>';
+    initRowHtml += '</select>';
+    initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
     var timeFilterHtml = '<span style="font-size:10px;opacity:0.85;margin-left:8px;">Time:&nbsp;</span>' +
@@ -6864,7 +6857,7 @@
   //   role=__lambdao_1.tmApplyProviderRouting,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Fix 16/18 injector: applies the identity's LOCKED order/ignore, SET provider.only, or AUTO seed preference (first success auto-stamps a lock); consults session-init when no lock exists.,
+  //   comment=Fix 16/18 injector: applies the identity's LOCKED order/ignore, SET provider.only, or AUTO seed preference (first success auto-stamps a lock); auto-locks from model→provider map when no lock exists and the session is new (v4.226).,
   // ]
   function tmApplyProviderRouting(body, label, idKeyOverride) {
     if (!body || !body.model) return false;
@@ -6876,13 +6869,12 @@
     var idKey = idKeyOverride || tmComputeRoutingIdentityKey(body, null, null) || '';
     if (!idKey) return false;
     var lock = tmGetProviderLock(idKey);
-    // (v4.213) Session-init: when NO lock exists for this session and the payload carries the
-    // pasted Session ID matching the global init entry, persist + apply the stored choice now
-    // (model mismatch => alert, not applied, request proceeds unrouted).
+    // (v4.226) Auto-lock from model→provider map: when NO lock exists for this identity,
+    // check if this is a NEW session (not yet in tm_session_costs_v2). If so, look up the
+    // model in the model→provider map and auto-lock the mapped provider.
     if (!lock) {
-      var initResult = tmMaybeInitProviderSession(body, idKey);
-      if (initResult === '__mismatch') return false;
-      if (initResult) lock = initResult;
+      var autoLockResult = tmMaybeAutoLockFromModelMap(body, idKey);
+      if (autoLockResult) lock = autoLockResult;
     }
     var seed = tmGetProviderEntries(model);
     var changed = false;
