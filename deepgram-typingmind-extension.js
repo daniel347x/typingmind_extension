@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.283 Changes:
+ * - The ❄️ button is now as visually loud as the frosted row: its emoji font-size PULSES 11px ↔
+ *   22px through the 2s cycle (synced to peak border brightness), and the row's border WIDTH also
+ *   doubles (2px → 4px) at peak — so the whole frosted unit heaves in unison.
+ *
  * v3.282 Changes:
  * - NEW: when freeze is active, the ENTIRE pills row AND the ❄️ button itself gain a frost-
  *   breathing border — an icy-blue border that pulses in and out over a 2s cycle, giving an
@@ -1016,7 +1021,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.282',
+  VERSION: '3.283',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2658,7 +2663,7 @@
         : 'Auto-select active — click to freeze (stop auto-selecting)';
       // Frost breath on the button itself (v3.277)
       if (refineFrozenAutoSelect) {
-        btn.style.animation = 'dgFrostBreath 2s ease-in-out infinite';
+        btn.style.animation = 'dgFrostBreathBtn 2s ease-in-out infinite';
         btn.style.borderRadius = '6px';
       } else {
         btn.style.animation = '';
@@ -5725,11 +5730,17 @@
         50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; }
       }
 
-      /* Frost-breathing border for the frozen pills row + freeze button (v3.277): an icy-blue
-         border that pulses in and out over 2s — an unmistakable "this is frozen" signal. */
+      /* Frost-breathing border for the frozen pills row + freeze button (v3.282: row border
+         thickness doubles at peak; v3.283: ❄️ emoji also pulses 11px ↔ 22px, synced to peak
+         brightness so the button is as visually loud as the row). */
       @keyframes dgFrostBreath {
-        0%, 100% { border-color: rgba(120,200,230,0.3); box-shadow: 0 0 4px rgba(120,200,230,0.15); }
-        50%      { border-color: rgba(180,230,250,0.95); box-shadow: 0 0 14px rgba(120,200,230,0.5); }
+        0%, 100% { border-color: rgba(120,200,230,0.3); border-width:2px; box-shadow: 0 0 4px rgba(120,200,230,0.15); }
+        50%      { border-color: rgba(180,230,250,0.95); border-width:4px; box-shadow: 0 0 14px rgba(120,200,230,0.5); }
+      }
+      /* The ❄️ button: same border breath PLUS the emoji font-size pulses 11px ↔ 22px (v3.283). */
+      @keyframes dgFrostBreathBtn {
+        0%, 100% { border-color: rgba(120,200,230,0.3); border-width:1px; box-shadow: 0 0 4px rgba(120,200,230,0.15); font-size:11px; }
+        50%      { border-color: rgba(180,230,250,0.95); border-width:2px; box-shadow: 0 0 14px rgba(120,200,230,0.5); font-size:22px; }
       }
 
       /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
