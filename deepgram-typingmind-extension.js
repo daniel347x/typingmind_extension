@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.286 Changes:
+ * - Enhanced __debugMatch() to check includes() (the REAL match condition) and report the match
+ *   position + matched substring, not just prefix divergence. Added __debugAllSessions() (checks
+ *   ALL sessions against recent turns, reports which match and why) and __debugTurns() (prints all
+ *   collected turn norms with head/tail).
+ *
  * v3.285 Changes:
  * - Session name in the Append button's top row now mirrors the tail-label vise-bar colors: yellow
  *   (#e6c200) when the session matches the current conversation, blue (#4da3ff) when it doesn't.
@@ -1031,7 +1037,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.285',
+  VERSION: '3.286',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3541,8 +3547,9 @@
     }
   }
 
-  /** Console debug: compare the ACTIVE session's last block vs recent chat turns, showing exactly
-   *  where each diverges (or whether one contains the other). Run __debugMatch() in DevTools. */
+  /** Console debug: compare the ACTIVE session's last block vs recent chat turns using the REAL
+   *  match condition (includes, either direction), reporting the match position and substring.
+   *  Run __debugMatch() in DevTools. (v3.286: was prefix-only, which missed substring matches.) */
   window.__debugMatch = function() {
     var sessionNorm = getSessionLastBlockNorm();
     console.log('[debugMatch] session last-block len:', sessionNorm.length,
@@ -3550,12 +3557,61 @@
     var turnNorms = getRecentChatTurnNorms(10, 4);
     console.log('[debugMatch] turns collected:', turnNorms.length);
     turnNorms.forEach(function(c, t) {
-      var i = 0, minLen = Math.min(sessionNorm.length, c.length);
-      while (i < minLen && sessionNorm[i] === c[i]) i++;
+      var fwd = c.includes(sessionNorm);
+      var rev = sessionNorm.includes(c);
       var verdict;
-      if (i >= minLen) verdict = (sessionNorm.length === c.length) ? 'EXACT MATCH (should have matched!)' : 'PREFIX MATCH (one contains the other - should have matched!)';
-      else verdict = 'diverge@' + i + '  session:"...' + sessionNorm.slice(Math.max(0, i - 20), i + 20) + '..."  vs  chat:"...' + c.slice(Math.max(0, i - 20), i + 20) + '..."';
+      if (fwd || rev) {
+        var pos = fwd ? c.indexOf(sessionNorm) : sessionNorm.indexOf(c);
+        var matched = fwd ? sessionNorm : c;
+        verdict = '*** MATCH *** ' + (fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos)
+          + '  matched:"' + matched.slice(0, 100) + (matched.length > 100 ? '...' : '') + '"';
+      } else {
+        var i = 0, minLen = Math.min(sessionNorm.length, c.length);
+        while (i < minLen && sessionNorm[i] === c[i]) i++;
+        verdict = 'diverge@' + i + '  session:"...' + sessionNorm.slice(Math.max(0, i - 20), i + 20) + '..."  vs  chat:"...' + c.slice(Math.max(0, i - 20), i + 20) + '..."';
+      }
       console.log('[debugMatch] turn', t, 'chatLen:', c.length, verdict);
+    });
+    return 'done';
+  };
+
+  /** Console debug: check ALL sessions against recent chat turns, reporting which match and why.
+   *  Run __debugAllSessions() in DevTools. */
+  window.__debugAllSessions = function() {
+    var contexts = refineGetContexts();
+    var turnNorms = getRecentChatTurnNorms(10, 4);
+    console.log('[debugAllSessions] turns collected:', turnNorms.length, '| sessions:', contexts.length);
+    contexts.forEach(function(ctx, si) {
+      var block = getLastBlockNormForText((ctx && ctx.text) || '');
+      if (block.length < 5) { console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): block too short (' + block.length + '), skipped'); return; }
+      var matched = false;
+      for (var t = 0; t < turnNorms.length; t++) {
+        var c = turnNorms[t];
+        var fwd = c.includes(block);
+        var rev = block.includes(c);
+        if (fwd || rev) {
+          var pos = fwd ? c.indexOf(block) : block.indexOf(c);
+          var matchedStr = fwd ? block : c;
+          console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): *** MATCH *** turn', t,
+            fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos,
+            '  blockLen:', block.length, 'turnLen:', c.length,
+            '  matched:"' + matchedStr.slice(0, 100) + (matchedStr.length > 100 ? '...' : '') + '"');
+          matched = true;
+          break;
+        }
+      }
+      if (!matched) console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): no match  blockLen:', block.length, '  blockHead:', block.slice(0, 80));
+    });
+    return 'done';
+  };
+
+  /** Console debug: print all collected turn norms (head + tail) to see what the matcher sees.
+   *  Run __debugTurns() in DevTools. */
+  window.__debugTurns = function() {
+    var turnNorms = getRecentChatTurnNorms(10, 4);
+    console.log('[debugTurns] turns collected:', turnNorms.length);
+    turnNorms.forEach(function(c, t) {
+      console.log('[debugTurns] turn', t, 'len:', c.length, '| head:', c.slice(0, 100), '| tail:', c.slice(-80));
     });
     return 'done';
   };
