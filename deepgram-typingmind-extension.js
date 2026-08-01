@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.287 Changes:
+ * - FIX: false session⇄chat matches caused by wrapper-level text pollution. extractChatTurnNorm
+ *   now walks from the actual CONTENT element ([data-element-id="ai-response"] or
+ *   [data-element-id="user-message"]) within the turn wrapper, NOT from the wrapper itself — so
+ *   extra content beyond the visible prose (e.g., residual sections from other turns, wrapper
+ *   metadata) no longer pollutes the norm and causes false matches. Confirmed via
+ *   __debugAllSessions: turn norm was 1318 chars with the session block hidden at position 1097
+ *   in wrapper-level extra text beyond the visible ~700-char prose.
+ *
  * v3.286 Changes:
  * - Enhanced __debugMatch() to check includes() (the REAL match condition) and report the match
  *   position + matched substring, not just prefix divergence. Added __debugAllSessions() (checks
@@ -1037,7 +1046,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.286',
+  VERSION: '3.287',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3315,9 +3324,13 @@
   }
 
   /** Extract the normalized text + role classification of one top-level chat-turn child.
-   *  Shared by getRecentChatTurnNorms (tail march) and getChatSignature (head read). */
+   *  Shared by getRecentChatTurnNorms (tail march) and getChatSignature (head read).
+   *  v3.287: walks from the actual CONTENT element (ai-response / user-message) within the turn
+   *  wrapper, NOT from the wrapper itself — wrapper-level extra content (residual sections from
+   *  other turns, metadata) was polluting the norm and causing false matches. */
   function extractChatTurnNorm(child) {
     if (!child || !child.querySelector) return null;
+    var contentEl = child.querySelector('[data-element-id="ai-response"]') || child.querySelector('[data-element-id="user-message"]') || child;
     var text = '';
     // (v3.277) Line-start tracking for ordered-list marker stripping. A continuation-numbered
     // list item ('6. ', '10. ') is literal DOM text on the chat side (the renderer can't open an
@@ -3344,7 +3357,7 @@
       if (eid && /action|tool/i.test(eid)) return;
       for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
       if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) { text += ' '; atLineStart = true; }
-    })(child);
+    })(contentEl);
     var norm = normalizeForChatMatch(text);
     var cls = classifyChatTurn(child, norm);
     if (!cls) return null;
