@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.284 Changes:
+ * - 📎 Append button relaid out as TWO ROWS: top row = the active Context Session name (11px,
+ *   ellipsis-cropped with a yellow colon at the end), bottom row = "📎 Append" (13px) + the
+ *   yellow ✓ when up-to-date. All existing flash/queue/behind-pulse/frost/match-state styling
+ *   continues to work through the new structure.
+ *
  * v3.283 Changes:
  * - The ❄️ button is now as visually loud as the frosted row: its emoji font-size PULSES 11px ↔
  *   22px through the 2s cycle (synced to peak border brightness), and the row's border WIDTH also
@@ -1021,7 +1027,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.283',
+  VERSION: '3.284',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2937,6 +2943,24 @@
     const i = refineGetActiveContextIndex();
     return (list[i] && list[i].name) || String(i + 1);
   }
+  /** Render the 📎 Append button's two-row content: top = active session name (11px, ellipsis-
+   *  cropped, yellow colon); bottom = "📎 Append" (13px). The v3.262 ✓ is managed separately by
+   *  refineUpdateAppendBtnState (appended to the bottom row). Call this whenever the active
+   *  session changes or after a flash/queue restore (v3.284). */
+  function refineRenderAppendBtn() {
+    var btn = document.getElementById('deepgram-insert-btn');
+    if (!btn) return;
+    var name = refineGetActiveContextName() || '';
+    // Escape HTML in the session name so it renders literally.
+    name = String(name).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    btn.innerHTML = '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
+      + '<div style="font-size:11px; line-height:1.15; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; text-align:center; opacity:0.85; padding:0 2px;">'
+      + name + '<span style="color:#ffd400; font-weight:700;">:</span>'
+      + '</div>'
+      + '<div id="deepgram-append-row2" style="font-size:13px; line-height:1.2; white-space:nowrap;">📎 Append</div>'
+      + '</div>';
+  }
+
   /** Pin the active slot's name to the right of the main 📝 Context button. */
   function refineUpdateContextButtonLabel() {
     const lbl = document.getElementById('deepgram-refine-active-context-label');
@@ -2949,6 +2973,7 @@
     }
     refineUpdateTailPreview();
     updateMatchBorder();
+    refineRenderAppendBtn();   // v3.284: two-row content follows the active session name
   }
 
   /**
@@ -3406,15 +3431,15 @@
     if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; return; }
     // The behind-state pulse (v3.263) applies ONLY to the 'match' verdict; clear it for all others.
     if (verdict !== 'match' && btn.style.animationName) btn.style.animation = '';
-    // Up-to-date ✓ decoration (v3.262): a dedicated span so the append flash ('✓ Appended' →
-    // innerHTML restore) can wipe it and the next updateMatchBorder call re-adds it.
+    // Up-to-date ✓ decoration (v3.262): a dedicated span in the bottom row ("📎 Append").
+    var row2 = btn.querySelector('#deepgram-append-row2') || btn;   // v3.284: ✓ goes in row 2
     var chk = document.getElementById('deepgram-append-uptodate-check');
     if (verdict === 'match-current' && !chk) {
       chk = document.createElement('span');
       chk.id = 'deepgram-append-uptodate-check';
       chk.textContent = ' ✓';
       chk.style.cssText = 'color:#ffd400; font-weight:700; text-shadow:0 0 3px rgba(0,0,0,0.65);';
-      btn.appendChild(chk);
+      row2.appendChild(chk);
     } else if (verdict !== 'match-current' && chk) {
       chk.remove();
     }
@@ -5013,7 +5038,7 @@
       btn.innerHTML = '✓ Appended';
       window.__refineAppendRestoreTimer = setTimeout(function(){
         const b = document.getElementById('deepgram-insert-btn');
-        if (b) b.innerHTML = '📎 Refine: Append';
+        if (b) refineRenderAppendBtn();   // v3.284: rebuild two-row content (session name + Append)
         window.__refineAppendRestoreTimer = null;
         try { updateMatchBorder(); } catch (e) {}   // re-apply the up-to-date ✓/styling immediately (v3.262)
       }, 1200);
@@ -11783,9 +11808,9 @@
           // Visual feedback
           const btn = document.getElementById('deepgram-insert-btn');
           if (btn) {
-            btn.textContent = '⏳ Queued...';
+            btn.innerHTML = '⏳ Queued...';
             setTimeout(() => {
-              btn.textContent = '💬 Insert';
+              refineRenderAppendBtn();   // v3.284: restore two-row content
             }, 1000);
           }
           return; // Exit - let chunk completion handle execution
@@ -11800,9 +11825,9 @@
           // Visual feedback
           const btn = document.getElementById('deepgram-insert-btn');
           if (btn) {
-            btn.textContent = '⏳ Queued...';
+            btn.innerHTML = '⏳ Queued...';
             setTimeout(() => {
-              btn.textContent = '💬 Insert';
+              refineRenderAppendBtn();   // v3.284: restore two-row content
             }, 1000);
           }
           return; // Exit - let chunk completion handle execution
