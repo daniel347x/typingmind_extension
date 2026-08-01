@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.288 Changes:
+ * - __debugAllSessions now prints BOTH full norms (session block AND turn) for matching pairs,
+ *   so you can see exactly what text is on each side of a match. Also prints the full turn norm
+ *   (not just head/tail) for the matching turn.
+ *
  * v3.287 Changes:
  * - FIX: false session⇄chat matches caused by wrapper-level text pollution. extractChatTurnNorm
  *   now walks from the actual CONTENT element ([data-element-id="ai-response"] or
@@ -1046,7 +1051,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.287',
+  VERSION: '3.288',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3604,11 +3609,10 @@
         var rev = block.includes(c);
         if (fwd || rev) {
           var pos = fwd ? c.indexOf(block) : block.indexOf(c);
-          var matchedStr = fwd ? block : c;
           console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): *** MATCH *** turn', t,
-            fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos,
-            '  blockLen:', block.length, 'turnLen:', c.length,
-            '  matched:"' + matchedStr.slice(0, 100) + (matchedStr.length > 100 ? '...' : '') + '"');
+            fwd ? 'turn CONTAINS session @' + pos : 'session CONTAINS turn @' + pos);
+          console.log('  session block (' + block.length + ' chars): "' + block + '"');
+          console.log('  turn norm (' + c.length + ' chars): "' + c + '"');
           matched = true;
           break;
         }
