@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.223
+// Version: 4.224
 // Issues Fixed:
+//   - v4.224: Time-window filter for the ring-buffer modal. A dropdown next to the sort pills
+//     offers three options: Current 12h block (since the last noon or midnight boundary),
+//     Current 24h block (current 12h + the previous full 12h block), or All. Applies to ALL
+//     sort modes (chronological, turn-cost, session-cost). Timeline separators still appear
+//     only in chronological mode.
 //   - v4.223: Timeline separators in the ring-buffer modal (chronological sort only). When
 //     scrolling through captures in chronological mode, a dim gray horizontal rule with a
 //     date label is inserted at each day boundary (showing "Monday, June 23 → Tuesday, June 24")
@@ -321,7 +326,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.223';
+  const EXT_VERSION = '4.224';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4180,6 +4185,12 @@
         renderPayloadCaptureModal();
         ev.stopPropagation();
       }
+      // (v4.224) Time-window filter dropdown
+      if (t && t.dataset && t.dataset.action === 'set-modal-time-filter') {
+        tmModalTimeFilter = t.value || 'all';
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+      }
     });
 
     // v4.163: Sort pill click handler (separate listener, stops at first match)
@@ -5114,6 +5125,7 @@
   // v4.163: Modal sort/filter state — survives modal open/close, not persisted.
   var tmModalSortMode = 'chronological';  // 'chronological' | 'turn-cost' | 'session-cost'
   var tmModalFilterIdentity = null;        // null = no filter, or an identity key string
+  var tmModalTimeFilter = 'all';            // (v4.224) 'all' | '12h' | '24h' — time-window filter for the ring modal
 
   // (v4.210) Ring-modal retry-visibility toggle. When ON (default), rows that are auto-retry
   // attempts (429s we fired, or any 429-bearing row) are HIDDEN so the modal isn't spammed with
@@ -5207,6 +5219,31 @@
     if (sessionName) label = sessionName + ' [' + sid + '] — ' + model;
     // Disambiguate if needed (same sid+model but different host or proxy)
     return { label: label, host: host, isProxy: isProxy, key: tmCapIdentityKey(cap), model: model, sid: sid };
+  }
+
+  // (v4.224) Time-window filter helpers for the ring modal.
+  function tmGetCurrentBlockStart() {
+    var now = new Date();
+    var isPM = now.getHours() >= 12;
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), isPM ? 12 : 0, 0, 0, 0).getTime();
+  }
+  function tmGetTimeFilterCutoff() {
+    if (tmModalTimeFilter === 'all') return 0;
+    var blockStart = tmGetCurrentBlockStart();
+    if (tmModalTimeFilter === '12h') return blockStart;
+    if (tmModalTimeFilter === '24h') return blockStart - (12 * 60 * 60 * 1000);
+    return 0;
+  }
+  function tmApplyTimeFilter(items) {
+    var cutoff = tmGetTimeFilterCutoff();
+    if (!cutoff) return items;
+    return items.filter(function(cap) {
+      var ts = cap.ts_local || cap.ts;
+      if (!ts) return false;
+      var d = new Date(ts);
+      if (isNaN(d.getTime())) return false;
+      return d.getTime() >= cutoff;
+    });
   }
 
   // v4.163: Sort items array in place according to tmModalSortMode.
@@ -5364,6 +5401,9 @@
       hiddenRetryCount = beforeHide - items.length;
     }
 
+    // (v4.224) Time-window filter (12h / 24h / all) applied after identity + retry filters.
+    items = tmApplyTimeFilter(items);
+
     // Status banner first, in ALL states.
     let html = tmBuildCaptureStatusBanner();
 
@@ -5480,8 +5520,16 @@
         : '<span style="opacity:0.5;">(no init entry set)</span>') +
       '</div>';
 
+    // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
+    var timeFilterHtml = '<span style="font-size:10px;opacity:0.85;margin-left:8px;">Time:&nbsp;</span>' +
+      '<select data-action="set-modal-time-filter" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
+    timeFilterHtml += '<option value="all"' + (tmModalTimeFilter === 'all' ? ' selected' : '') + '>All</option>';
+    timeFilterHtml += '<option value="12h"' + (tmModalTimeFilter === '12h' ? ' selected' : '') + '>Current 12h</option>';
+    timeFilterHtml += '<option value="24h"' + (tmModalTimeFilter === '24h' ? ' selected' : '') + '>Current 24h</option>';
+    timeFilterHtml += '</select>';
+
     html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
-      solSelectHtml + pillsHtml + filterHtml + retryToggleHtml +
+      solSelectHtml + pillsHtml + filterHtml + timeFilterHtml + retryToggleHtml +
       '</div>';
     html += initRowHtml;
 
