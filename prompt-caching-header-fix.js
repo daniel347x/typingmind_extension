@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.221
+// Version: 4.222
 // Issues Fixed:
 //   - v4.216: AUDIT FIX for the v4.214 provider-display work (reported by Dan: picked 'Fireworks
 //     Fast', still showed 'Fireworks'). The v4.214 label-resolution MACHINERY was correct --
@@ -316,7 +316,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.221';
+  const EXT_VERSION = '4.222';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -384,9 +384,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmPruneSessionScopedStorage-0m8e,
   //   role=__lambdao_1.tmPruneSessionScopedStorage,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Anti-leak: prunes every session-derived map by per-entry _ts. Global settings are intentionally left alone.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Anti-leak: prunes every session-derived map by per-entry _ts. Global settings are intentionally left alone.,
   // ]
   function tmPruneSessionScopedStorage(cutoff) {
     function pruneMap(storeKey, missingTsMeansOld) {
@@ -419,9 +419,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmResetTotalCost-6cs3,
   //   role=__lambdao_1.tmResetTotalCost,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Resets global cost and prunes week-old session-derived map entries.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Resets global cost and prunes week-old session-derived map entries.,
   // ]
   function tmResetTotalCost() {
     tmSetTotalCost(0);
@@ -500,6 +500,13 @@
     return (locks && locks[identityKey]) || null;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSetProviderLock-kwah,
+  //   role=__lambdao_1.tmSetProviderLock,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Writes a LOCKED single-provider lock for an identity key (hard pin; injection sends allow_fallbacks:false).,
+  // ]
   function tmSetProviderLock(identityKey, slug, label, manual) {
     try {
       var locks = tmGetProviderLocks();
@@ -508,6 +515,12 @@
     } catch (e) {}
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmClearProviderLock-15zq,
+  //   role=__lambdao_1.tmClearProviderLock,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  // ]
   function tmClearProviderLock(identityKey) {
     try {
       var locks = tmGetProviderLocks();
@@ -517,6 +530,13 @@
   }
 
   // (Fix 18, v4.204) Write a SET lock: the curated list of providers OpenRouter may route among.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSetProviderSetLock-w968,
+  //   role=__lambdao_1.tmSetProviderSetLock,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Writes a SET lock (provider.only slug list; OpenRouter price/uptime-balances within the set, fallbacks stay inside).,
+  // ]
   function tmSetProviderSetLock(identityKey, slugs, labels) {
     try {
       var locks = tmGetProviderLocks();
@@ -528,6 +548,13 @@
   // (v4.214) Resolve the DISPLAY label for a provider: when a lock exists for this identity,
   // use the lock's label (which carries the full 'Fireworks Fast' distinction) instead of the
   // bare response_provider string (which is always just 'Fireworks' for both variants).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmResolveProviderLabel-l60n,
+  //   role=__lambdao_1.tmResolveProviderLabel,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Resolves an identity's provider display label through the lock store (variant-aware, e.g. 'Fireworks Fast' vs bare 'Fireworks').,
+  // ]
   function tmResolveProviderLabel(idKey, fallbackProvider) {
     try {
       if (idKey) {
@@ -599,6 +626,13 @@
 
   // The init engine, called from tmApplyProviderRouting when NO lock exists for this identity.
   // Returns the applied lock, '__mismatch' on model mismatch (alerts once), or null if N/A.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMaybeInitProviderSession-32lx,
+  //   role=__lambdao_1.tmMaybeInitProviderSession,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Session-init engine (v4.213/4.217): a payload carrying the pasted Session ID with NO lock for this identity gets the saved model+provider choice persisted as that identity's lock; model mismatch alerts once and skips.,
+  // ]
   function tmMaybeInitProviderSession(body, idKey) {
     try {
       var init = tmGetProviderInit();
@@ -678,6 +712,13 @@
 
   // Build seed-shaped entries from the Endpoints API response. cache = has input_cache_read
   // pricing (Nebius famously OMITS it -- the 0%-cache confession, machine-readable).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildLiveProviderEntries-9nhf,
+  //   role=__lambdao_1.tmBuildLiveProviderEntries,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Parses an OpenRouter Endpoints-API response into provider entries (slug, label, tag-derived variant, pricing).,
+  // ]
   function tmBuildLiveProviderEntries(endpoints) {
     var out = [];
     var seen = {};
@@ -708,6 +749,13 @@
   // known slugs (base-slug tolerant: seed 'moonshotai' matches live 'moonshotai/mxfp4'); brand-new
   // providers unknown to the seed are appended with live values. Seed slugs that vanished from
   // the API are dropped (live truth).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMergeSeedKnowledge-s3wb,
+  //   role=__lambdao_1.tmMergeSeedKnowledge,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Merges live-discovered providers over the curated seed table, preserving seed order/notes/toxic flags.,
+  // ]
   function tmMergeSeedKnowledge(model, liveEntries) {
     var seed = TM_PROVIDER_SEED[model] || [];
     if (!seed.length) return liveEntries;
@@ -737,6 +785,13 @@
 
   // (v4.216) One-time migration: repair stale lock labels (e.g. a 'fireworks/fast' lock stored
   // as bare 'Fireworks' before variant-aware labels existed) from the current entry tables.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRepairLockLabelsFromEntries-o2fg,
+  //   role=__lambdao_1.tmRepairLockLabelsFromEntries,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=One-time migration repairing stale lock labels from current provider entries on load.,
+  // ]
   function tmRepairLockLabelsFromEntries() {
     try {
       var locks = tmGetProviderLocks();
@@ -760,6 +815,13 @@
   }
 
   // Live-aware entry list: fresh live entries win; otherwise the seed.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmGetProviderEntries-x3li,
+  //   role=__lambdao_1.tmGetProviderEntries,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Provider-list entry point for a model: live-discovery entries merged over the seed table.,
+  // ]
   function tmGetProviderEntries(model) {
     if (!model) return [];
     var live = tmGetLiveProviderEntries(model);
@@ -768,6 +830,13 @@
   }
 
   // Fire the endpoints fetch for a model if we have no fresh live record and none is in flight.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMaybeFetchProviderEndpoints-q932,
+  //   role=__lambdao_1.tmMaybeFetchProviderEndpoints,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Lazy OpenRouter Endpoints-API fetch (12h localStorage cache, tm_passthrough=1 sentinel so our own hook ignores it); any failure silently keeps the seed table.,
+  // ]
   function tmMaybeFetchProviderEndpoints(model) {
     try {
       if (!model) return;
@@ -792,9 +861,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmGetSessionCosts-fnas,
   //   role=__lambdao_1.tmGetSessionCosts,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Reads per-identity session cost aggregate from tm_session_costs_v2.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Reads per-identity session cost aggregate from tm_session_costs_v2.,
   // ]
   function tmGetSessionCosts() {
     try {
@@ -806,9 +875,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmExtractEndpointHost-6uov,
   //   role=__lambdao_1.tmExtractEndpointHost,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Endpoint identity: resolves real target host (x-target-endpoint for proxy traffic, fallback to URL host).,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Endpoint identity: resolves real target host (x-target-endpoint for proxy traffic, fallback to URL host).,
   // ]
   function tmExtractEndpointHost(cap) {
     // (v4.107) Extract a short host identifier from the capture URL for per-endpoint stratification.
@@ -830,9 +899,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmIsProxyCapture-am0g,
   //   role=__lambdao_1.tmIsProxyCapture,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Detects whether a capture was routed via TypingMind's cors-proxy.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Detects whether a capture was routed via TypingMind's cors-proxy.,
   // ]
   function tmIsProxyCapture(cap) {
     try {
@@ -842,6 +911,13 @@
 
   // v4.157: THE single canonical identity-key builder. Cost AND hue both route through this
   // so their keys can never drift (previously hue used '' for a missing host, cost used 'unknown').
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildIdentityKey-r49n,
+  //   role=__lambdao_1.tmBuildIdentityKey,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Canonical sid::model::host::proxy|direct identity key (v4.157). Cost, hue, routing locks, and retry backoff ALL key off this so they can never drift; tmBuildSessionCostKey is a thin alias.,
+  // ]
   function tmBuildIdentityKey(sessionId, model, endpointHost, isProxy) {
     return (sessionId || '') + '::' + (model || '') + '::' + (endpointHost || 'unknown') + '::' + (isProxy ? 'proxy' : 'direct');
   }
@@ -849,9 +925,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildSessionCostKey-stdp,
   //   role=__lambdao_1.tmBuildSessionCostKey,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=THE canonical 4-part identity key (sid::model::host::proxy|direct). Cost and hue must both key off this identity.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=THE canonical 4-part identity key (sid::model::host::proxy|direct). Cost and hue must both key off this identity.,
   // ]
   function tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy) {
     return tmBuildIdentityKey(sessionId, model, endpointHost, isProxy);
@@ -860,9 +936,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmRecordSessionCost-34n7,
   //   role=__lambdao_1.tmRecordSessionCost,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Event-sourced session cost ledger; persists per-identity totals in tm_session_costs_v2 and stamps session_cost_total onto capture rows at response receipt.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Event-sourced session cost ledger; persists per-identity totals in tm_session_costs_v2 and stamps session_cost_total onto capture rows at response receipt.,
   // ]
   function tmRecordSessionCost(sessionId, model, endpointHost, isProxy, cost) {
     if (!sessionId || !model || cost <= 0) return 0;
@@ -891,9 +967,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmGetSessionCost-3tm0,
   //   role=__lambdao_1.tmGetSessionCost,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Reads a single per-identity session cost total from tm_session_costs_v2 via tmBuildSessionCostKey.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Reads a single per-identity session cost total from tm_session_costs_v2 via tmBuildSessionCostKey.,
   // ]
   function tmGetSessionCost(sessionId, model, endpointHost, isProxy) {
     if (!sessionId || !model) return 0;
@@ -908,6 +984,13 @@
 
   // v4.169: Record cache hit/miss for the identity ledger (tm_session_costs_v2).
   // Called once per response at stamp time, never during render.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRecordIdentityCacheOutcome-nrz7,
+  //   role=__lambdao_1.tmRecordIdentityCacheOutcome,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Writes per-identity HIT/MISS ledger fields (_cache_hits/_misses/_streak/_last) onto the tm_session_costs_v2 record; 429s are never recorded as misses.,
+  // ]
   function tmRecordIdentityCacheOutcome(sessionId, model, endpointHost, isProxy, isHit) {
     if (!sessionId || !model) return null;
     try {
@@ -938,9 +1021,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmTouchSessionScopedStores-gz4j,
   //   role=__lambdao_1.tmTouchSessionScopedStores,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Anti-leak: touches _ts on all session-derived entries for a given sessionId. Called at response receipt so active sessions stay fresh.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Anti-leak: touches _ts on all session-derived entries for a given sessionId. Called at response receipt so active sessions stay fresh.,
   // ]
   function tmTouchSessionScopedStores(sessionId, ts) {
     if (!sessionId) return;
@@ -991,6 +1074,13 @@
   // tm_session_costs_v2 record: _cache_hits / _cache_misses / _cache_streak / _cache_last).
   // The widget badges read THIS instead of the ephemeral tmMostRecentPayloadStatus.cacheStats,
   // so they survive TypingMind refresh and are unaffected by error turns.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmGetCacheOutcomeForIdentity-63s5,
+  //   role=__lambdao_1.tmGetCacheOutcomeForIdentity,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Reads the per-identity cache-outcome ledger entry (v4.211); widget badges read THIS, not ephemeral live status, so they survive refresh and error storms.,
+  // ]
   function tmGetCacheOutcomeForIdentity(idKey) {
     try {
       if (!idKey) return null;
@@ -1004,6 +1094,13 @@
   // (v4.211) Find the most recent ring entry that actually carried usage (a successful turn), so
   // the widget status line can render cost/cache-report/badges even after a refresh wiped the
   // live status. Bounded scan for safety.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmLastSuccessfulUsage-joja,
+  //   role=__lambdao_1.tmLastSuccessfulUsage,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Bounded backward scan of the ring for the most recent entry that actually carried usage; the widget-feed gate's fallback so cost/cache render after refresh.,
+  // ]
   function tmLastSuccessfulUsage() {
     try {
       var ring = tmReadCaptureRing();
@@ -1021,6 +1118,13 @@
 
   // (v4.122) Determine if a capture represents a significant cache hit.
   // Requires cached tokens > 1000 AND at least 50% of prompt tokens. No cost heuristics.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmIsSignificantCacheHit-qzgp,
+  //   role=__lambdao_1.tmIsSignificantCacheHit,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=HIT/MISS determination from a capture's usage evidence (normalized usage first, raw-segment fallback).,
+  // ]
   function tmIsSignificantCacheHit(cap) {
     try {
       function num(v) {
@@ -1094,9 +1198,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmAssignSessionHue-c3l7,
   //   role=__lambdao_1.tmAssignSessionHue,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Hue placement for new identity keys. v4.157: integer permutation (n*137 mod 300, coprime with 300) + collision-probe so no two identities share a hue within a 300-set; replaced golden-angle round which repeated at n=24.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Hue placement for new identity keys. v4.157: integer permutation (n*137 mod 300, coprime with 300) + collision-probe so no two identities share a hue within a 300-set; replaced golden-angle round which repeated at n=24.,
   // ]
   function tmAssignSessionHue(seedKey, existingHues) {
     // Usable wheel: [30, 330] (300°). Red arc excluded BY CONSTRUCTION, not by clamp.
@@ -1120,9 +1224,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmModelEndpointColor-0nfj,
   //   role=__lambdao_1.tmModelEndpointColor,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Identity→color entry point. Key = sid::model::host::proxy|direct. Caches in tm_session_hues_v3. Empty model → fixed '#fff2f5' (silent; check tooltip).,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Identity→color entry point. Key = sid::model::host::proxy|direct. Caches in tm_session_hues_v3. Empty model → fixed '#fff2f5' (silent; check tooltip).,
   // ]
   function tmModelEndpointColor(model, endpointHost, isProxy, sessionId) {
     if (!model) return '#fff2f5';
@@ -1155,9 +1259,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmGetSessionName-ha2z,
   //   role=__lambdao_1.tmGetSessionName,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Human-readable session name lookup; keyed by sessionId only (names are per-conversation, not per-model).,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Human-readable session name lookup; keyed by sessionId only (names are per-conversation, not per-model).,
   // ]
   function tmGetSessionName(sessionId) {
     if (!sessionId) return '';
@@ -1171,9 +1275,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmSetSessionName-2h0s,
   //   role=__lambdao_1.tmSetSessionName,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Stores human-readable session name with _session_id + _ts metadata.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Stores human-readable session name with _session_id + _ts metadata.,
   // ]
   function tmSetSessionName(sessionId, name) {
     if (!sessionId) return;
@@ -1366,6 +1470,13 @@
     return tmGetTruncationLimit();
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSanitizeMalformedEmptyNoteValues-32dn,
+  //   role=__lambdao_1.tmSanitizeMalformedEmptyNoteValues,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 11: pre-JSON.parse sanitizer for TypingMind cross-model conversion bugs (empty note values) that would otherwise be fatal request crashes.,
+  // ]
   function tmSanitizeMalformedEmptyNoteValues(rawBody, contextLabel) {
     // (v4.102) TypingMind cross-model conversion can emit invalid JSON fragments like
     // "note": } or "note": , when switching old tool-history into Gemini format.
@@ -1425,6 +1536,13 @@
     return out;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMaybeRedactHeaders-zoar,
+  //   role=__lambdao_1.tmMaybeRedactHeaders,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Redacts Authorization/Cookie/x-api-key in stored capture headers when tm_payload_capture_redact_auth is set.,
+  // ]
   function tmMaybeRedactHeaders(headersObj) {
     try {
       const redact = localStorage.getItem(TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY) === 'true';
@@ -1443,6 +1561,13 @@
     return out;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmTruncateStringsDeep-02sm,
+  //   role=__lambdao_1.tmTruncateStringsDeep,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Recursive string truncation for captured payloads (widget 'Trunc:' setting, default 1000); arrays are NOT truncated so full cache_control history survives.,
+  // ]
   function tmTruncateStringsDeep(x, maxChars, seen) {
     if (x == null) return x;
 
@@ -1477,6 +1602,13 @@
     return `[tm_unhandled_type:${t}]`;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmDetectProtocol-ca7p,
+  //   role=__lambdao_1.tmDetectProtocol,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Classifies a capture as openai-chat / anthropic-messages / gemini / responses-api from URL+body shape; drives Summary and modal rendering.,
+  // ]
   function tmDetectProtocol(url, bodyObj) {
     const u = String(url || '');
     if (u.includes('/v1/responses')) return 'openai-responses';
@@ -1494,9 +1626,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildHugeSkeleton-92sj,
   //   role=__lambdao_1.tmBuildHugeSkeleton,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Skeleton builder for oversized payload captures. NOTE: Gemini contents-bodies fall through to key-only stub (no model field) — model must be carried on _model.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Skeleton builder for oversized payload captures. NOTE: Gemini contents-bodies fall through to key-only stub (no model field) — model must be carried on _model.,
   // ]
   function tmBuildHugeSkeleton(bodyObj) {
     // Preserve enough structure to debug cache_control placement + tool use + protocol.
@@ -1566,9 +1698,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildMinimalCaptureSkeleton-a6iw,
   //   role=__lambdao_1.tmBuildMinimalCaptureSkeleton,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Last-resort compact capture record; preserves model, session_id, cache_control, tool count, message shape. No full message text.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Last-resort compact capture record; preserves model, session_id, cache_control, tool count, message shape. No full message text.,
   // ]
   function tmBuildMinimalCaptureSkeleton(bodyObj) {
     // Last-resort compact record for the long-history ring: enough context to identify/cache-debug
@@ -1597,6 +1729,13 @@
     };
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildCompactResponseSkeleton-qlnf,
+  //   role=__lambdao_1.tmBuildCompactResponseSkeleton,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Compact structural view of a response body with large text stripped (the Response Skeleton copy button).,
+  // ]
   function tmBuildCompactResponseSkeleton(responseObj) {
     var usage = tmExtractKnownUsageEvidence(responseObj);
     return {
@@ -1638,9 +1777,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs/check-cors.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs/check-cors.,
   // ]
   function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall) {
     if (!tmCaptureEnabled()) return null;
@@ -1782,6 +1921,13 @@
   // (v4.86) Provider-agnostic response-usage fallback. Unknown normal endpoints are already
   // captured; this reads known cache/cost field variants anywhere in JSON or SSE event objects,
   // normalizes them for the widget/modal, and never changes the outbound request.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmExtractKnownUsageEvidence-jgts,
+  //   role=__lambdao_1.tmExtractKnownUsageEvidence,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 10: provider-agnostic deep-walk of a response object for known usage/cost/cache field shapes so unfamiliar providers still surface observability.,
+  // ]
   function tmExtractKnownUsageEvidence(root) {
     if (!root || typeof root !== 'object') return null;
     var out = {};
@@ -1876,9 +2022,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureResponse-vq1x,
   //   role=__lambdao_1.tmCaptureResponse,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Response receipt = the ONE identity/cost/metadata stamping event (usage extraction, cost recording, _identity stamp, store touch, widget render).,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Response receipt = the ONE identity/cost/metadata stamping event (usage extraction, cost recording, _identity stamp, store touch, widget render).,
   // ]
   function tmCaptureResponse(captureId, response) {
     if (!tmCaptureEnabled() || !captureId || !response) return;
@@ -2171,6 +2317,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmExportPayloadCapturesToClipboard-vb49,
+  //   role=__lambdao_1.tmExportPayloadCapturesToClipboard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Copies the full ring buffer JSON to the clipboard (the window._payloadExtDebug.exportCapturesToClipboard path).,
+  // ]
   function tmExportPayloadCapturesToClipboard() {
     const ring = tmReadCaptureRing();
     const json = JSON.stringify(ring, null, 2);
@@ -2286,6 +2439,13 @@
     return reportText;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.checkForDebugTrigger-ax34,
+  //   role=__lambdao_1.checkForDebugTrigger,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 3: detects the DEBUG trigger in an outbound payload and runs payload analysis.,
+  // ]
   function checkForDebugTrigger(body) {
     if (!body.messages || body.messages.length === 0) return null;
 
@@ -2316,9 +2476,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.deriveConversationIdFromBody-aubh,
   //   role=__lambdao_1.deriveConversationIdFromBody,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Session identity tier 1: scans first 10 user messages for 'Session ID: <hash>' line (multiline regex). Returns pasted ID or null.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Session identity tier 1: scans first 10 user messages for 'Session ID: <hash>' line (multiline regex). Returns pasted ID or null.,
   // ]
   function deriveConversationIdFromBody(body) {
     let userMessages = [];
@@ -2380,6 +2540,13 @@
 
   // @carto-group id=client-group-4 label="Client group 4"
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.updateGpt51Usage-ambz,
+  //   role=__lambdao_1.updateGpt51Usage,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Per-conversation GPT-5.1 usage/cost accumulator (gpt51_conv_usage store); drives the widget's context-%-of-limit readout.,
+  // ]
   function updateGpt51Usage(convId, usage) {
     if (!convId || !usage) return;
     const store = getGpt51UsageStore();
@@ -2414,6 +2581,13 @@
     renderGpt51UsageWidget();
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.exportAnthropicConversationToClipboard-rmip,
+  //   role=__lambdao_1.exportAnthropicConversationToClipboard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Clean-JSON continuity export: user/assistant text only, tool blocks + thinking stripped, ~1/10th token size for ARC handoffs.,
+  // ]
   function exportAnthropicConversationToClipboard() {
     if (!lastAnthropicBodyForExport || !Array.isArray(lastAnthropicBodyForExport.messages)) {
       alert('No Anthropic conversation available to export yet.');
@@ -2477,6 +2651,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.exportGeminiConversationToClipboard-c8oz,
+  //   role=__lambdao_1.exportGeminiConversationToClipboard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Gemini variant of the clean-JSON continuity export.,
+  // ]
   function exportGeminiConversationToClipboard() {
     if (!lastGeminiBodyForExport || !Array.isArray(lastGeminiBodyForExport.contents)) {
       alert('No Gemini conversation available to export yet.');
@@ -2534,6 +2715,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.exportGpt51ConversationToClipboard-25wd,
+  //   role=__lambdao_1.exportGpt51ConversationToClipboard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=OpenAI/GPT-5.1 variant of the clean-JSON continuity export.,
+  // ]
   function exportGpt51ConversationToClipboard() {
     if (!lastGpt51BodyForExport || !Array.isArray(lastGpt51BodyForExport.input)) {
       alert('No GPT-5.1 conversation available to export yet.');
@@ -2602,6 +2790,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.exportGrokConversationToClipboard-czfu,
+  //   role=__lambdao_1.exportGrokConversationToClipboard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Grok variant of the clean-JSON continuity export.,
+  // ]
   function exportGrokConversationToClipboard() {
     if (!lastGrokBodyForExport || !Array.isArray(lastGrokBodyForExport.messages)) {
       alert('No Grok conversation available to export yet.');
@@ -2670,6 +2865,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.ensureGpt51UsageWidget-0ti9,
+  //   role=__lambdao_1.ensureGpt51UsageWidget,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Builds the persistent upper-right widget DOM (status rows, Trunc input, Gemini repair toggle, routing dropdown, session name/copy controls) and wires all click handlers.,
+  // ]
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
@@ -2879,6 +3081,13 @@
   // (v4.66) Render the two-family repair badge (R a/b/c/d + T n) for a SINGLE payload's tally.
   // family='anthropic' brightens R and dims T; family='openai' brightens T and dims R; null dims both.
   // Used by the per-row payload-capture modal ribbon (header keeps its own equivalent inline copy).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRenderRepairBlocks-vwem,
+  //   role=__lambdao_1.tmRenderRepairBlocks,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Renders the per-fix repair tally blocks in the widget.,
+  // ]
   function tmRenderRepairBlocks(tally) {
     var rt = tally || null;
     var family = (rt && rt.family) ? rt.family : null;
@@ -2912,6 +3121,13 @@
 
   // (v4.69) Render the prompt-cache report (blue = tokens reused/saved, red = newly-created/expensive) for
   // a payload's usage. Shared by the always-visible header AND the per-row payload-capture modal ribbon.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRenderCacheReport-ilrd,
+  //   role=__lambdao_1.tmRenderCacheReport,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Renders the cache read/write evidence line (cached tokens, hit streak, per-turn cost) in the widget.,
+  // ]
   function tmRenderCacheReport(au, oru, costFontSize) {
     // (v4.71) Extract inference cost for the gray cost badge (appended to all return paths so it
     // surfaces in BOTH the always-visible widget header AND the per-row payload-capture modal).
@@ -2952,6 +3168,13 @@
 
   // @carto-group id=client-group-5 label="Client group 5"
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildWidgetStatusLine-pmi7,
+  //   role=__lambdao_1.tmBuildWidgetStatusLine,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Composes the widget's top status line from live status with ledger fallback.,
+  // ]
   function tmBuildWidgetStatusLine() {
     var st = tmMostRecentPayloadStatus || {};
     var rt = st.repairTally || null;
@@ -3054,9 +3277,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.renderGpt51UsageWidget-j6og,
   //   role=__lambdao_1.renderGpt51UsageWidget,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Primary widget render. MUST read stamped cap._identity for hue+cost together; never re-derive per-surface. Also renders modal/payload links, trunc control, Gemini repair toggle.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Primary widget render. MUST read stamped cap._identity for hue+cost together; never re-derive per-surface. Also renders modal/payload links, trunc control, Gemini repair toggle.,
   // ]
   function renderGpt51UsageWidget() {
     if (typeof document === 'undefined') return;
@@ -3114,7 +3337,7 @@
     } catch (e) {}
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:13px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
       if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + displayPastedId + '</span>');
       // (v4.146) Current session total at the left, before the labels.
       // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
@@ -3140,7 +3363,7 @@
         lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session</div>');
       }
     } else {
-      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:8px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
+      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
 
     // v4.192: model row — active session's model string in the session identity color
@@ -3387,6 +3610,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.notePayloadConversation-kdcg,
+  //   role=__lambdao_1.notePayloadConversation,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Registers a conversation in the payload-filter store when tool groups are first seen in its payloads.,
+  // ]
   function notePayloadConversation(vendor, convId, model) {
     if (!vendor || !convId) return;
     lastSeenConversation = { vendor, convId, model: model || null };
@@ -3395,6 +3625,13 @@
   const TOOL_INPUT_STUB = { _tm_excluded: true, _tm_stub: true };
   const TOOL_OUTPUT_STUB = [{ type: 'text', text: '[tm_excluded_tool_output]' }];
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.collectAnthropicToolGroups-zhi0,
+  //   role=__lambdao_1.collectAnthropicToolGroups,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Groups a body's tool_use/tool_result blocks into per-tool-call entries for the tool-filter modal.,
+  // ]
   function collectAnthropicToolGroups(body) {
     const groups = {};
     if (!body || !Array.isArray(body.messages)) return groups;
@@ -3439,6 +3676,13 @@
     return groups;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.applyAnthropicToolFilters-urhj,
+  //   role=__lambdao_1.applyAnthropicToolFilters,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Applies the per-conversation tool filter: replaces excluded tool inputs/outputs with stubs so payloads slim down (one cache miss, then ongoing savings).,
+  // ]
   function applyAnthropicToolFilters(body, vendor, convId) {
     if (!body || !Array.isArray(body.messages) || !vendor || !convId) return false;
     const groups = collectAnthropicToolGroups(body);
@@ -3494,6 +3738,13 @@
   let payloadModalEl = null;
   let payloadModalInnerEl = null;
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.ensurePayloadModal-xwhd,
+  //   role=__lambdao_1.ensurePayloadModal,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Builds the tool-filter modal DOM (per-tool-call include/exclude toggles with byte sizes).,
+  // ]
   function ensurePayloadModal() {
     if (payloadModalEl) return payloadModalEl;
 
@@ -3597,6 +3848,13 @@
     return overlay;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.renderPayloadModal-iaf2,
+  //   role=__lambdao_1.renderPayloadModal,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Renders the tool-filter modal rows with inclusion state and size totals.,
+  // ]
   function renderPayloadModal() {
     if (typeof document === 'undefined') return;
     const overlay = ensurePayloadModal();
@@ -3738,6 +3996,13 @@
       .replace(/'/g, '&#39;');
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.ensurePayloadCaptureModal-l2it,
+  //   role=__lambdao_1.ensurePayloadCaptureModal,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Builds the ring-buffer modal DOM including the session-init row, retry-visibility toggle, and per-entry copy buttons.,
+  // ]
   function ensurePayloadCaptureModal() {
     if (payloadCaptureModalEl) return payloadCaptureModalEl;
 
@@ -3946,6 +4211,13 @@
     alert('Clipboard API not available.');
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSummarizeCacheControl-vufq,
+  //   role=__lambdao_1.tmSummarizeCacheControl,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Walks a body for cache_control markers; produces the count + sample-paths summary carried in Summary copies.,
+  // ]
   function tmSummarizeCacheControl(bodyObj) {
     // Returns {count, ttls: {...}, hasAny, paths_sample:[...]} for quick debugging.
     const out = { count: 0, hasAny: false, ttls: {}, paths_sample: [] };
@@ -3993,6 +4265,13 @@
 
   // Scan raw response text (SSE or bare JSON) for an OpenRouter-style error object.
   // Returns a structured summary or null. Uses fromCharCode(10) for newline to avoid escapes.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmParseOpenRouterError-0qxf,
+  //   role=__lambdao_1.tmParseOpenRouterError,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 17: parses rich OpenRouter error bodies/segments (incl. streamed chunks) into {provider, code, message, retryAfter, remedy_hint, raw}.,
+  // ]
   function tmParseOpenRouterError(text) {
     if (!text || typeof text !== 'string') return null;
     var NL = String.fromCharCode(10);
@@ -4071,6 +4350,13 @@
   // (v4.209) Healthy-return path for OpenRouter 2xx responses: unconditionally reset the
   // per-identity 429 counter (a success = healthy pool), clear any error banner, apply the Sol
   // Pro guard, return the (possibly rebuilt) response.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmHealthyOpenRouterReturn-dnwp,
+  //   role=__lambdao_1.tmHealthyOpenRouterReturn,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=2xx path (v4.209/4.211): resets the identity's retry counter, clears ONLY its own error banner (parallel-conversation safe), applies the Sol Pro guard.,
+  // ]
   function tmHealthyOpenRouterReturn(response, args, shouldSanitizeSolProUsage) {
     var okKey = null;
     try {
@@ -4097,6 +4383,13 @@
   // (v4.209) Shared error core for BOTH HTTP>=400 bodies and HTTP-200 streamed error chunks.
   // Stamps the widget error banner, then either auto-retries (429 with per-session backoff) or
   // returns `passThrough` (a SAFE, unread response -- NEVER a partially-read original).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmHandleOpenRouterError-1diu,
+  //   role=__lambdao_1.tmHandleOpenRouterError,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Shared error core for HTTP>=400 bodies and HTTP-200 streamed error chunks: stamps the identity-guarded error banner, auto-retries 429/5xx with per-session exponential backoff (max 20 attempts, 15s clamp), never retries 4xx.,
+  // ]
   function tmHandleOpenRouterError(response, err, status, args, shouldSanitizeSolProUsage, attempt, passThrough) {
     var reqBody = null;
     try { reqBody = JSON.parse((args[1] && args[1].body) || '{}'); } catch (e) {}
@@ -4152,12 +4445,25 @@
   var TM_STREAM_SNIFF_BYTES = 4096;
   var TM_STREAM_SNIFF_MS = 4000;
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSyntheticStreamResponse-mhl2,
+  //   role=__lambdao_1.tmSyntheticStreamResponse,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  // ]
   function tmSyntheticStreamResponse(text, original) {
     try {
       return new Response(text, { status: 200, statusText: 'OK', headers: { 'Content-Type': 'text/event-stream' } });
     } catch (e) { return original; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmPeekStreamForError-s5s9,
+  //   role=__lambdao_1.tmPeekStreamForError,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=HTTP-200 streamed-error peek: reads only the FIRST SSE data event (<=4KB, <=4s cap); healthy streams are rebuilt byte-identically, errors go to the shared error core with a synthetic response.,
+  // ]
   function tmPeekStreamForError(response, args, shouldSanitizeSolProUsage, attempt) {
     var reader;
     try { reader = response.body.getReader(); } catch (e) {
@@ -4224,6 +4530,13 @@
 
   // Given a (possibly error) response, decide whether to surface + auto-retry. Returns a promise
   // resolving to a response. Non-error responses pass straight through untouched (never buffered).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMaybeAutoRetry-50zz,
+  //   role=__lambdao_1.tmMaybeAutoRetry,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Retry dispatcher: non-error responses pass through untouched (never buffered); HTTP>=400 goes to tmHandleOpenRouterError; streamed 200s go through tmPeekStreamForError.,
+  // ]
   function tmMaybeAutoRetry(response, args, captureId, shouldSanitizeSolProUsage, attempt) {
     attempt = attempt || 0;
     var status = 0;
@@ -4253,6 +4566,13 @@
   }
 
   // (Fix 17, v4.202) Minimal popup showing the full raw error JSON for the most-recent error.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowErrorPopup-blhe,
+  //   role=__lambdao_1.tmShowErrorPopup,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Raw-JSON error popup opened from the widget's red error row.,
+  // ]
   function tmShowErrorPopup() {
     if (typeof document === 'undefined' || !tmMostRecentError) return;
     var existing = document.getElementById('tm-error-popup-overlay');
@@ -4294,6 +4614,13 @@
 
   // (v4.206) Shared builder for the provider-routing <select>, used by BOTH the persistent widget
   // model row AND the ring-buffer modal (most-recent entry per identity). Identical semantics.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildProviderRoutingDropdown-f8x3,
+  //   role=__lambdao_1.tmBuildProviderRoutingDropdown,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Shared LOCKED/AUTO/FLOAT/multi-select dropdown builder used by BOTH the widget model row and the modal's most-recent entry of each identity.,
+  // ]
   function tmBuildProviderRoutingDropdown(idKey, model, providerLabel) {
     var lock = tmGetProviderLock(idKey);
     var seed = tmGetProviderEntries(model);
@@ -4326,6 +4653,13 @@
   }
 
   // (v4.206) Shared change handler for any set-provider-routing <select> (widget OR ring modal).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmHandleProviderRoutingChange-ane3,
+  //   role=__lambdao_1.tmHandleProviderRoutingChange,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Dropdown change handler: writes/clears the identity's provider lock across lock/set/float modes.,
+  // ]
   function tmHandleProviderRoutingChange(target) {
     if (!target || !target.dataset) return false;
     var routeVal = target.value;
@@ -4355,6 +4689,13 @@
 
   // (Fix 18, v4.204) Multi-select modal: choose the curated set of providers OpenRouter may
   // route among for this session identity. Apply writes a set lock via tmSetProviderSetLock.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowProviderSetModal-y2t7,
+  //   role=__lambdao_1.tmShowProviderSetModal,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 18: multi-select allowed-provider SET modal (checkboxes with cache/toxic badges) writing provider.only locks.,
+  // ]
   function tmShowProviderSetModal(idKey, model) {
     if (typeof document === 'undefined' || !idKey) return;
     var seed = tmGetProviderEntries(model);
@@ -4449,6 +4790,13 @@
     return ('00000000' + h.toString(16)).slice(-8);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmComputeSystemToolsPrefixHash-jpo5,
+  //   role=__lambdao_1.tmComputeSystemToolsPrefixHash,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=FNV-1a 32-bit hash of JSON.stringify({tools, system}) - the stability proof that the cached prefix is byte-identical across turns (shown as h:XXXXXXXX).,
+  // ]
   function tmComputeSystemToolsPrefixHash(reqBody) {
     try {
       if (!reqBody || typeof reqBody !== 'object') return null;
@@ -4470,9 +4818,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureModel-uh3f,
   //   role=__lambdao_1.tmCaptureModel,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Canonical model resolution for a capture: _model → body/skeleton → response body. Prefer cap._identity when available.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Canonical model resolution for a capture: _model → body/skeleton → response body. Prefer cap._identity when available.,
   // ]
   function tmCaptureModel(cap) {
     if (!cap) return '';
@@ -4494,9 +4842,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildCaptureSummary-h05z,
   //   role=__lambdao_1.tmBuildCaptureSummary,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Builds a diagnostic summary from a capture record for modal copy buttons. Uses tmCaptureModel for model identity.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Builds a diagnostic summary from a capture record for modal copy buttons. Uses tmCaptureModel for model identity.,
   // ]
   function tmBuildCaptureSummary(cap) {
     if (!cap) return null;
@@ -4563,6 +4911,13 @@
   // The text is what was just copied; selectable (user-select:text) but read-only. Escape or
   // click-outside closes ONLY the viewer -- capture-phase keydown + tmPromptActive keep the ring
   // modal's own Escape handler from firing underneath (same pattern as tmShowErrorPopup).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowJsonViewerModal-4cr5,
+  //   role=__lambdao_1.tmShowJsonViewerModal,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Scrollable pretty-printed JSON viewer modal used by the error popup and raw-segment views.,
+  // ]
   function tmShowJsonViewerModal(text, label) {
     if (typeof document === 'undefined') return;
     var existing = document.getElementById('tm-json-viewer-overlay');
@@ -4617,6 +4972,13 @@
     document.body.appendChild(overlay);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.copyPayloadCapturePart-xdsa,
+  //   role=__lambdao_1.copyPayloadCapturePart,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Per-part copy logic behind the modal buttons: Summary, Outbound/Response Headers/Body/Skeleton, Raw Seg.,
+  // ]
   function copyPayloadCapturePart(captureId, part) {
     const cap = getCaptureById(captureId);
     if (!cap) return;
@@ -4717,6 +5079,13 @@
   // Persistent status banner shown at the TOP of the capture modal in EVERY state
   // (enabled/disabled, empty/populated). Always surfaces the click-to-copy console command
   // for the OPPOSITE action, so enabling and disabling are equally easy at all times.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildCaptureStatusBanner-2rzn,
+  //   role=__lambdao_1.tmBuildCaptureStatusBanner,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Builds the widget status/banner area from the most recent capture plus current error state.,
+  // ]
   function tmBuildCaptureStatusBanner() {
     var enabled = tmCaptureEnabled();
     var enableCmd = "localStorage.setItem('" + TM_PAYLOAD_CAPTURE_ENABLED_KEY + "','true')";
@@ -4754,6 +5123,13 @@
 
   // True if this capture row is a 429/auto-retry row (vendor-tagged retry attempt, or its captured
   // response parses to an OpenRouter 429 error -- which also covers a 200-streamed 429).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmIsRetryRow-yt0k,
+  //   role=__lambdao_1.tmIsRetryRow,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Detects auto-retry/429 ring rows (vendor tag, HTTP 429, or a parsed 429 error body incl. 200-streamed 429s) for the retry-visibility filter.,
+  // ]
   function tmIsRetryRow(cap) {
     try {
       if (!cap) return false;
@@ -4832,6 +5208,13 @@
   // items are initially most-recent-first (ring.slice().reverse()).
   // v4.166: In session-cost mode, collapse to one representative row per identity
   // (highest session cost; most recent on ties) before sorting.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSortModalItems-oyh5,
+  //   role=__lambdao_1.tmSortModalItems,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Ring-modal row ordering across the sort modes (identity filtering applied by the caller).,
+  // ]
   function tmSortModalItems(items) {
     if (tmModalSortMode === 'chronological') return; // already in the right order
     // For cost sorts: zero/no-cost entries go to bottom, then descending by cost.
@@ -4894,10 +5277,11 @@
   }
 
   // @beacon[
+  //   id=None,
   //   role=__lambdao_1.renderPayloadCaptureModal,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
   // ]
   function renderPayloadCaptureModal() {
     if (!payloadCaptureModalInnerEl) return;
@@ -5266,6 +5650,13 @@
 
   // ==================== FETCH OVERRIDE ====================
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairHistoricAnthropicToolInputs-tubb,
+  //   role=__lambdao_1.repairHistoricAnthropicToolInputs,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Repairs empty/invalid historic tool_use inputs in cross-model transcripts.,
+  // ]
   function repairHistoricAnthropicToolInputs(body) {
     if (!Array.isArray(body.messages) || body.messages.length < 2) return 0;
     let changed = 0;
@@ -5298,6 +5689,13 @@
 
   // @carto-group id=client-group-6 label="Client group 6"
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairAnthropicEmptyMessageContent-3tx3,
+  //   role=__lambdao_1.repairAnthropicEmptyMessageContent,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 2 (Anthropic path): stubs empty message content so the API never rejects the payload - the original crash-prevention fix.,
+  // ]
   function repairAnthropicEmptyMessageContent(body) {
     if (!Array.isArray(body.messages) || body.messages.length === 0) return 0;
     let changed = 0;
@@ -5342,6 +5740,13 @@
   // v4.171: OpenAI-compatible chat-completions repair for providers like Kimi/Moonshot
   // that reject historic assistant messages with content:"". Keep shape conservative:
   // for chat-completions messages, replace empty/missing content with a simple text string.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairChatCompletionsEmptyMessageContent-ji4r,
+  //   role=__lambdao_1.repairChatCompletionsEmptyMessageContent,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 2 (OpenAI chat-completions path): stubs empty content fields.,
+  // ]
   function repairChatCompletionsEmptyMessageContent(body, label) {
     if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return 0;
     let changed = 0;
@@ -5365,6 +5770,13 @@
     return changed;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairGeminiThoughtSignatures-c309,
+  //   role=__lambdao_1.repairGeminiThoughtSignatures,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Gemini 3 repair: injects required thought signatures when a conversation started with another LLM is resumed with Gemini (the widget toggle).,
+  // ]
   function repairGeminiThoughtSignatures(body) {
     if (!body || !Array.isArray(body.contents)) return false;
 
@@ -5492,6 +5904,13 @@
     return null;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.synthesizeGeminiThoughtSignature-59nd,
+  //   role=__lambdao_1.synthesizeGeminiThoughtSignature,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Synthesizes and caches a bootstrap Gemini thought signature so the first bridged turns are accepted; Dan turns the toggle off once Gemini manages its own.,
+  // ]
   function synthesizeGeminiThoughtSignature(body) {
     const synthetic = getCachedGeminiThoughtSignature();
     if (!synthetic) {
@@ -5534,6 +5953,13 @@
     return changed;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairAnthropicMissingToolResults-8u2z,
+  //   role=__lambdao_1.repairAnthropicMissingToolResults,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Synthesizes missing tool_result blocks for orphaned tool_use calls (crash prevention).,
+  // ]
   function repairAnthropicMissingToolResults(body) {
     if (!body || !Array.isArray(body.messages)) return 0;
 
@@ -5622,6 +6048,13 @@
   // so we sanitize them consistently on outbound: any non [A-Za-z0-9_-] char becomes underscore.
   // This is intentionally limited to Anthropic-shaped bodies (messages[].content[] blocks), and is
   // applied before missing-tool-result repair so all later logic sees the canonical sanitized IDs.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairAnthropicToolUseIds-xqd6,
+  //   role=__lambdao_1.repairAnthropicToolUseIds,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Sanitizes Anthropic tool_use IDs (colon -> underscore) for cross-model transcripts.,
+  // ]
   function repairAnthropicToolUseIds(body) {
     if (!body || !Array.isArray(body.messages)) return 0;
     var changed = 0;
@@ -5656,6 +6089,13 @@
     return changed;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmInjectCacheControlOnMessage-qwbi,
+  //   role=__lambdao_1.tmInjectCacheControlOnMessage,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 1/5 helper: stamps cache_control {type:ephemeral, ttl:1h} onto a message's content blocks.,
+  // ]
   function tmInjectCacheControlOnMessage(msg, label) {
     // Inject cache_control: {type:'ephemeral'} on a single message's content.
     // Handles string content (wraps to multipart) and array content (tags last text block).
@@ -5704,6 +6144,13 @@
     return false;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.ensureOpenRouterClaudeCacheControl-6lz3,
+  //   role=__lambdao_1.ensureOpenRouterClaudeCacheControl,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 5: deep-strips existing per-block markers, normalizes top-level cache_control to ttl:1h, injects cap-safe breakpoints (system + 2 user) to avoid provider max-block errors.,
+  // ]
   function ensureOpenRouterClaudeCacheControl(body) {
     // OpenRouter prompt caching for Claude requires cache_control breakpoints (max 4 per request).
     // cache_control markers are NOT part of the cache key hash (confirmed by Claude Code behavior
@@ -5832,6 +6279,13 @@
   //
   // CRITICAL: sort OBJECT KEYS only. NEVER reorder ARRAY elements -- array order is semantic
   // (enum value order, required[] order, and the tools list order itself must be preserved).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCanonicalizeKeysDeep-jii2,
+  //   role=__lambdao_1.tmCanonicalizeKeysDeep,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 6A primitive: recursive OBJECT-key sort (array order preserved - enum/required stay semantic) so semantically-equal tools serialize byte-identically every turn.,
+  // ]
   function tmCanonicalizeKeysDeep(x) {
     if (Array.isArray(x)) {
       // Preserve array order; only canonicalize the contents of each element.
@@ -5922,6 +6376,13 @@
   }
 
   // Repair tool-parameter schemas in body.tools IN PLACE. Returns true if anything changed.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRepairToolSchemas-82ue,
+  //   role=__lambdao_1.tmRepairToolSchemas,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 15: re-infers and re-injects a JSON-Schema type into tool properties TypingMind stripped (array-valued types), unblocking strict validators (Fireworks 400s).,
+  // ]
   function tmRepairToolSchemas(body) {
     try {
       if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
@@ -5948,6 +6409,13 @@
   // serialized form actually changed (i.e., TypingMind had emitted non-sorted keys this turn).
   // Applied UNIVERSALLY to all OpenRouter requests (both Claude and OpenAI-family) so the
   // outbound tools block is byte-stable across turns for every model.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmStabilizeToolsOrdering-cyrk,
+  //   role=__lambdao_1.tmStabilizeToolsOrdering,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 6A entry point: runs key canonicalization on body.tools for EVERY intercepted JSON request, before any endpoint-specific branch.,
+  // ]
   function tmStabilizeToolsOrdering(body) {
     try {
       if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
@@ -5980,9 +6448,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmDeriveStableSessionId-h7sh,
   //   role=__lambdao_1.tmDeriveStableSessionId,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=Session identity tier 2: deterministic FNV-1a hash of first-system + first-user message as stable fallback when no pasted Session ID exists.,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=Session identity tier 2: deterministic FNV-1a hash of first-system + first-user message as stable fallback when no pasted Session ID exists.,
   // ]
   function tmDeriveStableSessionId(body) {
     // 1) Prefer the extension's existing conversation-id derivation when it yields something.
@@ -6037,9 +6505,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmEnsureOpenRouterAccountingAndSession-t849,
   //   role=__lambdao_1.tmEnsureOpenRouterAccountingAndSession,
-  //   slice_labels=tm-payload-cost-visibility,
-  //   comment=OpenRouter injector: session_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
+  //   comment=OpenRouter injector: session_id for sticky routing + usage.{include:true} for streaming cost/cache evidence. Called on every OpenRouter path (direct or proxy).,
   // ]
   function tmEnsureOpenRouterAccountingAndSession(body, label, routingIdKey) {
     // (v4.104) Universal OpenRouter injection: session_id for sticky routing + usage.{include:true}
@@ -6074,6 +6542,13 @@
     return changed;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.repairOpenAIOrphanedToolCalls-la0a,
+  //   role=__lambdao_1.repairOpenAIOrphanedToolCalls,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Drops or satisfies orphaned tool_calls lacking their tool responses (OpenAI-path crash prevention).,
+  // ]
   function repairOpenAIOrphanedToolCalls(body) {
     if (!body || !Array.isArray(body.input)) return 0;
 
@@ -6194,6 +6669,13 @@
   // from tmExtractEndpointHost(url+headers) and proxy from tmIsProxyCapture. GLM's v4.200 built
   // the request-side key with host='' (-> 'unknown') while the stamp used 'openrouter.ai', so
   // the stamped lock was INVISIBLE to the injector and AUTO mode never engaged the lock.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmComputeRoutingIdentityKey-l4ml,
+  //   role=__lambdao_1.tmComputeRoutingIdentityKey,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.201: THE shared request-time routing identity-key builder (sid::model::host::proxy) so auto-stamped locks are always findable later.,
+  // ]
   function tmComputeRoutingIdentityKey(body, url, options) {
     try {
       if (!body || !body.model) return null;
@@ -6210,6 +6692,13 @@
     } catch (e) { return null; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmApplyProviderRouting-41e2,
+  //   role=__lambdao_1.tmApplyProviderRouting,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 16/18 injector: applies the identity's LOCKED order/ignore, SET provider.only, or AUTO seed preference (first success auto-stamps a lock); consults session-init when no lock exists.,
+  // ]
   function tmApplyProviderRouting(body, label, idKeyOverride) {
     if (!body || !body.model) return false;
     var model = String(body.model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
@@ -6297,6 +6786,13 @@
 
   // v4.161: Ensure plain-Sol requests carry reasoning.effort = 'high' at the top level.
   // Mutates body in place. Returns true if anything was changed.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmEnsurePlainSolReasoningHigh-z80e,
+  //   role=__lambdao_1.tmEnsurePlainSolReasoningHigh,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.161/4.162: plain-Sol requests carry reasoning.effort=high + summary=auto (restores streaming thinking).,
+  // ]
   function tmEnsurePlainSolReasoningHigh(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
     if (!tmIsPlainSolModel(body.model)) return false;
@@ -6341,6 +6837,13 @@
 
   // Returns a TransformStream that rewrites SSE data: lines carrying usage.prompt_tokens
   // get prompt_tokens / total_tokens capped when the response model also identifies Sol Pro.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCreateSolProUsageTransform-a9mp,
+  //   role=__lambdao_1.tmCreateSolProUsageTransform,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=SSE TransformStream that rewrites Sol Pro usage fields on the fly.,
+  // ]
   function tmCreateSolProUsageTransform() {
     var decoder = new TextDecoder('utf-8', { fatal: false });
     var encoder = new TextEncoder();
@@ -6420,6 +6923,13 @@
 
   // Wrap a Response with a transformed body (Sol Pro usage guard).
   // Falls back to the original response if the body stream is unavailable.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmWrapSolProResponse-5r8s,
+  //   role=__lambdao_1.tmWrapSolProResponse,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Wraps a Response with the Sol Pro usage transform via pipeThrough (content-length deleted; falls back to the original on lock failures).,
+  // ]
   function tmWrapSolProResponse(response) {
     // Validate that the response body is pipeable BEFORE we lock it.
     try {
@@ -6443,6 +6953,13 @@
     }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.originalFetch@1-rkgc,
+  //   role=__lambdao_1.originalFetch@1,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Anchors the central window.fetch override (immediately below): passthrough guard -> universal repairs -> per-protocol branches -> capture -> response handling. Every request flows through here.,
+  // ]
   const originalFetch = window.fetch;
 
   window.fetch = function(...args) {
