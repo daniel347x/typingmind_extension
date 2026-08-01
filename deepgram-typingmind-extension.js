@@ -11,6 +11,9 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.293 Changes:
+ * - Session name row (name + colon + ✓) in the Append button is now BOLD (font-weight:700).
+ *
  * v3.292 Changes:
  * - Behind-pulse breathing RESTORED via transform:scale on the inner content (the v3.284 two-row
  *   restructure gave the inner divs explicit font-sizes that overrode the inherited font-size
@@ -1085,7 +1088,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.292',
+  VERSION: '3.293',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3014,7 +3017,7 @@
     // v3.286: row1 is now a flex row — [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
     // The ✓ is managed by refineUpdateAppendBtnState (appended to #deepgram-append-row1 after the colon).
     btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
-      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:11px; line-height:1.15; opacity:0.85; padding:0 2px;">'
+      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:11px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px;">'
       + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
       + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
