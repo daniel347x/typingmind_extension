@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.282 Changes:
+ * - NEW: when freeze is active, the ENTIRE pills row AND the ❄️ button itself gain a frost-
+ *   breathing border — an icy-blue border that pulses in and out over a 2s cycle, giving an
+ *   unmistakable "this is frozen" signal so you never forget to unfreeze. Removed cleanly on
+ *   unfreeze. Driven by one @keyframes (dgFrostBreath) applied in refineUpdateFreezeButton.
+ *
  * v3.281 Changes:
  * - FIX: marker-strip regexes now tolerate leading HEADING markers ('## 1. Foo') on BOTH sides.
  *   A numbered heading renders in the chat DOM as <h2> whose text starts with a bare '1. ' (the
@@ -1010,7 +1016,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.281',
+  VERSION: '3.282',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2641,14 +2647,38 @@
     if (idx === null || idx === undefined) localStorage.removeItem(CONFIG.REFINE_ACTIVE_CONVO_SLOT_STORAGE);
     else localStorage.setItem(CONFIG.REFINE_ACTIVE_CONVO_SLOT_STORAGE, String(idx));
   }
-  /** Update the freeze button visual state. */
+  /** Update the freeze button visual state + the frost-breathing row (v3.277). */
   function refineUpdateFreezeButton() {
     var btn = document.getElementById('deepgram-refine-freeze-btn');
-    if (!btn) return;
-    btn.style.opacity = refineFrozenAutoSelect ? '1' : '0.3';
-    btn.title = refineFrozenAutoSelect
-      ? 'Auto-select frozen — click to unfreeze (auto-select matching conversation)'
-      : 'Auto-select active — click to freeze (stop auto-selecting)';
+    var row = document.getElementById('deepgram-refine-toggle-row');
+    if (btn) {
+      btn.style.opacity = refineFrozenAutoSelect ? '1' : '0.3';
+      btn.title = refineFrozenAutoSelect
+        ? 'Auto-select frozen — click to unfreeze (auto-select matching conversation)'
+        : 'Auto-select active — click to freeze (stop auto-selecting)';
+      // Frost breath on the button itself (v3.277)
+      if (refineFrozenAutoSelect) {
+        btn.style.animation = 'dgFrostBreath 2s ease-in-out infinite';
+        btn.style.borderRadius = '6px';
+      } else {
+        btn.style.animation = '';
+        btn.style.borderRadius = '4px';
+      }
+    }
+    // Frost breath on the entire pills row (v3.277)
+    if (row) {
+      if (refineFrozenAutoSelect) {
+        row.style.animation = 'dgFrostBreath 2s ease-in-out infinite';
+        row.style.borderRadius = '10px';
+        row.style.padding = '6px 8px';
+        row.style.border = '2px solid rgba(120,200,230,0.3)';
+      } else {
+        row.style.animation = '';
+        row.style.borderRadius = '';
+        row.style.padding = '';
+        row.style.border = '';
+      }
+    }
   }
 
   /** Called when a session's TEXT is updated: ensure that session is in the toggle row.
@@ -5693,6 +5723,13 @@
       @keyframes dgAppendBehindPulse {
         0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; font-size:14px; }
         50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; }
+      }
+
+      /* Frost-breathing border for the frozen pills row + freeze button (v3.277): an icy-blue
+         border that pulses in and out over 2s — an unmistakable "this is frozen" signal. */
+      @keyframes dgFrostBreath {
+        0%, 100% { border-color: rgba(120,200,230,0.3); box-shadow: 0 0 4px rgba(120,200,230,0.15); }
+        50%      { border-color: rgba(180,230,250,0.95); box-shadow: 0 0 14px rgba(120,200,230,0.5); }
       }
 
       /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
