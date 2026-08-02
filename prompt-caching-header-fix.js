@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.229
+// Version: 4.230
 // Issues Fixed:
+//   - v4.230: Fix missing 12h/24h block costs on cache-MISS ring rows. Two causes: (1) LAYOUT:
+//     the title-row left group was a fixed 150px box; the wider MISS badge (58px vs HIT's 30px)
+//     overflowed and painted over the 12h/24h amounts. Now a natural-width flex row with
+//     flex-shrink:0 on the cost chips. (2) STAMPING: 12h/24h snapshots were only written inside
+//     the turnCost>0 branches; now always stamped whenever identity is known, after cost
+//     accumulation, so misses/zero-delta turns still get the block aggregate. tmComputeBlockCost
+//     now prefers ISO cap.ts over ts_local for reliable Date parsing.
 //   - v4.229: Provider ratings system. A new "📊 Rate Providers" button in the ring-buffer
 //     modal's model→provider map row opens a hierarchical modal showing every model→provider
 //     combination discovered in the ring buffer (merged with localStorage-persisted ratings).
@@ -350,7 +357,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.229';
+  const EXT_VERSION = '4.230';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2263,16 +2270,16 @@
             // response — zero-cost, no-usage, or errored — carries a canonical identity for hue/cost.
             // Also hang it on tmMostRecentPayloadStatus so the widget uses ONE identity for both
             // hue and cost (no more mixing most-recent-response session with last-ring-entry model).
+            // (v4.230) Hoist identity fields so the unconditional 12h/24h block-cost stamp below
+            // can always see them (previously they were try-block locals only).
+            var idSid = null, idModel = '', idHost = '', idIsProxy = false, idKey = null;
             try {
               if (capRec) {
-                var idSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
-                var idModel = '';
-                var idHost = '';
+                idSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
                 try { idModel = tmCaptureModel(capRec); } catch (e) {}
                 try { idHost = tmExtractEndpointHost(capRec); } catch (e) {}
-                var idIsProxy = false;
                 try { idIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
-                var idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
+                idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
                 var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
                 if (capWidgetFeed) tmMostRecentPayloadStatus.identity = identity;
                 // (v4.198) Carry the serving provider onto the most-recent status so the persistent
@@ -2357,13 +2364,9 @@
                 try {
                   if (capRec) {
                     var errSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, errTurnCost);
-                    var errBlockStamp = { _model: idModel };
-                    if (errSessionTotal > 0) errBlockStamp.session_cost_total = errSessionTotal;
-                    // (v4.225) Snapshot 12h/24h block costs.
-                    var errBlockStart = tmGetCurrentBlockStart();
-                    errBlockStamp._cost_12h = tmComputeBlockCost(idKey, errBlockStart);
-                    errBlockStamp._cost_24h = tmComputeBlockCost(idKey, errBlockStart - (12 * 60 * 60 * 1000));
-                    tmUpdateCaptureRecord(captureId, errBlockStamp);
+                    var errCostStamp = { _model: idModel };
+                    if (errSessionTotal > 0) errCostStamp.session_cost_total = errSessionTotal;
+                    tmUpdateCaptureRecord(captureId, errCostStamp);
                   }
                 } catch (e) {}
               }
@@ -2382,16 +2385,26 @@
                   try {
                     if (capRec) {
                       var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
-                      var okBlockStamp = { _model: idModel };
-                      if (newSessionTotal > 0) okBlockStamp.session_cost_total = newSessionTotal;
-                      // (v4.225) Snapshot 12h/24h block costs.
-                      var okBlockStart = tmGetCurrentBlockStart();
-                      okBlockStamp._cost_12h = tmComputeBlockCost(idKey, okBlockStart);
-                      okBlockStamp._cost_24h = tmComputeBlockCost(idKey, okBlockStart - (12 * 60 * 60 * 1000));
-                      tmUpdateCaptureRecord(captureId, okBlockStamp);
+                      var okCostStamp = { _model: idModel };
+                      if (newSessionTotal > 0) okCostStamp.session_cost_total = newSessionTotal;
+                      tmUpdateCaptureRecord(captureId, okCostStamp);
                     }
                   } catch (e) {}
                 }
+              }
+            } catch (e) {}
+            // (v4.230) ALWAYS snapshot 12h/24h block costs when identity is known — independent
+            // of hit/miss, and independent of whether this turn added a new cost delta. Previously
+            // these were only written inside the turnCost>0 branches, so some miss/zero-delta rows
+            // never received the fields. Runs AFTER cost accumulation so the current turn's usage
+            // is already on the ring entry that tmComputeBlockCost walks.
+            try {
+              if (capRec && idKey) {
+                var blockStart = tmGetCurrentBlockStart();
+                tmUpdateCaptureRecord(captureId, {
+                  _cost_12h: tmComputeBlockCost(idKey, blockStart),
+                  _cost_24h: tmComputeBlockCost(idKey, blockStart - (12 * 60 * 60 * 1000))
+                });
               }
             } catch (e) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
@@ -5666,12 +5679,14 @@
   function tmComputeBlockCost(identityKey, cutoffMs) {
     var ring = tmReadCaptureRing();
     var total = 0;
+    if (!identityKey) return 0;
     for (var i = 0; i < ring.length; i++) {
       var cap = ring[i];
       if (!cap) continue;
       var capIdKey = tmCapIdentityKey(cap);
       if (capIdKey !== identityKey) continue;
-      var ts = cap.ts_local || cap.ts;
+      // Prefer ISO ts (always parseable). ts_local is display-only and locale-dependent.
+      var ts = cap.ts || cap.ts_local;
       if (!ts) continue;
       var d = new Date(ts);
       if (isNaN(d.getTime())) continue;
@@ -6128,27 +6143,32 @@
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
-      var sessionCostStr = '<span title="session cost" style="display:inline-block;width:55px;color:#ffccd5;font-size:11px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
+      var sessionCostStr = '<span title="session cost" style="display:inline-block;min-width:55px;color:#ffccd5;font-size:11px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
       var cost12h = (typeof cap._cost_12h === 'number') ? cap._cost_12h : null;
       var cost24h = (typeof cap._cost_24h === 'number') ? cap._cost_24h : null;
-      var cost12hStr = (cost12h != null && cost12h > 0)
-        ? '<span title="cost in current 12h block" style="color:#a0d0ff;font-size:10px;padding-right:6px;">12h:$' + cost12h.toFixed(2) + '</span>'
+      // (v4.230) Show whenever the field exists (including $0.00) — misses must not hide these.
+      var cost12hStr = (cost12h != null)
+        ? '<span title="cost in current 12h block" style="color:#a0d0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">12h:$' + cost12h.toFixed(2) + '</span>'
         : '';
-      var cost24hStr = (cost24h != null && cost24h > 0)
-        ? '<span title="cost in current+prior 12h blocks" style="color:#c0b0ff;font-size:10px;padding-right:6px;">24h:$' + cost24h.toFixed(2) + '</span>'
+      var cost24hStr = (cost24h != null)
+        ? '<span title="cost in current+prior 12h blocks" style="color:#c0b0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">24h:$' + cost24h.toFixed(2) + '</span>'
         : '';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
       var modelColorTooltip = escapeHtml((capIdentity ? capIdentity.key : tmBuildIdentityKey(capSessionId, capModel, capHost, capIsProxy)) + ' — ' + modelColor);
-      var idxStyle = 'display:inline-block;width:32px;opacity:0.8;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
+      var idxStyle = 'display:inline-block;width:32px;opacity:0.8;flex-shrink:0;' + (isHit ? 'font-size:9px;' : 'font-size:12px;color:#ff6b6b;');
 
-      html += '<div style="font-weight:600;overflow:visible;text-overflow:ellipsis;white-space:nowrap;display:flex;align-items:flex-start;gap:0;min-height:18px;">' +
-              '<span style="display:inline-block;width:150px;white-space:nowrap;">' +
+      // (v4.230) Natural-width flex row — the old fixed 150px left box overflowed on MISS
+      // (badge 58px vs HIT 30px) and painted over the 12h/24h chips.
+      html += '<div style="font-weight:600;overflow:visible;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:18px;">' +
+              '<span style="display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;">' +
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
               hitBadge + sessionCostStr +
               '</span>' +
-              cost12hStr + cost24hStr +
-              (capModelHtml ? (' <span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;position:relative;top:10px;display:inline-block;">' + capModelHtml + '</span>') : '') +
+              (cost12hStr || cost24hStr
+                ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
+                : '') +
+              (capModelHtml ? ('<span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
       // (v4.206) Provider-routing dropdown -- MOVED into the button row above (v4.212).
