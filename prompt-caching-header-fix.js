@@ -5109,7 +5109,6 @@
         return;
       }
     });
-    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     document.addEventListener('keydown', onKey, true);
     tmPromptActive = true;
     document.body.appendChild(overlay);
