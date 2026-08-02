@@ -4917,6 +4917,13 @@
     document.body.appendChild(overlay);
   }
 
+  // (v4.229) Format a comment for inline preview display: strip empty lines, join with " - ".
+  function tmFormatCommentPreview(comment) {
+    if (!comment) return '';
+    var lines = comment.split(/\r?\n/).map(function(l) { return l.trim(); }).filter(function(l) { return l.length > 0; });
+    return lines.join(' - ');
+  }
+
   // (v4.229) Provider ratings modal: hierarchical model→provider list with
   // red/green counts with +/− buttons and free-text comments.
   function tmShowProviderRatingsModal() {
@@ -5059,6 +5066,19 @@
           commentBtn.title = r.comment ? ('Edit comment: ' + r.comment.substring(0, 80)) : 'Add comment';
           row.appendChild(commentBtn);
 
+          // Comment preview — display only: lines joined with " - ", ellipsis if overflow.
+          var previewSpan = document.createElement('span');
+          previewSpan.className = 'tm-rating-comment-preview';
+          previewSpan.style.cssText = 'color:#9aa4b2;font-size:11px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+          var previewText = tmFormatCommentPreview(r.comment);
+          if (previewText) {
+            previewSpan.textContent = previewText;
+            previewSpan.title = previewText;
+          } else {
+            previewSpan.style.display = 'none';
+          }
+          row.appendChild(previewSpan);
+
           listWrap.appendChild(row);
         });
       });
@@ -5182,6 +5202,18 @@
               buttons[i].style.color = '#fff';
               buttons[i].style.borderColor = '#555';
               buttons[i].title = 'Add comment';
+            }
+            // Update the inline comment preview
+            var previewSpan = buttons[i].nextElementSibling;
+            if (previewSpan && previewSpan.className === 'tm-rating-comment-preview') {
+              var preview = tmFormatCommentPreview(ta.value);
+              if (preview) {
+                previewSpan.textContent = preview;
+                previewSpan.title = preview;
+                previewSpan.style.display = '';
+              } else {
+                previewSpan.style.display = 'none';
+              }
             }
             break;
           }
