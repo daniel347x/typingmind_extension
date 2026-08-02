@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.230
+// Version: 4.231
 // Issues Fixed:
+//   - v4.231: Provider ratings system enhancements. Red rating buttons swapped so + (increment
+//     failure count) sits on the left where you naturally slam it when angry. Inline comment
+//     previews now appear to the right of each 📝 button (lines joined with " - ", ellipsis-
+//     truncated).
 //   - v4.230: Fix missing 12h/24h block costs on cache-MISS ring rows. Two causes: (1) LAYOUT:
 //     the title-row left group was a fixed 150px box; the wider MISS badge (58px vs HIT's 30px)
 //     overflowed and painted over the 12h/24h amounts. Now a natural-width flex row with
@@ -357,7 +361,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.230';
+  const EXT_VERSION = '4.231';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
