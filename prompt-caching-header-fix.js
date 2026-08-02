@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.227
+// Version: 4.228
 // Issues Fixed:
+//   - v4.228: Provider-routing dropdown flash-close fix (real root cause). The widget only
+//     listened for 'click', never 'change' — so clicking the routing <select> to OPEN it
+//     dispatched a click whose target.value was the PRE-change value. When a provider was
+//     already locked (the normal case), that value was non-empty, so tmHandleProviderRoutingChange
+//     re-applied the lock and unconditionally re-rendered the widget, destroying the <select>
+//     DOM and instantly closing the native popup (the "click and it flashes shut" bug; v4.227's
+//     empty-value guard only covered the no-lock case). Fix: routing + Sol-reasoning selects
+//     are now handled by a real document-level 'change' listener (capture phase, survives the
+//     widget's innerHTML rebuilds), and the widget click handler leaves selects alone.
+//   - v4.227: (partial) Guarded tmHandleProviderRoutingChange against empty-value re-renders.
+//   - v4.226: Model→Provider map row replaces session-init in the ring modal.
 //   - v4.225: Per-entry 12h and 24h block cost snapshots. Each ring entry now stamps
 //     _cost_12h and _cost_24h at response receipt — the aggregate per-turn cost for the
 //     session identity within the current 12-hour block (and current+prior 12h block).
@@ -332,7 +343,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.227';
+  const EXT_VERSION = '4.228';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2972,14 +2983,9 @@
             ev.stopPropagation();
             return;
           }
-          // (v4.162) Sol reasoning effort dropdown — onchange bubbles to this click handler.
+          // (v4.162) Sol reasoning effort dropdown — handled by the 'change' listener (v4.228),
+          // NOT on click (see set-provider-routing note below for the flash-close rationale).
           if (target.dataset.action === 'set-sol-reasoning-effort') {
-            var newLevel = target.value;
-            if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
-              tmSetSolReasoningEffort(newLevel);
-              console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
-            }
-            ev.stopPropagation();
             return;
           }
           // (Fix 17, v4.202) Open the error popup with the full raw error JSON.
@@ -2988,10 +2994,12 @@
             ev.stopPropagation();
             return;
           }
-          // (Fix 16, v4.200) Provider routing dropdown -- shared handler (v4.206).
+          // (Fix 16, v4.200) Provider routing dropdown — handled by the 'change' listener
+          // (v4.228), NOT on click. Clicking a <select> to OPEN it also dispatches a click
+          // whose target.value is the PRE-change value; when a provider is already locked that
+          // value is non-empty, so acting here re-applied the lock and re-rendered the widget,
+          // destroying the <select> DOM and flash-closing the native popup instantly.
           if (target.dataset.action === 'set-provider-routing') {
-            tmHandleProviderRoutingChange(target);
-            ev.stopPropagation();
             return;
           }
           // Close (hide) a specific conversation from the list
@@ -3076,6 +3084,30 @@
     }
     return el;
   }
+
+  // (v4.228) Real 'change' handling for the widget's <select> controls (provider routing +
+  // Sol reasoning). A select's value only meaningfully changes via 'change'; processing it
+  // on 'click' fires on OPEN with the pre-change value and (for routing) re-rendered the
+  // widget, killing the popup. Attached to document (not the widget el) so it survives the
+  // widget's frequent innerHTML rebuilds.
+  document.addEventListener('change', function(ev) {
+    var t = ev.target;
+    if (!t || !t.dataset) return;
+    if (t.dataset.action === 'set-provider-routing') {
+      tmHandleProviderRoutingChange(t);
+      ev.stopPropagation();
+      return;
+    }
+    if (t.dataset.action === 'set-sol-reasoning-effort') {
+      var newLevel = t.value;
+      if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
+        tmSetSolReasoningEffort(newLevel);
+        console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
+      }
+      ev.stopPropagation();
+      return;
+    }
+  }, true);
 
   // (v4.63) Compact token formatter for the header badge (184301 -> "184.3k").
   function tmFmtTok(n) {
