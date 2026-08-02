@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.226
+// Version: 4.227
 // Issues Fixed:
 //   - v4.225: Per-entry 12h and 24h block cost snapshots. Each ring entry now stamps
 //     _cost_12h and _cost_24h at response receipt — the aggregate per-turn cost for the
@@ -332,7 +332,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.226';
+  const EXT_VERSION = '4.227';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4685,15 +4685,23 @@
   function tmHandleProviderRoutingChange(target) {
     if (!target || !target.dataset) return false;
     var routeVal = target.value;
+    // Guard: the initial disabled placeholder <option> has value="" — a click open on a
+    // <select> fires change with that empty value, and the downstream re-render destroys
+    // the select DOM, closing the browser popup instantly. Only act on a real value change.
+    if (!routeVal) return false;
     var routeIdKey = target.dataset.identityKey || '';
+    var changed = false;
     if (routeVal === '__auto') {
       tmClearProviderLock(routeIdKey);
       console.log('🔓 [v' + EXT_VERSION + '] Provider lock cleared for ' + routeIdKey + ' — auto-lock on next hit');
+      changed = true;
     } else if (routeVal === '__float') {
       tmSetProviderLock(routeIdKey, '__float', 'Float', true);
       console.log('🌊 [v' + EXT_VERSION + '] Provider set to FLOAT for ' + routeIdKey);
+      changed = true;
     } else if (routeVal === '__set') {
       try { tmShowProviderSetModal(routeIdKey, (routeIdKey.split('::')[1]) || ''); } catch (e) {}
+      changed = true;
     } else if (routeVal) {
       var routeModel = (routeIdKey.split('::')[1]) || '';
       var routeSeed = tmGetProviderEntries(routeModel);
@@ -4703,10 +4711,13 @@
       }
       tmSetProviderLock(routeIdKey, routeVal, routeLabel, true);
       console.log('🔒 [v' + EXT_VERSION + '] Provider manually locked to ' + routeLabel + ' (' + routeVal + ') for ' + routeIdKey);
+      changed = true;
     }
-    try { renderGpt51UsageWidget(); } catch (e) {}
-    try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
-    return true;
+    if (changed) {
+      try { renderGpt51UsageWidget(); } catch (e) {}
+      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+    }
+    return changed;
   }
 
   // (Fix 18, v4.204) Multi-select modal: choose the curated set of providers OpenRouter may
