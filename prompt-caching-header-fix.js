@@ -673,13 +673,16 @@
     } catch (e) {}
   }
 
-  // Scan the ring buffer for all observed model→provider combos. Any combo not yet in the
-  // ratings store is added with zeroed ratings + empty comment. Called at modal render time.
+  // Scan the ring buffer for all observed model→provider combos. Also adds entries for
+  // locked providers (tm_provider_locks_v1) and model→provider map entries — so a provider
+  // that hangs and never returns a response is STILL in the list and rateable.
   function tmDiscoverAndMergeProviderRatings() {
     try {
       var ratings = tmGetProviderRatings();
       var ring = tmReadCaptureRing();
       var changed = false;
+
+      // (A) Ring buffer combos — providers that actually returned a response.
       for (var i = 0; i < ring.length; i++) {
         var cap = ring[i];
         if (!cap) continue;
@@ -690,13 +693,52 @@
         var provider = '';
         if (typeof cap._provider_label === 'string' && cap._provider_label) provider = cap._provider_label;
         else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
-        if (!provider) continue;
-        var key = model + '::' + provider;
-        if (!ratings[key]) {
-          ratings[key] = { red: 0, green: 0, comment: '' };
-          changed = true;
+        if (provider) {
+          var key = model + '::' + provider;
+          if (!ratings[key]) { ratings[key] = { red: 0, green: 0, comment: '' }; changed = true; }
         }
       }
+
+      // (B) Locked providers — known even if no response was received (hanging request).
+      try {
+        var locksStr = localStorage.getItem('tm_provider_locks_v1');
+        if (locksStr) {
+          var locks = JSON.parse(locksStr);
+          for (var idKey in locks) {
+            if (!locks.hasOwnProperty(idKey)) continue;
+            var lock = locks[idKey];
+            if (!lock || lock.slug === '__float') continue;
+            var parts = idKey.split('::');
+            if (parts.length < 2) continue;
+            var lockModel = parts[1].toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+            if (!lockModel) continue;
+            var lockProv = lock.label || lock.slug;
+            if (!lockProv) continue;
+            var lockKey = lockModel + '::' + lockProv;
+            if (!ratings[lockKey]) { ratings[lockKey] = { red: 0, green: 0, comment: '' }; changed = true; }
+          }
+        }
+      } catch (e) {}
+
+      // (C) Model→Provider map entries — the saved per-model defaults.
+      try {
+        var mpMap = tmGetModelProviderMap();
+        for (var mpModel in mpMap) {
+          if (!mpMap.hasOwnProperty(mpModel)) continue;
+          var mpSlug = mpMap[mpModel];
+          if (!mpSlug) continue;
+          var mpLabel = mpSlug;
+          try {
+            var entries = tmGetProviderEntries(mpModel);
+            for (var ei = 0; ei < entries.length; ei++) {
+              if (entries[ei].slug === mpSlug) { mpLabel = entries[ei].label; break; }
+            }
+          } catch (e) {}
+          var mpKey = mpModel + '::' + mpLabel;
+          if (!ratings[mpKey]) { ratings[mpKey] = { red: 0, green: 0, comment: '' }; changed = true; }
+        }
+      } catch (e) {}
+
       if (changed) tmSaveProviderRatings(ratings);
     } catch (e) {}
   }
