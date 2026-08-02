@@ -5011,20 +5011,7 @@
           labelSpan.title = prov;
           row.appendChild(labelSpan);
 
-          // Red rating: [−] count [+]
-          var redMinus = document.createElement('button');
-          redMinus.textContent = '−';
-          redMinus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
-          redMinus.dataset.action = 'rating-decrement';
-          redMinus.dataset.field = 'red';
-          redMinus.dataset.model = mdl;
-          redMinus.dataset.provider = prov;
-
-          var redCount = document.createElement('span');
-          redCount.textContent = String(r.red || 0);
-          redCount.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
-          redCount.id = 'tm-rating-red-' + ratingIdBase;
-
+          // Red rating: [+] count [−]  (plus on left so you slam it when angry)
           var redPlus = document.createElement('button');
           redPlus.textContent = '+';
           redPlus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
@@ -5033,9 +5020,22 @@
           redPlus.dataset.model = mdl;
           redPlus.dataset.provider = prov;
 
-          row.appendChild(redMinus);
-          row.appendChild(redCount);
+          var redCount = document.createElement('span');
+          redCount.textContent = String(r.red || 0);
+          redCount.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
+          redCount.id = 'tm-rating-red-' + ratingIdBase;
+
+          var redMinus = document.createElement('button');
+          redMinus.textContent = '−';
+          redMinus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+          redMinus.dataset.action = 'rating-decrement';
+          redMinus.dataset.field = 'red';
+          redMinus.dataset.model = mdl;
+          redMinus.dataset.provider = prov;
+
           row.appendChild(redPlus);
+          row.appendChild(redCount);
+          row.appendChild(redMinus);
 
           // Separator
           var sep = document.createElement('span');
