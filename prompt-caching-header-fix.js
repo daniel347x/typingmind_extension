@@ -652,7 +652,7 @@
   //   role=__lambdao_1.tmMaybeAutoLockFromModelMap,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=v4.226: auto-locks the model→provider map's provider for a NEW session identity (one that has no entry in tm_session_costs_v2 yet). Replaces the old v4.213 session-init engine.
+  //   comment=v4.226: auto-locks the model→provider map's provider for a NEW session identity (one that has no entry in tm_session_costs_v2 yet). Replaces the old v4.213 session-init engine.,
   // ]
   function tmMaybeAutoLockFromModelMap(body, idKey) {
     try {
