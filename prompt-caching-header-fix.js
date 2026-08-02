@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.228
+// Version: 4.229
 // Issues Fixed:
+//   - v4.229: Provider ratings system. A new "📊 Rate Providers" button in the ring-buffer
+//     modal's model→provider map row opens a hierarchical modal showing every model→provider
+//     combination discovered in the ring buffer (merged with localStorage-persisted ratings).
+//     Each provider entry has 🔴 red (failure) and 🟢 green (success) counts with +/− buttons
+//     (floor at 0), and a 📝 comment button that opens a nested textarea modal. Ratings are
+//     independent of any session and persisted in localStorage key tm_provider_ratings_v1.
+//     New combos from the ring buffer are auto-discovered and initialized with zero ratings.
 //   - v4.228: Provider-routing dropdown flash-close fix (real root cause). The widget only
 //     listened for 'click', never 'change' — so clicking the routing <select> to OPEN it
 //     dispatched a click whose target.value was the PRE-change value. When a provider was
@@ -343,7 +350,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.228';
+  const EXT_VERSION = '4.229';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -621,6 +628,66 @@
       var map = tmGetModelProviderMap();
       return map[model] || null;
     } catch (e) { return null; }
+  }
+
+  // ==================== PROVIDER RATINGS (v4.229) ====================
+  // Tracks per-model, per-provider ratings (red = failures, green = successes)
+  // and free-text comments. Independent of any session — persisted in localStorage.
+  // Key format: "model_lower::provider_label" → { red: N, green: N, comment: "..." }
+  var TM_PROVIDER_RATINGS_KEY = 'tm_provider_ratings_v1';
+
+  function tmGetProviderRatings() {
+    try { var r = localStorage.getItem(TM_PROVIDER_RATINGS_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+
+  function tmSaveProviderRatings(ratings) {
+    try { localStorage.setItem(TM_PROVIDER_RATINGS_KEY, JSON.stringify(ratings)); } catch (e) {}
+  }
+
+  function tmGetProviderRatingEntry(model, provider) {
+    try {
+      var ratings = tmGetProviderRatings();
+      var key = model + '::' + provider;
+      return ratings[key] || { red: 0, green: 0, comment: '' };
+    } catch (e) { return { red: 0, green: 0, comment: '' }; }
+  }
+
+  function tmSetProviderRatingField(model, provider, field, value) {
+    try {
+      var ratings = tmGetProviderRatings();
+      var key = model + '::' + provider;
+      if (!ratings[key]) ratings[key] = { red: 0, green: 0, comment: '' };
+      ratings[key][field] = value;
+      localStorage.setItem(TM_PROVIDER_RATINGS_KEY, JSON.stringify(ratings));
+    } catch (e) {}
+  }
+
+  // Scan the ring buffer for all observed model→provider combos. Any combo not yet in the
+  // ratings store is added with zeroed ratings + empty comment. Called at modal render time.
+  function tmDiscoverAndMergeProviderRatings() {
+    try {
+      var ratings = tmGetProviderRatings();
+      var ring = tmReadCaptureRing();
+      var changed = false;
+      for (var i = 0; i < ring.length; i++) {
+        var cap = ring[i];
+        if (!cap) continue;
+        var model = '';
+        try { model = tmCaptureModel(cap); } catch (e) {}
+        if (!model) continue;
+        model = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        var provider = '';
+        if (typeof cap._provider_label === 'string' && cap._provider_label) provider = cap._provider_label;
+        else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
+        if (!provider) continue;
+        var key = model + '::' + provider;
+        if (!ratings[key]) {
+          ratings[key] = { red: 0, green: 0, comment: '' };
+          changed = true;
+        }
+      }
+      if (changed) tmSaveProviderRatings(ratings);
+    } catch (e) {}
   }
 
   // Collect all unique model names from the ring buffer entries.
@@ -4164,6 +4231,13 @@
         }
         return;
       }
+
+      // (v4.229) Open the provider ratings modal.
+      if (t.dataset && t.dataset.action === 'show-provider-ratings') {
+        tmShowProviderRatingsModal();
+        ev.stopPropagation();
+        return;
+      }
     });
 
     // v4.162: Change handler for Sol reasoning effort dropdown + v4.163: identity filter dropdown.
@@ -4843,6 +4917,283 @@
     document.body.appendChild(overlay);
   }
 
+  // (v4.229) Provider ratings modal: hierarchical model→provider list with
+  // red/green counts with +/− buttons and free-text comments.
+  function tmShowProviderRatingsModal() {
+    if (typeof document === 'undefined') return;
+    tmDiscoverAndMergeProviderRatings();
+    var ratings = tmGetProviderRatings();
+    var existing = document.getElementById('tm-provider-ratings-overlay');
+    if (existing) existing.parentNode.removeChild(existing);
+
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-provider-ratings-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'width:70vw;max-width:900px;height:80vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+    hdr.innerHTML = '<span style="font-weight:bold;font-size:13px;color:#8ef0a0;">📊 Provider Ratings</span>' +
+      '<button data-action="close-provider-ratings" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button>';
+    box.appendChild(hdr);
+
+    var sub = document.createElement('div');
+    sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
+    sub.textContent = 'Track your experience with each provider per model. 🔴 = failures / frustrations, 🟢 = successes / satisfaction. Click +/− to adjust. Click 📝 to add notes.';
+    box.appendChild(sub);
+
+    // Build hierarchical data: group by model, then sort
+    var modelMap = {};
+    for (var key in ratings) {
+      if (!ratings.hasOwnProperty(key)) continue;
+      var parts = key.split('::');
+      if (parts.length < 2) continue;
+      var mdl = parts[0];
+      var prov = parts.slice(1).join('::');
+      if (!modelMap[mdl]) modelMap[mdl] = [];
+      modelMap[mdl].push({ provider: prov, rating: ratings[key] });
+    }
+
+    var sortedModels = Object.keys(modelMap).sort();
+
+    if (!sortedModels.length) {
+      var empty = document.createElement('div');
+      empty.style.cssText = 'color:#777;font-size:12px;text-align:center;padding:40px 0;';
+      empty.textContent = 'No provider data yet. Send some messages and providers will appear here automatically.';
+      box.appendChild(empty);
+    } else {
+      var listWrap = document.createElement('div');
+      listWrap.style.cssText = 'flex:1;overflow:auto;';
+
+      sortedModels.forEach(function(mdl) {
+        var modelHeader = document.createElement('div');
+        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#8ef0a0;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;';
+        modelHeader.textContent = mdl;
+        listWrap.appendChild(modelHeader);
+
+        var providers = modelMap[mdl].sort(function(a, b) {
+          return a.provider.localeCompare(b.provider);
+        });
+
+        providers.forEach(function(entry) {
+          var prov = entry.provider;
+          var r = entry.rating;
+          var ratingIdBase = (mdl + '__' + prov).replace(/[^a-zA-Z0-9]/g, '_');
+
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 16px;font-size:12px;';
+
+          var labelSpan = document.createElement('span');
+          labelSpan.style.cssText = 'color:#d0d0d8;min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
+          labelSpan.textContent = prov;
+          labelSpan.title = prov;
+          row.appendChild(labelSpan);
+
+          // Red rating: [−] count [+]
+          var redMinus = document.createElement('button');
+          redMinus.textContent = '−';
+          redMinus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+          redMinus.dataset.action = 'rating-decrement';
+          redMinus.dataset.field = 'red';
+          redMinus.dataset.model = mdl;
+          redMinus.dataset.provider = prov;
+
+          var redCount = document.createElement('span');
+          redCount.textContent = String(r.red || 0);
+          redCount.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
+          redCount.id = 'tm-rating-red-' + ratingIdBase;
+
+          var redPlus = document.createElement('button');
+          redPlus.textContent = '+';
+          redPlus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+          redPlus.dataset.action = 'rating-increment';
+          redPlus.dataset.field = 'red';
+          redPlus.dataset.model = mdl;
+          redPlus.dataset.provider = prov;
+
+          row.appendChild(redMinus);
+          row.appendChild(redCount);
+          row.appendChild(redPlus);
+
+          // Separator
+          var sep = document.createElement('span');
+          sep.style.cssText = 'color:#555;margin:0 4px;flex-shrink:0;';
+          sep.textContent = '|';
+          row.appendChild(sep);
+
+          // Green rating: [−] count [+]
+          var greenMinus = document.createElement('button');
+          greenMinus.textContent = '−';
+          greenMinus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+          greenMinus.dataset.action = 'rating-decrement';
+          greenMinus.dataset.field = 'green';
+          greenMinus.dataset.model = mdl;
+          greenMinus.dataset.provider = prov;
+
+          var greenCount = document.createElement('span');
+          greenCount.textContent = String(r.green || 0);
+          greenCount.style.cssText = 'color:#7dd67d;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
+          greenCount.id = 'tm-rating-green-' + ratingIdBase;
+
+          var greenPlus = document.createElement('button');
+          greenPlus.textContent = '+';
+          greenPlus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+          greenPlus.dataset.action = 'rating-increment';
+          greenPlus.dataset.field = 'green';
+          greenPlus.dataset.model = mdl;
+          greenPlus.dataset.provider = prov;
+
+          row.appendChild(greenMinus);
+          row.appendChild(greenCount);
+          row.appendChild(greenPlus);
+
+          // Comment button
+          var commentBtn = document.createElement('button');
+          commentBtn.textContent = '📝';
+          commentBtn.style.cssText = 'background:' + (r.comment ? '#4a4a1a' : '#333') + ';color:' + (r.comment ? '#ffe0a0' : '#fff') + ';border:1px solid ' + (r.comment ? '#6a6a2a' : '#555') + ';border-radius:3px;width:28px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
+          commentBtn.dataset.action = 'rating-comment';
+          commentBtn.dataset.model = mdl;
+          commentBtn.dataset.provider = prov;
+          commentBtn.title = r.comment ? ('Edit comment: ' + r.comment.substring(0, 80)) : 'Add comment';
+          row.appendChild(commentBtn);
+
+          listWrap.appendChild(row);
+        });
+      });
+
+      box.appendChild(listWrap);
+    }
+
+    overlay.appendChild(box);
+
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = false; }, 100);
+    }
+    function onKey(ev) {
+      if (ev.key === 'Escape' || ev.keyCode === 27) {
+        ev.stopPropagation();
+        if (ev.preventDefault) ev.preventDefault();
+        close();
+      }
+    }
+    overlay.addEventListener('click', function(ev) {
+      var t = ev.target;
+      if (t === overlay || (t.dataset && t.dataset.action === 'close-provider-ratings')) {
+        close();
+        return;
+      }
+      if (t.dataset && (t.dataset.action === 'rating-increment' || t.dataset.action === 'rating-decrement')) {
+        ev.stopPropagation();
+        var fld = t.dataset.field;
+        var rModel = t.dataset.model;
+        var rProv = t.dataset.provider;
+        var rEntry = tmGetProviderRatingEntry(rModel, rProv);
+        var delta = (t.dataset.action === 'rating-increment') ? 1 : -1;
+        var newVal = Math.max(0, (rEntry[fld] || 0) + delta);
+        tmSetProviderRatingField(rModel, rProv, fld, newVal);
+        var countId = 'tm-rating-' + fld + '-' + (rModel + '__' + rProv).replace(/[^a-zA-Z0-9]/g, '_');
+        var countEl = document.getElementById(countId);
+        if (countEl) countEl.textContent = String(newVal);
+        return;
+      }
+      if (t.dataset && t.dataset.action === 'rating-comment') {
+        ev.stopPropagation();
+        var cModel = t.dataset.model;
+        var cProv = t.dataset.provider;
+        tmShowProviderRatingCommentModal(cModel, cProv, overlay);
+        return;
+      }
+    });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+  }
+
+  // (v4.229) Nested modal for editing a provider rating comment.
+  function tmShowProviderRatingCommentModal(model, provider, parentOverlay) {
+    if (typeof document === 'undefined') return;
+    var existing = document.getElementById('tm-rating-comment-overlay');
+    if (existing) existing.parentNode.removeChild(existing);
+
+    var entry = tmGetProviderRatingEntry(model, provider);
+
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-rating-comment-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'width:60vw;max-width:600px;background:#1a1a22;border:1px solid #555;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.7);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;font-size:13px;color:#8ef0a0;margin-bottom:8px;';
+    hdr.textContent = '📝 ' + provider + ' (' + model + ')';
+    box.appendChild(hdr);
+
+    var ta = document.createElement('textarea');
+    ta.style.cssText = 'width:100%;height:120px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:monospace;padding:8px;box-sizing:border-box;resize:vertical;';
+    ta.value = entry.comment || '';
+    ta.placeholder = 'Notes about this provider for this model...';
+    box.appendChild(ta);
+
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.style.cssText = 'background:#333;color:#ccc;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;';
+
+    var saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save';
+    saveBtn.style.cssText = 'background:#245f36;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:bold;';
+
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(saveBtn);
+    box.appendChild(btnRow);
+    overlay.appendChild(box);
+
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+    overlay.addEventListener('click', function(ev) {
+      if (ev.target === overlay) close();
+    });
+    cancelBtn.addEventListener('click', function(ev) { ev.stopPropagation(); close(); });
+    saveBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      tmSetProviderRatingField(model, provider, 'comment', ta.value);
+      close();
+      // Update the comment button's appearance in place (no full re-render needed).
+      if (parentOverlay) {
+        var buttons = parentOverlay.querySelectorAll('button[data-action="rating-comment"]');
+        for (var i = 0; i < buttons.length; i++) {
+          if (buttons[i].dataset.model === model && buttons[i].dataset.provider === provider) {
+            if (ta.value) {
+              buttons[i].style.background = '#4a4a1a';
+              buttons[i].style.color = '#ffe0a0';
+              buttons[i].style.borderColor = '#6a6a2a';
+              buttons[i].title = 'Edit comment: ' + ta.value.substring(0, 80);
+            } else {
+              buttons[i].style.background = '#333';
+              buttons[i].style.color = '#fff';
+              buttons[i].style.borderColor = '#555';
+              buttons[i].title = 'Add comment';
+            }
+            break;
+          }
+        }
+      }
+    });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.body.appendChild(overlay);
+    setTimeout(function() { ta.focus(); }, 50);
+  }
+
   function tmFnv1a32(str) {
     // Simple fast deterministic hash for debugging prefix stability.
     // Not cryptographic.
@@ -5468,6 +5819,9 @@
     const ring = tmReadCaptureRing();
     var items = ring.slice().reverse(); // most recent first
 
+    // (v4.229) Discover and merge any new model→provider combos from the ring buffer into the ratings store.
+    try { tmDiscoverAndMergeProviderRatings(); } catch (e) {}
+
     // (v4.210) Apply identity filter + retry-visibility filter BEFORE building any HTML, so
     // hiddenRetryCount is available to the toggle button in the control row below. (Moved ahead
     // of the banner; the sort call stays in its original spot further down.)
@@ -5592,6 +5946,7 @@
     initRowHtml += '<select id="tm-mpm-provider-select" data-action="set-mpm-provider" style="font-size:10px;background:#222;color:#8ef0a0;border:1px solid #444;border-radius:3px;padding:1px 4px;max-width:200px;">';
     initRowHtml += '<option value="">(select model first)</option>';
     initRowHtml += '</select>';
+    initRowHtml += '<button data-action="show-provider-ratings" title="Rate and track providers per model" style="font-size:10px;background:#3a3a1a;color:#ffe0a0;border:1px solid #5a5a2a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">📊 Rate Providers</button>';
     initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
