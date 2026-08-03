@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.234
+// Version: 4.235
 // Issues Fixed:
+//   - v4.235: Cache-write cost billing in tmCalculateCostFromTable. When the response shows
+//     cache reuse (cached_tokens > 0) AND cache creation tokens are present, they are billed
+//     at the cache_write pricing field (if set in the Set Costs table). Quick-and-dirty: the
+//     user sets cache_write to the output rate as a conservative overestimate.
 //   - v4.234: Audit fixes — tmCalculateCostFromTable now reads Anthropic-style usage fields
 //     (input_tokens/output_tokens) as fallbacks when prompt_tokens/completion_tokens are
 //     absent; call-site tcUsage falls back to response_anthropic_usage so direct-Anthropic
@@ -393,7 +397,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.234';
+  const EXT_VERSION = '4.235';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -952,6 +956,22 @@
     // Cache reuse cost (cache_read pricing)
     if (cached > 0 && Number(pricing.cache_read) > 0) {
       cost += (cached * Number(pricing.cache_read)) / 1000000;
+      hasCalculableCost = true;
+    }
+
+    // (v4.235) Cache creation cost (quick-and-dirty: bill at output rate when cache is active)
+    // Only charge cache_write when we have evidence of cache REUSE (cached > 0), which implies
+    // the provider is actively maintaining cache entries. This deliberately overestimates
+    // (cache_write tokens billed at the output rate instead of their true 1.25x input rate)
+    // because an overestimate is better than a silent zero. Only fires when the pricing table
+    // has a cache_write value set; otherwise it's silently skipped.
+    var cacheWriteTokens = Number(
+      usageEvidence.cache_creation_input_tokens ||
+      usageEvidence.cache_write_tokens ||
+      (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cache_write_tokens) || 0
+    );
+    if (cached > 0 && cacheWriteTokens > 0 && Number(pricing.cache_write) > 0) {
+      cost += (cacheWriteTokens * Number(pricing.cache_write)) / 1000000;
       hasCalculableCost = true;
     }
 
