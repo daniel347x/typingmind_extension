@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.233
+// Version: 4.234
 // Issues Fixed:
+//   - v4.234: Audit fixes — tmCalculateCostFromTable now reads Anthropic-style usage fields
+//     (input_tokens/output_tokens) as fallbacks when prompt_tokens/completion_tokens are
+//     absent; call-site tcUsage falls back to response_anthropic_usage so direct-Anthropic
+//     providers get table-calculated cost instead of a silent ⚠. Doc lag fixed (v4.232
+//     comments no longer say "planned for future version"). Beacon blocks added to
+//     tmCalculateCostFromTable, tmDiscoverAndMergeProviderCosts, and tmShowCostEditorModal.
 //   - v4.233: Client-side cost calculation from a global cost table ("Set Costs" modal).
 //     New "Set Costs" button in the ring-buffer modal (next to "Rate Providers") opens a
 //     hierarchical modal where you set per-million pricing (input, output, cache_read, cache_write)
@@ -26,7 +32,7 @@
 //     session_id. Also confirmed: Moonshot's API returns usage with cached_tokens but NO cost
 //     field — cost must be calculated client-side from the published pricing ($3/M input cache
 //     miss, $0.30/M cache hit, $15/M output). The cost-table interface for client-side cost
-//     calculation is planned for a future version.
+//     calculation is shipped in v4.233 (Set Costs modal).
 //   - v4.231: Provider ratings system enhancements. Red rating buttons swapped so + (increment
 //     failure count) sits on the left where you naturally slam it when angry. Inline comment
 //     previews now appear to the right of each 📝 button (lines joined with " - ", ellipsis-
@@ -387,7 +393,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.233';
+  const EXT_VERSION = '4.234';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -830,6 +836,13 @@
     return (Number(entry.input) > 0 || Number(entry.output) > 0 || Number(entry.cache_read) > 0);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmDiscoverAndMergeProviderCosts-dcst,
+  //   role=__lambdao_1.tmDiscoverAndMergeProviderCosts,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
+  //   kind=ast,
+  //   comment=Discovers model→provider combos from ring buffer, locks, and model→provider map; auto-creates zero-cost entries for new combos (mirrors ratings discovery).,
+  // ]
   // Discover model+provider combos from ring buffer, locks, and model→provider map.
   // Auto-creates zero entries for combos that don't exist yet (like ratings discovery).
   function tmDiscoverAndMergeProviderCosts() {
@@ -899,9 +912,18 @@
     } catch (e) {}
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCalculateCostFromTable-ccft,
+  //   role=__lambdao_1.tmCalculateCostFromTable,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
+  //   kind=ast,
+  //   comment=Calculates per-turn cost from token usage × pricing table entry when API returns no cost. Handles OpenAI-style (prompt_tokens/completion_tokens) and Anthropic-style (input_tokens/output_tokens) fields.,
+  // ]
   // (v4.233) Calculate cost from token usage × pricing table entry.
   // Uses the SAME response usage evidence that tmExtractKnownUsageEvidence / tmMergeUsageInto
   // produce (the response_usage object on the capture record).
+  // (v4.234) Also reads Anthropic-style fields: input_tokens as fallback for prompt_tokens,
+  // output_tokens as fallback for completion_tokens — so direct-Anthropic providers work.
   // Token determination:
   //   cached_tokens → cache_read_input_tokens / cached_tokens / prompt_tokens_details.cached_tokens
   //   output_tokens → prefer completion_tokens; fallback total - prompt; ultimate fallback total - cached
@@ -915,8 +937,8 @@
       usageEvidence.cached_tokens ||
       (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cached_tokens) || 0
     );
-    var prompt = Number(usageEvidence.prompt_tokens || 0);
-    var completion = Number(usageEvidence.completion_tokens || 0);
+    var prompt = Number(usageEvidence.prompt_tokens || usageEvidence.input_tokens || 0);
+    var completion = Number(usageEvidence.completion_tokens || usageEvidence.output_tokens || 0);
     var total = Number(usageEvidence.total_tokens || 0);
 
     // Can we determine ANY token usage?
@@ -2675,7 +2697,8 @@
                     tmUpdateCaptureRecord(captureId, { _cost_init_needed: true });
                   } else {
                     // Entry is populated — try to calculate cost from token usage
-                    var tcUsage = patch.response_usage || (capRec && capRec.response_usage) || null;
+                    // (v4.234) Fall back to response_anthropic_usage for direct-Anthropic providers
+                    var tcUsage = patch.response_usage || (capRec && capRec.response_usage) || patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null;
                     if (tcUsage) {
                       var tcResult = tmCalculateCostFromTable(tcUsage, tcEntry);
                       if (tcResult.cost != null && tcResult.cost > 0) {
@@ -5547,6 +5570,13 @@
     setTimeout(function() { ta.focus(); }, 50);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowCostEditorModal-scem,
+  //   role=__lambdao_1.tmShowCostEditorModal,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
+  //   kind=ast,
+  //   comment=Set Costs modal: hierarchical model→provider list with per-million pricing inputs for client-side cost calculation.,
+  // ]
   // (v4.233) Set Costs modal: hierarchical model→provider list with per-million pricing inputs.
   function tmShowCostEditorModal() {
     if (typeof document === 'undefined') return;
@@ -8680,7 +8710,7 @@
     // prompt_cache_key and OpenRouter's session_id.
     // No body repairs or cache_control injection needed — just the cache key.
     // NOTE: Moonshot's API returns usage with cached_tokens but NO cost/dollar field; cost must
-    // be calculated client-side from published pricing (planned for future cost-table interface).
+    // be calculated client-side from published pricing (see v4.233 Set Costs modal).
     else if (typeof url === 'string' && url.includes('api.moonshot.ai')) {
       vendorForThisCall = 'moonshot';
       try {
