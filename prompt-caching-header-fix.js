@@ -1,6 +1,32 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.231
+// Version: 4.233
 // Issues Fixed:
+//   - v4.233: Client-side cost calculation from a global cost table ("Set Costs" modal).
+//     New "Set Costs" button in the ring-buffer modal (next to "Rate Providers") opens a
+//     hierarchical modal where you set per-million pricing (input, output, cache_read, cache_write)
+//     for each model→provider combination. When a response carries NO cost field from the API,
+//     the extension looks up the model+provider in this table and calculates cost from token
+//     usage (cached_tokens × cache_read + new_input × input + output × output, all per-million).
+//     Three flags are stamped on ring buffer entries:
+//       _cost_calculated: cost was computed from the table (shown with ○ circle indicator).
+//       _cost_no_usage:   table entry exists but token usage can't be determined (shown with ⚠
+//                         red X, hover explains the problem).
+//       _cost_init_needed: no table entry existed (or entry has all-zero pricing); a zero entry
+//                         was auto-created and the user needs to populate it (shown with 🌱
+//                         green indicator).
+//     The pricing values used are also saved on the ring entry as _cost_pricing_used.
+//     Token determination: prefer completion_tokens for output; fallback to total_tokens -
+//     prompt_tokens; ultimate fallback total_tokens - cached_tokens (billed as output, includes
+//     new input). New input = prompt_tokens - cached_tokens (only when not using the fallback).
+//   - v4.232: Moonshot AI (api.moonshot.ai) prompt_cache_key injection — mirrors the DeepInfra
+//     v4.79 pattern. Moonshot's API is OpenAI-compatible (/v1/chat/completions) and supports a
+//     top-level `prompt_cache_key` parameter (confirmed in Kimi API Platform docs). The key
+//     improves cross-instance KV cache hit rate on their serverless fleet. Uses the same stable
+//     per-conversation derivation (tmDeriveStableSessionId) as DeepInfra and OpenRouter's
+//     session_id. Also confirmed: Moonshot's API returns usage with cached_tokens but NO cost
+//     field — cost must be calculated client-side from the published pricing ($3/M input cache
+//     miss, $0.30/M cache hit, $15/M output). The cost-table interface for client-side cost
+//     calculation is planned for a future version.
 //   - v4.231: Provider ratings system enhancements. Red rating buttons swapped so + (increment
 //     failure count) sits on the left where you naturally slam it when angry. Inline comment
 //     previews now appear to the right of each 📝 button (lines joined with " - ", ellipsis-
@@ -361,7 +387,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.231';
+  const EXT_VERSION = '4.233';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -761,6 +787,186 @@
       }
     } catch (e) {}
     return models;
+  }
+
+  // ==================== PROVIDER COST TABLE (v4.233) ====================
+  // Per-model, per-provider pricing table for client-side cost calculation.
+  // When a response carries NO cost field from the API, the extension looks up the
+  // model+provider in this table and calculates cost from token usage × pricing.
+  // Key format: "model_lower::provider_label" → { input: N, output: N, cache_read: N, cache_write: N|null }
+  // All prices are per-million tokens (e.g. 3.00 = $3.00 per 1M tokens).
+  var TM_PROVIDER_COSTS_KEY = 'tm_provider_costs_v1';
+
+  function tmGetProviderCosts() {
+    try { var r = localStorage.getItem(TM_PROVIDER_COSTS_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+
+  function tmSaveProviderCosts(costs) {
+    try { localStorage.setItem(TM_PROVIDER_COSTS_KEY, JSON.stringify(costs)); } catch (e) {}
+  }
+
+  function tmGetProviderCostEntry(model, provider) {
+    try {
+      var costs = tmGetProviderCosts();
+      var key = model + '::' + provider;
+      return costs[key] || { input: 0, output: 0, cache_read: 0, cache_write: null };
+    } catch (e) { return { input: 0, output: 0, cache_read: 0, cache_write: null }; }
+  }
+
+  function tmSetProviderCostField(model, provider, field, value) {
+    try {
+      var costs = tmGetProviderCosts();
+      var key = model + '::' + provider;
+      if (!costs[key]) costs[key] = { input: 0, output: 0, cache_read: 0, cache_write: null };
+      costs[key][field] = value;
+      localStorage.setItem(TM_PROVIDER_COSTS_KEY, JSON.stringify(costs));
+    } catch (e) {}
+  }
+
+  // Check if a cost entry has been populated (has non-zero pricing for at least one field).
+  // cache_write is excluded — it can remain null/zero by design.
+  function tmIsCostEntryPopulated(entry) {
+    if (!entry) return false;
+    return (Number(entry.input) > 0 || Number(entry.output) > 0 || Number(entry.cache_read) > 0);
+  }
+
+  // Discover model+provider combos from ring buffer, locks, and model→provider map.
+  // Auto-creates zero entries for combos that don't exist yet (like ratings discovery).
+  function tmDiscoverAndMergeProviderCosts() {
+    try {
+      var costs = tmGetProviderCosts();
+      var ring = tmReadCaptureRing();
+      var changed = false;
+
+      // (A) Ring buffer combos
+      for (var i = 0; i < ring.length; i++) {
+        var cap = ring[i];
+        if (!cap) continue;
+        var model = '';
+        try { model = tmCaptureModel(cap); } catch (e) {}
+        if (!model) continue;
+        model = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        var provider = '';
+        if (typeof cap._provider_label === 'string' && cap._provider_label) provider = cap._provider_label;
+        else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
+        if (provider) {
+          var key = model + '::' + provider;
+          if (!costs[key]) { costs[key] = { input: 0, output: 0, cache_read: 0, cache_write: null }; changed = true; }
+        }
+      }
+
+      // (B) Locked providers
+      try {
+        var locksStr = localStorage.getItem('tm_provider_locks_v1');
+        if (locksStr) {
+          var locks = JSON.parse(locksStr);
+          for (var idKey in locks) {
+            if (!locks.hasOwnProperty(idKey)) continue;
+            var lock = locks[idKey];
+            if (!lock || lock.slug === '__float') continue;
+            var parts = idKey.split('::');
+            if (parts.length < 2) continue;
+            var lockModel = parts[1].toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+            if (!lockModel) continue;
+            var lockProv = lock.label || lock.slug;
+            if (!lockProv) continue;
+            var lockKey = lockModel + '::' + lockProv;
+            if (!costs[lockKey]) { costs[lockKey] = { input: 0, output: 0, cache_read: 0, cache_write: null }; changed = true; }
+          }
+        }
+      } catch (e) {}
+
+      // (C) Model→Provider map
+      try {
+        var mpMap = tmGetModelProviderMap();
+        for (var mpModel in mpMap) {
+          if (!mpMap.hasOwnProperty(mpModel)) continue;
+          var mpSlug = mpMap[mpModel];
+          if (!mpSlug) continue;
+          var mpLabel = mpSlug;
+          try {
+            var entries = tmGetProviderEntries(mpModel);
+            for (var ei = 0; ei < entries.length; ei++) {
+              if (entries[ei].slug === mpSlug) { mpLabel = entries[ei].label; break; }
+            }
+          } catch (e) {}
+          var mpKey = mpModel + '::' + mpLabel;
+          if (!costs[mpKey]) { costs[mpKey] = { input: 0, output: 0, cache_read: 0, cache_write: null }; changed = true; }
+        }
+      } catch (e) {}
+
+      if (changed) tmSaveProviderCosts(costs);
+    } catch (e) {}
+  }
+
+  // (v4.233) Calculate cost from token usage × pricing table entry.
+  // Uses the SAME response usage evidence that tmExtractKnownUsageEvidence / tmMergeUsageInto
+  // produce (the response_usage object on the capture record).
+  // Token determination:
+  //   cached_tokens → cache_read_input_tokens / cached_tokens / prompt_tokens_details.cached_tokens
+  //   output_tokens → prefer completion_tokens; fallback total - prompt; ultimate fallback total - cached
+  //   new_input    → prompt_tokens - cached_tokens (only when NOT using the total-cached fallback)
+  // Returns { cost: N, pricing_used: {...} } or { cost: null, reason: 'no_usage' }
+  function tmCalculateCostFromTable(usageEvidence, pricing) {
+    if (!usageEvidence || !pricing) return { cost: null, reason: 'no_usage' };
+
+    var cached = Number(
+      usageEvidence.cache_read_input_tokens ||
+      usageEvidence.cached_tokens ||
+      (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cached_tokens) || 0
+    );
+    var prompt = Number(usageEvidence.prompt_tokens || 0);
+    var completion = Number(usageEvidence.completion_tokens || 0);
+    var total = Number(usageEvidence.total_tokens || 0);
+
+    // Can we determine ANY token usage?
+    if (prompt == 0 && total == 0 && cached == 0) {
+      return { cost: null, reason: 'no_usage' };
+    }
+
+    var cost = 0;
+    var hasCalculableCost = false;
+
+    // Cache reuse cost (cache_read pricing)
+    if (cached > 0 && Number(pricing.cache_read) > 0) {
+      cost += (cached * Number(pricing.cache_read)) / 1000000;
+      hasCalculableCost = true;
+    }
+
+    // Determine output tokens: prefer completion_tokens, then total - prompt, then total - cached (fallback)
+    var outputTokens = null;
+    var usingFallback = false;
+
+    if (completion > 0) {
+      outputTokens = completion;
+    } else if (total > 0 && prompt > 0 && total > prompt) {
+      outputTokens = total - prompt;
+    } else if (total > 0 && total > cached) {
+      outputTokens = total - cached;
+      usingFallback = true; // Includes new input too — don't separately calculate new input
+    }
+
+    // New input tokens: only if we have prompt_tokens AND not using the fallback
+    var newInputTokens = null;
+    if (prompt > 0 && !usingFallback) {
+      newInputTokens = Math.max(0, prompt - cached);
+    }
+
+    if (outputTokens != null && outputTokens > 0 && Number(pricing.output) > 0) {
+      cost += (outputTokens * Number(pricing.output)) / 1000000;
+      hasCalculableCost = true;
+    }
+
+    if (newInputTokens != null && newInputTokens > 0 && Number(pricing.input) > 0) {
+      cost += (newInputTokens * Number(pricing.input)) / 1000000;
+      hasCalculableCost = true;
+    }
+
+    if (!hasCalculableCost) {
+      return { cost: null, reason: 'no_usage' };
+    }
+
+    return { cost: cost, pricing_used: pricing };
   }
 
   // The auto-lock engine, called from tmApplyProviderRouting when NO lock exists for the
@@ -2436,6 +2642,57 @@
                       tmUpdateCaptureRecord(captureId, okCostStamp);
                     }
                   } catch (e) {}
+                }
+              }
+            } catch (e) {}
+            // (v4.233) Client-side cost calculation from the global cost table.
+            // If no cost was returned by the API, look up the model+provider in the cost table
+            // and calculate cost from token usage × pricing. Three flags are stamped on the
+            // ring buffer entry: _cost_calculated, _cost_no_usage, _cost_init_needed.
+            try {
+              var apiTurnCost = tmExtractCostVal(
+                (capWidgetFeed ? tmMostRecentPayloadStatus.anthropicUsage : patch.response_anthropic_usage),
+                (capWidgetFeed ? tmMostRecentPayloadStatus.orUsage : patch.response_usage)
+              );
+              if (apiTurnCost == 0 && capRec && idModel) {
+                var tcModel = String(idModel).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+                var tcProvider = '';
+                if (capRec._provider_label) tcProvider = capRec._provider_label;
+                else if (capRec.response_provider) tcProvider = capRec.response_provider;
+                else tcProvider = idHost || '';
+
+                if (tcProvider) {
+                  var tcEntry = tmGetProviderCostEntry(tcModel, tcProvider);
+                  var tcPopulated = tmIsCostEntryPopulated(tcEntry);
+
+                  if (!tcPopulated) {
+                    // Entry doesn't exist or has all zeros — ensure entry exists, set init flag
+                    if (!tmGetProviderCosts()[tcModel + '::' + tcProvider]) {
+                      var tcCosts = tmGetProviderCosts();
+                      tcCosts[tcModel + '::' + tcProvider] = { input: 0, output: 0, cache_read: 0, cache_write: null };
+                      tmSaveProviderCosts(tcCosts);
+                    }
+                    tmUpdateCaptureRecord(captureId, { _cost_init_needed: true });
+                  } else {
+                    // Entry is populated — try to calculate cost from token usage
+                    var tcUsage = patch.response_usage || (capRec && capRec.response_usage) || null;
+                    if (tcUsage) {
+                      var tcResult = tmCalculateCostFromTable(tcUsage, tcEntry);
+                      if (tcResult.cost != null && tcResult.cost > 0) {
+                        tmSetTotalCost(tmGetTotalCost() + tcResult.cost);
+                        try {
+                          var tcSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, tcResult.cost);
+                          var tcCostStamp = { _model: idModel, _cost_calculated: true, _table_cost: tcResult.cost, _cost_pricing_used: tcEntry };
+                          if (tcSessionTotal > 0) tcCostStamp.session_cost_total = tcSessionTotal;
+                          tmUpdateCaptureRecord(captureId, tcCostStamp);
+                        } catch (e) {}
+                      } else if (tcResult.reason === 'no_usage') {
+                        tmUpdateCaptureRecord(captureId, { _cost_no_usage: true });
+                      }
+                    } else {
+                      tmUpdateCaptureRecord(captureId, { _cost_no_usage: true });
+                    }
+                  }
                 }
               }
             } catch (e) {}
@@ -4297,6 +4554,12 @@
         ev.stopPropagation();
         return;
       }
+      // (v4.233) Open the Set Costs modal.
+      if (t.dataset && t.dataset.action === 'show-cost-editor') {
+        tmShowCostEditorModal();
+        ev.stopPropagation();
+        return;
+      }
     });
 
     // v4.162: Change handler for Sol reasoning effort dropdown + v4.163: identity filter dropdown.
@@ -5284,6 +5547,153 @@
     setTimeout(function() { ta.focus(); }, 50);
   }
 
+  // (v4.233) Set Costs modal: hierarchical model→provider list with per-million pricing inputs.
+  function tmShowCostEditorModal() {
+    if (typeof document === 'undefined') return;
+    tmDiscoverAndMergeProviderCosts();
+    var costs = tmGetProviderCosts();
+    var existing = document.getElementById('tm-cost-editor-overlay');
+    if (existing) existing.parentNode.removeChild(existing);
+
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-cost-editor-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'width:75vw;max-width:1000px;height:80vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+    hdr.innerHTML = '<span style="font-weight:bold;font-size:13px;color:#a0c0ff;">\uD83D\uDCB2 Provider Cost Table</span>' +
+      '<button data-action="close-cost-editor" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button>';
+    box.appendChild(hdr);
+
+    var sub = document.createElement('div');
+    sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
+    sub.textContent = 'Set per-million-token pricing for each model\u2192provider combination. When a response carries no cost from the API, the extension calculates cost from these rates \u00d7 token usage. All values are $ per 1M tokens.';
+    box.appendChild(sub);
+
+    var modelMap = {};
+    for (var key in costs) {
+      if (!costs.hasOwnProperty(key)) continue;
+      var parts = key.split('::');
+      if (parts.length < 2) continue;
+      var mdl = parts[0];
+      var prov = parts.slice(1).join('::');
+      if (!modelMap[mdl]) modelMap[mdl] = [];
+      modelMap[mdl].push({ provider: prov, cost: costs[key] });
+    }
+
+    var sortedModels = Object.keys(modelMap).sort();
+
+    if (!sortedModels.length) {
+      var empty = document.createElement('div');
+      empty.style.cssText = 'color:#777;font-size:12px;text-align:center;padding:40px 0;';
+      empty.textContent = 'No cost entries yet. Send some messages and providers will appear here automatically.';
+      box.appendChild(empty);
+    } else {
+      var listWrap = document.createElement('div');
+      listWrap.style.cssText = 'flex:1;overflow:auto;';
+
+      sortedModels.forEach(function(mdl) {
+        var modelHeader = document.createElement('div');
+        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#a0c0ff;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;';
+        modelHeader.textContent = mdl;
+        listWrap.appendChild(modelHeader);
+
+        var providers = modelMap[mdl].sort(function(a, b) {
+          return a.provider.localeCompare(b.provider);
+        });
+
+        providers.forEach(function(entry) {
+          var prov = entry.provider;
+          var c = entry.cost;
+
+          var row = document.createElement('div');
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 16px;font-size:12px;flex-wrap:wrap;';
+
+          var labelSpan = document.createElement('span');
+          labelSpan.style.cssText = 'color:#d0d0d8;min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
+          labelSpan.textContent = prov;
+          labelSpan.title = prov;
+          row.appendChild(labelSpan);
+
+          var fields = [
+            { key: 'input', label: 'In', color: '#ffccd5', val: c.input },
+            { key: 'output', label: 'Out', color: '#ff9d9d', val: c.output },
+            { key: 'cache_read', label: 'Cache\u21BA', color: '#5ab0ff', val: c.cache_read },
+            { key: 'cache_write', label: 'Cache+', color: '#9aa4b2', val: c.cache_write }
+          ];
+
+          fields.forEach(function(f) {
+            var lbl = document.createElement('span');
+            lbl.style.cssText = 'color:' + f.color + ';font-size:10px;flex-shrink:0;';
+            lbl.textContent = f.label;
+            row.appendChild(lbl);
+
+            var inp = document.createElement('input');
+            inp.type = 'number';
+            inp.step = '0.01';
+            inp.min = '0';
+            inp.value = (f.val != null && f.val !== 0) ? f.val : '';
+            inp.placeholder = '0';
+            inp.style.cssText = 'width:55px;background:#0d0d11;border:1px solid #333;border-radius:3px;color:' + f.color + ';font-size:11px;padding:1px 3px;flex-shrink:0;';
+            inp.dataset.action = 'set-cost-field';
+            inp.dataset.model = mdl;
+            inp.dataset.provider = prov;
+            inp.dataset.field = f.key;
+            row.appendChild(inp);
+          });
+
+          listWrap.appendChild(row);
+        });
+      });
+
+      box.appendChild(listWrap);
+    }
+
+    overlay.appendChild(box);
+
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = false; }, 100);
+    }
+    function onKey(ev) {
+      if (ev.key === 'Escape' || ev.keyCode === 27) {
+        ev.stopPropagation();
+        if (ev.preventDefault) ev.preventDefault();
+        close();
+      }
+    }
+    overlay.addEventListener('click', function(ev) {
+      var t = ev.target;
+      if (t === overlay || (t.dataset && t.dataset.action === 'close-cost-editor')) {
+        close();
+        return;
+      }
+    });
+    overlay.addEventListener('change', function(ev) {
+      var t = ev.target;
+      if (t && t.dataset && t.dataset.action === 'set-cost-field') {
+        var val = parseFloat(t.value);
+        if (isNaN(val) || val < 0) val = 0;
+        var mdl = t.dataset.model;
+        var prov = t.dataset.provider;
+        var fld = t.dataset.field;
+        if (mdl && prov && fld) {
+          tmSetProviderCostField(mdl, prov, fld, val);
+          console.log('\uD83D\uDCB2 [v' + EXT_VERSION + '] Cost table updated: ' + mdl + '::' + prov + ' ' + fld + ' = ' + val);
+        }
+        ev.stopPropagation();
+      }
+    });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+  }
+
   function tmFnv1a32(str) {
     // Simple fast deterministic hash for debugging prefix stability.
     // Not cryptographic.
@@ -5669,7 +6079,10 @@
 
   // v4.163: Extract per-turn cost for a capture.
   function tmCapTurnCost(cap) {
-    return tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+    var apiCost = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+    if (apiCost > 0) return apiCost;
+    if (typeof cap._table_cost === 'number' && cap._table_cost > 0) return cap._table_cost;
+    return 0;
   }
 
   // v4.163: Extract session/aggregate total cost for a capture.
@@ -5738,6 +6151,7 @@
       if (isNaN(d.getTime())) continue;
       if (d.getTime() >= cutoffMs) {
         var cost = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
+        if (cost == 0 && typeof cap._table_cost === 'number') cost = cap._table_cost;
         if (cost > 0) total += cost;
       }
     }
@@ -5913,6 +6327,8 @@
 
     // (v4.229) Discover and merge any new model→provider combos from the ring buffer into the ratings store.
     try { tmDiscoverAndMergeProviderRatings(); } catch (e) {}
+    // (v4.233) Discover and merge any new model→provider combos into the cost table.
+    try { tmDiscoverAndMergeProviderCosts(); } catch (e) {}
 
     // (v4.210) Apply identity filter + retry-visibility filter BEFORE building any HTML, so
     // hiddenRetryCount is available to the toggle button in the control row below. (Moved ahead
@@ -6039,6 +6455,7 @@
     initRowHtml += '<option value="">(select model first)</option>';
     initRowHtml += '</select>';
     initRowHtml += '<button data-action="show-provider-ratings" title="Rate and track providers per model" style="font-size:10px;background:#3a3a1a;color:#ffe0a0;border:1px solid #5a5a2a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">📊 Rate Providers</button>';
+    initRowHtml += '<button data-action="show-cost-editor" title="Set per-million pricing for client-side cost calculation" style="font-size:10px;background:#1a2a3a;color:#a0c0ff;border:1px solid #2a4a5a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">💲 Set Costs</button>';
     initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
@@ -6226,9 +6643,16 @@
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
       // (v4.94) Cost pinned to the very left of the row, before repair blocks.
       var costVal = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
-      var costHtml = (costVal > 0)
-        ? ('<span title="inference cost" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">·</span> ')
-        : '';
+      var costHtml = '';
+      if (cap._cost_no_usage) {
+        costHtml = '<span title="Cost table entry exists but token usage could not be determined from the response" style="color:#ff6b6b;font-size:14px;font-weight:bold;">\u26A0</span> <span style="opacity:0.4;">\u00b7</span> ';
+      } else if (cap._cost_init_needed) {
+        costHtml = '<span title="No pricing entry existed (or has all zeros) \u2014 auto-created. Open Set Costs to populate." style="font-size:14px;">\uD83C\uDF31</span> <span style="opacity:0.4;">\u00b7</span> ';
+      } else if (costVal > 0) {
+        costHtml = '<span title="inference cost" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">\u00b7</span> ';
+      } else if (typeof cap._table_cost === 'number' && cap._table_cost > 0) {
+        costHtml = '<span title="cost calculated from global pricing table" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + cap._table_cost.toFixed(3) + '</span> <span title="calculated by extension (not from API)" style="color:#a0d0ff;font-size:10px;">\u25CB</span> <span style="opacity:0.4;">\u00b7</span> ';
+      }
 
       // (v4.197) Inline provider badge (light green) at the right end of the cost/repair/cache row,
       // so the serving provider is visible at a glance without opening the raw segment JSON. Falls
@@ -8244,6 +8668,55 @@
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse DeepInfra request:', e);
+      }
+    }
+
+
+    // ==================== MOONSHOT AI BRANCH (v4.232) ====================
+    // Moonshot AI (api.moonshot.ai) hosts Kimi K3 and other models on an OpenAI-compatible
+    // /v1/chat/completions endpoint. The API supports a top-level `prompt_cache_key` parameter
+    // (confirmed in Kimi API Platform docs) which improves cross-instance KV cache hit rate
+    // on their serverless fleet. Uses the same stable per-conversation derivation as DeepInfra's
+    // prompt_cache_key and OpenRouter's session_id.
+    // No body repairs or cache_control injection needed — just the cache key.
+    // NOTE: Moonshot's API returns usage with cached_tokens but NO cost/dollar field; cost must
+    // be calculated client-side from published pricing (planned for future cost-table interface).
+    else if (typeof url === 'string' && url.includes('api.moonshot.ai')) {
+      vendorForThisCall = 'moonshot';
+      try {
+        if (options.body) {
+          const body = JSON.parse(options.body);
+          let modified = false;
+
+          // (v4.232) Inject prompt_cache_key for cross-instance cache pinning.
+          // Uses the same stable per-conversation derivation as DeepInfra's prompt_cache_key
+          // and OpenRouter's session_id. Only inject when not already present (self-healing).
+          if (!body.prompt_cache_key) {
+            var msCacheKey = tmDeriveStableSessionId(body);
+            if (msCacheKey) {
+              body.prompt_cache_key = msCacheKey;
+              modified = true;
+              console.log('✅ [v' + EXT_VERSION + '] Moonshot: injected prompt_cache_key for cross-instance cache pinning:', msCacheKey);
+            } else {
+              console.warn('⚠️ [v' + EXT_VERSION + '] Moonshot: could not derive a stable prompt_cache_key; cache pinning not set.');
+            }
+          }
+
+          // Derive conversation ID for notePayloadConversation + payload filters
+          const convId = deriveConversationIdFromBody(body);
+          if (convId) {
+            convIdForThisCall = convId;
+            notePayloadConversation(vendorForThisCall, convId, body.model);
+          }
+
+          if (modified) {
+            options.body = JSON.stringify(body);
+            console.log('✅ [v' + EXT_VERSION + '] Moonshot request body updated (prompt_cache_key injected)');
+          }
+          // No repairs, no cache_control injection — passthrough with capture only.
+        }
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse Moonshot request:', e);
       }
     }
 
