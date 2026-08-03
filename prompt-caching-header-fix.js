@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.235
+// Version: 4.236
 // Issues Fixed:
+//   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
+//     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
+//     direct). The status object is stamped with the table cost at response-receipt, and the
+//     post-refresh fallback (tmLastSuccessfulUsage) returns it too.
 //   - v4.235: Cache-write cost billing in tmCalculateCostFromTable. When the response shows
 //     cache reuse (cached_tokens > 0) AND cache creation tokens are present, they are billed
 //     at the cache_write pricing field (if set in the Set Costs table). Quick-and-dirty: the
@@ -397,7 +401,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.235';
+  const EXT_VERSION = '4.236';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1491,7 +1495,8 @@
         var cap = ring[i];
         if (!cap) continue;
         if (cap.response_anthropic_usage || cap.response_usage) {
-          return { au: cap.response_anthropic_usage || null, oru: cap.response_usage || null };
+          return { au: cap.response_anthropic_usage || null, oru: cap.response_usage || null,
+                   tableCost: (typeof cap._table_cost === 'number' && cap._table_cost > 0) ? cap._table_cost : 0 };
         }
       }
     } catch (e) {}
@@ -2728,6 +2733,8 @@
                           var tcCostStamp = { _model: idModel, _cost_calculated: true, _table_cost: tcResult.cost, _cost_pricing_used: tcEntry };
                           if (tcSessionTotal > 0) tcCostStamp.session_cost_total = tcSessionTotal;
                           tmUpdateCaptureRecord(captureId, tcCostStamp);
+                          // (v4.236) Stamp table cost onto the status object for the widget flashpoint.
+                          if (capWidgetFeed) { try { tmMostRecentPayloadStatus.tableCost = tcResult.cost; } catch (e2) {} }
                         } catch (e) {}
                       } else if (tcResult.reason === 'no_usage') {
                         tmUpdateCaptureRecord(captureId, { _cost_no_usage: true });
@@ -3683,18 +3690,22 @@
 
     var au = st.anthropicUsage;
     var oru = st.orUsage;
+    // (v4.236) Table-cost fallback for providers returning no API cost (e.g. Moonshot/DeepSeek direct).
+    var tableCostFallback = (st && typeof st.tableCost === 'number' && st.tableCost > 0) ? st.tableCost : 0;
     // (v4.211) Fallback when the live status is empty (post-refresh, or the last turn was an
     // error): use the most recent SUCCESSFUL turn's usage from the ring, so cost + cache report
     // + badges still render instead of going blank.
     if (!au && !oru) {
       try {
         var lastOk = tmLastSuccessfulUsage();
-        if (lastOk) { au = lastOk.au; oru = lastOk.oru; }
+        if (lastOk) { au = lastOk.au; oru = lastOk.oru; if (lastOk.tableCost > 0) tableCostFallback = lastOk.tableCost; }
       } catch (e) {}
     }
     // v4.168: Per-turn cost is now rendered inline here (not via tmRenderCacheReport's tiny gray badge)
     // so it can be the flashpoint — larger font, orange-red, bold.
     var turnCostVal = tmExtractCostVal(au, oru);
+    // (v4.236) Fall back to table-calculated cost for providers with no API cost field.
+    if (!(turnCostVal > 0) && tableCostFallback > 0) turnCostVal = tableCostFallback;
     // v4.169: Cache hit/miss badges around the cost.
     // (v4.211) Read the per-identity cache-outcome LEDGER (survives refresh; error turns no
     // longer stamp tmMostRecentPayloadStatus, so status.cacheStats alone would go stale/blank).
