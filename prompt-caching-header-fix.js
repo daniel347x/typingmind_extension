@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.238
+// Version: 4.239
 // Issues Fixed:
 //   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
@@ -401,7 +401,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.238';
+  const EXT_VERSION = '4.239';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -696,6 +696,17 @@
       x = x.replace(/[^a-z0-9]/g, '');
       return x;
     } catch (e) { return String(s || '').toLowerCase(); }
+  }
+
+  // (v4.238) Format a max-context token count compactly for dropdown/ratings display.
+  // 1048576 -> '1.0M', 524288 -> '524k', 200000 -> '200k'. Returns '' for null/0.
+  function tmFmtCtx(n) {
+    try {
+      if (typeof n !== 'number' || !isFinite(n) || n <= 0) return '';
+      if (n >= 1000000) return (Math.round(n / 100000) / 10) + 'M';
+      if (n >= 1000) return Math.round(n / 1000) + 'k';
+      return String(n);
+    } catch (e) { return ''; }
   }
 
   // ==================== PROVIDER RATINGS (v4.229) ====================
@@ -4751,7 +4762,10 @@
             var mpe = mpmEntries[mpei];
             var badge = mpe.cache ? '\uD83D\uDFE2' : '\u26D4';
             var mpmSel = (mpmCurrentSlug === mpe.slug) ? ' selected' : '';
-            mpmHtml += '<option value="' + escapeHtml(mpe.slug) + '"' + mpmSel + '>' + badge + ' ' + escapeHtml(mpe.label) + '</option>';
+            // (v4.238) Append the provider's max-context window as a parenthetical so Dan can pick
+            // the provider that can actually serve a long conversation at a glance.
+            var mpeCtx = (mpe.maxContext != null) ? (' (ctx: ' + tmFmtCtx(mpe.maxContext) + ')') : '';
+            mpmHtml += '<option value="' + escapeHtml(mpe.slug) + '"' + mpmSel + '>' + badge + ' ' + escapeHtml(mpe.label) + mpeCtx + '</option>';
           }
           mpmProviderSelect.innerHTML = mpmHtml;
         }
@@ -6697,7 +6711,18 @@
       for (var mi = 0; mi < ringModels.length; mi++) {
         var ringModel = ringModels[mi];
         var mappedSlug = modelProviderMap[ringModel.toLowerCase().replace(/:(nitro|floor|free)$/i, '')] || '';
-        var mpmLabel = ringModel + (mappedSlug ? (' → ' + mappedSlug) : '');
+        // (v4.238) Append the mapped provider's max-context window (when known) to the model→provider
+        // mapping label so the current mapping shows its ctx at a glance.
+        var mappedCtx = '';
+        if (mappedSlug) {
+          try {
+            var _miEntries = tmGetProviderEntries(ringModel);
+            for (var _mii = 0; _mii < _miEntries.length; _mii++) {
+              if (_miEntries[_mii].slug === mappedSlug && _miEntries[_mii].maxContext != null) { mappedCtx = ' (ctx: ' + tmFmtCtx(_miEntries[_mii].maxContext) + ')'; break; }
+            }
+          } catch (e) {}
+        }
+        var mpmLabel = ringModel + (mappedSlug ? (' → ' + mappedSlug + mappedCtx) : '');
         initRowHtml += '<option value="' + escapeHtml(ringModel) + '">' + escapeHtml(mpmLabel) + '</option>';
       }
     }
