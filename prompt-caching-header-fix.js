@@ -5,7 +5,7 @@
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
 //     direct). The status object is stamped with the table cost at response-receipt, and the
 //     post-refresh fallback (tmLastSuccessfulUsage) returns it too.
-//   - v4.235: Cache-write cost billing in tmCalculateCostFromTable. When the response shows
+//   - v4.236: Cache-write cost billing in tmCalculateCostFromTable. When the response shows
 //     cache reuse (cached_tokens > 0) AND cache creation tokens are present, they are billed
 //     at the cache_write pricing field (if set in the Set Costs table). Quick-and-dirty: the
 //     user sets cache_write to the output rate as a conservative overestimate.
@@ -681,6 +681,23 @@
     } catch (e) { return null; }
   }
 
+  // (v4.236) Normalize a provider identifier to its LOWERCASE BASE slug for dedup. Accepts a slug
+  // ('deepinfra/fp8' -> 'deepinfra') OR a display label ('DeepInfra Fp8' -> 'deepinfra'). Stripping
+  // the variant suffix lets us collapse 'DeepInfra' and 'DeepInfra Fp8' to ONE ratings row (we keep
+  // the most granular entry). We deliberately do NOT resolve against tmGetProviderEntries here
+  // (seed labels like 'Fireworks Fast' would otherwise wrongly map 'fireworks'->'fireworks/fast');
+  // base-slug normalization is the conservative, correct granularity for ratings dedup.
+  function tmNormalizeProviderBaseSlug(s) {
+    try {
+      if (!s) return '';
+      var x = String(s).toLowerCase().trim();
+      x = x.split('/')[0];           // slug form: drop variant
+      x = x.split(/\s+/)[0];         // label form: drop trailing variant word ('Fp8')
+      x = x.replace(/[^a-z0-9]/g, '');
+      return x;
+    } catch (e) { return String(s || '').toLowerCase(); }
+  }
+
   // ==================== PROVIDER RATINGS (v4.229) ====================
   // Tracks per-model, per-provider ratings (red = failures, green = successes)
   // and free-text comments. Independent of any session — persisted in localStorage.
@@ -710,6 +727,29 @@
       if (!ratings[key]) ratings[key] = { red: 0, green: 0, comment: '' };
       ratings[key][field] = value;
       localStorage.setItem(TM_PROVIDER_RATINGS_KEY, JSON.stringify(ratings));
+    } catch (e) {}
+  }
+
+  // (v4.236) Permanently delete a provider-rating row (cleanup of duplicate/detritus entries).
+  function tmDeleteProviderRating(model, provider) {
+    try {
+      var ratings = tmGetProviderRatings();
+      var key = model + '::' + provider;
+      if (ratings.hasOwnProperty(key)) { delete ratings[key]; tmSaveProviderRatings(ratings); }
+    } catch (e) {}
+  }
+
+  // (v4.236) Persist which model family is expanded in the ratings modal. We store the FULL set
+  // (simple object map model->true) so the user's expansions survive reopening the modal.
+  var TM_RATINGS_EXPANDED_KEY = 'tm_provider_ratings_expanded_v1';
+  function tmGetRatingsExpanded() {
+    try { var r = localStorage.getItem(TM_RATINGS_EXPANDED_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+  function tmSetRatingsExpandedModel(model, expanded) {
+    try {
+      var m = tmGetRatingsExpanded();
+      if (expanded) m[model] = true; else delete m[model];
+      localStorage.setItem(TM_RATINGS_EXPANDED_KEY, JSON.stringify(m));
     } catch (e) {}
   }
 
@@ -963,7 +1003,7 @@
       hasCalculableCost = true;
     }
 
-    // (v4.235) Cache creation cost (quick-and-dirty: bill at output rate when cache is active)
+    // (v4.236) Cache creation cost (quick-and-dirty: bill at output rate when cache is active)
     // Only charge cache_write when we have evidence of cache REUSE (cached > 0), which implies
     // the provider is actively maintaining cache entries. This deliberately overestimates
     // (cache_write tokens billed at the output rate instead of their true 1.25x input rate)
@@ -1126,7 +1166,13 @@
       var variant = tagParts.length > 1 ? tagParts.slice(1).join('/') : '';
       var baseLabel = ep.provider_name || tagParts[0];
       var label = variant ? (baseLabel + ' ' + variant.charAt(0).toUpperCase() + variant.slice(1)) : baseLabel;
-      out.push({ slug: slug, label: label, cache: hasCache, note: parts.join(' · '), toxic: !hasCache });
+      // (v4.236) Capture the endpoint's max context window (tokens) so we can display it and so
+      // the user can see WHICH providers can serve a long conversation. This is the root cause of
+      // 'No endpoints found' on long threads: the prompt exceeds a pinned provider's window and
+      // allow_fallbacks:false leaves nowhere to go. OpenRouter Endpoints API returns context_length.
+      var maxCtx = (typeof ep.context_length === 'number' && ep.context_length > 0) ? ep.context_length : null;
+      if (maxCtx) parts.push('ctx ' + maxCtx);
+      out.push({ slug: slug, label: label, cache: hasCache, note: parts.join(' · '), toxic: !hasCache, maxContext: maxCtx });
     }
     return out;
   }
@@ -1161,7 +1207,7 @@
         // The live label (provider_name) is identical across variants ('Fireworks' for both
         // 'fireworks' and 'fireworks/fast'), so preferring it discarded the seed's richer
         // 'Fireworks Fast' distinction -- the reported bug. Seed label wins; live fills the rest.
-        merged.push({ slug: lv.slug, label: s.label || lv.label, cache: lv.cache, note: s.note || lv.note, toxic: !!(s.toxic || lv.toxic) });
+        merged.push({ slug: lv.slug, label: s.label || lv.label, cache: lv.cache, note: s.note || lv.note, toxic: !!(s.toxic || lv.toxic), maxContext: (lv.maxContext != null ? lv.maxContext : null) });
         delete bySlug[lv.slug];
       }
     }
@@ -3427,6 +3473,14 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.236) Dismiss the persistent 'endpoint not found' banner.
+          if (target.dataset.action === 'dismiss-endpoint-not-found') {
+            tmEndpointNotFound = null;
+            try { renderGpt51UsageWidget(); } catch (e) {}
+            ev.stopPropagation();
+            ev.preventDefault();
+            return;
+          }
           // (Fix 16, v4.200) Provider routing dropdown — handled by the 'change' listener
           // (v4.228), NOT on click. Clicking a <select> to OPEN it also dispatches a click
           // whose target.value is the PRE-change value; when a provider is already locked that
@@ -3921,6 +3975,26 @@
           var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
           var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
           lines.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:9px;font-family:monospace;margin-bottom:2px;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⚠ err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' — click</div>');
+        }
+      }
+    } catch (e) {}
+
+    // (v4.236) Persistent orange banner for 'No endpoints found for <model>'. Unlike the red
+    // error row (auto-clears on success), this STAYS until the user clicks its X — so Dan can't
+    // forget that the remedy is to switch the provider routing. Identity-guarded like the error row.
+    try {
+      if (tmEndpointNotFound) {
+        var enfMatches = true;
+        try {
+          var wKey2 = (widgetIdentity && widgetIdentity.key) || '';
+          if (wKey2 && tmEndpointNotFound.idKey && tmEndpointNotFound.idKey !== wKey2) enfMatches = false;
+        } catch (e) {}
+        if (enfMatches) {
+          var enfProv = tmEndpointNotFound.provider ? (' for ' + escapeHtml(tmEndpointNotFound.provider)) : '';
+          lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;background:#3a2200;border:1px solid #ff9500;border-radius:4px;padding:3px 6px;">' +
+            '<span style="color:#ff9500;font-size:11px;font-weight:bold;font-family:monospace;line-height:1.3;flex:1;">⛔ Provider/endpoint not found' + enfProv + '. Consider switching providers.</span>' +
+            '<span data-action="dismiss-endpoint-not-found" title="Dismiss" style="cursor:pointer;color:#ff9500;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">×</span>' +
+            '</div>');
         }
       }
     } catch (e) {}
@@ -4767,6 +4841,12 @@
   // time instead of stalling on a 1s blip until the human types 'continue'.
   var tmMostRecentError = null;
 
+  // (v4.236) Distinct, persistent (until dismissed) widget banner for the specific 'No endpoints
+  // found for <model>' case — the routing-into-a-dead-end failure that is easy to forget the
+  // remedy for. Separate from tmMostRecentError (which auto-clears on success) because Dan wants
+  // this reminder to STAY until he clicks its X. { model, provider, ts, idKey }
+  var tmEndpointNotFound = null;
+
   // Scan raw response text (SSE or bare JSON) for an OpenRouter-style error object.
   // Returns a structured summary or null. Uses fromCharCode(10) for newline to avoid escapes.
   // @beacon[
@@ -4908,6 +4988,22 @@
         message: err.message, raw: err.raw, remedy_hint: err.remedy_hint,
         retryAfter: err.retryAfter, full: err.full, attempt: attempt, idKey: errIdKey
       };
+      // (v4.236) Detect the 'No endpoints found for <model>' case and raise the persistent
+      // orange banner. Provider label comes from the request's pinned provider (order[0]/only[0])
+      // when present, else the error's provider field, else empty.
+      try {
+        var _msg = String((err && err.message) || '');
+        var _mm = _msg.match(/No endpoints found for\s+([^\s.]+)/i);
+        if (_mm) {
+          var _provLabel = '';
+          try {
+            if (reqBody && reqBody.provider && Array.isArray(reqBody.provider.order) && reqBody.provider.order.length) _provLabel = String(reqBody.provider.order[0]);
+            else if (reqBody && reqBody.provider && Array.isArray(reqBody.provider.only) && reqBody.provider.only.length) _provLabel = String(reqBody.provider.only[0]);
+          } catch (e2) {}
+          if (!_provLabel && err && err.provider) _provLabel = String(err.provider);
+          tmEndpointNotFound = { model: String(_mm[1]), provider: _provLabel, ts: Date.now(), idKey: errIdKey };
+        }
+      } catch (e) {}
       try { renderGpt51UsageWidget(); } catch (e) {}
     }
     // (v4.215) Retry transient errors: 429 (rate limit) AND 5xx (server errors like 503
@@ -5327,7 +5423,10 @@
     sub.textContent = 'Track your experience with each provider per model. 🔴 = failures / frustrations, 🟢 = successes / satisfaction. Click +/− to adjust. Click 📝 to add notes.';
     box.appendChild(sub);
 
-    // Build hierarchical data: group by model, then sort
+    // Build hierarchical data: group by model, then sort.
+    // (v4.236) DEDUP providers to their BASE slug so e.g. 'DeepInfra' and 'DeepInfra Fp8' collapse
+    // to ONE row (we keep the most granular entry -- the one carrying a variant word or slash).
+    var expandedMap = tmGetRatingsExpanded();
     var modelMap = {};
     for (var key in ratings) {
       if (!ratings.hasOwnProperty(key)) continue;
@@ -5335,8 +5434,15 @@
       if (parts.length < 2) continue;
       var mdl = parts[0];
       var prov = parts.slice(1).join('::');
-      if (!modelMap[mdl]) modelMap[mdl] = [];
-      modelMap[mdl].push({ provider: prov, rating: ratings[key] });
+      if (!modelMap[mdl]) modelMap[mdl] = {};
+      var grp = modelMap[mdl];
+      var base = tmNormalizeProviderBaseSlug(prov);
+      var isGranular = (prov.indexOf('/') !== -1) || (/\s/.test(prov));
+      if (!grp[base]) {
+        grp[base] = { provider: prov, rating: ratings[key] };
+      } else if (isGranular && grp[base].provider.indexOf('/') === -1 && !/\s/.test(grp[base].provider)) {
+        grp[base] = { provider: prov, rating: ratings[key] }; // upgrade to the more granular entry
+      }
     }
 
     var sortedModels = Object.keys(modelMap).sort();
@@ -5351,14 +5457,36 @@
       listWrap.style.cssText = 'flex:1;overflow:auto;';
 
       sortedModels.forEach(function(mdl) {
+        var isOpen = !!expandedMap[mdl];
+        var grp = modelMap[mdl];
+        var provCount = Object.keys(grp).length;
+
+        // (v4.236) Collapsible model-family header. Click toggles + persists.
         var modelHeader = document.createElement('div');
-        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#8ef0a0;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;';
-        modelHeader.textContent = mdl;
+        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#8ef0a0;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;cursor:pointer;user-select:none;';
+        modelHeader.dataset.action = 'rating-toggle-model';
+        modelHeader.dataset.model = mdl;
+        modelHeader.title = 'Click to expand/collapse';
+        var arrow = document.createElement('span');
+        arrow.style.cssText = 'display:inline-block;width:16px;color:#6a6a7a;';
+        arrow.textContent = isOpen ? '▾' : '▸';
+        modelHeader.appendChild(arrow);
+        var mname = document.createElement('span');
+        mname.textContent = mdl + '  ';
+        modelHeader.appendChild(mname);
+        var cnt = document.createElement('span');
+        cnt.style.cssText = 'color:#9aa4b2;font-weight:normal;font-size:11px;';
+        cnt.textContent = '(' + provCount + ')';
+        modelHeader.appendChild(cnt);
         listWrap.appendChild(modelHeader);
 
-        var providers = modelMap[mdl].sort(function(a, b) {
+        var providers = Object.keys(grp).map(function(b) { return grp[b]; }).sort(function(a, b) {
           return a.provider.localeCompare(b.provider);
         });
+
+        var provWrap = document.createElement('div');
+        provWrap.style.display = isOpen ? '' : 'none';
+        listWrap.appendChild(provWrap);
 
         providers.forEach(function(entry) {
           var prov = entry.provider;
@@ -5373,6 +5501,24 @@
           labelSpan.textContent = prov;
           labelSpan.title = prov;
           row.appendChild(labelSpan);
+
+          // (v4.236) Show the provider's max context window when known (from live Endpoints-API
+          // entries). This is the field that explains 'No endpoints found' on long conversations.
+          try {
+            var _entries = tmGetProviderEntries(mdl);
+            var _base = tmNormalizeProviderBaseSlug(prov);
+            var _mc = null;
+            for (var _ei = 0; _ei < _entries.length; _ei++) {
+              if (tmNormalizeProviderBaseSlug(_entries[_ei].slug) === _base && _entries[_ei].maxContext != null) { _mc = _entries[_ei].maxContext; break; }
+            }
+            if (_mc != null) {
+              var ctxSpan = document.createElement('span');
+              ctxSpan.style.cssText = 'color:#7fb3ff;font-size:10px;flex-shrink:0;margin-left:2px;';
+              ctxSpan.textContent = 'ctx ' + (_mc >= 1000 ? (Math.round(_mc / 1000) + 'k') : _mc);
+              ctxSpan.title = 'Max context window: ' + _mc + ' tokens';
+              row.appendChild(ctxSpan);
+            }
+          } catch (e) {}
 
           // Red rating: [+] count [−]  (plus on left so you slam it when angry)
           var redPlus = document.createElement('button');
@@ -5455,7 +5601,17 @@
           }
           row.appendChild(previewSpan);
 
-          listWrap.appendChild(row);
+          // (v4.236) Delete button to permanently remove this provider-rating row (cleanup).
+          var delBtn = document.createElement('button');
+          delBtn.textContent = '🗑';
+          delBtn.style.cssText = 'background:#3a1a1a;color:#ff9b9b;border:1px solid #5a2a2a;border-radius:3px;width:26px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
+          delBtn.dataset.action = 'rating-delete';
+          delBtn.dataset.model = mdl;
+          delBtn.dataset.provider = prov;
+          delBtn.title = 'Delete this provider rating row';
+          row.appendChild(delBtn);
+
+          provWrap.appendChild(row);
         });
       });
 
@@ -5502,6 +5658,22 @@
         var cModel = t.dataset.model;
         var cProv = t.dataset.provider;
         tmShowProviderRatingCommentModal(cModel, cProv, overlay);
+        return;
+      }
+      // (v4.236) Expand/collapse a model family. Persist + re-render so the arrow/state update.
+      if (t.dataset && t.dataset.action === 'rating-toggle-model') {
+        ev.stopPropagation();
+        var tgModel = t.dataset.model;
+        var cur = tmGetRatingsExpanded();
+        tmSetRatingsExpandedModel(tgModel, !cur[tgModel]);
+        tmShowProviderRatingsModal(); // re-render
+        return;
+      }
+      // (v4.236) Delete a provider-rating row, then re-render.
+      if (t.dataset && t.dataset.action === 'rating-delete') {
+        ev.stopPropagation();
+        tmDeleteProviderRating(t.dataset.model, t.dataset.provider);
+        tmShowProviderRatingsModal(); // re-render
         return;
       }
     });
