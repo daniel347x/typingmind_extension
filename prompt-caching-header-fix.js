@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.237
+// Version: 4.238
 // Issues Fixed:
 //   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
@@ -401,7 +401,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.237';
+  const EXT_VERSION = '4.238';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1132,6 +1132,10 @@
       var rec = tmReadProviderLive()[m];
       if (!rec || !Array.isArray(rec.entries)) return null;
       if (Date.now() - Number(rec.ts || 0) > TM_PROVIDER_LIVE_TTL) return null;
+      // (v4.237) SELF-HEAL: entries cached before maxContext was captured have NO maxContext field
+      // and would otherwise be served until the 12h TTL expires, hiding the context-window display.
+      // Treat such a record as stale (return null) so the caller refetches/rebuilds with the field.
+      if (!rec.entries.some(function(e) { return e && e.maxContext != null; })) return null;
       return rec.entries;
     } catch (e) { return null; }
   }
@@ -1173,6 +1177,20 @@
       var maxCtx = (typeof ep.context_length === 'number' && ep.context_length > 0) ? ep.context_length : null;
       if (maxCtx) parts.push('ctx ' + maxCtx);
       out.push({ slug: slug, label: label, cache: hasCache, note: parts.join(' · '), toxic: !hasCache, maxContext: maxCtx });
+    }
+    // (v4.237) Safety net: if NO endpoint carried context_length (older/leaner API shape), backfill
+    // from the model-level average so every entry still carries a maxContext (avoids the self-heal
+    // staleness gate spinning forever, and gives the user a ballpark window rather than nothing).
+    if (out.length && !out.some(function(e) { return e && e.maxContext != null; })) {
+      var avg = null;
+      try {
+        for (var ai = 0; ai < endpoints.length; ai++) {
+          var ep2 = endpoints[ai];
+          if (ep2 && ep2.stats && typeof ep2.stats.p50_context_length === 'number' && ep2.stats.p50_context_length > 0) { avg = Math.round(ep2.stats.p50_context_length); break; }
+          if (ep2 && typeof ep2.max_context === 'number' && ep2.max_context > 0) { avg = ep2.max_context; break; }
+        }
+      } catch (e) {}
+      if (avg) { for (var bi = 0; bi < out.length; bi++) out[bi].maxContext = avg; }
     }
     return out;
   }
@@ -5591,13 +5609,14 @@
           // Comment preview — display only: lines joined with " - ", ellipsis if overflow.
           var previewSpan = document.createElement('span');
           previewSpan.className = 'tm-rating-comment-preview';
-          previewSpan.style.cssText = 'color:#9aa4b2;font-size:11px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;';
+          // (v4.237) Keep this span as a flex spacer (flex:1) even when there is NO comment, so the
+          // trailing delete button stays right-justified. Previously we set display:'none' on empty,
+          // which collapsed the spacer and pulled the trash icon up against the buttons on the left.
+          previewSpan.style.cssText = 'color:#9aa4b2;font-size:11px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;';
           var previewText = tmFormatCommentPreview(r.comment);
           if (previewText) {
             previewSpan.textContent = previewText;
             previewSpan.title = previewText;
-          } else {
-            previewSpan.style.display = 'none';
           }
           row.appendChild(previewSpan);
 
