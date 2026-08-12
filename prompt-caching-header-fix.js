@@ -5543,11 +5543,13 @@
           var row = document.createElement('div');
           row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 16px;font-size:12px;';
 
+          // (v4.240) The ctx parenthetical now lives INSIDE the provider-name label (as a blue
+          // child span) rather than as its own row slot, so every row's rating buttons start at the
+          // same x and line up. Label slot widened a touch so name + ctx never clip.
           var labelSpan = document.createElement('span');
-          labelSpan.style.cssText = 'color:#d0d0d8;min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
-          labelSpan.textContent = prov;
+          labelSpan.style.cssText = 'color:#d0d0d8;min-width:150px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
           labelSpan.title = prov;
-          row.appendChild(labelSpan);
+          labelSpan.appendChild(document.createTextNode(prov));
 
           // (v4.236) Show the provider's max context window when known (from live Endpoints-API
           // entries). This is the field that explains 'No endpoints found' on long conversations.
@@ -5560,12 +5562,13 @@
             }
             if (_mc != null) {
               var ctxSpan = document.createElement('span');
-              ctxSpan.style.cssText = 'color:#7fb3ff;font-size:10px;flex-shrink:0;margin-left:2px;';
-              ctxSpan.textContent = 'ctx ' + (_mc >= 1000 ? (Math.round(_mc / 1000) + 'k') : _mc);
+              ctxSpan.style.cssText = 'color:#7fb3ff;font-size:10px;margin-left:6px;';
+              ctxSpan.textContent = '(ctx ' + (_mc >= 1000 ? (Math.round(_mc / 1000) + 'k') : _mc) + ')';
               ctxSpan.title = 'Max context window: ' + _mc + ' tokens';
-              row.appendChild(ctxSpan);
+              labelSpan.appendChild(ctxSpan);
             }
           } catch (e) {}
+          row.appendChild(labelSpan);
 
           // Red rating: [+] count [−]  (plus on left so you slam it when angry)
           var redPlus = document.createElement('button');
