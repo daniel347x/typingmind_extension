@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.239
+// Version: 4.240
 // Issues Fixed:
 //   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
@@ -401,7 +401,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.239';
+  const EXT_VERSION = '4.240';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -742,11 +742,17 @@
   }
 
   // (v4.236) Permanently delete a provider-rating row (cleanup of duplicate/detritus entries).
+  // (v4.239) ALSO tombstone the key in a `_deleted` map — otherwise tmDiscoverAndMergeProviderRatings
+  // (which runs on every modal open) immediately re-derives the provider from the ring buffer and
+  // re-adds it, making the trash icon appear to do nothing.
   function tmDeleteProviderRating(model, provider) {
     try {
       var ratings = tmGetProviderRatings();
       var key = model + '::' + provider;
-      if (ratings.hasOwnProperty(key)) { delete ratings[key]; tmSaveProviderRatings(ratings); }
+      if (ratings.hasOwnProperty(key)) delete ratings[key];
+      if (!ratings._deleted || typeof ratings._deleted !== 'object') ratings._deleted = {};
+      ratings._deleted[key] = true;
+      tmSaveProviderRatings(ratings);
     } catch (e) {}
   }
 
@@ -772,6 +778,8 @@
       var ratings = tmGetProviderRatings();
       var ring = tmReadCaptureRing();
       var changed = false;
+      // (v4.239) Tombstoned (user-deleted) keys must NOT be re-added by discovery.
+      var deleted = (ratings._deleted && typeof ratings._deleted === 'object') ? ratings._deleted : {};
 
       // (A) Ring buffer combos — providers that actually returned a response.
       for (var i = 0; i < ring.length; i++) {
@@ -786,7 +794,7 @@
         else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
         if (provider) {
           var key = model + '::' + provider;
-          if (!ratings[key]) { ratings[key] = { red: 0, green: 0, comment: '' }; changed = true; }
+          if (!ratings[key] && !deleted[key]) { ratings[key] = { red: 0, green: 0, comment: '' }; changed = true; }
         }
       }
 
@@ -806,7 +814,7 @@
             var lockProv = lock.label || lock.slug;
             if (!lockProv) continue;
             var lockKey = lockModel + '::' + lockProv;
-            if (!ratings[lockKey]) { ratings[lockKey] = { red: 0, green: 0, comment: '' }; changed = true; }
+            if (!ratings[lockKey] && !deleted[lockKey]) { ratings[lockKey] = { red: 0, green: 0, comment: '' }; changed = true; }
           }
         }
       } catch (e) {}
@@ -826,7 +834,7 @@
             }
           } catch (e) {}
           var mpKey = mpModel + '::' + mpLabel;
-          if (!ratings[mpKey]) { ratings[mpKey] = { red: 0, green: 0, comment: '' }; changed = true; }
+          if (!ratings[mpKey] && !deleted[mpKey]) { ratings[mpKey] = { red: 0, green: 0, comment: '' }; changed = true; }
         }
       } catch (e) {}
 
