@@ -5452,10 +5452,17 @@
     var box = document.createElement('div');
     box.style.cssText = 'width:70vw;max-width:900px;height:80vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
 
+    // (v4.240) Count tombstoned (user-deleted) provider keys so the restore button can show a badge.
+    var _tombCount = 0;
+    try { if (ratings._deleted && typeof ratings._deleted === 'object') { for (var _dk in ratings._deleted) { if (ratings._deleted.hasOwnProperty(_dk)) _tombCount++; } } } catch (e) {}
+
     var hdr = document.createElement('div');
     hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
     hdr.innerHTML = '<span style="font-weight:bold;font-size:13px;color:#8ef0a0;">📊 Provider Ratings</span>' +
-      '<button data-action="close-provider-ratings" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button>';
+      '<span>' +
+      '<button data-action="restore-deleted-providers" title="Restore rows you deleted (they were hidden, not lost). Re-runs discovery so deleted rows reappear." style="background:#2a3a4a;color:#a0c8ff;border:1px solid #3a5a7a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">♻ Restore deleted' + (_tombCount > 0 ? (' (' + _tombCount + ')') : '') + '</button>' +
+      '<button data-action="close-provider-ratings" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button>' +
+      '</span>';
     box.appendChild(hdr);
 
     var sub = document.createElement('div');
@@ -5678,6 +5685,18 @@
       var t = ev.target;
       if (t === overlay || (t.dataset && t.dataset.action === 'close-provider-ratings')) {
         close();
+        return;
+      }
+      // (v4.240) Restore deleted (tombstoned) provider rows: clear the tombstone map and re-run
+      // discovery so those rows reappear. Safety net in case a delete was a mistake or the row is
+      // now valid again.
+      if (t.dataset && t.dataset.action === 'restore-deleted-providers') {
+        ev.stopPropagation();
+        try {
+          var _rs = tmGetProviderRatings();
+          if (_rs && _rs._deleted) { delete _rs._deleted; tmSaveProviderRatings(_rs); }
+        } catch (e) {}
+        tmShowProviderRatingsModal(); // re-render (runs discovery, which re-adds the rows)
         return;
       }
       if (t.dataset && (t.dataset.action === 'rating-increment' || t.dataset.action === 'rating-decrement')) {
