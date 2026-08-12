@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.240
+// Version: 4.241
 // Issues Fixed:
 //   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
@@ -401,7 +401,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.240';
+  const EXT_VERSION = '4.241';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
