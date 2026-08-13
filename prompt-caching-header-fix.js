@@ -1,5 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.241
+// Version: 4.242
+// Issues Fixed:
+//   - v4.242: Fix 15 extended — Moonshot strict-schema repair. Moonshot AI's tool-schema
+//     validator 400s ('tools.function.parameters is not a valid moonshot flavored json schema,
+//     ... conflicting keywords found in anyOf with parent: keywords (default) are defined on the
+//     parent') whenever a property carries BOTH an anyOf/oneOf/allOf union AND a sibling keyword
+//     (default/type/enum/const) on the SAME node. FastMCP Optional[...] params emit exactly this
+//     shape (anyOf:[{...},{type:'null'}] with a parent-level default). tmFlattenAnyOfForStrictSchema()
+//     collapses such a union to a single concrete non-null branch, merging the parent default/
+//     description/title back in, so every provider (Moonshot included) accepts it. Semantic-
+//     preserving for the common Optional case; conservative otherwise.
 // Issues Fixed:
 //   - v4.236: Widget flashpoint cost fix — the persistent widget's top-row per-turn cost now
 //     shows table-calculated cost for providers returning no API cost (e.g. Moonshot/DeepSeek
@@ -401,7 +411,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.241';
+  const EXT_VERSION = '4.242';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7720,11 +7730,71 @@
     return 'string';
   }
 
+  // ---- Moonshot strict-schema repair (Fix 15 extension, v4.242) ----
+  // Moonshot AI's validator REJECTS a schema node that has an `anyOf` (or `oneOf`/`allOf`)
+  // union sitting alongside a SIBLING keyword — `default`, `type`, `enum`, or `const` — on the
+  // SAME node ('conflicting keywords found in anyOf with parent'). FastMCP Optional[...] params
+  // serialize to exactly this: { anyOf: [ {type:'string', default:'x'}, {type:'null'} ],
+  // default:'x', description:'...', title:'...' }. Lax providers (OpenAI/Anthropic/Fireworks)
+  // ignore the redundancy; Moonshot 400s the whole request.
+  //
+  // Fix: collapse the union to a SINGLE concrete branch. Prefer the first non-null,
+  // non-empty branch; merge the parent-level default/description/title back onto it; drop the
+  // union keyword and the now-redundant sibling keywords. This preserves the practical
+  // Optional[T] semantics (the argument is a T, and it's optional via `default`/not-in-required)
+  // while producing a shape every provider accepts. Returns 1 if it flattened this node, else 0.
+  function tmFlattenAnyOfForStrictSchema(prop) {
+    if (!prop || typeof prop !== 'object' || Array.isArray(prop)) return 0;
+    var unionKey = null;
+    if (Array.isArray(prop.anyOf)) unionKey = 'anyOf';
+    else if (Array.isArray(prop.oneOf)) unionKey = 'oneOf';
+    else if (Array.isArray(prop.allOf)) unionKey = 'allOf';
+    if (!unionKey) return 0;
+    // Only act when a CONFLICTING sibling keyword co-exists with the union (the exact thing
+    // Moonshot flags). If the union stands alone, leave it untouched (it's valid everywhere).
+    var hasConflictSibling = Object.prototype.hasOwnProperty.call(prop, 'default')
+      || Object.prototype.hasOwnProperty.call(prop, 'type')
+      || Object.prototype.hasOwnProperty.call(prop, 'enum')
+      || Object.prototype.hasOwnProperty.call(prop, 'const');
+    if (!hasConflictSibling) return 0;
+    var branches = prop[unionKey];
+    // Choose the first branch that is a concrete (non-null) schema object.
+    var chosen = null;
+    for (var bi = 0; bi < branches.length; bi++) {
+      var br = branches[bi];
+      if (br && typeof br === 'object' && !Array.isArray(br)) {
+        if (br.type === 'null') continue; // skip the Optional's null arm
+        chosen = br;
+        break;
+      }
+    }
+    if (!chosen) return 0; // nothing concrete to collapse to; leave as-is (don't corrupt)
+    // Preserve parent-level annotations the branch may lack.
+    var carry = ['default', 'description', 'title'];
+    for (var ci = 0; ci < carry.length; ci++) {
+      var ck = carry[ci];
+      if (Object.prototype.hasOwnProperty.call(prop, ck)
+          && !Object.prototype.hasOwnProperty.call(chosen, ck)) {
+        chosen[ck] = prop[ck];
+      }
+    }
+    // Rewrite `prop` in place to be exactly the chosen branch: remove the union + any
+    // now-conflicting parent siblings, then copy the branch's own keys over.
+    delete prop[unionKey];
+    var stripParent = ['type', 'enum', 'const', 'default', 'description', 'title'];
+    for (var si = 0; si < stripParent.length; si++) delete prop[stripParent[si]];
+    var bkeys = Object.keys(chosen);
+    for (var kj = 0; kj < bkeys.length; kj++) prop[bkeys[kj]] = chosen[bkeys[kj]];
+    return 1;
+  }
+
   function tmRepairSchemaTypesDeep(node) {
     // Walk a JSON-Schema subtree. Repair each `properties` map: any property object that has
     // NO type indicator (no `type`, `anyOf`, `oneOf`, `allOf`, `$ref`, `enum`, or `const`)
     // gets a single inferred string `type`. Recurse into nested schemas so deep params
     // (items, nested object properties, anyOf branches) are covered too.
+    // ALSO (v4.242): flatten any anyOf/oneOf/allOf that co-exists with a conflicting sibling
+    // keyword, so Moonshot's strict validator accepts the schema.
     var repaired = 0;
     if (!node || typeof node !== 'object') return 0;
     if (Array.isArray(node)) {
@@ -7736,6 +7806,10 @@
       for (var k = 0; k < keys.length; k++) {
         var prop = node.properties[keys[k]];
         if (prop && typeof prop === 'object' && !Array.isArray(prop)) {
+          // v4.242: Moonshot strict-schema fix FIRST — collapse a conflicting anyOf/oneOf/allOf
+          // (union + sibling default/type/enum/const) to a single concrete branch before the
+          // typeless-property check runs (flattening may turn it into a plain typed property).
+          repaired += tmFlattenAnyOfForStrictSchema(prop);
           var hasType = Object.prototype.hasOwnProperty.call(prop, 'type')
             || Object.prototype.hasOwnProperty.call(prop, 'anyOf')
             || Object.prototype.hasOwnProperty.call(prop, 'oneOf')
@@ -7781,7 +7855,7 @@
         }
       }
       if (total > 0) {
-        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' typeless tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type; fixes Fireworks/strict-provider 400s).');
+        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type, and/or flattened conflicting anyOf-with-sibling-keyword unions; fixes Fireworks/Moonshot/strict-provider 400s).');
         return true;
       }
       return false;
