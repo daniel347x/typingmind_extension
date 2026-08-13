@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.242
+// Version: 4.243
 // Issues Fixed:
 //   - v4.242: Fix 15 extended — Moonshot strict-schema repair. Moonshot AI's tool-schema
 //     validator 400s ('tools.function.parameters is not a valid moonshot flavored json schema,
@@ -411,7 +411,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.242';
+  const EXT_VERSION = '4.243';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7876,6 +7876,53 @@
   //   kind=ast,
   //   comment=Fix 6A entry point: runs key canonicalization on body.tools for EVERY intercepted JSON request, before any endpoint-specific branch.,
   // ]
+  // (v4.243) Strip reasoning.encrypted blocks that were minted by a DIFFERENT model than the one
+  // now being targeted. Such blocks are cryptographically sealed to their origin endpoint and can
+  // NEVER be replayed elsewhere — OpenRouter 404s with 'encrypted reasoning ... produced under a
+  // different model' (seen live: a Grok 4.5 block poisoned a switch to MiniMax M3). reasoning.summary
+  // is plain text and is KEPT. We only mutate the OUTBOUND payload; TypingMind's stored history keeps
+  // the block, so switching back to the origin model still works (we re-strip each time it's needed).
+  function tmStripForeignEncryptedReasoning(body, targetModel) {
+    var removed = 0;
+    try {
+      if (!body || !Array.isArray(body.messages) || !targetModel) return 0;
+      var tm = String(targetModel).toLowerCase();
+      var tmModel = tm.indexOf('/') !== -1 ? tm.split('/').pop() : tm; // strip provider prefix
+      for (var i = 0; i < body.messages.length; i++) {
+        var msg = body.messages[i];
+        if (!msg || !Array.isArray(msg.reasoning_details)) continue;
+        var kept = [];
+        for (var j = 0; j < msg.reasoning_details.length; j++) {
+          var rd = msg.reasoning_details[j];
+          if (!rd || rd.type !== 'reasoning.encrypted') { kept.push(rd); continue; }
+          // Derive the origin endpoint slug embedded in the sealed blob (base64 JSON, e.g.
+          // {"endpoint_slug":"x-ai/grok-4.5-20260708|xai"}). If the target IS the origin, keep it.
+          var keep = false;
+          try {
+            var data = String(rd.data || '');
+            var tail = data.split('.').pop();
+            var pad = tail.length % 4; if (pad) tail += new Array(5 - pad).join('=');
+            var json = (typeof atob === 'function') ? atob(tail) : '';
+            var m = json.match(/"endpoint_slug"\s*:\s*"([^"]+)"/);
+            if (m && m[1]) {
+              var slug = String(m[1]).toLowerCase().split('|')[0]; // 'x-ai/grok-4.5-20260708'
+              var slugModel = slug.indexOf('/') !== -1 ? slug.split('/').pop() : slug;
+              if (tmModel === slugModel || tm === slug) keep = true;
+            }
+          } catch (e) {}
+          if (keep) kept.push(rd); else removed++;
+        }
+        if (kept.length !== msg.reasoning_details.length) {
+          if (kept.length) msg.reasoning_details = kept; else delete msg.reasoning_details;
+        }
+      }
+    } catch (e) {}
+    if (removed > 0) {
+      try { console.log('🧹 [v' + EXT_VERSION + '] Stripped ' + removed + ' foreign reasoning.encrypted block(s) for target model ' + targetModel); } catch (e) {}
+    }
+    return removed;
+  }
+
   function tmStabilizeToolsOrdering(body) {
     try {
       if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
@@ -8734,6 +8781,8 @@
           tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
           tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
           if (toolIdSanitized || tally.historicToolInputs || tally.emptyMessageContent || tally.missingToolResults) modified = true;
+          // (v4.243) Also strip foreign reasoning.encrypted blocks on the Anthropic-skin path.
+          if (tmStripForeignEncryptedReasoning(body, body && body.model)) modified = true;
           repairTallyForThisCall = tally;
 
           if (modified) {
@@ -8763,6 +8812,13 @@
           // regardless of TypingMind's non-deterministic key ordering. Root-cause fix for the
           // GPT-5.x cache misses; also removes needless per-turn cache re-writes on Claude.
           if (tmStabilizeToolsOrdering(body)) {
+            modified = true;
+          }
+
+          // (v4.243) Strip reasoning.encrypted blocks minted by a DIFFERENT model than this target
+          // (e.g. a Grok block poisoning a switch to MiniMax). Generic — compares the target to the
+          // origin endpoint slug embedded in each sealed block; keeps same-origin blocks (resumption).
+          if (tmStripForeignEncryptedReasoning(body, model)) {
             modified = true;
           }
 
