@@ -1,6 +1,29 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.248
+// Version: 4.249
 // Issues Fixed:
+//   - v4.249: Two more junk-row sources removed, by two DIFFERENT mechanisms chosen for safety.
+//     (a) api.firecrawl.dev/v1/scrape -- a browser-side scraping-tool call, same class as the
+//     already-filtered ElevenLabs TTS endpoint: a real third-party API but NOT an LLM provider, so
+//     it carries no tokens, no cache and no per-token cost. Added to the capture-time host list.
+//     Deliberately an EXPLICIT host, not a heuristic: a 'looks non-LLM' rule could silently drop a
+//     genuine new provider, which is the one failure mode worth avoiding here.
+//     (b) The dead OpenRouter Anthropic-skin probe: TypingMind's DIRECT call to
+//     openrouter.ai/api/v1/messages, which the browser CORS-blocks -- it is the very call that
+//     triggers TypingMind's 'enable the proxy' prompt. That grant lasts 24h, so the probe
+//     reappears when it lapses (confirmed live: consecutive ring entries exactly 24h apart). The
+//     fetch throws, so tmCaptureResponse NEVER runs and the row is informationally empty: no
+//     status, no usage, no cost, and a display-computed MISS. Unlike (a) this canNOT be filtered at
+//     capture time -- nothing about the request is knowable as doomed before it fails -- so it is a
+//     DISPLAY filter folded into the existing retry-visibility toggle (relabeled 'Noise'), which
+//     keeps the rows COUNTED and one click from visible rather than silently discarded.
+//     WHY (b) CANNOT HIDE A REAL CHARGE: usage/cache/cost are stamped ONLY in tmCaptureResponse,
+//     so a row that never received a response cannot carry billing data. tmIsDeadProxyProbeRow
+//     additionally requires ALL of: direct (never cors-proxy) OpenRouter /v1/messages URL, no
+//     response_status AND no response_ok, no usage/anthropic-usage/usage-segments, no table cost,
+//     and age > 30s so the CURRENT in-flight turn is never hidden while awaiting its response.
+//     Note these probe rows never polluted the cache ledger or cost totals (no response = no
+//     stamping event); they were purely visual clutter, unlike the v4.245 /api/version rows, which
+//     returned HTTP 200 and so DID write MISSes and clobber widget status.
 //   - v4.248: Ring-row cost disambiguation. A ring entry shows TWO pink dollar amounts and neither
 //     said which was which: the smaller one on the info row (row 2) is the running SESSION total,
 //     the larger one at the left of the cost row is THIS single payload's inference cost. Two cues
@@ -489,7 +512,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.248';
+  const EXT_VERSION = '4.249';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2402,7 +2425,7 @@
       // RELATIVE path '/api/check-cors' (no domain, so the 'typingmind' substring check misses it),
       // with the real provider endpoint only present in the body. No model/usage/cost — pure noise.
       if (!isTmCorsProxy &&
-          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io') || u.includes('/api/check-cors') || u.includes('/api/version'))) {
+          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io') || u.includes('api.firecrawl.dev') || u.includes('/api/check-cors') || u.includes('/api/version'))) {
         return null;
       }
 
@@ -6712,6 +6735,50 @@
     return false;
   }
 
+  // (v4.249) A DEAD PROXY PROBE row: TypingMind's DIRECT attempt at OpenRouter's Anthropic-skin
+  // endpoint (/api/v1/messages), which the browser CORS-blocks. It is the exact call that makes
+  // TypingMind pop its 'enable the proxy' prompt; that grant lasts 24h, so the probe reappears
+  // whenever it lapses (observed live as ring entries precisely 24h apart). The fetch throws, so
+  // tmCaptureResponse never runs and the row carries nothing at all: no status, no usage, no cost,
+  // and a MISS computed purely from the absence of cache evidence.
+  //
+  // WHY THIS CANNOT HIDE A REAL CHARGE (read before loosening any clause): usage, cache and cost
+  // are stamped ONLY inside tmCaptureResponse. A row that never received a response is therefore
+  // STRUCTURALLY incapable of carrying billing data. Every clause below is required, so anything
+  // that actually reached a provider -- any response status at all, any usage object, any usage
+  // segment, any calculated cost -- fails the test and stays visible. The 30s age floor exists so
+  // the CURRENT in-flight turn is never hidden while it waits for its response. And because this
+  // feeds the (relabeled) 'Noise' toggle rather than deleting anything, matched rows remain counted
+  // on the button and one click from view.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmIsDeadProxyProbeRow-dppr,
+  //   role=__lambdao_1.tmIsDeadProxyProbeRow,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Detects the CORS-blocked direct OpenRouter Anthropic-skin probe (the 'enable the proxy' call, recurring per 24h grant lapse) for the Noise-visibility filter. Peer of tmIsRetryRow. Safe because usage/cost are stamped ONLY in tmCaptureResponse, so a row with no response at all cannot carry billing data; all clauses are required and a 30s age floor protects the in-flight turn.,
+  // ]
+  function tmIsDeadProxyProbeRow(cap) {
+    try {
+      if (!cap) return false;
+      var u = String(cap.url || '').toLowerCase();
+      // Direct OpenRouter Anthropic-skin ONLY -- never the cors-proxy, which carries real traffic.
+      if (u.indexOf('/api/cors-proxy') !== -1) return false;
+      if (u.indexOf('openrouter.ai') === -1 || u.indexOf('/v1/messages') === -1) return false;
+      // No response was EVER recorded (the fetch threw). Compaction never nulls these two fields,
+      // so this stays true for old rows -- it is not confused by a stripped body.
+      if (cap.response_status != null || cap.response_ok != null) return false;
+      // No usage/cost evidence of any kind.
+      if (cap.response_usage || cap.response_anthropic_usage) return false;
+      if (cap.response_usage_segments && cap.response_usage_segments.length) return false;
+      if (cap._table_cost != null || cap._cost_calculated) return false;
+      // Never hide a request that may still be in flight awaiting its response.
+      var probeTs = Date.parse(cap.ts || '');
+      if (!isFinite(probeTs) || (Date.now() - probeTs) < 30000) return false;
+      return true;
+    } catch (e) {}
+    return false;
+  }
+
   // v4.163: Extract the identity key for a capture, preferring stamped _identity.
   function tmCapIdentityKey(cap) {
     if (cap._identity) return cap._identity.key || '';
@@ -6987,7 +7054,9 @@
     var hiddenRetryCount = 0;
     if (tmGetHideRetries()) {
       var beforeHide = items.length;
-      items = items.filter(function(cap) { return !tmIsRetryRow(cap); });
+      // (v4.249) The toggle now hides BOTH noise categories -- 429/auto-retry rows and dead
+      // CORS-blocked proxy probes -- so hiddenRetryCount reports the combined total.
+      items = items.filter(function(cap) { return !tmIsRetryRow(cap) && !tmIsDeadProxyProbeRow(cap); });
       hiddenRetryCount = beforeHide - items.length;
     }
 
@@ -7071,8 +7140,8 @@
     // spam; click to reveal them. Shows a live count of hidden rows when hiding is active.
     var hideRetries = tmGetHideRetries();
     var retryBtnLabel = hideRetries
-      ? ('⏳ Retries: hidden' + (hiddenRetryCount > 0 ? (' (' + hiddenRetryCount + ')') : ''))
-      : '⏳ Retries: shown';
+      ? ('⏳ Noise: hidden' + (hiddenRetryCount > 0 ? (' (' + hiddenRetryCount + ')') : ''))
+      : '⏳ Noise: shown';
     var retryBtnStyle = hideRetries
       ? 'background:#3a3a3a;color:#bbb;border:1px solid #555;'
       : 'background:#5a3a6e;color:#fff;border:1px solid #7a5aae;';
