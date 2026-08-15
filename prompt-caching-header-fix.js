@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.246
+// Version: 4.247
 // Issues Fixed:
+//   - v4.247: Listener-leak cleanup completed. v4.246 neutralized the CONSEQUENCE of leaked
+//     child-modal Escape listeners (the ring modal's guard no longer trusts state a leaked handler
+//     can mutate); this removes the leak itself. The ratings modal leaked one document keydown
+//     listener per family toggle (it re-renders by removing its overlay and calling itself again,
+//     never removing the listener) -- unbounded growth across a long session. Same self-uninstall
+//     guard now used by the cost-editor/json-viewer handlers: if the handler's own overlay is no
+//     longer in the DOM, it is a leak, so it detaches itself and returns. Also applied to the
+//     error-popup and provider-set handlers, which leak one copy per reopen.
 //   - v4.246: Set Costs modal — collapsible model families (mirrors the v4.236 Rate Providers
 //     expanders). With ~100+ model→provider rows the flat list was unusable. Persistence is
 //     deliberately DIFFERENT from the ratings modal: the ratings modal stores the FULL expanded
@@ -470,7 +478,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.246';
+  const EXT_VERSION = '4.247';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2365,7 +2373,7 @@
   //   role=__lambdao_1.tmCaptureFetchCall,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs/check-cors.,
+  //   comment=Capture-time record creation. Stamps _model + session IDs immediately so identity survives body stripping/skeletonization; _model falls back to the URL path (/models/<name>) for Gemini-native traffic, which carries no body.model. Noise filter excludes localhost/typingmind-telemetry/ElevenLabs plus ALL same-origin relative paths (TypingMind's own backend: /api/version, /api/check-cors, ...) EXCEPT /api/cors-proxy, which carries real LLM traffic.,
   // ]
   function tmCaptureFetchCall(url, options, convIdForThisCall, vendorForThisCall, repairTallyForThisCall) {
     if (!tmCaptureEnabled()) return null;
@@ -2558,7 +2566,7 @@
   //   role=__lambdao_1.tmExtractKnownUsageEvidence,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Fix 10: provider-agnostic deep-walk of a response object for known usage/cost/cache field shapes so unfamiliar providers still surface observability.,
+  //   comment=Fix 10: provider-agnostic deep-walk of a response object for known usage/cost/cache field shapes so unfamiliar providers still surface observability. Normalizes OpenAI/Anthropic/OpenRouter/Gemini spellings (incl. Gemini's promptTokenCount/totalTokenCount/candidatesTokenCount+thoughtsTokenCount) into prompt_tokens/total_tokens/completion_tokens/cache_read_input_tokens — a MISSING spelling here does not just lose a number, it silently breaks the hit/miss ratio test and the cost calculation downstream.,
   // ]
   function tmExtractKnownUsageEvidence(root) {
     if (!root || typeof root !== 'object') return null;
@@ -5427,7 +5435,12 @@
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
     }
-    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    function onKey(ev) {
+      // (v4.247) Self-uninstall a leaked copy: this modal is replaced (overlay removed, function
+      // re-called) without its listener being detached, so one copy leaks per reopen.
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); }
+    }
     overlay.addEventListener('click', function() { close(); });
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     document.addEventListener('keydown', onKey, true);
@@ -5586,7 +5599,12 @@
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
     }
-    function onKey(ev) { if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); } }
+    function onKey(ev) {
+      // (v4.247) Self-uninstall a leaked copy: this modal is replaced (overlay removed, function
+      // re-called) without its listener being detached, so one copy leaks per reopen.
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); }
+    }
     overlay.addEventListener('click', function() { close(); });
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     cancelBtn.addEventListener('click', function(ev) { ev.stopPropagation(); close(); });
@@ -5860,6 +5878,12 @@
       setTimeout(function() { tmPromptActive = false; }, 100);
     }
     function onKey(ev) {
+      // (v4.247) SELF-UNINSTALL. This modal re-renders by removing its overlay and calling itself
+      // again (every family toggle, every rating +/-, every delete) WITHOUT removing this
+      // listener -- so each toggle leaked a permanent copy. If our overlay is gone we are a leak:
+      // detach and do nothing. (v4.246 already made the ring modal immune to what these leaked
+      // copies did to its Escape guard; this stops the unbounded accumulation itself.)
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
       if (ev.key === 'Escape' || ev.keyCode === 27) {
         ev.stopPropagation();
         if (ev.preventDefault) ev.preventDefault();
@@ -6268,7 +6292,7 @@
   //   role=__lambdao_1.tmCaptureModel,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Canonical model resolution for a capture: _model → body/skeleton → response body. Prefer cap._identity when available.,
+  //   comment=Canonical model resolution for a capture: _model → body/skeleton → response body.model → response body.modelVersion → URL /models/<name> (the last two are the Gemini-native fallbacks, and they back-fill pre-v4.244 ring rows). Prefer cap._identity when available. An empty return silently disables cost discovery AND the client-side cost calculator.,
   // ]
   function tmCaptureModel(cap) {
     if (!cap) return '';
