@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.250
+// Version: 4.251
 // Issues Fixed:
+//   - v4.251: Two ring-row legibility tweaks.
+//     (a) The v4.248 session-total tag now HUGS its dollar amount. The gap was not padding: the
+//     amount lived in its own min-width:55px inline-block, so a short value like '$0.04' left the
+//     tag stranded at the 55px mark instead of beside the digits. Fixed by collapsing amount + tag
+//     into ONE inline-block that keeps the min-width (so the column still aligns across rows,
+//     including em-dash rows), with the tag emitted immediately after the digits with NO
+//     intervening space, shortened to '(T)' and given a slightly brighter tint so the pair reads as
+//     a single field. Column alignment downstream is preserved; the field is simply narrower now,
+//     consistently on every row.
+//     (b) Model name font 13px -> 21px (+62%). It is THE primary identifying field when scrolling
+//     the ring, but sat visually dominated by the button row directly above it. line-height nudged
+//     1.1 -> 1.15 so taller glyphs cannot clip. Row height grows slightly; that is intended.
 //   - v4.250: Gemini SESSION IDENTITY — the third and last head of the v4.244 Gemini hydra. Native
 //     Gemini rows showed '—' for the session total and had NO clickable session hash (so the
 //     session could not be named), while every other provider worked. ONE root cause: BOTH
@@ -536,7 +548,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.250';
+  const EXT_VERSION = '4.251';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7402,13 +7414,22 @@
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
-      // (v4.248) '(TOT)' disambiguates the row's two pink dollar amounts: THIS one is the running
-      // SESSION total for the identity (smaller font, info row); the larger unlabeled one on the
-      // cost row below is this single payload's own inference cost. Labeling one of the pair is
-      // enough. The tag lives in its own fixed min-width inline-block -- empty string when there is
-      // no session total -- so column alignment is identical on '—' rows and '$x.xx (TOT)' rows.
-      var sessionCostStr = '<span title="session cost (running total for this session identity)" style="display:inline-block;min-width:55px;color:#ffccd5;font-size:11px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>' +
-        '<span title="running SESSION total for this identity — NOT the cost of this single turn" style="display:inline-block;min-width:30px;padding-right:6px;color:#c99aa4;font-size:9px;font-weight:600;">' + (sessionCost > 0 ? '(TOT)' : '') + '</span>';
+      // (v4.248) A '(T)' tag disambiguates the row's two pink dollar amounts: THIS one is the
+      // running SESSION total for the identity (smaller font, info row); the larger unlabeled one on
+      // the cost row below is this single payload's own inference cost. Labeling one of the pair is
+      // enough, so the per-payload cost stays clean.
+      // (v4.251) The tag now HUGS the digits. Previously the amount had its own min-width:55px
+      // inline-block and the tag followed in a second box, so a short value ('$0.04') left the tag
+      // stranded at the 55px mark -- far enough right that it read as a separate field and did not
+      // catch the eye. Now ONE inline-block carries both: the min-width still reserves the column
+      // (identical alignment on '—' rows and '$x.xx(T)' rows, and for everything to the right), while
+      // the tag is concatenated directly after the digits with NO space, so they read as one field.
+      // nowrap keeps them on the same line no matter how narrow the modal gets.
+      var sessionCostStr = '<span title="running SESSION total for this identity — NOT the cost of this single turn" style="display:inline-block;min-width:62px;padding-right:6px;color:#ffccd5;font-size:11px;white-space:nowrap;">' +
+        (sessionCost > 0
+          ? ('$' + sessionCost.toFixed(2) + '<span style="color:#e8b0bd;font-size:9px;font-weight:700;">(T)</span>')
+          : '—') +
+        '</span>';
       var cost12h = (typeof cap._cost_12h === 'number') ? cap._cost_12h : null;
       var cost24h = (typeof cap._cost_24h === 'number') ? cap._cost_24h : null;
       // (v4.230) Show whenever the field exists (including $0.00) — misses must not hide these.
@@ -7433,7 +7454,10 @@
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
                 : '') +
-              (capModelHtml ? ('<span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:13px;line-height:1.1;display:inline-block;">' + capModelHtml + '</span>') : '') +
+              // (v4.251) 13px -> 21px (+62%). This is THE field being scanned when scrolling the
+              // ring, yet the button row directly above it dominated visually. line-height 1.1 ->
+              // 1.15 so the taller glyphs cannot clip; a slightly taller row is an accepted cost.
+              (capModelHtml ? ('<span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:21px;line-height:1.15;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
       // (v4.206) Provider-routing dropdown -- MOVED into the button row above (v4.212).
