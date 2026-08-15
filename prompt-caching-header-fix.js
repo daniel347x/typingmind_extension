@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.247
+// Version: 4.248
 // Issues Fixed:
+//   - v4.248: Ring-row cost disambiguation. A ring entry shows TWO pink dollar amounts and neither
+//     said which was which: the smaller one on the info row (row 2) is the running SESSION total,
+//     the larger one at the left of the cost row is THIS single payload's inference cost. Two cues
+//     added. (1) A small '(TOT)' tag sits to the right of the session total -- labeling just ONE of
+//     the pair is sufficient to resolve the ambiguity, so the per-payload cost stays unlabeled and
+//     uncluttered. The tag is rendered in a fixed min-width inline-block (empty when there is no
+//     session total) so the row's column alignment is unchanged either way. (2) The per-payload
+//     cost is nudged 1/3 of the way from the shared pink #ffccd5 toward the persistent widget's
+//     distinctive mud-orange per-turn cost #ff6b3d, giving #ffaca2 -- rgb(255,204,213) ->
+//     rgb(255,172,162), i.e. R unchanged, G/B moved one third. Deliberately only a THIRD: going
+//     all the way to #ff6b3d would compete with the red MISS text, which must keep standing out.
 //   - v4.247: Listener-leak cleanup completed. v4.246 neutralized the CONSEQUENCE of leaked
 //     child-modal Escape listeners (the ring modal's guard no longer trusts state a leaked handler
 //     can mutate); this removes the leak itself. The ratings modal leaked one document keydown
@@ -478,7 +489,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.247';
+  const EXT_VERSION = '4.248';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7254,7 +7265,13 @@
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
       var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
-      var sessionCostStr = '<span title="session cost" style="display:inline-block;min-width:55px;color:#ffccd5;font-size:11px;padding-right:6px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>';
+      // (v4.248) '(TOT)' disambiguates the row's two pink dollar amounts: THIS one is the running
+      // SESSION total for the identity (smaller font, info row); the larger unlabeled one on the
+      // cost row below is this single payload's own inference cost. Labeling one of the pair is
+      // enough. The tag lives in its own fixed min-width inline-block -- empty string when there is
+      // no session total -- so column alignment is identical on '—' rows and '$x.xx (TOT)' rows.
+      var sessionCostStr = '<span title="session cost (running total for this session identity)" style="display:inline-block;min-width:55px;color:#ffccd5;font-size:11px;">' + (sessionCost > 0 ? ('$' + sessionCost.toFixed(2)) : '—') + '</span>' +
+        '<span title="running SESSION total for this identity — NOT the cost of this single turn" style="display:inline-block;min-width:30px;padding-right:6px;color:#c99aa4;font-size:9px;font-weight:600;">' + (sessionCost > 0 ? '(TOT)' : '') + '</span>';
       var cost12h = (typeof cap._cost_12h === 'number') ? cap._cost_12h : null;
       var cost24h = (typeof cap._cost_24h === 'number') ? cap._cost_24h : null;
       // (v4.230) Show whenever the field exists (including $0.00) — misses must not hide these.
@@ -7297,9 +7314,9 @@
       } else if (cap._cost_init_needed) {
         costHtml = '<span title="No pricing entry existed (or has all zeros) \u2014 auto-created. Open Set Costs to populate." style="font-size:14px;">\uD83C\uDF31</span> <span style="opacity:0.4;">\u00b7</span> ';
       } else if (costVal > 0) {
-        costHtml = '<span title="inference cost" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">\u00b7</span> ';
+        costHtml = '<span title="inference cost" style="color:#ffaca2;font-size:14px;font-weight:600;">$' + costVal.toFixed(3) + '</span> <span style="opacity:0.4;">\u00b7</span> ';
       } else if (typeof cap._table_cost === 'number' && cap._table_cost > 0) {
-        costHtml = '<span title="cost calculated from global pricing table" style="color:#ffccd5;font-size:14px;font-weight:600;">$' + cap._table_cost.toFixed(3) + '</span> <span title="calculated by extension (not from API)" style="color:#a0d0ff;font-size:10px;">\u25CB</span> <span style="opacity:0.4;">\u00b7</span> ';
+        costHtml = '<span title="cost calculated from global pricing table" style="color:#ffaca2;font-size:14px;font-weight:600;">$' + cap._table_cost.toFixed(3) + '</span> <span title="calculated by extension (not from API)" style="color:#a0d0ff;font-size:10px;">\u25CB</span> <span style="opacity:0.4;">\u00b7</span> ';
       }
 
       // (v4.197) Inline provider badge (light green) at the right end of the cost/repair/cache row,
