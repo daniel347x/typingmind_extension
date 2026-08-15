@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.251
+// Version: 4.252
 // Issues Fixed:
+//   - v4.252: Ring-row polish, final pass. The '(T)' session-total tag gets a NON-BREAKING space
+//     before it (it was running straight into the digits) and shifts from the pink family to a
+//     near-white light gray, so it reads as a LABEL on the amount rather than as part of the
+//     number. &nbsp; specifically -- with the field already nowrap, a regular space would be
+//     collapsible and is not worth the ambiguity. Combined-field min-width 62px -> 68px to absorb
+//     the extra space so the column still aligns for the widest amounts. Model name 21px -> 23px.
 //   - v4.251: Two ring-row legibility tweaks.
 //     (a) The v4.248 session-total tag now HUGS its dollar amount. The gap was not padding: the
 //     amount lived in its own min-width:55px inline-block, so a short value like '$0.04' left the
@@ -548,7 +554,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.251';
+  const EXT_VERSION = '4.252';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7422,12 +7428,17 @@
       // inline-block and the tag followed in a second box, so a short value ('$0.04') left the tag
       // stranded at the 55px mark -- far enough right that it read as a separate field and did not
       // catch the eye. Now ONE inline-block carries both: the min-width still reserves the column
-      // (identical alignment on '—' rows and '$x.xx(T)' rows, and for everything to the right), while
-      // the tag is concatenated directly after the digits with NO space, so they read as one field.
-      // nowrap keeps them on the same line no matter how narrow the modal gets.
-      var sessionCostStr = '<span title="running SESSION total for this identity — NOT the cost of this single turn" style="display:inline-block;min-width:62px;padding-right:6px;color:#ffccd5;font-size:11px;white-space:nowrap;">' +
+      // (identical alignment on '—' rows and '$x.xx (T)' rows, and for everything to the right),
+      // while the tag sits immediately beside the digits inside that one box, so they read as a
+      // single field. nowrap keeps them on the same line no matter how narrow the modal gets.
+      // (v4.252) A NON-BREAKING space separates tag from digits (they were running together), and
+      // the tag is near-white light gray rather than pink -- deliberately OUTSIDE the amount's color
+      // family so it reads as a LABEL on the number, not a part of it. &nbsp; rather than a plain
+      // space: the field is already nowrap, so a collapsible space buys nothing and risks nothing
+      // being rendered at all.
+      var sessionCostStr = '<span title="running SESSION total for this identity — NOT the cost of this single turn" style="display:inline-block;min-width:68px;padding-right:6px;color:#ffccd5;font-size:11px;white-space:nowrap;">' +
         (sessionCost > 0
-          ? ('$' + sessionCost.toFixed(2) + '<span style="color:#e8b0bd;font-size:9px;font-weight:700;">(T)</span>')
+          ? ('$' + sessionCost.toFixed(2) + '<span style="color:#eaeaf0;font-size:9px;font-weight:700;">&nbsp;(T)</span>')
           : '—') +
         '</span>';
       var cost12h = (typeof cap._cost_12h === 'number') ? cap._cost_12h : null;
@@ -7454,10 +7465,11 @@
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
                 : '') +
-              // (v4.251) 13px -> 21px (+62%). This is THE field being scanned when scrolling the
-              // ring, yet the button row directly above it dominated visually. line-height 1.1 ->
-              // 1.15 so the taller glyphs cannot clip; a slightly taller row is an accepted cost.
-              (capModelHtml ? ('<span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:21px;line-height:1.15;display:inline-block;">' + capModelHtml + '</span>') : '') +
+              // (v4.251, v4.252) 13px -> 21px -> 23px (+77% overall). This is THE field being
+              // scanned when scrolling the ring, yet the button row directly above it dominated
+              // visually. line-height 1.1 -> 1.15 so the taller glyphs cannot clip; a slightly
+              // taller row is an accepted cost.
+              (capModelHtml ? ('<span title="' + modelColorTooltip + '" style="font-weight:bold;color:' + modelColor + ';font-size:23px;line-height:1.15;display:inline-block;">' + capModelHtml + '</span>') : '') +
               '</div>';
 
       // (v4.206) Provider-routing dropdown -- MOVED into the button row above (v4.212).
