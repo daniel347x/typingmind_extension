@@ -1,6 +1,26 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.243
+// Version: 4.244
 // Issues Fixed:
+//   - v4.244: Gemini NATIVE (generativelanguage.googleapis.com) observability repair — two
+//     independent root causes that together produced 'every turn is a MISS and costs nothing'
+//     on gemini-3.7-flash (i.e. money draining invisibly, the worst possible failure mode).
+//     RC-1 (half-mapped usage fields): tmExtractKnownUsageEvidence recognized Gemini's
+//     cachedContentTokenCount but NOT promptTokenCount / totalTokenCount / candidatesTokenCount,
+//     so the normalized usage object held cached tokens and nothing else. The cache BADGE showed
+//     a correct ~498K while tmIsSignificantCacheHit had no denominator at all (input_tokens ||
+//     prompt_tokens || total_tokens all undefined) -> false -> MISS on a genuine 99.2% hit, every
+//     turn. Also added a real completion_tokens extraction (never present for ANY provider
+//     spelling before), summing Gemini's separately-reported thoughtsTokenCount since thinking is
+//     billed as output. RC-2 (empty model): a native Gemini request body has NO `model` field —
+//     the model lives in the URL path (/v1beta/models/gemini-3.7-flash:streamGenerateContent) —
+//     and the response says `modelVersion`, not `model`, so tmCaptureModel resolved ''. That empty
+//     string silently disabled the ENTIRE cost pipeline: tmDiscoverAndMergeProviderCosts skips the
+//     row ('if (!model) continue') so no Set Costs entry was ever created to price, and
+//     tmCaptureResponse's client-side cost block is gated on idModel so it never ran (no cost, not
+//     even a _cost_init_needed flag). Google returns no cost field of its own, so there was no
+//     other cost source. Model is now derived from the URL at capture time (x-target-endpoint
+//     header checked too, for cors-proxied traffic) with modelVersion/URL fallbacks in
+//     tmCaptureModel that ALSO back-fill ring rows captured before this version.
 //   - v4.242: Fix 15 extended — Moonshot strict-schema repair. Moonshot AI's tool-schema
 //     validator 400s ('tools.function.parameters is not a valid moonshot flavored json schema,
 //     ... conflicting keywords found in anyOf with parent: keywords (default) are defined on the
@@ -411,7 +431,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.243';
+  const EXT_VERSION = '4.244';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2318,6 +2338,27 @@
         record.protocol = tmDetectProtocol(url, parsed);
         record._model = (parsed && parsed.model) ? String(parsed.model) : null;
 
+        // (v4.244) Gemini-native traffic carries NO body.model — the model lives in the URL path
+        // (/v1beta/models/gemini-3.7-flash:streamGenerateContent). An empty model is the kill
+        // switch for the ENTIRE cost pipeline: tmDiscoverAndMergeProviderCosts skips the row
+        // ('if (!model) continue') so no Set Costs entry is ever created for the user to price,
+        // and tmCaptureResponse's client-side cost block is gated on idModel so it never runs —
+        // real money spent, silent $0 reported. It also poisons the identity key (sid::::host::
+        // direct), smearing session cost/hue across models. Derive it from the URL; check the
+        // cors-proxy x-target-endpoint header first, since proxied traffic hides the real URL
+        // there while the request URL is just typingmind.com/api/cors-proxy.
+        if (!record._model) {
+          try {
+            var modelUrl = String(url || '');
+            try {
+              var tgtEndpoint = headersNorm && (headersNorm['x-target-endpoint'] || headersNorm['X-Target-Endpoint']);
+              if (tgtEndpoint && /\/models\//i.test(String(tgtEndpoint))) modelUrl = String(tgtEndpoint);
+            } catch (eTgt) {}
+            var urlModelMatch = modelUrl.match(/\/models\/([^\/:?#]+)/i);
+            if (urlModelMatch && urlModelMatch[1]) record._model = decodeURIComponent(urlModelMatch[1]);
+          } catch (eUrlModel) {}
+        }
+
         // (v4.90) Always derive and store session IDs on every capture record.
         try {
           record.session_id = tmDeriveStableSessionId(parsed);
@@ -2449,8 +2490,28 @@
       setIfAbsent('cache_creation_input_tokens', write);
       setIfAbsent('cost', cost);
       // (v4.120) Preserve prompt_tokens / total_tokens so the hit/miss ratio check works.
-      setIfAbsent('prompt_tokens', firstNum(obj, ['prompt_tokens', 'promptTokens']));
-      setIfAbsent('total_tokens', firstNum(obj, ['total_tokens', 'totalTokens']));
+      // (v4.244) GEMINI-NATIVE SPELLINGS. The Google generativelanguage API reports
+      // promptTokenCount / totalTokenCount / candidatesTokenCount inside usageMetadata. Only its
+      // cachedContentTokenCount was recognized here, so the cache BADGE rendered a correct value
+      // while tmIsSignificantCacheHit had NO denominator (input_tokens || prompt_tokens ||
+      // total_tokens all undefined) -> isSignificant() bailed -> EVERY Gemini turn reported MISS
+      // on a real ~99% hit. Gemini's promptTokenCount INCLUDES the cached tokens, matching
+      // prompt_tokens semantics, so both the ratio test and (prompt - cached) new-input math work.
+      setIfAbsent('prompt_tokens', firstNum(obj, ['prompt_tokens', 'promptTokens', 'promptTokenCount']));
+      setIfAbsent('total_tokens', firstNum(obj, ['total_tokens', 'totalTokens', 'totalTokenCount']));
+      // (v4.244) completion/output tokens were never extracted for ANY provider spelling, so
+      // tmCalculateCostFromTable could only reach output via its total-minus-prompt fallback (and
+      // for Gemini, with no total either, it billed nothing at all). Gemini bills thinking as
+      // output but reports it SEPARATELY from candidates (totalTokenCount = promptTokenCount +
+      // candidatesTokenCount + thoughtsTokenCount), so the two are summed for the candidates case.
+      var completionTok = firstNum(obj, ['completion_tokens', 'completionTokens', 'output_tokens', 'outputTokens', 'candidatesTokenCount']);
+      if (completionTok != null) {
+        if (obj.candidatesTokenCount != null) {
+          var thoughtsTok = firstNum(obj, ['thoughtsTokenCount', 'thoughts_token_count', 'reasoning_tokens', 'reasoningTokens']);
+          if (thoughtsTok != null) completionTok += thoughtsTok;
+        }
+        setIfAbsent('completion_tokens', completionTok);
+      }
       if (read != null || write != null) {
         out.prompt_tokens_details = out.prompt_tokens_details || {};
         if (read != null) out.prompt_tokens_details.cached_tokens = read;
@@ -6058,6 +6119,20 @@
     try {
       if (cap.response_body && cap.response_body.model) return String(cap.response_body.model);
     } catch (e3) {}
+    // (v4.244) GEMINI FALLBACKS. A native Gemini response reports `modelVersion`, not `model`, and
+    // the request model lives only in the URL path — so these captures resolved to '' and were
+    // dropped by BOTH cost discovery and the client-side cost calculator. Reading them here also
+    // BACK-FILLS ring rows captured before v4.244 began stamping _model, so the Set Costs modal
+    // populates from existing history instead of only from future turns.
+    try {
+      if (cap.response_body && cap.response_body.modelVersion) return String(cap.response_body.modelVersion);
+    } catch (e4) {}
+    try {
+      if (cap.url) {
+        var capUrlModel = String(cap.url).match(/\/models\/([^\/:?#]+)/i);
+        if (capUrlModel && capUrlModel[1]) return decodeURIComponent(capUrlModel[1]);
+      }
+    } catch (e5) {}
     return '';
   }
 
