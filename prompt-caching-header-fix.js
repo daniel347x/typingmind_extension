@@ -1,6 +1,45 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.244
+// Version: 4.246
 // Issues Fixed:
+//   - v4.246: Set Costs modal — collapsible model families (mirrors the v4.236 Rate Providers
+//     expanders). With ~100+ model→provider rows the flat list was unusable. Persistence is
+//     deliberately DIFFERENT from the ratings modal: the ratings modal stores the FULL expanded
+//     set, whereas Set Costs stores only the SINGLE most-recently-expanded family
+//     (tm_provider_costs_expanded_v1), so the modal always opens fully COLLAPSED except that one
+//     family — even if several were open when it was last closed. Multiple families may still be
+//     open during a visit (tracked in memory only, reset on each fresh open).
+//   - v4.246: JSON viewer modal gets an explicit '📋 Copy' button (clipboard API with a
+//     textarea/execCommand fallback, and a ✓/⚠ flash confirmation) so the pretty-printed contents
+//     can be handed to an agent without manually selecting text.
+//   - v4.246: Escape now RELIABLY closes the ring-buffer modal. The handler existed since v4.221
+//     but was being defeated: child modals (ratings/cost-editor/json-viewer/...) re-render by
+//     removing their overlay and calling themselves again WITHOUT removing their document-level
+//     capture keydown listener. Those leaked listeners keep firing forever, and each one calls its
+//     close(), which sets tmPayloadCaptureSuppressEscapeUntil = now+1500 — so the ring modal's
+//     keyup handler saw a 'suppressed' window on EVERY subsequent Escape and ate it. One family
+//     toggle in Rate Providers was enough to kill Escape for the rest of the page session. Fixed
+//     at a SINGLE point instead of patching six modals: a window-CAPTURE keydown listener
+//     snapshots {child-overlay-open, tmPromptActive, suppressed} BEFORE any document-level
+//     (leaked) listener can run, and the keyup handler decides from that snapshot. A spurious
+//     suppress set DURING the same keypress by a leaked handler is therefore invisible, while the
+//     legitimate guards (native prompt() in flight, held-key repeat after a real child close, a
+//     child modal genuinely open) all still win. tmAnyChildModalOpen() is DOM-authoritative, so
+//     the state cannot get permanently stuck the way the old boolean could.
+//   - v4.245: Junk ring rows from TypingMind's OWN backend eliminated (generalized v4.194).
+//     '/api/version' (the deployment-SHA poll — response body is just {vercelGitSHA}) was landing
+//     in the ring as an information-free row: model '', protocol 'unknown', no usage, permanent
+//     MISS. Cause is identical to v4.194's '/api/check-cors': TypingMind calls its own backend
+//     with a RELATIVE path, so the u.includes('typingmind') HOST check never matches. Not merely
+//     cosmetic — each such row is an HTTP 200, so capWidgetFeed was true and it (a) wrote a MISS
+//     into the cache-outcome ledger (empty identity, padding miss totals) and (b) replaced
+//     tmMostRecentPayloadStatus, transiently clobbering the persistent widget's model/provider/hue
+//     with junk. Fixed generally: a same-origin RELATIVE path can only reach the app's own server,
+//     so it can never be a provider endpoint and is now filtered wholesale. THE ONE EXCEPTION is
+//     TypingMind's cors-proxy, which DOES carry real LLM traffic — its exemption is now
+//     HOST-AGNOSTIC ('/api/cors-proxy' rather than 'typingmind.com/api/cors-proxy') so it stays
+//     captured even if TypingMind ever calls it relatively. Unknown relative paths are logged ONCE
+//     each (console.debug) so a genuinely new traffic-carrying endpoint reveals itself instead of
+//     silently vanishing from cost tracking.
 //   - v4.244: Gemini NATIVE (generativelanguage.googleapis.com) observability repair — two
 //     independent root causes that together produced 'every turn is a MISS and costs nothing'
 //     on gemini-3.7-flash (i.e. money draining invisibly, the worst possible failure mode).
@@ -431,7 +470,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.244';
+  const EXT_VERSION = '4.246';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -799,6 +838,24 @@
       localStorage.setItem(TM_RATINGS_EXPANDED_KEY, JSON.stringify(m));
     } catch (e) {}
   }
+
+  // (v4.246) Set Costs modal expansion state. DELIBERATELY DIFFERENT from the ratings modal above:
+  // that one persists the FULL expanded set, while Set Costs persists only the SINGLE
+  // most-recently-expanded family, because the requirement is that Set Costs always opens fully
+  // COLLAPSED except for the one family expanded last -- even if several were open at close time.
+  // Multiple families may still be open DURING a visit; that lives in tmCostEditorSessionExpanded
+  // (memory only, rebuilt from the persisted single family on each fresh open).
+  var TM_COSTS_EXPANDED_KEY = 'tm_provider_costs_expanded_v1';
+  function tmGetCostsLastExpanded() {
+    try { return localStorage.getItem(TM_COSTS_EXPANDED_KEY) || null; } catch (e) { return null; }
+  }
+  function tmSetCostsLastExpanded(model) {
+    try {
+      if (model) localStorage.setItem(TM_COSTS_EXPANDED_KEY, String(model));
+      else localStorage.removeItem(TM_COSTS_EXPANDED_KEY);
+    } catch (e) {}
+  }
+  var tmCostEditorSessionExpanded = {};
 
   // Scan the ring buffer for all observed model→provider combos. Also adds entries for
   // locked providers (tm_provider_locks_v1) and model→provider map entries — so a provider
@@ -1950,6 +2007,35 @@
   var tmPromptActive = false;
   var tmPayloadCaptureSuppressEscapeUntil = 0;
 
+  // (v4.246) DOM-AUTHORITATIVE child-modal test. Every modal openable from within the ring-buffer
+  // modal owns a fixed overlay id; if one is present in the DOM it owns the Escape key and the
+  // ring modal must not react. Reading the DOM (rather than trusting a mutable boolean) means this
+  // can never get permanently stuck -- the failure mode that silently killed Escape before.
+  var TM_CHILD_MODAL_OVERLAY_IDS = [
+    'tm-json-viewer-overlay',
+    'tm-error-popup-overlay',
+    'tm-provider-ratings-overlay',
+    'tm-rating-comment-overlay',
+    'tm-cost-editor-overlay',
+    'tm-provider-set-overlay',
+    'tm-payload-modal-overlay'
+  ];
+  function tmAnyChildModalOpen() {
+    try {
+      for (var i = 0; i < TM_CHILD_MODAL_OVERLAY_IDS.length; i++) {
+        var el = document.getElementById(TM_CHILD_MODAL_OVERLAY_IDS[i]);
+        if (el && el.parentNode && el.style && el.style.display !== 'none') return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+  // (v4.246) Snapshot of the guard state taken at KEYDOWN on window CAPTURE -- i.e. before any
+  // document-level listener (including LEAKED ones from a re-rendered child modal) can mutate it.
+  // The keyup handler decides from this, so a spurious suppress-window set during the same
+  // keypress by a leaked handler cannot swallow the Escape.
+  var tmEscapeGuardSnapshot = null;
+  var tmPayloadCaptureModalEscapeKeydownSnapshotter = null;
+
   function tmGetTruncationLimit() {
     try {
       const v = parseInt(localStorage.getItem(TM_PAYLOAD_CAPTURE_TRUNCATION_KEY), 10);
@@ -2289,12 +2375,37 @@
     // though the host is typingmind.com — we WANT to capture those. Only genuine TM telemetry is noise.
     try {
       const u = String(url || '').toLowerCase();
-      const isTmCorsProxy = u.includes('typingmind.com/api/cors-proxy');
+      // (v4.245) HOST-AGNOSTIC cors-proxy match. This endpoint carries REAL LLM traffic and must
+      // NEVER be filtered; matching on the path alone keeps it captured even if TypingMind calls
+      // it via a relative path (which the relative-path rule below would otherwise swallow).
+      const isTmCorsProxy = u.includes('/api/cors-proxy');
       // v4.194: also exclude TypingMind's CORS-preflight probe. It calls its OWN backend via the
       // RELATIVE path '/api/check-cors' (no domain, so the 'typingmind' substring check misses it),
       // with the real provider endpoint only present in the body. No model/usage/cost — pure noise.
       if (!isTmCorsProxy &&
-          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io') || u.includes('/api/check-cors'))) {
+          (u.includes('typingmind') || u.includes('localhost') || u.includes('127.0.0.1') || u.includes('127.') || u.includes('_vercel') || u.includes('api.elevenlabs.io') || u.includes('/api/check-cors') || u.includes('/api/version'))) {
+        return null;
+      }
+
+      // (v4.245) GENERALIZED same-origin noise filter. TypingMind polls its own backend with
+      // RELATIVE paths ('/api/version', '/api/check-cors', ...), which the HOST checks above can
+      // never see — so each one landed in the ring as a junk row (model '', protocol 'unknown', no
+      // usage, permanent MISS) that also wrote a MISS to the cache ledger and clobbered the
+      // widget's most-recent status with a junk identity. A relative path resolves against the
+      // app's OWN origin, so it CANNOT be a provider endpoint (every provider URL is absolute and
+      // cross-origin) — with exactly one exception, the cors-proxy, exempted host-agnostically
+      // above. '//host/path' (protocol-relative) is deliberately NOT treated as relative.
+      // Unknown relative paths are dropped but logged ONCE each, so if TypingMind ever routes real
+      // billable traffic through a new same-origin endpoint it announces itself in the console
+      // instead of disappearing from cost tracking.
+      if (!isTmCorsProxy && u.charAt(0) === '/' && u.charAt(1) !== '/') {
+        try {
+          var loggedRel = tmCaptureFetchCall._loggedRelativePaths || (tmCaptureFetchCall._loggedRelativePaths = {});
+          if (!loggedRel[u]) {
+            loggedRel[u] = true;
+            console.debug('\ud83d\udd07 [v' + EXT_VERSION + '] Payload capture: ignoring same-origin relative path (TypingMind backend, not provider traffic): ' + u);
+          }
+        } catch (eRelLog) {}
         return null;
       }
     } catch (e) {}
@@ -5915,10 +6026,19 @@
   //   comment=Set Costs modal: hierarchical model→provider list with per-million pricing inputs for client-side cost calculation.,
   // ]
   // (v4.233) Set Costs modal: hierarchical model→provider list with per-million pricing inputs.
-  function tmShowCostEditorModal() {
+  // (v4.246) _isRerender is set ONLY by this modal's own family-toggle handler. A FRESH open
+  // rebuilds the in-visit expansion set from the single persisted 'most recently expanded' family,
+  // so the modal always appears fully collapsed except that one; a re-render preserves whatever
+  // the user has open right now.
+  function tmShowCostEditorModal(_isRerender) {
     if (typeof document === 'undefined') return;
     tmDiscoverAndMergeProviderCosts();
     var costs = tmGetProviderCosts();
+    if (!_isRerender) {
+      tmCostEditorSessionExpanded = {};
+      var lastExpanded = tmGetCostsLastExpanded();
+      if (lastExpanded) tmCostEditorSessionExpanded[lastExpanded] = true;
+    }
     var existing = document.getElementById('tm-cost-editor-overlay');
     if (existing) existing.parentNode.removeChild(existing);
 
@@ -5963,14 +6083,37 @@
       listWrap.style.cssText = 'flex:1;overflow:auto;';
 
       sortedModels.forEach(function(mdl) {
-        var modelHeader = document.createElement('div');
-        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#a0c0ff;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;';
-        modelHeader.textContent = mdl;
-        listWrap.appendChild(modelHeader);
-
+        var isOpen = !!tmCostEditorSessionExpanded[mdl];
         var providers = modelMap[mdl].sort(function(a, b) {
           return a.provider.localeCompare(b.provider);
         });
+
+        // (v4.246) Collapsible family header: disclosure arrow + name + provider count. The whole
+        // header is the hit target (data-action is resolved via closest(), so clicking the arrow
+        // or the count works too -- not just the bare text).
+        var modelHeader = document.createElement('div');
+        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#a0c0ff;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;';
+        modelHeader.dataset.action = 'cost-toggle-model';
+        modelHeader.dataset.model = mdl;
+        modelHeader.title = 'Click to expand/collapse';
+
+        var arrow = document.createElement('span');
+        arrow.style.cssText = 'display:inline-block;width:10px;flex-shrink:0;opacity:0.8;';
+        arrow.textContent = isOpen ? '\u25BE' : '\u25B8';
+        modelHeader.appendChild(arrow);
+
+        var nameSpan = document.createElement('span');
+        nameSpan.textContent = mdl;
+        modelHeader.appendChild(nameSpan);
+
+        var countSpan = document.createElement('span');
+        countSpan.style.cssText = 'color:#6b7280;font-weight:normal;font-size:11px;';
+        countSpan.textContent = '(' + providers.length + ')';
+        modelHeader.appendChild(countSpan);
+
+        listWrap.appendChild(modelHeader);
+
+        if (!isOpen) return;
 
         providers.forEach(function(entry) {
           var prov = entry.provider;
@@ -6028,6 +6171,11 @@
       setTimeout(function() { tmPromptActive = false; }, 100);
     }
     function onKey(ev) {
+      // (v4.246) SELF-UNINSTALL. This modal re-renders by removing its overlay and calling itself
+      // again, which used to leave this listener attached forever; every leaked copy then fired on
+      // every later Escape and set tmPayloadCaptureSuppressEscapeUntil, which is what killed the
+      // ring modal's Escape. If our overlay is gone, we are a leak: detach and do nothing.
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
       if (ev.key === 'Escape' || ev.keyCode === 27) {
         ev.stopPropagation();
         if (ev.preventDefault) ev.preventDefault();
@@ -6036,8 +6184,25 @@
     }
     overlay.addEventListener('click', function(ev) {
       var t = ev.target;
-      if (t === overlay || (t.dataset && t.dataset.action === 'close-cost-editor')) {
-        close();
+      if (t === overlay) { close(); return; }
+      // (v4.246) Resolve the action through closest() so clicks on a header's arrow/count child
+      // spans still register (a bare t.dataset.action check misses them).
+      var actionEl = (t && t.closest) ? t.closest('[data-action]') : null;
+      var act = (actionEl && actionEl.dataset) ? actionEl.dataset.action : null;
+      if (act === 'close-cost-editor') { close(); return; }
+      if (act === 'cost-toggle-model') {
+        ev.stopPropagation();
+        var tgModel = actionEl.dataset.model;
+        if (tmCostEditorSessionExpanded[tgModel]) {
+          delete tmCostEditorSessionExpanded[tgModel];
+          // Collapsing the remembered family clears the memory, so the next fresh open is fully
+          // collapsed rather than re-expanding something the user just closed.
+          if (tmGetCostsLastExpanded() === tgModel) tmSetCostsLastExpanded(null);
+        } else {
+          tmCostEditorSessionExpanded[tgModel] = true;
+          tmSetCostsLastExpanded(tgModel);
+        }
+        tmShowCostEditorModal(true); // re-render, preserving the in-visit expansion set
         return;
       }
     });
@@ -6226,7 +6391,59 @@
     box.style.cssText = 'width:85vw;max-width:1100px;height:85vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:12px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
     var hdr = document.createElement('div');
     hdr.style.cssText = 'color:#8ef0a0;font-weight:bold;font-size:12px;margin-bottom:8px;font-family:monospace;display:flex;justify-content:space-between;align-items:center;gap:12px;';
-    hdr.innerHTML = '<span>' + escapeHtml(label || 'Payload') + ' \u2014 copied to clipboard</span><span style="opacity:0.55;font-weight:normal;">read-only \u00b7 selectable \u00b7 Esc / click outside to close</span>';
+    hdr.innerHTML = '<span>' + escapeHtml(label || 'Payload') + ' \u2014 copied to clipboard</span>';
+
+    // (v4.246) Explicit copy button. The contents are almost always destined for an agent, and
+    // hand-selecting a long pretty-printed JSON blob is tedious/error-prone. Copies exactly what
+    // is displayed (the pretty-printed text), with a textarea+execCommand fallback for contexts
+    // where the async clipboard API is unavailable or permission-blocked.
+    function tmViewerFallbackCopy(txt) {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = txt;
+        ta.setAttribute('readonly', 'readonly');
+        ta.style.cssText = 'position:fixed;top:-2000px;left:-2000px;opacity:0;';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        return !!ok;
+      } catch (e) { return false; }
+    }
+    var hdrRight = document.createElement('span');
+    hdrRight.style.cssText = 'display:flex;align-items:center;gap:10px;font-weight:normal;';
+    var copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = '\uD83D\uDCCB Copy';
+    copyBtn.style.cssText = 'background:#2a3f5a;color:#cfe4ff;border:1px solid #46617f;border-radius:4px;padding:3px 10px;font-size:11px;font-family:monospace;cursor:pointer;flex-shrink:0;';
+    copyBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      var payload = (pre && pre.textContent) ? pre.textContent : '';
+      function flash(ok) {
+        copyBtn.textContent = ok ? '\u2713 Copied' : '\u26a0 Copy failed';
+        copyBtn.style.background = ok ? '#1f4d2a' : '#5a2a2a';
+        setTimeout(function() {
+          copyBtn.textContent = '\uD83D\uDCCB Copy';
+          copyBtn.style.background = '#2a3f5a';
+        }, 1200);
+      }
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(payload).then(
+            function() { flash(true); },
+            function() { flash(tmViewerFallbackCopy(payload)); }
+          );
+          return;
+        }
+      } catch (e) {}
+      flash(tmViewerFallbackCopy(payload));
+    });
+    var hdrHint = document.createElement('span');
+    hdrHint.style.cssText = 'opacity:0.55;font-weight:normal;';
+    hdrHint.textContent = 'read-only \u00b7 selectable \u00b7 Esc / click outside to close';
+    hdrRight.appendChild(copyBtn);
+    hdrRight.appendChild(hdrHint);
+    hdr.appendChild(hdrRight);
     var pre = document.createElement('pre');
     pre.style.cssText = 'flex:1;overflow:auto;background:#0d0d11;border:1px solid #2a2a2a;border-radius:6px;color:#d0d0d8;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;padding:10px;user-select:text;cursor:text;';
     pre.textContent = tmPrettyPrintMaybeJson(text);
@@ -6246,6 +6463,14 @@
       setTimeout(function() { tmPromptActive = false; }, 100);
     }
     function onKey(ev) {
+      // (v4.246) Self-uninstall if our overlay was replaced out from under us (opening a second
+      // viewer removes the first WITHOUT calling its close()), so a leaked copy can never keep
+      // setting the suppress window and eating the ring modal's Escape.
+      if (!overlay.parentNode) {
+        document.removeEventListener('keydown', onKey, true);
+        document.removeEventListener('keyup', onKeyUp, true);
+        return;
+      }
       if (ev.key === 'Escape' || ev.keyCode === 27 || ev.code === 'Escape') {
         ev.stopPropagation();
         if (ev.preventDefault) ev.preventDefault();
@@ -6253,6 +6478,13 @@
       }
     }
     function onKeyUp(ev) {
+      // (v4.246) Same self-uninstall guard: a leaked copy of this handler would otherwise eat
+      // Escape keyups for the life of the page.
+      if (!overlay.parentNode) {
+        document.removeEventListener('keydown', onKey, true);
+        document.removeEventListener('keyup', onKeyUp, true);
+        return;
+      }
       // While the viewer is open, eat Escape keyups outright -- a second wall in front of the
       // ring modal's window-capture keyup handler (tmPromptActive already guards it, but belt
       // and suspenders costs nothing here).
@@ -7093,18 +7325,49 @@
     const overlay = ensurePayloadCaptureModal();
     overlay.style.display = 'block';
     renderPayloadCaptureModal();
-    // Register escape handler on every open (removed on close).
+    // Register escape handlers on every open (removed on close).
+    // (v4.246) TWO listeners, both on window CAPTURE so they run before ANY document-level
+    // listener -- crucially including listeners LEAKED by a child modal that re-rendered itself
+    // (ratings/cost-editor re-render by removing their overlay and calling themselves again,
+    // without removing their document keydown listener). Each leaked listener still calls its own
+    // close(), which sets tmPayloadCaptureSuppressEscapeUntil = now+1500; the old single-keyup
+    // handler therefore saw 'suppressed' on every later Escape and ate it, permanently. Snapshot
+    // the guard state at KEYDOWN (before leaks can run), then decide on KEYUP from the snapshot.
+    if (!tmPayloadCaptureModalEscapeKeydownSnapshotter) {
+      tmPayloadCaptureModalEscapeKeydownSnapshotter = function(ev) {
+        if (ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) {
+          tmEscapeGuardSnapshot = {
+            childOpen: tmAnyChildModalOpen(),
+            promptActive: !!tmPromptActive,
+            suppressed: (Date.now() < tmPayloadCaptureSuppressEscapeUntil)
+          };
+        }
+      };
+      window.addEventListener('keydown', tmPayloadCaptureModalEscapeKeydownSnapshotter, true);
+    }
     if (!tmPayloadCaptureModalEscapeHandler) {
       tmPayloadCaptureModalEscapeHandler = function(ev) {
-        if (tmPromptActive) return;
-        if (ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27) {
-          if (Date.now() < tmPayloadCaptureSuppressEscapeUntil) {
-            ev.stopPropagation();
-            if (ev.preventDefault) ev.preventDefault();
-            return;
-          }
-          closePayloadCaptureModal();
+        if (!(ev.code === 'Escape' || ev.key === 'Escape' || ev.keyCode === 27)) return;
+        // Prefer the keydown snapshot; fall back to live state for a keyup with no paired keydown
+        // (e.g. focus arrived mid-keypress), which is the conservative choice.
+        var snap = tmEscapeGuardSnapshot || {
+          childOpen: tmAnyChildModalOpen(),
+          promptActive: !!tmPromptActive,
+          suppressed: (Date.now() < tmPayloadCaptureSuppressEscapeUntil)
+        };
+        tmEscapeGuardSnapshot = null;
+        // A child modal was genuinely open when the key went down: it owns this Escape entirely.
+        // Do NOT close the ring modal underneath it (and do not eat the event -- the child's own
+        // handler already dealt with it on keydown).
+        if (snap.childOpen) return;
+        // A native prompt() was in flight, or this is a held-key repeat trailing a real child
+        // close: swallow, exactly as v4.221 intended.
+        if (snap.promptActive || snap.suppressed) {
+          ev.stopPropagation();
+          if (ev.preventDefault) ev.preventDefault();
+          return;
         }
+        closePayloadCaptureModal();
       };
       window.addEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
     }
@@ -7117,6 +7380,12 @@
       window.removeEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
       tmPayloadCaptureModalEscapeHandler = null;
     }
+    // (v4.246) Tear down the paired keydown snapshotter too.
+    if (tmPayloadCaptureModalEscapeKeydownSnapshotter) {
+      window.removeEventListener('keydown', tmPayloadCaptureModalEscapeKeydownSnapshotter, true);
+      tmPayloadCaptureModalEscapeKeydownSnapshotter = null;
+    }
+    tmEscapeGuardSnapshot = null;
   }
 
   // ==================== FETCH OVERRIDE ====================
