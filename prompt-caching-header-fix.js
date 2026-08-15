@@ -1,6 +1,30 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.249
+// Version: 4.250
 // Issues Fixed:
+//   - v4.250: Gemini SESSION IDENTITY — the third and last head of the v4.244 Gemini hydra. Native
+//     Gemini rows showed '—' for the session total and had NO clickable session hash (so the
+//     session could not be named), while every other provider worked. ONE root cause: BOTH
+//     session-derivation tiers read body.messages / body.input, but a Gemini-native body carries
+//     body.contents (roles 'user'/'model', text under parts[].text) and body.systemInstruction. So
+//     tier 1 (deriveConversationIdFromBody, which scans user turns for a pasted 'Session ID: ...')
+//     found no user messages and returned null, and tier 2 (tmDeriveStableSessionId) hashed an
+//     EMPTY seed and also returned null -- every Gemini capture got session_id null.
+//     That single null explains both symptoms and the asymmetry that exposed it:
+//       * tmRecordSessionCost bails on its FIRST line ('if (!sessionId || !model || cost <= 0)
+//         return 0'), so session_cost_total was never stamped and tmGetSessionCost also returned 0
+//         -> the '—'. Meanwhile the 12h/24h figures DID render, because tmComputeBlockCost walks
+//         the RING by identity key and never consults the session ledger. Same money, two paths,
+//         only one of which needs a session id.
+//       * With no session id there was nothing to render or click, hence no way to name the session.
+//     Fixed by teaching both tiers the Gemini shape via tmNormalizeGeminiBodyToMessages(), which
+//     maps contents[]/systemInstruction onto the {role, content:string} form the existing scanners
+//     already understand (Gemini 'model' role -> 'assistant'; a missing role means user).
+//     SIDE BENEFIT worth knowing: a null session id also made the identity key
+//     'null::model::host::direct' IDENTICAL for every Gemini conversation, so 12h/24h block costs
+//     and hues were SMEARING all Gemini conversations into one bucket. Each conversation now gets
+//     its own identity. Consequence: Gemini identity keys change again, so block/session totals
+//     start a fresh (correct) bucket, and ring rows captured before v4.250 keep showing '—'
+//     because their stored session_id is null -- new turns are correct.
 //   - v4.249: Two more junk-row sources removed, by two DIFFERENT mechanisms chosen for safety.
 //     (a) api.firecrawl.dev/v1/scrape -- a browser-side scraping-tool call, same class as the
 //     already-filtered ElevenLabs TTS endpoint: a real third-party API but NOT an LLM provider, so
@@ -512,7 +536,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.249';
+  const EXT_VERSION = '4.250';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3235,12 +3259,51 @@
 
   // ==================== GPT-5.1 CONVERSATION ID & USAGE WIDGET HELPERS ====================
 
+  // (v4.250) Gemini-native bodies do NOT use messages[]/system: they carry `contents[]` (roles
+  // 'user' and 'model', with text under parts[].text) plus `systemInstruction`. Both session-id
+  // tiers below scanned only messages[]/input[], so every Gemini capture derived session_id = null
+  // -- which silently disabled the session-cost ledger (tmRecordSessionCost bails on a falsy
+  // sessionId) AND left no session hash to display or click. This normalizes a Gemini body onto the
+  // {role, content:string} shape those scanners already understand, so both tiers work unchanged.
+  // Kept deliberately read-only and total: it never mutates the body and returns [] for any
+  // non-Gemini shape, so callers can try it as a pure fallback.
+  function tmNormalizeGeminiBodyToMessages(body) {
+    var out = [];
+    try {
+      if (!body) return out;
+      // Text of a Gemini node: join every parts[].text (skipping non-text parts such as
+      // thoughtSignature / inlineData / functionCall, which carry no stable conversation identity).
+      function partsText(node) {
+        if (!node) return '';
+        if (typeof node === 'string') return node;
+        if (!Array.isArray(node.parts)) return (typeof node.text === 'string') ? node.text : '';
+        var acc = [];
+        for (var i = 0; i < node.parts.length; i++) {
+          var p = node.parts[i];
+          if (p && typeof p.text === 'string' && p.text) acc.push(p.text);
+        }
+        return acc.join('\n');
+      }
+      var sysText = partsText(body.systemInstruction || body.system_instruction || null);
+      if (sysText) out.push({ role: 'system', content: sysText });
+      if (Array.isArray(body.contents)) {
+        for (var c = 0; c < body.contents.length; c++) {
+          var item = body.contents[c];
+          if (!item) continue;
+          // Gemini's assistant role is 'model'; an ABSENT role means user (single-turn form).
+          out.push({ role: (item.role === 'model') ? 'assistant' : 'user', content: partsText(item) });
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.deriveConversationIdFromBody-aubh,
   //   role=__lambdao_1.deriveConversationIdFromBody,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Session identity tier 1: scans first 10 user messages for 'Session ID: <hash>' line (multiline regex). Returns pasted ID or null.,
+  //   comment=Session identity tier 1: scans first 10 user messages for 'Session ID: <hash>' line (multiline regex). Returns pasted ID or null. Understands messages[] / input[] AND (v4.250) Gemini's contents[] via tmNormalizeGeminiBodyToMessages -- returning null here cascades into a dead session-cost ledger and an unnameable session.,
   // ]
   function deriveConversationIdFromBody(body) {
     let userMessages = [];
@@ -3248,6 +3311,11 @@
       userMessages = body.messages.filter(m => m && m.role === 'user');
     } else if (Array.isArray(body.input)) {
       userMessages = body.input.filter(m => m && m.role === 'user');
+    } else if (Array.isArray(body.contents)) {
+      // (v4.250) Gemini-native shape. This is the tier that matters most in practice, because the
+      // pasted 'Session ID: ...' line lives in the first user turn -- so once Gemini bodies are
+      // scanned, Gemini sessions get the SAME human-chosen id as every other provider.
+      userMessages = tmNormalizeGeminiBodyToMessages(body).filter(m => m && m.role === 'user');
     }
     if (!userMessages.length) return null;
 
@@ -8411,7 +8479,7 @@
   //   role=__lambdao_1.tmDeriveStableSessionId,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Session identity tier 2: deterministic FNV-1a hash of first-system + first-user message as stable fallback when no pasted Session ID exists.,
+  //   comment=Session identity tier 2: deterministic FNV-1a hash of first-system + first-user message as stable fallback when no pasted Session ID exists. Reads messages[] / input[] AND (v4.250) Gemini's contents[]+systemInstruction via tmNormalizeGeminiBodyToMessages; an empty seed returns null, which disables the session-cost ledger and makes every conversation on that model share one identity key.,
   // ]
   function tmDeriveStableSessionId(body) {
     // 1) Prefer the extension's existing conversation-id derivation when it yields something.
@@ -8428,8 +8496,11 @@
     //    per-conversation stickiness OpenRouter wants. Mirrors OpenRouter's own internal
     //    'hash first system + first non-system message' conversation identification.
     try {
+      // (v4.250) Gemini-native bodies fall back to the normalizer; without it msgs was [] and the
+      // seed was empty, so this returned null for EVERY Gemini turn.
       var msgs = Array.isArray(body && body.messages) ? body.messages
-               : (Array.isArray(body && body.input) ? body.input : []);
+               : (Array.isArray(body && body.input) ? body.input
+               : (Array.isArray(body && body.contents) ? tmNormalizeGeminiBodyToMessages(body) : []));
 
       function firstText(role) {
         for (var i = 0; i < msgs.length; i++) {
