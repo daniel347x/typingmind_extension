@@ -1,6 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.253
+// Version: 4.254
 // Issues Fixed:
+//   - v4.254: Fix 15 POLARITY INVERSION -- preserve union+default everywhere EXCEPT Moonshot-bound
+//     requests. v4.253 dropped the advisory `default` sibling from every anyOf-union optional on
+//     every chat-completions-shaped body, universally -- needless information loss, since ONLY
+//     Moonshot's day-one Kimi-K3 validator ever rejected union+default (OpenAI provably accepts
+//     it: the untouched /v1/responses path ships exactly that shape; Fireworks' historical 400
+//     was the SEPARATE typeless-property bug, which remains fixed unconditionally). Now the
+//     default-drop is GATED to Moonshot-bound requests only: URL host contains 'moonshot'
+//     (direct api.moonshot.*), OR body.model contains 'moonshot'/'kimi' (covers OpenRouter FLOAT
+//     mode, where the serving provider is unknowable at request time and a moonshotai/* model MAY
+//     land on Moonshot; over-stripping for the Kimi family is provably harmless -- the v4.253
+//     test matrix showed Kimi emits minimal calls with or without defaults), OR an existing
+//     body.provider order/only pin names a moonshot slug. Everywhere else union+default now
+//     passes through VERBATIM. Constraint-conflicted unions (sibling type/enum/const --
+//     genuinely contradictory schema, never emitted by FastMCP) still flatten unconditionally.
+//     BONUS: this is the live H1-vs-H2 discriminator for WHY Sol null-fills all optionals via
+//     OpenRouter -- if a coherent default is the omission cue (H1), Sol-via-OpenRouter now goes
+//     minimal-args like the direct path; if it still null-fills, upstream strict-mode function
+//     calling (H2) is the likelier mechanism. Either way calls succeed.
 //   - v4.253: Fix 15 UNION PRESERVATION (the Sol-via-OpenRouter empty-string-optionals bug).
 //     tmFlattenAnyOfForStrictSchema no longer collapses an anyOf/oneOf/allOf union whose ONLY
 //     conflicting sibling is the advisory `default` annotation (the universal FastMCP Optional
@@ -572,7 +590,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.253';
+  const EXT_VERSION = '4.254';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8319,7 +8337,7 @@
   // union keyword and the now-redundant sibling keywords. This preserves the practical
   // Optional[T] semantics (the argument is a T, and it's optional via `default`/not-in-required)
   // while producing a shape every provider accepts. Returns 1 if it flattened this node, else 0.
-  function tmFlattenAnyOfForStrictSchema(prop) {
+  function tmFlattenAnyOfForStrictSchema(prop, stripUnionDefaults) {
     if (!prop || typeof prop !== 'object' || Array.isArray(prop)) return 0;
     var unionKey = null;
     if (Array.isArray(prop.anyOf)) unionKey = 'anyOf';
@@ -8348,6 +8366,13 @@
     // deleting them would LOOSEN the schema -- so that rare shape falls through to the
     // old conservative flatten below.
     if (hasAnnotationConflict && !hasConstraintConflict) {
+      // (v4.254) FULL-FIDELITY MODE (every non-Moonshot target): union+default is valid JSON
+      // Schema and every non-Moonshot validator we have ever hit accepts it (OpenAI provably
+      // does -- the /v1/responses path ships exactly this shape untouched). Pass it through
+      // VERBATIM so the model keeps both the null arm AND the advisory default (the likely
+      // omission cue -- H1). Only Moonshot-bound requests (see tmIsMoonshotBoundRequest) get
+      // the v4.253 default-drop, which their validator requires.
+      if (!stripUnionDefaults) return 0;
       delete prop.default;
       return 1;
     }
@@ -8382,7 +8407,7 @@
     return 1;
   }
 
-  function tmRepairSchemaTypesDeep(node) {
+  function tmRepairSchemaTypesDeep(node, stripUnionDefaults) {
     // Walk a JSON-Schema subtree. Repair each `properties` map: any property object that has
     // NO type indicator (no `type`, `anyOf`, `oneOf`, `allOf`, `$ref`, `enum`, or `const`)
     // gets a single inferred string `type`. Recurse into nested schemas so deep params
@@ -8392,7 +8417,7 @@
     var repaired = 0;
     if (!node || typeof node !== 'object') return 0;
     if (Array.isArray(node)) {
-      for (var i = 0; i < node.length; i++) repaired += tmRepairSchemaTypesDeep(node[i]);
+      for (var i = 0; i < node.length; i++) repaired += tmRepairSchemaTypesDeep(node[i], stripUnionDefaults);
       return repaired;
     }
     if (node.properties && typeof node.properties === 'object') {
@@ -8403,7 +8428,7 @@
           // v4.242: Moonshot strict-schema fix FIRST — collapse a conflicting anyOf/oneOf/allOf
           // (union + sibling default/type/enum/const) to a single concrete branch before the
           // typeless-property check runs (flattening may turn it into a plain typed property).
-          repaired += tmFlattenAnyOfForStrictSchema(prop);
+          repaired += tmFlattenAnyOfForStrictSchema(prop, stripUnionDefaults);
           var hasType = Object.prototype.hasOwnProperty.call(prop, 'type')
             || Object.prototype.hasOwnProperty.call(prop, 'anyOf')
             || Object.prototype.hasOwnProperty.call(prop, 'oneOf')
@@ -8416,17 +8441,42 @@
             repaired++;
           }
           // Recurse regardless (nested object/array schemas may also have naked props).
-          repaired += tmRepairSchemaTypesDeep(prop);
+          repaired += tmRepairSchemaTypesDeep(prop, stripUnionDefaults);
         }
       }
     }
     // Recurse into common nested-schema carriers.
-    if (node.items) repaired += tmRepairSchemaTypesDeep(node.items);
+    if (node.items) repaired += tmRepairSchemaTypesDeep(node.items, stripUnionDefaults);
     var branchKeys = ['anyOf', 'oneOf', 'allOf'];
     for (var b = 0; b < branchKeys.length; b++) {
-      if (Array.isArray(node[branchKeys[b]])) repaired += tmRepairSchemaTypesDeep(node[branchKeys[b]]);
+      if (Array.isArray(node[branchKeys[b]])) repaired += tmRepairSchemaTypesDeep(node[branchKeys[b]], stripUnionDefaults);
     }
     return repaired;
+  }
+
+  // (v4.254) Is this request Moonshot-bound? Moonshot's validator is the ONLY one ever observed
+  // to 400 on a union (anyOf/oneOf/allOf) co-existing with a sibling `default` (day-one Kimi-K3
+  // turbulence, v4.242). The default-drop is therefore gated to: direct Moonshot URLs; any model
+  // id containing 'moonshot' or 'kimi' (OpenRouter FLOAT mode may route moonshotai/* to Moonshot
+  // unpredictably, and over-stripping for the Kimi family is provably harmless -- Kimi emits
+  // minimal calls either way, per the v4.253 test matrix); or an already-present OpenRouter
+  // provider pin naming a moonshot slug. The model-id check also covers cors-proxy traffic,
+  // where the URL is TypingMind's proxy rather than the real target host.
+  function tmIsMoonshotBoundRequest(url, body) {
+    try {
+      var u = String(url || '').toLowerCase();
+      if (u.indexOf('moonshot') !== -1) return true;
+      var m = (body && typeof body.model === 'string') ? body.model.toLowerCase() : '';
+      if (m.indexOf('moonshot') !== -1 || m.indexOf('kimi') !== -1) return true;
+      var p = body && body.provider;
+      var slugs = [];
+      if (p && Array.isArray(p.order)) slugs = slugs.concat(p.order);
+      if (p && Array.isArray(p.only)) slugs = slugs.concat(p.only);
+      for (var i = 0; i < slugs.length; i++) {
+        if (String(slugs[i] || '').toLowerCase().indexOf('moonshot') !== -1) return true;
+      }
+    } catch (e) {}
+    return false;
   }
 
   // Repair tool-parameter schemas in body.tools IN PLACE. Returns true if anything changed.
@@ -8435,9 +8485,9 @@
   //   role=__lambdao_1.tmRepairToolSchemas,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Fix 15: re-infers and re-injects a JSON-Schema type into tool properties TypingMind stripped (array-valued types), unblocking strict validators (Fireworks 400s); v4.253: union+default conflicts now drop the advisory default and PRESERVE the anyOf union (null arms survive) instead of flattening.,
+  //   comment=Fix 15: re-infers and re-injects a JSON-Schema type into tool properties TypingMind stripped (array-valued types), unblocking strict validators (Fireworks 400s); v4.253 preserved anyOf unions (null arms survive) by dropping the advisory default; v4.254 gates that default-drop to Moonshot-bound requests only (URL slash model slash provider-pin) -- everywhere else union+default passes through verbatim.,
   // ]
-  function tmRepairToolSchemas(body) {
+  function tmRepairToolSchemas(body, stripUnionDefaults) {
     try {
       if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
       var total = 0;
@@ -8445,11 +8495,11 @@
         var tool = body.tools[t];
         var params = tool && tool.function && tool.function.parameters;
         if (params && typeof params === 'object') {
-          total += tmRepairSchemaTypesDeep(params);
+          total += tmRepairSchemaTypesDeep(params, stripUnionDefaults);
         }
       }
       if (total > 0) {
-        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type; dropped conflicting `default` siblings PRESERVING anyOf unions incl. null arms; flattened only constraint-conflicted unions; fixes Fireworks/Moonshot/strict-provider 400s without de-nulling Optionals).');
+        console.log('✅ [v' + EXT_VERSION + '] Fix 15 (' + (stripUnionDefaults ? 'moonshot-strict mode' : 'full-fidelity mode') + '): repaired ' + total + ' tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (typeless→string restores; ' + (stripUnionDefaults ? 'dropped conflicting `default` siblings, unions + null arms preserved' : 'unions + advisory defaults passed through verbatim') + '; constraint-conflicted unions flattened).');
         return true;
       }
       return false;
@@ -9135,7 +9185,9 @@
         // (Fix 15, v4.199) Repair typeless tool-schema properties BEFORE canonicalization, so the
         // key-sort then runs over the completed schema and the cache-stable ordering still holds.
         // Universal (every endpoint) since a naked schema is a portability bug, not OpenRouter-only.
-        if (tmRepairToolSchemas(tmUniversalBody)) {
+        // (v4.254) The union+default strip inside is GATED to Moonshot-bound requests only; every
+        // other target now gets full-fidelity schemas (unions + advisory defaults untouched).
+        if (tmRepairToolSchemas(tmUniversalBody, tmIsMoonshotBoundRequest(url, tmUniversalBody))) {
           tmUniversalChanged = true;
         }
         if (tmStabilizeToolsOrdering(tmUniversalBody)) {
