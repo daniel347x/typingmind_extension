@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.256
+// Version: 4.257
 // Issues Fixed:
+//   - v4.257: (a) Sol reasoning injector now ALSO guarantees reasoning.context='all_turns'
+//     (GPT-5.6's persisted-reasoning context mode -- default on the modern direct/OpenRouter
+//     Responses paths, but pinning it is harmless there and closes any legacy/Chat-Completions
+//     config where it defaulted off; OpenAI/OpenRouter both document it as GPT-5.6-only).
+//     Does NOT set store/include -- OpenRouter Responses is stateless by default and direct
+//     OpenAI's stateful behavior must not be flipped. (b) tmSummarizeReasoningReplay now also
+//     counts Kimi/Moonshot's `reasoning_content` field (native Chat-Completions thinking
+//     channel) so Kimi continuity audits read correctly instead of false-negative none:true.
+//     K3 docs: 'add the COMPLETE assistant message returned by the API to the next request. Do
+//     not keep only content.' NOTE: v4.256's 1.5MB ring budget may evict the rich rich-skeleton
+//     path for long convos, hiding per-message reasoning markers; the aggregate stays exact.
+
 //   - v4.256: REASONING-REPLAY AGGREGATES THAT SURVIVE THE RECORD BUDGET. Live audit (2026-08)
 //     found v4.255's per-message replay markers structurally invisible for real conversations:
 //     any large history blows TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS (1000), so capture falls
@@ -626,7 +638,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.256';
+  const EXT_VERSION = '4.257';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2486,17 +2498,21 @@
   // reasoning_details, and Responses-API replayed reasoning items with encrypted_content.
   // Returns {assistants, none:true} when a scan finds nothing (explicit zero, distinct from
   // undefined = shape not scannable).
+  // v4.257: Also count Kimi/Moonshot's native Chat-Completions thinking field,
+  // `reasoning_content`, which is the continuity channel Moonshot's docs require clients to
+  // replay verbatim as part of the complete assistant message. Counts only; never content.
   function tmSummarizeReasoningReplay(bodyObj) {
     try {
       var msgs = Array.isArray(bodyObj && bodyObj.messages) ? bodyObj.messages
         : (Array.isArray(bodyObj && bodyObj.input) ? bodyObj.input : null);
       if (!msgs) return undefined;
-      var agg = { assistants: 0, thinking_blocks: 0, redacted_blocks: 0, reasoning_strs: 0, reasoning_details: 0, reasoning_detail_types: {}, encrypted_items: 0, encrypted_chars: 0 };
+      var agg = { assistants: 0, thinking_blocks: 0, redacted_blocks: 0, reasoning_strs: 0, reasoning_content_strs: 0, reasoning_details: 0, reasoning_detail_types: {}, encrypted_items: 0, encrypted_chars: 0 };
       for (var i = 0; i < msgs.length; i++) {
         var m = msgs[i];
         if (!m) continue;
         if (m.role === 'assistant') agg.assistants++;
         if (typeof m.reasoning === 'string' && m.reasoning.length) agg.reasoning_strs++;
+        if (typeof m.reasoning_content === 'string' && m.reasoning_content.length) agg.reasoning_content_strs++;
         if (Array.isArray(m.reasoning_details)) {
           agg.reasoning_details += m.reasoning_details.length;
           for (var d = 0; d < m.reasoning_details.length; d++) {
@@ -2519,7 +2535,7 @@
           }
         }
       }
-      if (!agg.thinking_blocks && !agg.redacted_blocks && !agg.reasoning_strs && !agg.reasoning_details && !agg.encrypted_items) {
+      if (!agg.thinking_blocks && !agg.redacted_blocks && !agg.reasoning_strs && !agg.reasoning_content_strs && !agg.reasoning_details && !agg.encrypted_items) {
         return { assistants: agg.assistants, none: true };
       }
       return agg;
@@ -9138,8 +9154,11 @@
     var changed = false;
     var level = tmGetSolReasoningEffort();
     // v4.162: always inject summary:auto alongside the effort level (restores streaming thinking).
+    // v4.257: also pin context:'all_turns' (GPT-5.6's persisted-reasoning context mode). Default
+    // is already all_turns on the direct/OpenRouter Responses paths, so pinning is a no-op there;
+    // this matters only on any residual config where it might have defaulted to current_turn.
     if (!body.reasoning || typeof body.reasoning !== 'object' || Array.isArray(body.reasoning)) {
-      body.reasoning = { effort: level, summary: 'auto' };
+      body.reasoning = { effort: level, summary: 'auto', context: 'all_turns' };
       changed = true;
     } else {
       if (body.reasoning.effort !== level) {
@@ -9150,9 +9169,13 @@
         body.reasoning.summary = 'auto';
         changed = true;
       }
+      if (body.reasoning.context !== 'all_turns') {
+        body.reasoning.context = 'all_turns';
+        changed = true;
+      }
     }
     if (changed) {
-      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=' + level + ' + summary=auto for plain Sol model:', body.model);
+      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=' + level + ' + summary=auto + context=all_turns for plain Sol model:', body.model);
     }
     return changed;
   }
