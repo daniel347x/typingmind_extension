@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.254
+// Version: 4.255
 // Issues Fixed:
+//   - v4.255: RING QUOTA SAFETY + INJECTED-FIELD VISIBILITY. (a) TypingMind hard-crashed when the
+//     capture ring hit 4.3MB of the shared ~5MB origin localStorage quota -- at that size it is
+//     TYPINGMIND'S OWN writes that start throwing, not ours (append path had evict-retries; the
+//     response-stamp writer tmWriteCaptureRing just warned; and NOTHING bounded total bytes --
+//     count caps alone cannot). Ring halved per Dan: 500 -> 250 entries, rich window 100 -> 50.
+//     NEW hard byte budget (1.5MB) on the serialized ring, enforced in BOTH writers: over budget,
+//     heavy fields (bodies, raw SSE segments, verbatim headers) are stripped oldest-first in
+//     chunks, then oldest entries evicted; tmWriteCaptureRing also gains quota-catch
+//     evict-and-retry. The ring can no longer starve the app. (b) Skeleton captures now SURFACE
+//     the extension's own injected fields -- chat: reasoning / session_id / usage / provider /
+//     prompt_cache_key; Responses: reasoning / include / store / previous_response_id -- plus
+//     reasoning-REPLAY markers (per-message _reasoning_chars + _reasoning_details type list;
+//     Responses input item `type` + _encrypted_reasoning_chars) and tool_calls name/arg-size
+//     markers. These instrument the open question of whether prior-turn reasoning blocks are
+//     replayed to reasoning models via OpenRouter (Fix 19's Grok 404 already proved replay
+//     HAPPENS for reasoning_details-emitting models; this makes it visible per-turn).
 //   - v4.254: Fix 15 POLARITY INVERSION -- preserve union+default everywhere EXCEPT Moonshot-bound
 //     requests. v4.253 dropped the advisory `default` sibling from every anyOf-union optional on
 //     every chat-completions-shaped body, universally -- needless information loss, since ONLY
@@ -590,7 +606,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.254';
+  const EXT_VERSION = '4.255';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2113,11 +2129,17 @@
   const TM_PAYLOAD_CAPTURE_ENABLED_KEY = 'tm_payload_capture_enabled';
   const TM_PAYLOAD_CAPTURE_REDACT_AUTH_KEY = 'tm_payload_capture_redact_auth';
 
-  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 500;
-  const TM_PAYLOAD_CAPTURE_MAX_RICH_ENTRIES = 100;
+  // (v4.255) Ring HALVED (500->250, rich 100->50) after it grew to 4.3MB of the shared ~5MB
+  // origin quota and starved TypingMind's own localStorage writes (hard app crash).
+  const TM_PAYLOAD_CAPTURE_MAX_ENTRIES = 250;
+  const TM_PAYLOAD_CAPTURE_MAX_RICH_ENTRIES = 50;
+  // (v4.255) HARD BYTE BUDGET for the serialized ring -- count caps alone do not bound bytes
+  // (headers + raw SSE segments legally added up to 4.3MB under the old caps). Both writers keep
+  // JSON.stringify(ring) under this via oldest-first stripping, then eviction.
+  const TM_PAYLOAD_CAPTURE_MAX_TOTAL_CHARS = 1_500_000;
   const TM_PAYLOAD_CAPTURE_TRUNCATION_KEY = 'tm_payload_capture_truncation';
   const TM_PAYLOAD_CAPTURE_MAX_STRING_CHARS_DEFAULT = 250;
-  // Hard record budgets keep 500-entry ring safe. Rich entries (first 100) get full detail.
+  // Hard record budgets keep the 250-entry ring safe. Rich entries (first 50) get full detail.
   const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 1000;
   const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1000;
 
@@ -2334,7 +2356,7 @@
   //   role=__lambdao_1.tmBuildHugeSkeleton,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Skeleton builder for oversized payload captures. NOTE: Gemini contents-bodies fall through to key-only stub (no model field) — model must be carried on _model.,
+  //   comment=Skeleton builder for oversized payload captures. NOTE: Gemini contents-bodies fall through to key-only stub (no model field) — model must be carried on _model.; v4.255: surfaces injected fields (chat: reasoning/session_id/usage/provider/prompt_cache_key; Responses: reasoning/include/store/previous_response_id) plus reasoning-replay markers (_reasoning_chars/_reasoning_details; Responses input type/name/_encrypted_reasoning_chars) and tool_calls name/arg-size markers.,
   // ]
   function tmBuildHugeSkeleton(bodyObj) {
     // Preserve enough structure to debug cache_control placement + tool use + protocol.
@@ -2349,6 +2371,14 @@
         cache_control: bodyObj.cache_control || undefined,
         tools: Array.isArray(bodyObj.tools) ? { count: bodyObj.tools.length } : undefined,
         system: bodyObj.system ? '[tm_system_present]' : undefined,
+        // (v4.255) Surface the extension's own INJECTED fields so skeleton captures prove what
+        // actually went out (the Sol reasoning injection was invisible here during the 2026-08
+        // debugging session -- session_id too; both were skeleton drops, not wire absences).
+        reasoning: bodyObj.reasoning || undefined,
+        session_id: bodyObj.session_id || undefined,
+        usage: bodyObj.usage || undefined,
+        provider: bodyObj.provider || undefined,
+        prompt_cache_key: bodyObj.prompt_cache_key || undefined,
         messages: bodyObj.messages.map(m => {
           const msg = { role: m && m.role ? m.role : null };
           const c = m && m.content;
@@ -2374,6 +2404,20 @@
           } else {
             msg.content = '[tm_content_unhandled]';
           }
+          // (v4.255) Reasoning-REPLAY markers: prove whether prior-turn reasoning blocks are
+          // being sent BACK to the model (chat-completions form: assistant `reasoning` string /
+          // `reasoning_details` blocks, e.g. reasoning.encrypted). Types/sizes only -- never
+          // content. Plus tool_calls name/arg-size markers (previously invisible in skeletons).
+          if (m && typeof m.reasoning === 'string' && m.reasoning.length) msg._reasoning_chars = m.reasoning.length;
+          if (m && Array.isArray(m.reasoning_details)) {
+            msg._reasoning_details = m.reasoning_details.map(function(d) { return d && (d.type || d.format) ? String(d.type || d.format) : '?'; });
+          }
+          if (m && Array.isArray(m.tool_calls)) {
+            msg.tool_calls = m.tool_calls.map(function(tc) {
+              var fn = tc && tc.function;
+              return { name: fn && fn.name ? fn.name : null, args_chars: (fn && typeof fn.arguments === 'string') ? fn.arguments.length : 0 };
+            });
+          }
           return msg;
         })
       };
@@ -2386,8 +2430,19 @@
         model: bodyObj.model || null,
         prompt_cache_key: bodyObj.prompt_cache_key,
         prompt_cache_retention: bodyObj.prompt_cache_retention,
+        // (v4.255) Surface injected/replay-relevant Responses-API fields.
+        reasoning: bodyObj.reasoning || undefined,
+        include: bodyObj.include || undefined,
+        store: (typeof bodyObj.store === 'boolean') ? bodyObj.store : undefined,
+        previous_response_id: bodyObj.previous_response_id || undefined,
         input: bodyObj.input.map(m => {
           const msg = { role: m && m.role ? m.role : null };
+          // (v4.255) Responses input items carry replayed reasoning/function items via `type`
+          // (e.g. type:'reasoning' with encrypted_content). Mark type + name + encrypted SIZE
+          // only -- never the encrypted payload itself.
+          if (m && m.type) msg.type = m.type;
+          if (m && m.name) msg.name = m.name;
+          if (m && m.encrypted_content) msg._encrypted_reasoning_chars = String(m.encrypted_content).length;
           const c = m && m.content;
           msg.content = tmTruncateStringsDeep(c, 200);
           return msg;
@@ -2462,9 +2517,63 @@
     }
   }
 
+  // (v4.255) Strip the heavy per-entry fields (bodies, raw SSE usage segments, verbatim
+  // headers). Used by the byte-budget enforcer when the serialized ring outgrows its budget;
+  // preserves identity/cost/cache metadata (_model, _identity, response_usage, session ids, ts).
+  function tmStripCaptureHeavyFields(entry) {
+    if (!entry) return;
+    if (!entry._model && entry.body) {
+      try { var b = entry.stored_as_skeleton ? entry.body_skeleton : entry.body; if (b && b.model) entry._model = b.model; } catch (e) {}
+    }
+    entry.body = null;
+    entry.body_skeleton = null;
+    entry.response_body = null;
+    entry.response_body_head = null;
+    entry.response_body_compacted = null;
+    entry.response_usage_segments = null;
+    entry.headers = null;
+    entry.response_headers = null;
+    entry.stored_as_skeleton = false;
+  }
+
+  // (v4.255) Serialize the ring under TM_PAYLOAD_CAPTURE_MAX_TOTAL_CHARS. Root cause of the
+  // 2026-08 TypingMind hard crash: the ring reached 4.3MB of the shared ~5MB origin quota, so
+  // the APP'S OWN localStorage writes started throwing. Pass 1 strips heavy fields oldest-first
+  // (chunks of 20); pass 2 evicts oldest entries (chunks of 10). Mutates `ring` in place.
+  function tmSerializeRingWithinBudget(ring) {
+    var s = JSON.stringify(ring);
+    if (s.length <= TM_PAYLOAD_CAPTURE_MAX_TOTAL_CHARS) return s;
+    var idx = 0;
+    while (s.length > TM_PAYLOAD_CAPTURE_MAX_TOTAL_CHARS && idx < ring.length) {
+      var end = Math.min(idx + 20, ring.length);
+      for (; idx < end; idx++) tmStripCaptureHeavyFields(ring[idx]);
+      s = JSON.stringify(ring);
+    }
+    while (s.length > TM_PAYLOAD_CAPTURE_MAX_TOTAL_CHARS && ring.length > 1) {
+      ring.splice(0, Math.min(10, ring.length - 1));
+      s = JSON.stringify(ring);
+    }
+    console.warn('⚠️ [v' + EXT_VERSION + '] Payload capture ring exceeded its byte budget; compacted/evicted to ' + ring.length + ' entries, ' + s.length + ' chars.');
+    return s;
+  }
+
   function tmWriteCaptureRing(arr) {
     try {
-      localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(arr));
+      var s = tmSerializeRingWithinBudget(arr);
+      try {
+        localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, s);
+      } catch (quotaErr) {
+        // (v4.255) Quota still exceeded (other origin keys grew): evict oldest quarter and retry.
+        for (var attempt = 0; attempt < 4; attempt++) {
+          try {
+            arr.splice(0, Math.max(1, Math.floor(arr.length / 4)));
+            localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(arr));
+            console.warn('⚠️ [v' + EXT_VERSION + '] Ring write hit quota; evicted oldest quarter (attempt ' + (attempt + 1) + ', ' + arr.length + ' entries left).');
+            return;
+          } catch (e2) {}
+        }
+        console.warn('⚠️ [v' + EXT_VERSION + '] Failed to persist payload capture ring buffer after eviction retries.');
+      }
     } catch (e) {
       // If localStorage is full or blocked, do not break fetch.
       console.warn('⚠️ [v' + EXT_VERSION + '] Failed to persist payload capture ring buffer:', e);
@@ -2646,14 +2755,16 @@
 
     // Guard against localStorage quota overflow: if write fails, evict oldest entries and retry
     var writeOk = false;
+    var ringStr = tmSerializeRingWithinBudget(ring); // (v4.255) hard byte budget BEFORE first write
     for (var attempt = 0; attempt < 5 && !writeOk; attempt++) {
       try {
-        localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, JSON.stringify(ring));
+        localStorage.setItem(TM_PAYLOAD_CAPTURE_RING_KEY, ringStr);
         writeOk = true;
       } catch (quotaErr) {
         // Evict oldest entry and retry
         if (ring.length > 1) {
           ring.shift();
+          ringStr = JSON.stringify(ring); // (v4.255) re-serialize after eviction for the retry
           console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] Payload capture ring exceeded localStorage quota; evicted oldest entry (attempt ' + (attempt + 1) + ')');
         } else {
           // Even a single entry is too large; store a minimal stub
