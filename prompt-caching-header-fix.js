@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.257
+// Version: 4.258
 // Issues Fixed:
+//   - v4.258: RAW-SEGMENT SIZE SAFETY for Responses-API SSE. The final `response.completed`
+//     event on OpenRouter/OpenAI Responses echoes the ENTIRE response object -- including the
+//     full `tools` array (~megabytes on big MCP setups) -- so a single 'usage segment' could
+//     dwarf the v4.255 1.5MB ring budget and get evicted/compact to nothing. Root cause: the
+//     push was `usageSegments.push(jsonStr)` with NO per-segment bound. Fix: cap each stored
+//     segment at 24KB; oversized segments are replaced by a compact skeleton that preserves
+//     usage/cost/error verbatim and strips the giant echoed fields (tools, large output arrays,
+//     reasoning content). Error-bearing segments are always kept (v4.198 behavior preserved);
+//     a tiny hard-error row is never dead. This also hardens the direct-OpenAI Responses path,
+//     whose response.completed echo is identical. Kimi reasoning-content counting (v4.257)
+//     remains the audit surface; this change only bounds storage.
+
 //   - v4.257: (a) Sol reasoning injector now ALSO guarantees reasoning.context='all_turns'
 //     (GPT-5.6's persisted-reasoning context mode -- default on the modern direct/OpenRouter
 //     Responses paths, but pinning it is harmless there and closes any legacy/Chat-Completions
@@ -638,7 +650,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.257';
+  const EXT_VERSION = '4.258';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3105,8 +3117,69 @@
                   // diagnostic you want, so mark it as worth keeping.
                   // (v4.211) ...and flag the capture as an error response for the widget-feed gate.
                   if (parsed2 && parsed2.error) { hit = true; capHadError = true; }
-                  // (v4.96) Save the raw JSON blob for any segment that carried usage/cost/error evidence.
-                  if (hit) { usageSegments.push(jsonStr); }
+                  // (v4.258) Build a compact skeleton for an oversized SSE segment: preserve usage/cost/error
+  // verbatim, strip the giant echoed fields (tools, large output arrays, reasoning content).
+  // Returns a JSON string capped near TM_RAW_SEG_SKELETON_MAX. Never throws.
+  const TM_RAW_SEG_MAX_CHARS = 24 * 1024;
+  function tmSlimRawSegment(jsonStr) {
+    try {
+      if (typeof jsonStr !== 'string' || jsonStr.length <= TM_RAW_SEG_MAX_CHARS) return jsonStr;
+      var p = JSON.parse(jsonStr);
+      var slim = { _tm_slim_segment: true, _orig_chars: jsonStr.length };
+      // Root identity fields commonly useful for debugging.
+      var carry = ['id','object','created','model','provider','service_tier','status','type'];
+      for (var ci = 0; ci < carry.length; ci++) {
+        var k = carry[ci];
+        if (Object.prototype.hasOwnProperty.call(p, k) && p[k] != null) slim[k] = p[k];
+      }
+      // Usage / cost evidence: keep verbatim (small).
+      if (p.usage) slim.usage = p.usage;
+      if (p.cost != null) slim.cost = p.cost;
+      if (p.cost_details) slim.cost_details = p.cost_details;
+      if (p.prompt_tokens_details) slim.prompt_tokens_details = p.prompt_tokens_details;
+      if (p.completion_tokens_details) slim.completion_tokens_details = p.completion_tokens_details;
+      // Error objects are the entire reason we keep raw segments; always preserve verbatim.
+      if (p.error) slim.error = p.error;
+      // Choices: keep only finish metadata, drop large content.
+      if (Array.isArray(p.choices)) {
+        slim.choices = p.choices.map(function(c) {
+          var o = {};
+          if (c && c.index != null) o.index = c.index;
+          if (c && c.finish_reason) o.finish_reason = c.finish_reason;
+          if (c && c.native_finish_reason) o.native_finish_reason = c.native_finish_reason;
+          return o;
+        });
+      }
+      // response.completed wrapper: keep response.usage + status + error + stop, drop response.tools/output.
+      if (p.response && typeof p.response === 'object' && !Array.isArray(p.response)) {
+        var r = p.response;
+        var sr = { _tm_slim_response: true };
+        var rcarry = ['id','object','created_at','completed_at','status','model','stop_reason','stop_sequence','service_tier','speed'];
+        for (var ri = 0; ri < rcarry.length; ri++) {
+          var rk = rcarry[ri];
+          if (Object.prototype.hasOwnProperty.call(r, rk) && r[rk] != null) sr[rk] = r[rk];
+        }
+        if (r.usage) sr.usage = r.usage;
+        if (r.error) sr.error = r.error;
+        if (r.cost != null) sr.cost = r.cost;
+        if (r.cost_details) sr.cost_details = r.cost_details;
+        if (Array.isArray(r.output)) sr._output_items_count = r.output.length;
+        if (Array.isArray(r.tools)) sr._tools_count = r.tools.length;
+        slim.response = sr;
+      }
+      var out = JSON.stringify(slim);
+      if (out.length > TM_RAW_SEG_MAX_CHARS) {
+        // Absolute backstop: hard truncate the skeleton itself.
+        out = out.slice(0, TM_RAW_SEG_MAX_CHARS - 40) + '... [tm_slim_truncated]';
+      }
+      return out;
+    } catch (e) {
+      // On any parse/shape surprise, fall back to a bounded head of the original string.
+      return String(jsonStr).slice(0, TM_RAW_SEG_MAX_CHARS - 40) + '... [tm_slim_fallback_truncated]';
+    }
+  }
+
+                  if (hit) { usageSegments.push(tmSlimRawSegment(jsonStr)); }
                 } catch (parseErr) {}
               }
               if (usageSegments.length > 0) { patch.response_usage_segments = usageSegments; }
