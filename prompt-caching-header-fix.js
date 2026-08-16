@@ -1,6 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.252
+// Version: 4.253
 // Issues Fixed:
+//   - v4.253: Fix 15 UNION PRESERVATION (the Sol-via-OpenRouter empty-string-optionals bug).
+//     tmFlattenAnyOfForStrictSchema no longer collapses an anyOf/oneOf/allOf union whose ONLY
+//     conflicting sibling is the advisory `default` annotation (the universal FastMCP Optional
+//     shape: anyOf:[{X},{null}] + default:null) -- it now DROPS the `default` and KEEPS the
+//     union intact, null arms and all. The old collapse-to-first-concrete-branch destroyed the
+//     null arm (the model's in-schema cue that a field is meant to be omitted/null) and any
+//     extra arms (e.g. render_spec's object form, anyOf:[string,object,null] -> bare string).
+//     Proven live 2026-08: GPT-5.6 Sol via OpenRouter (chat-completions tool shape), seeing the
+//     de-nulled bare types, populated every optional with "" (output_file:"") and crashed the
+//     GLIMPSE MCP tool; the same forked turn sent direct to OpenAI /v1/responses (whose FLAT
+//     tool shape this repair structurally never touches -- no tool.function.parameters) emitted
+//     a clean minimal call. Moonshot's strict validator objects to the UNION+SIBLING
+//     coexistence, NOT to a standalone union, so dropping the sibling satisfies it without
+//     de-nulling; genuine constraint siblings (parent-level type/enum/const) would LOOSEN the
+//     schema if deleted, so that rare shape falls through to the old conservative flatten.
+//     Omission semantics are unaffected either way: optionality is governed by `required`
+//     (never touched) and the MCP server's own defaults remain authoritative. NEEDS LIVE
+//     RE-TEST vs Moonshot (Kimi locked) to confirm standalone unions pass its validator.
 //   - v4.252: Ring-row polish, final pass. The '(T)' session-total tag gets a NON-BREAKING space
 //     before it (it was running straight into the digits) and shifts from the pink family to a
 //     near-white light gray, so it reads as a LABEL on the amount rather than as part of the
@@ -554,7 +572,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.252';
+  const EXT_VERSION = '4.253';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8310,11 +8328,29 @@
     if (!unionKey) return 0;
     // Only act when a CONFLICTING sibling keyword co-exists with the union (the exact thing
     // Moonshot flags). If the union stands alone, leave it untouched (it's valid everywhere).
-    var hasConflictSibling = Object.prototype.hasOwnProperty.call(prop, 'default')
-      || Object.prototype.hasOwnProperty.call(prop, 'type')
+    var hasAnnotationConflict = Object.prototype.hasOwnProperty.call(prop, 'default');
+    var hasConstraintConflict = Object.prototype.hasOwnProperty.call(prop, 'type')
       || Object.prototype.hasOwnProperty.call(prop, 'enum')
       || Object.prototype.hasOwnProperty.call(prop, 'const');
-    if (!hasConflictSibling) return 0;
+    if (!hasAnnotationConflict && !hasConstraintConflict) return 0;
+    // (v4.253) PRESERVE THE UNION when the only conflict is the advisory `default`
+    // annotation -- the universal FastMCP Optional shape: anyOf:[{X},{null}] + default:null.
+    // The old collapse-to-first-concrete-branch DESTROYED the null arm (the model's
+    // in-schema cue that a field is meant to be omitted/null) and any extra union arms
+    // (e.g. render_spec's object form). Proven live 2026-08: Sol via OpenRouter, seeing the
+    // de-nulled bare types, filled optionals with "" (output_file:"") and crashed the tool
+    // call, while the untouched direct/Responses schema produced clean minimal calls.
+    // Moonshot's strict validator objects to the UNION+SIBLING coexistence, NOT to a
+    // standalone union (see comment above) -- so drop the sibling, keep the union.
+    // `default` is advisory metadata: omission is governed by `required` (never touched),
+    // the server-side defaults remain authoritative, and the tool descriptions restate
+    // defaults in prose. Constraint siblings (type/enum/const) are REAL constraints --
+    // deleting them would LOOSEN the schema -- so that rare shape falls through to the
+    // old conservative flatten below.
+    if (hasAnnotationConflict && !hasConstraintConflict) {
+      delete prop.default;
+      return 1;
+    }
     var branches = prop[unionKey];
     // Choose the first branch that is a concrete (non-null) schema object.
     var chosen = null;
@@ -8399,7 +8435,7 @@
   //   role=__lambdao_1.tmRepairToolSchemas,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Fix 15: re-infers and re-injects a JSON-Schema type into tool properties TypingMind stripped (array-valued types), unblocking strict validators (Fireworks 400s).,
+  //   comment=Fix 15: re-infers and re-injects a JSON-Schema type into tool properties TypingMind stripped (array-valued types), unblocking strict validators (Fireworks 400s); v4.253: union+default conflicts now drop the advisory default and PRESERVE the anyOf union (null arms survive) instead of flattening.,
   // ]
   function tmRepairToolSchemas(body) {
     try {
@@ -8413,7 +8449,7 @@
         }
       }
       if (total > 0) {
-        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type, and/or flattened conflicting anyOf-with-sibling-keyword unions; fixes Fireworks/Moonshot/strict-provider 400s).');
+        console.log('✅ [v' + EXT_VERSION + '] Fix 15: repaired ' + total + ' tool-schema propert' + (total === 1 ? 'y' : 'ies') + ' (restored dropped array-type → single string type; dropped conflicting `default` siblings PRESERVING anyOf unions incl. null arms; flattened only constraint-conflicted unions; fixes Fireworks/Moonshot/strict-provider 400s without de-nulling Optionals).');
         return true;
       }
       return false;
