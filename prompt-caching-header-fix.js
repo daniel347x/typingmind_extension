@@ -1,6 +1,26 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.255
+// Version: 4.256
 // Issues Fixed:
+//   - v4.256: REASONING-REPLAY AGGREGATES THAT SURVIVE THE RECORD BUDGET. Live audit (2026-08)
+//     found v4.255's per-message replay markers structurally invisible for real conversations:
+//     any large history blows TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS (1000), so capture falls
+//     back to tmBuildMinimalCaptureSkeleton -- which carried none of the markers (the pasted
+//     'skeleton' was even a DOUBLE-skeleton: tmBuildHugeSkeleton applied to the stored minimal
+//     record, hence the self-referential keys list). Fix: ONE cheap single-pass aggregate,
+//     tmSummarizeReasoningReplay -- counts only, never content: assistants, Anthropic thinking/
+//     redacted_thinking blocks, chat-shape reasoning strings + reasoning_details (type
+//     histogram), Responses-shape replayed reasoning items + encrypted chars; explicit
+//     {none:true} when a scan finds nothing (distinguishes 'scanned, zero' from 'could not
+//     scan'). Emitted at top level of BOTH skeleton tiers (rich chat + Responses branches, and
+//     the minimal compact record), so every future row answers the replay question at a glance.
+//     Also closes the flagged whitelist gap: Anthropic's native body-level `thinking` param now
+//     surfaces in the rich chat skeleton AND the minimal record (is thinking explicitly
+//     requested, or provider-defaulted?). Audit context: raw segments already proved Fable-5
+//     via OpenRouter (Azure) thinks -- output_tokens_details.thinking_tokens 7126 -- and clean
+//     multi-tool-loop turns prove within-loop signed-block replay (Anthropic hard-errors
+//     otherwise). EXPECTATION for readers: thinking_blocks may legitimately be ZERO on
+//     fresh-turn requests (Anthropic ignores prior-turn thinking by design); the cell that
+//     must be nonzero is a mid-tool-loop continuation.
 //   - v4.255: RING QUOTA SAFETY + INJECTED-FIELD VISIBILITY. (a) TypingMind hard-crashed when the
 //     capture ring hit 4.3MB of the shared ~5MB origin localStorage quota -- at that size it is
 //     TYPINGMIND'S OWN writes that start throwing, not ours (append path had evict-retries; the
@@ -606,7 +626,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.255';
+  const EXT_VERSION = '4.256';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2375,10 +2395,12 @@
         // actually went out (the Sol reasoning injection was invisible here during the 2026-08
         // debugging session -- session_id too; both were skeleton drops, not wire absences).
         reasoning: bodyObj.reasoning || undefined,
+        thinking: bodyObj.thinking || undefined,
         session_id: bodyObj.session_id || undefined,
         usage: bodyObj.usage || undefined,
         provider: bodyObj.provider || undefined,
         prompt_cache_key: bodyObj.prompt_cache_key || undefined,
+        reasoning_replay: tmSummarizeReasoningReplay(bodyObj),
         messages: bodyObj.messages.map(m => {
           const msg = { role: m && m.role ? m.role : null };
           const c = m && m.content;
@@ -2435,6 +2457,7 @@
         include: bodyObj.include || undefined,
         store: (typeof bodyObj.store === 'boolean') ? bodyObj.store : undefined,
         previous_response_id: bodyObj.previous_response_id || undefined,
+        reasoning_replay: tmSummarizeReasoningReplay(bodyObj),
         input: bodyObj.input.map(m => {
           const msg = { role: m && m.role ? m.role : null };
           // (v4.255) Responses input items carry replayed reasoning/function items via `type`
@@ -2456,12 +2479,59 @@
     };
   }
 
+  // (v4.256) ONE-PASS reasoning-replay AGGREGATE -- counts/types only, never content. Survives
+  // every record budget (unlike v4.255's per-message markers, which die with the rich skeleton
+  // on any real-sized conversation). Covers all three wire shapes: Anthropic thinking/
+  // redacted_thinking content blocks, chat-completions per-message reasoning strings +
+  // reasoning_details, and Responses-API replayed reasoning items with encrypted_content.
+  // Returns {assistants, none:true} when a scan finds nothing (explicit zero, distinct from
+  // undefined = shape not scannable).
+  function tmSummarizeReasoningReplay(bodyObj) {
+    try {
+      var msgs = Array.isArray(bodyObj && bodyObj.messages) ? bodyObj.messages
+        : (Array.isArray(bodyObj && bodyObj.input) ? bodyObj.input : null);
+      if (!msgs) return undefined;
+      var agg = { assistants: 0, thinking_blocks: 0, redacted_blocks: 0, reasoning_strs: 0, reasoning_details: 0, reasoning_detail_types: {}, encrypted_items: 0, encrypted_chars: 0 };
+      for (var i = 0; i < msgs.length; i++) {
+        var m = msgs[i];
+        if (!m) continue;
+        if (m.role === 'assistant') agg.assistants++;
+        if (typeof m.reasoning === 'string' && m.reasoning.length) agg.reasoning_strs++;
+        if (Array.isArray(m.reasoning_details)) {
+          agg.reasoning_details += m.reasoning_details.length;
+          for (var d = 0; d < m.reasoning_details.length; d++) {
+            var det = m.reasoning_details[d];
+            var t = (det && (det.type || det.format)) ? String(det.type || det.format) : '?';
+            agg.reasoning_detail_types[t] = (agg.reasoning_detail_types[t] || 0) + 1;
+          }
+        }
+        if (m.type === 'reasoning') {
+          agg.encrypted_items++;
+          if (m.encrypted_content) agg.encrypted_chars += String(m.encrypted_content).length;
+        }
+        var c = m.content;
+        if (Array.isArray(c)) {
+          for (var b = 0; b < c.length; b++) {
+            var blk = c[b];
+            if (!blk) continue;
+            if (blk.type === 'thinking') agg.thinking_blocks++;
+            else if (blk.type === 'redacted_thinking') agg.redacted_blocks++;
+          }
+        }
+      }
+      if (!agg.thinking_blocks && !agg.redacted_blocks && !agg.reasoning_strs && !agg.reasoning_details && !agg.encrypted_items) {
+        return { assistants: agg.assistants, none: true };
+      }
+      return agg;
+    } catch (e) { return undefined; }
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildMinimalCaptureSkeleton-a6iw,
   //   role=__lambdao_1.tmBuildMinimalCaptureSkeleton,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Last-resort compact capture record; preserves model, session_id, cache_control, tool count, message shape. No full message text.,
+  //   comment=Last-resort compact capture record; preserves model, session_id, cache_control, tool count, message shape. No full message text. v4.256: also carries thinking/reasoning body params + the tmSummarizeReasoningReplay aggregate (counts only) -- real-sized conversations always land in THIS record, so the reasoning-replay audit must live here, not only in the rich skeleton.,
   // ]
   function tmBuildMinimalCaptureSkeleton(bodyObj) {
     // Last-resort compact record for the long-history ring: enough context to identify/cache-debug
@@ -2481,6 +2551,11 @@
       model: (bodyObj && bodyObj.model) || null,
       keys: (bodyObj && typeof bodyObj === 'object') ? Object.keys(bodyObj) : [],
       prompt_cache_key: bodyObj && bodyObj.prompt_cache_key,
+      // (v4.256) Reasoning audit fields -- present even in the last-resort record, because real
+      // conversations ALWAYS land here (the rich skeleton dies on the 1000-char record budget).
+      thinking: bodyObj && bodyObj.thinking,
+      reasoning: bodyObj && bodyObj.reasoning,
+      reasoning_replay: tmSummarizeReasoningReplay(bodyObj),
       session_id: bodyObj && bodyObj.session_id,
       usage: bodyObj && bodyObj.usage,
       cache_control: bodyObj && bodyObj.cache_control,
