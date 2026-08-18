@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.263
+// Version: 4.264
 // Issues Fixed:
+//   - v4.264: DIRECT-ANTHROPIC AUTOMATIC CACHING + MESSAGE TOOL-INPUT STABILITY. v4.263
+//     successfully restored cache writes, but a live follow-up reused only the stable 18,746-token
+//     tools/system prefix and rewrote 157,256 conversation tokens at the expensive 1h rate.
+//     Root cause in our strategy: moving explicit user-block breakpoints are a poor fit for
+//     agentic histories and Anthropic's 20-block lookback; the extension also canonicalized only
+//     body.tools schemas, not historical assistant tool_use.input objects in messages. Fix:
+//     direct Anthropic now uses the API's current recommended TOP-LEVEL automatic cache_control
+//     (server advances the final conversation breakpoint each request) plus ONE explicit system
+//     marker as a stable fallback -- 2 of 4 slots total. Historical tool_use.input objects are
+//     recursively key-canonicalized (arrays preserved) before caching so TypingMind reserialization
+//     cannot invalidate message prefixes. The existing 1h TTL/beta and marker-free self-healing
+//     gate remain. Expected warm pattern: large cache_read, only the newly appended suffix written.
 //   - v4.263: DIRECT-ANTHROPIC PROMPT CACHING REGRESSION FIX. Live captures on direct
 //     api.anthropic.com traffic (claude-fable-5) showed hasCacheControl:false with BOTH
 //     cache_read_input_tokens:0 AND cache_creation_input_tokens:0 across consecutive 600K-token
@@ -697,7 +709,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.263';
+  const EXT_VERSION = '4.264';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8614,59 +8626,47 @@
     return changed;
   }
 
-  // ==================== DIRECT-ANTHROPIC CACHE INJECTION (v4.263) ====================
-  // Same cap-safe strategy as ensureOpenRouterClaudeCacheControl, adapted to the NATIVE
-  // /v1/messages shape: system is a TOP-LEVEL body field (string or content-block array),
-  // never a role:'system' message. A marker on the last system block caches tools + system
-  // (tools precede system in the hashed prefix); two user-message markers cover the
-  // conversation. Caller gates on tmSummarizeCacheControl().hasAny, so this function can
-  // assume a marker-free body and never needs the deep-strip pass.
+  // ==================== DIRECT-ANTHROPIC CACHE INJECTION (v4.264) ====================
+  // Use Anthropic's top-level AUTOMATIC caching for the growing conversation: the server moves
+  // the final breakpoint forward each request, reads the prior prefix, and writes only the new
+  // suffix. Keep one explicit system marker as a stable fallback if message history diverges.
+  // This consumes 2 of the 4 available breakpoint slots and avoids the v4.263 moving-explicit-
+  // user-marker strategy that rewrote most of a tool-heavy conversation.
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmEnsureDirectAnthropicCacheControl-da63,
   //   role=__lambdao_1.tmEnsureDirectAnthropicCacheControl,
   //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
   //   kind=ast,
-  //   comment=v4.263: cap-safe cache_control injection for DIRECT api.anthropic.com traffic (native shape: top-level system field + last-2-user markers, 3 blocks total, ttl 1h). Regression fix for TypingMind ceasing native marker injection on new Claude models.,
+  //   comment=v4.264: direct Anthropic cache policy -- top-level automatic conversation caching plus one explicit system fallback, both ttl 1h (2 of 4 breakpoint slots).,
   // ]
   function tmEnsureDirectAnthropicCacheControl(body) {
     if (!body || !Array.isArray(body.messages)) return false;
     var cc = { type: 'ephemeral', ttl: '1h' };
     var changed = false;
 
-    // 1) System breakpoint (native shape: top-level string or block array).
+    // 1) Automatic conversation breakpoint. Anthropic advances this to the last cacheable block.
+    if (!body.cache_control || typeof body.cache_control !== 'object') {
+      body.cache_control = { type: 'ephemeral', ttl: '1h' };
+      console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: enabled top-level automatic cache_control ttl:1h.');
+      changed = true;
+    }
+
+    // 2) Explicit stable fallback at the end of the native top-level system field.
     if (typeof body.system === 'string' && body.system.length > 0) {
       body.system = [{ type: 'text', text: body.system, cache_control: cc }];
-      console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: wrapped top-level system string into cached block.');
+      console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: wrapped top-level system string into cached fallback block.');
       changed = true;
     } else if (Array.isArray(body.system)) {
       for (var sbi = body.system.length - 1; sbi >= 0; sbi--) {
         var sb = body.system[sbi];
         if (sb && sb.type === 'text' && typeof sb.text === 'string') {
-          sb.cache_control = cc;
-          console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: injected cache_control on system block[' + sbi + '].');
-          changed = true;
+          if (!sb.cache_control || typeof sb.cache_control !== 'object') {
+            sb.cache_control = cc;
+            console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: injected cache_control on system fallback block[' + sbi + '].');
+            changed = true;
+          }
           break;
         }
-      }
-    }
-
-    // 2) Up to two user-message breakpoints (same offsets as Fix 5: last, 2-back; fallbacks 10/5).
-    var userIndices = [];
-    for (var mi = 0; mi < body.messages.length; mi++) {
-      if (body.messages[mi] && body.messages[mi].role === 'user') userIndices.push(mi);
-    }
-    var offsets = [0, 2, 10, 5];
-    var placed = 0;
-    var used = new Set();
-    for (var oi = 0; oi < offsets.length && placed < 2; oi++) {
-      var pos = userIndices.length - 1 - offsets[oi];
-      if (pos < 0) continue;
-      var idx = userIndices[pos];
-      if (used.has(idx)) continue;
-      used.add(idx);
-      if (tmInjectCacheControlOnMessage(body.messages[idx], 'direct-anthropic user[' + idx + '] (offset -' + offsets[oi] + ')')) {
-        placed++;
-        changed = true;
       }
     }
     return changed;
@@ -8999,6 +8999,42 @@
     } catch (e) {
       console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] tmStabilizeToolsOrdering failed (leaving tools untouched):', e);
       return false;
+    }
+  }
+
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmStabilizeAnthropicToolUseInputs-ati64,
+  //   role=__lambdao_1.tmStabilizeAnthropicToolUseInputs,
+  //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
+  //   kind=ast,
+  //   comment=v4.264: recursively key-canonicalizes historical assistant tool_use.input objects in Anthropic messages (array order preserved) so TypingMind reserialization cannot invalidate the conversation cache prefix.,
+  // ]
+  function tmStabilizeAnthropicToolUseInputs(body) {
+    try {
+      if (!body || !Array.isArray(body.messages)) return 0;
+      var changed = 0;
+      for (var mi = 0; mi < body.messages.length; mi++) {
+        var msg = body.messages[mi];
+        if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+        for (var bi = 0; bi < msg.content.length; bi++) {
+          var block = msg.content[bi];
+          if (!block || block.type !== 'tool_use' || !block.input || typeof block.input !== 'object') continue;
+          var before = JSON.stringify(block.input);
+          var canon = tmCanonicalizeKeysDeep(block.input);
+          var after = JSON.stringify(canon);
+          if (after !== before) {
+            block.input = canon;
+            changed++;
+          }
+        }
+      }
+      if (changed > 0) {
+        console.log('\u2705 [v' + EXT_VERSION + '] Canonicalized ' + changed + ' historical Anthropic tool_use.input object(s) for stable message-cache prefixes.');
+      }
+      return changed;
+    } catch (e) {
+      console.warn('\u26a0\ufe0f [v' + EXT_VERSION + '] tmStabilizeAnthropicToolUseInputs failed (leaving message inputs untouched):', e);
+      return 0;
     }
   }
 
@@ -9971,20 +10007,19 @@
           if (directToolIdSanitized) modified = true;
           tally.historicToolInputs  = repairHistoricAnthropicToolInputs(body) || 0;
           if (tally.historicToolInputs) modified = true;
+          var directToolInputOrderStabilized = tmStabilizeAnthropicToolUseInputs(body) || 0;
+          if (directToolInputOrderStabilized) modified = true;
           tally.emptyMessageContent = repairAnthropicEmptyMessageContent(body) || 0;
           if (tally.emptyMessageContent) modified = true;
           // 🩹 FIX: Inject missing tool_result blocks (v4.28)
           tally.missingToolResults  = repairAnthropicMissingToolResults(body) || 0;
           if (tally.missingToolResults) modified = true;
 
-          // ==================== DIRECT-ANTHROPIC PROMPT CACHING (v4.263) ====================
-          // REGRESSION FIX (same shape as the v4.70 proxy-path fix): TypingMind historically
-          // injected cache_control breakpoints itself on direct api.anthropic.com traffic, so
-          // this branch only ever added the beta header and repaired tool blocks. Live captures
-          // on claude-fable-5 show hasCacheControl:false with cache_read==0 AND cache_creation==0
-          // on every turn -- TypingMind no longer injects markers for this model, so the full
-          // ~600K prefix re-bills at full price each turn. Inject cap-safe markers ONLY when the
-          // body carries no cache_control anywhere (self-healing if native injection resumes).
+          // ==================== DIRECT-ANTHROPIC PROMPT CACHING (v4.264) ====================
+          // Use Anthropic's current top-level AUTOMATIC cache control so the server advances the
+          // conversation breakpoint itself. One explicit system marker remains as a stable fallback.
+          // This replaces v4.263's moving explicit user markers, which reused only the 18.7K
+          // tools/system prefix and rewrote ~157K message tokens in a live Fable 5 follow-up.
           try {
             var directCacheSummary = tmSummarizeCacheControl(body);
             if (!(directCacheSummary && directCacheSummary.hasAny)) {
@@ -9996,7 +10031,7 @@
                   options.headers['anthropic-beta'] = directBeta ? directBeta + ',extended-cache-ttl-2025-04-11' : 'extended-cache-ttl-2025-04-11';
                   console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: appended extended-cache-ttl-2025-04-11 beta header for ttl:1h.');
                 }
-                console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: injected cap-safe cache_control breakpoints (system + up to 2 user, ttl:1h).');
+                console.log('\u2705 [v' + EXT_VERSION + '] Direct Anthropic: enabled automatic conversation caching + explicit system fallback (2 breakpoint slots, ttl:1h).');
                 try { tmResetOpenRouterCacheTimer(); } catch (e) {}
               }
             } else {
