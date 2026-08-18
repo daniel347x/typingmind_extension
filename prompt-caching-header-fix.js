@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.268
+// Version: 4.269
 // Issues Fixed:
+//   - v4.269: WIDGET MISS-COUNT RED. The persistent widget's (misses / hits) superscript now
+//     renders the MISS COUNT in #ff6b6b (the MISS badge red -- the only red in the cost/cache
+//     feedback system, since the hue palette deliberately avoids red); slash + hits stay #ccffcc.
+//     NOTE: the ring-modal Filter DROPDOWN cannot color just the miss number the same way --
+//     native <option> elements are single-color plain text (the session hue); doing it there
+//     would require replacing the native select with a custom listbox component (deferred).
 //   - v4.268: TRAILING SPACE after the merged (misses / hits) parenthetical in ring-modal rows.
 //     The ratio badge ran flush onto the following field (session cost); a trailing &nbsp;
 //     inside the HIT/MISS badge now restores the one-blank-space separation. Spacing only
@@ -733,7 +739,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.268';
+  const EXT_VERSION = '4.269';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4555,8 +4561,10 @@
               ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
               : '') +
             // v4.189: hit/miss superscript readability — font 9px->11px, spaces around the slash
+            // v4.269: miss count in the MISS badge red (#ff6b6b) -- the system's one reserved
+            // red -- while slash + hits keep the legacy light green.
             ((totalMisses > 0 || totalHits > 0)
-              ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;">' + totalMisses + ' / ' + totalHits + '</span>'
+              ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
               : '') +
         '</span>'
       : '';
