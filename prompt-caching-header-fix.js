@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.267
+// Version: 4.268
 // Issues Fixed:
+//   - v4.268: TRAILING SPACE after the merged (misses / hits) parenthetical in ring-modal rows.
+//     The ratio badge ran flush onto the following field (session cost); a trailing &nbsp;
+//     inside the HIT/MISS badge now restores the one-blank-space separation. Spacing only
+//     applies when the ratio is rendered.
 //   - v4.267: RATIO BADGE MERGED INTO HIT/MISS FIELD + BRIGHTER PALETTE + FILTER DROPDOWN RATIOS.
 //     (a) The (misses / hits) parenthetical now lives INSIDE the HIT/MISS badge span itself
 //     (one &nbsp; after the word; the fixed 30px/58px badge widths were removed so the merged
@@ -729,7 +733,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.267';
+  const EXT_VERSION = '4.268';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7856,7 +7860,7 @@
           '(' + '<span style="color:#d07070;">' + rowMisses + '</span>' +
           ' / ' +
           '<span style="color:#82c882;">' + rowHits + '</span>' + ')' +
-          '</span>';
+          '</span>&nbsp;';
       }
       // v4.267: fixed 30px/58px badge widths REMOVED (would clip the merged ratio parenthetical);
       // nowrap keeps 'HIT (3 / 18)' / 'MISS (12 / 4)' on one line as a single field.
