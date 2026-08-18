@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.265
+// Version: 4.266
 // Issues Fixed:
+//   - v4.266: DEAD-BRANCH FIX in v4.265's ring-modal session-cost lookup. The hoisted-store
+//     fallback read modalCostsStore[capIdKey].total but the ledger stores the cost total as
+//     _total (underscore-prefixed, tmRecordSessionCost), so the typeof test always failed and
+//     execution always fell through to the per-row tmGetSessionCost localStorage re-parse.
+//     One-word fix (.total -> ._total): the hoisted store now actually serves session cost,
+//     eliminating the per-row re-parse the hoist was intended to save. Badge behavior unchanged.
 //   - v4.265: RING-BUFFER MODAL CUMULATIVE CACHE RATIO BADGE (misses / hits). Added a muted,
 //     non-intrusive `(misses / hits)` session cache outcome badge adjacent to the HIT/MISS status
 //     badge on every row in the Payload Capture ring buffer modal. Reads the per-identity ledger
@@ -715,7 +721,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.265';
+  const EXT_VERSION = '4.266';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7853,7 +7859,7 @@
       var capHost = capIdentity ? (capIdentity.host || '') : '';
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
-      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : (capIdKey && modalCostsStore && modalCostsStore[capIdKey] && typeof modalCostsStore[capIdKey].total === 'number' ? modalCostsStore[capIdKey].total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy));
+      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : (capIdKey && modalCostsStore && modalCostsStore[capIdKey] && typeof modalCostsStore[capIdKey]._total === 'number' ? modalCostsStore[capIdKey]._total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy));
       // (v4.248) A '(T)' tag disambiguates the row's two pink dollar amounts: THIS one is the
       // running SESSION total for the identity (smaller font, info row); the larger unlabeled one on
       // the cost row below is this single payload's own inference cost. Labeling one of the pair is
