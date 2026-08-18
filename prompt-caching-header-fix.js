@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.260
+// Version: 4.261
 // Issues Fixed:
+//   - v4.261: KIMI TOOL-ID REPAIR VISIBILITY. When v4.259/4.260 replaces a missing or
+//     duplicate provider tool-call ID, stamp the EXISTING payload-capture ring row with
+//     `_tool_id_repair_count` + last-repair detail (no new localStorage store), immediately
+//     repaint the persistent widget with an amber `ID↺` badge, and show the same badge on that
+//     ring-modal entry. The capture Summary includes the fields too. Healthy turns clear the live
+//     widget badge on the next status rebuild; historical ring rows retain their event fact.
 //   - v4.260: KIMI TOOL-ID COLLISION ORACLE WIDENING. The v4.259 response guard now
 //     reserves IDs from BOTH normalized history halves: assistant `tool_calls[].id` and
 //     `role:'tool'` message `tool_call_id`. If history conversion/pruning retains only the tool
@@ -669,7 +675,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.260';
+  const EXT_VERSION = '4.261';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3221,6 +3227,9 @@
             var capWidgetFeed = !capHadError;
             tmMostRecentPayloadStatus = capWidgetFeed ? {
               ts: Date.now(),
+              captureId: captureId,
+              toolIdRepairCount: Number(capRec && capRec._tool_id_repair_count || 0),
+              toolIdRepairLast: (capRec && capRec._tool_id_repair_last) || null,
               repairTally: (capRec && capRec.repair_tally) || null,
               anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
               orUsage: patch.response_usage || (capRec && capRec.response_usage) || null,
@@ -4388,6 +4397,22 @@
     var family = (rt && rt.family) ? rt.family : null;   // 'anthropic' | 'openai' | null
     var parts = [];
     parts.push('<span style="opacity:0.7;">v' + EXT_VERSION + '</span>');
+
+    // v4.261: current most-recent payload required one or more Kimi tool-ID replacements.
+    // Bright only on the affected turn; the next status rebuild carries zero and clears it.
+    var idRepairCount = Number(st.toolIdRepairCount || 0);
+    if (idRepairCount > 0) {
+      var idRepairLast = st.toolIdRepairLast || {};
+      var idRepairTitle = 'Kimi tool-call ID repaired before TypingMind persistence';
+      if (idRepairLast.from || idRepairLast.to) {
+        idRepairTitle += ': ' + String(idRepairLast.from || '?') + ' → ' + String(idRepairLast.to || '?');
+      }
+      parts.push(
+        '<span title="' + escapeHtml(idRepairTitle) + '" ' +
+        'style="color:#ffd166;font-weight:bold;text-shadow:0 1px 2px #000;">ID↺' +
+        (idRepairCount > 1 ? (' ' + idRepairCount) : '') + '</span>'
+      );
+    }
 
     // Anthropic-family repair block: R a/b/c/d. Full-bright when the most-recent payload was Anthropic
     // family; dimmed (not applicable) otherwise. Bold + ⚠ only when active AND non-zero.
@@ -6818,6 +6843,8 @@
       vendorHint: cap.vendorHint,
       convIdHint: cap.convIdHint,
       repair_tally: cap.repair_tally || null,
+      tool_id_repair_count: Number(cap._tool_id_repair_count || 0),
+      tool_id_repair_last: cap._tool_id_repair_last || null,
       model,
       hasCacheControl,
       cacheControlSummary,
@@ -7742,6 +7769,20 @@
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
+      // v4.261: permanent per-capture marker for a response whose Kimi tool-call ID was repaired.
+      var capIdRepairCount = Number(cap._tool_id_repair_count || 0);
+      var capIdRepairBadge = '';
+      if (capIdRepairCount > 0) {
+        var capIdRepairLast = cap._tool_id_repair_last || {};
+        var capIdRepairTitle = 'Kimi tool-call ID repaired before TypingMind persistence';
+        if (capIdRepairLast.from || capIdRepairLast.to) {
+          capIdRepairTitle += ': ' + String(capIdRepairLast.from || '?') + ' → ' + String(capIdRepairLast.to || '?');
+        }
+        capIdRepairBadge = '<span title="' + escapeHtml(capIdRepairTitle) + '" ' +
+          'style="display:inline-block;margin-right:6px;padding:1px 5px;border:1px solid #ffd166;' +
+          'border-radius:8px;color:#ffd166;font-size:10px;font-weight:bold;white-space:nowrap;">ID↺' +
+          (capIdRepairCount > 1 ? (' ' + capIdRepairCount) : '') + '</span>';
+      }
       var capSessionId = cap.session_id || null;
       var capIdentity = cap._identity || null;
       var capModel = capIdentity ? (capIdentity.model || '') : tmCaptureModel(cap);
@@ -7790,7 +7831,7 @@
       html += '<div style="font-weight:600;overflow:visible;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:18px;">' +
               '<span style="display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;">' +
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
-              hitBadge + sessionCostStr +
+              hitBadge + capIdRepairBadge + sessionCostStr +
               '</span>' +
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
@@ -9457,13 +9498,68 @@
     return candidate;
   }
 
+  // Event-source one Kimi ID repair into the EXISTING capture row and the live widget state.
+  // The ring itself is already localStorage-backed, so no parallel store/schema is needed.
+  // @beacon[
+  //   id=tm-payload@kimi-tool-id-repair-visibility,
+  //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
+  //   kind=ast,
+  //   comment=Event-sources each dynamic Kimi tool-call-ID replacement onto the existing capture row and current widget status, then asynchronously repaints the persistent widget and any open ring modal.,
+  // ]
+  function tmRecordKimiToolIdRepair(captureId, detail) {
+    var priorCount = 0;
+    try {
+      var prior = captureId ? getCaptureById(captureId) : null;
+      priorCount = Number(prior && prior._tool_id_repair_count || 0);
+    } catch (e) {}
+    var nextCount = priorCount + 1;
+    var stamp = {
+      from: detail && detail.from != null ? String(detail.from) : '',
+      to: detail && detail.to != null ? String(detail.to) : '',
+      choice_index: detail && detail.choiceIndex != null ? String(detail.choiceIndex) : '',
+      model: detail && detail.model != null ? String(detail.model) : '',
+      ts: Date.now()
+    };
+
+    if (captureId) {
+      try {
+        tmUpdateCaptureRecord(captureId, {
+          _tool_id_repair_count: nextCount,
+          _tool_id_repair_last: stamp
+        });
+      } catch (e) {}
+    }
+
+    // Immediate current-turn signal. tmCaptureResponse also rebuilds these fields from the
+    // capture record at stream completion, so either clone/consumer branch winning the race
+    // converges on the same event-sourced count.
+    try {
+      tmMostRecentPayloadStatus = tmMostRecentPayloadStatus || {};
+      tmMostRecentPayloadStatus.captureId = captureId || null;
+      tmMostRecentPayloadStatus.toolIdRepairCount = nextCount;
+      tmMostRecentPayloadStatus.toolIdRepairLast = stamp;
+    } catch (e) {}
+
+    // Paint outside the TransformStream callback so UI work never delays token delivery.
+    try {
+      setTimeout(function() {
+        try { renderGpt51UsageWidget(); } catch (e) {}
+        try {
+          if (payloadCaptureModalInnerEl && payloadCaptureModalInnerEl.isConnected) {
+            renderPayloadCaptureModal();
+          }
+        } catch (e) {}
+      }, 0);
+    } catch (e) {}
+  }
+
   // @beacon[
   //   id=tm-payload@kimi-tool-id-guard,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
   //   comment=Dynamic Kimi response-boundary guard: preserves healthy unique tool-call IDs but replaces missing/history-duplicate/current-response-duplicate IDs before TypingMind persists them; SSE fragments and parallel calls stay paired by choice+local-index.,
   // ]
-  function tmWrapKimiToolIdResponse(response, historicalIds, modelLabel) {
+  function tmWrapKimiToolIdResponse(response, historicalIds, modelLabel, onRepair) {
     if (!response || !response.body) return response;
 
     var occupied = new Set();
@@ -9512,6 +9608,16 @@
             (providerId || '<missing>') + ' -> ' + canonicalId +
             ' (model=' + String(modelLabel || 'kimi') + ', choice/index=' + mapKey + ')'
           );
+          try {
+            if (typeof onRepair === 'function') {
+              onRepair({
+                from: providerId || '<missing>',
+                to: canonicalId,
+                choiceIndex: mapKey,
+                model: String(modelLabel || 'kimi')
+              });
+            }
+          } catch (e) {}
         }
       }
       return changed;
@@ -10380,7 +10486,12 @@
     var fetchPromiseToolIdGuarded = fetchPromiseCaptured.then(function(response) {
       if (!shouldGuardKimiToolIds) return response;
       try {
-        return tmWrapKimiToolIdResponse(response, kimiHistoricalToolIds, kimiToolIdModel);
+        return tmWrapKimiToolIdResponse(
+          response,
+          kimiHistoricalToolIds,
+          kimiToolIdModel,
+          function(detail) { tmRecordKimiToolIdRepair(captureId, detail); }
+        );
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Kimi tool-id guard failed open:', e);
         return response;
