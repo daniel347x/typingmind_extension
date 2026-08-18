@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.264
+// Version: 4.265
 // Issues Fixed:
+//   - v4.265: RING-BUFFER MODAL CUMULATIVE CACHE RATIO BADGE (misses / hits). Added a muted,
+//     non-intrusive `(misses / hits)` session cache outcome badge adjacent to the HIT/MISS status
+//     badge on every row in the Payload Capture ring buffer modal. Reads the per-identity ledger
+//     (`tm_session_costs_v2`) once per modal render pass (hoisted outside the row loop for performance);
+//     displays dim muddy red (`#9e4a4a`) for misses, neutral off-white/gray (`#a0a0ab`) for parens/slash,
+//     and dim muddy green (`#487e48`) for hits at 9px/600 font size on both HIT and MISS rows.
 //   - v4.264: DIRECT-ANTHROPIC AUTOMATIC CACHING + MESSAGE TOOL-INPUT STABILITY. v4.263
 //     successfully restored cache writes, but a live follow-up reused only the stable 18,746-token
 //     tools/system prefix and rewrote 157,256 conversation tokens at the expensive 1h rate.
@@ -709,7 +715,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.264';
+  const EXT_VERSION = '4.265';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7706,6 +7712,10 @@
     // available to the toggle button; only the sort remains here.
     tmSortModalItems(items);
 
+    // (v4.265) Hoist session costs store read outside the row loop so we don't JSON.parse localStorage per row.
+    var modalCostsStore = null;
+    try { modalCostsStore = tmGetSessionCosts() || {}; } catch (e) { modalCostsStore = {}; }
+
     // (v4.145) Session costs are stamped onto each capture row at response receipt.
     // No live recomputation from ring entries here; avoids double-counting and preserves history.
 
@@ -7807,6 +7817,21 @@
       var hitBadge = isHit
         ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
         : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
+      // (v4.265) Cumulative cache ratio (misses / hits) for this session identity.
+      var capIdKey = '';
+      try { capIdKey = tmCapIdentityKey(cap) || ''; } catch (e) {}
+      var rowStats = (capIdKey && modalCostsStore) ? modalCostsStore[capIdKey] : null;
+      var rowHits = Number((rowStats && rowStats._cache_hits) || 0);
+      var rowMisses = Number((rowStats && rowStats._cache_misses) || 0);
+      var hitRatioBadge = '';
+      if (rowHits > 0 || rowMisses > 0) {
+        hitRatioBadge = '<span title="session totals (misses / hits) — cumulative, this identity" ' +
+          'style="display:inline-block;margin-left:4px;margin-right:6px;font-size:9px;font-weight:600;white-space:nowrap;color:#a0a0ab;">' +
+          '(' + '<span style="color:#9e4a4a;">' + rowMisses + '</span>' +
+          ' / ' +
+          '<span style="color:#487e48;">' + rowHits + '</span>' + ')' +
+          '</span>';
+      }
       // v4.261: permanent per-capture marker for a response whose Kimi tool-call ID was repaired.
       var capIdRepairCount = Number(cap._tool_id_repair_count || 0);
       var capIdRepairBadge = '';
@@ -7828,7 +7853,7 @@
       var capHost = capIdentity ? (capIdentity.host || '') : '';
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
-      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy);
+      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : (capIdKey && modalCostsStore && modalCostsStore[capIdKey] && typeof modalCostsStore[capIdKey].total === 'number' ? modalCostsStore[capIdKey].total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy));
       // (v4.248) A '(T)' tag disambiguates the row's two pink dollar amounts: THIS one is the
       // running SESSION total for the identity (smaller font, info row); the larger unlabeled one on
       // the cost row below is this single payload's own inference cost. Labeling one of the pair is
@@ -7869,7 +7894,7 @@
       html += '<div style="font-weight:600;overflow:visible;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:18px;">' +
               '<span style="display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;">' +
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
-              hitBadge + capIdRepairBadge + sessionCostStr +
+              hitBadge + hitRatioBadge + capIdRepairBadge + sessionCostStr +
               '</span>' +
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
