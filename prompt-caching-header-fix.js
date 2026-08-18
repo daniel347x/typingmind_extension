@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.261
+// Version: 4.262
 // Issues Fixed:
+//   - v4.262: GENERIC INPUT-TOKEN NORMALIZATION FOR SEGMENTED RESPONSES. Preserve
+//     input_tokens/inputTokens/inputTokenCount in provider-agnostic usage evidence so table-based
+//     cost calculation can price formats that split usage across message_start/message_delta-style
+//     events (observed on direct Anthropic Claude 5). Previously the generic extractor found cache
+//     and output evidence first, creating response_usage without input tokens; that partial object
+//     then won the cost-path fallback and stamped _cost_no_usage even though the saved raw segments
+//     contained the full input/output counts. Completion-only evidence is now also recognized as
+//     billable usage, allowing output pricing when a provider reports its counters incrementally.
 //   - v4.261: KIMI TOOL-ID REPAIR VISIBILITY. When v4.259/4.260 replaces a missing or
 //     duplicate provider tool-call ID, stamp the EXISTING payload-capture ring row with
 //     `_tool_id_repair_count` + last-repair detail (no new localStorage store), immediately
@@ -675,7 +683,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.261';
+  const EXT_VERSION = '4.262';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1300,8 +1308,8 @@
     var completion = Number(usageEvidence.completion_tokens || usageEvidence.output_tokens || 0);
     var total = Number(usageEvidence.total_tokens || 0);
 
-    // Can we determine ANY token usage?
-    if (prompt == 0 && total == 0 && cached == 0) {
+    // Can we determine ANY billable token usage? Completion-only segments can still be priced.
+    if (prompt == 0 && total == 0 && cached == 0 && completion == 0) {
       return { cost: null, reason: 'no_usage' };
     }
 
@@ -2915,9 +2923,9 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmExtractKnownUsageEvidence-jgts,
   //   role=__lambdao_1.tmExtractKnownUsageEvidence,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Fix 10: provider-agnostic deep-walk of a response object for known usage/cost/cache field shapes so unfamiliar providers still surface observability. Normalizes OpenAI/Anthropic/OpenRouter/Gemini spellings (incl. Gemini's promptTokenCount/totalTokenCount/candidatesTokenCount+thoughtsTokenCount) into prompt_tokens/total_tokens/completion_tokens/cache_read_input_tokens — a MISSING spelling here does not just lose a number, it silently breaks the hit/miss ratio test and the cost calculation downstream.,
+  //   comment=Fix 10: provider-agnostic deep-walk of a response object for known usage/cost/cache field shapes so unfamiliar providers still surface observability. Normalizes OpenAI/Anthropic/OpenRouter/Gemini spellings (incl. Gemini's promptTokenCount/totalTokenCount/candidatesTokenCount+thoughtsTokenCount) into input_tokens/prompt_tokens/total_tokens/completion_tokens/cache_read_input_tokens — a MISSING spelling here does not just lose a number, it silently breaks the hit/miss ratio test and the cost calculation downstream.,
   // ]
   function tmExtractKnownUsageEvidence(root) {
     if (!root || typeof root !== 'object') return null;
@@ -2967,6 +2975,10 @@
       // total_tokens all undefined) -> isSignificant() bailed -> EVERY Gemini turn reported MISS
       // on a real ~99% hit. Gemini's promptTokenCount INCLUDES the cached tokens, matching
       // prompt_tokens semantics, so both the ratio test and (prompt - cached) new-input math work.
+      // Preserve input_tokens as its own canonical fallback rather than forcing it into
+      // prompt_tokens: some segmented APIs use input_tokens while OpenAI-style APIs use
+      // prompt_tokens. Downstream cost logic already accepts either spelling.
+      setIfAbsent('input_tokens', firstNum(obj, ['input_tokens', 'inputTokens', 'inputTokenCount']));
       setIfAbsent('prompt_tokens', firstNum(obj, ['prompt_tokens', 'promptTokens', 'promptTokenCount']));
       setIfAbsent('total_tokens', firstNum(obj, ['total_tokens', 'totalTokens', 'totalTokenCount']));
       // (v4.244) completion/output tokens were never extracted for ANY provider spelling, so
