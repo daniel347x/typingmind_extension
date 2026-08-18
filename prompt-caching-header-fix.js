@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.266
+// Version: 4.267
 // Issues Fixed:
+//   - v4.267: RATIO BADGE MERGED INTO HIT/MISS FIELD + BRIGHTER PALETTE + FILTER DROPDOWN RATIOS.
+//     (a) The (misses / hits) parenthetical now lives INSIDE the HIT/MISS badge span itself
+//     (one &nbsp; after the word; the fixed 30px/58px badge widths were removed so the merged
+//     field can't clip). Palette brightened off the black point per user feedback: misses
+//     #d07070, parens/slash #d0d0d8, hits #82c882. Ratio stays 9px even on MISS rows.
+//     (b) The ring-modal session Filter dropdown now appends the same (misses / hits) ratio to
+//     each option label, after the existing ($total) parenthetical; option text is plain escaped
+//     text inheriting the session hue (no sub-spans possible inside <option>).
 //   - v4.266: DEAD-BRANCH FIX in v4.265's ring-modal session-cost lookup. The hoisted-store
 //     fallback read modalCostsStore[capIdKey].total but the ledger stores the cost total as
 //     _total (underscore-prefixed, tmRecordSessionCost), so the typeof test always failed and
@@ -721,7 +729,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.266';
+  const EXT_VERSION = '4.267';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7606,6 +7614,10 @@
         var lbl = idEntries[ei].label;
         labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
       }
+      // (v4.267) Hoist session-ledger read for the identity loop so option labels can carry
+      // the cumulative cache ratio without a localStorage re-parse per identity.
+      var idFilterCosts = {};
+      try { idFilterCosts = tmGetSessionCosts() || {}; } catch (e) {}
       for (var ei2 = 0; ei2 < idEntries.length; ei2++) {
         var entry = idEntries[ei2];
         var displayLabel = entry.label;
@@ -7619,6 +7631,14 @@
           displayLabel += ' ($' + totalCost.toFixed(2) + ')';
         } else {
           displayLabel += ' (—)';
+        }
+        // v4.267: Append the cumulative session cache ratio (misses / hits) after the cost
+        // parenthetical. Plain escaped text — option labels inherit the session hue (no spans).
+        var idfStats = idFilterCosts[entry.key];
+        var idfHits = Number((idfStats && idfStats._cache_hits) || 0);
+        var idfMisses = Number((idfStats && idfStats._cache_misses) || 0);
+        if (idfHits > 0 || idfMisses > 0) {
+          displayLabel += ' (' + idfMisses + ' / ' + idfHits + ')';
         }
         // v4.164: Color the option text with the identity's hue (Chrome/Edge renders option colors)
         var optColor = tmModelEndpointColor(entry.model || '', entry.host, entry.isProxy, entry.sid || '');
@@ -7820,24 +7840,29 @@
 
       // (v4.111) Title row: #N (fixed-width, very left) + HIT/MISS + cost + model + hash.
       var isHit = tmIsSignificantCacheHit(cap);
-      var hitBadge = isHit
-        ? '<span title="cache hit" style="display:inline-block;width:30px;color:#7dd67d;font-size:9px;font-weight:bold;">HIT</span>'
-        : '<span title="cache miss" style="display:inline-block;width:58px;color:#ff6b6b;font-size:12px;font-weight:bold;">MISS</span>';
-      // (v4.265) Cumulative cache ratio (misses / hits) for this session identity.
+      // (v4.265/4.267) Cumulative cache ratio (misses / hits) for this session identity.
+      // v4.267: embedded INSIDE the HIT/MISS badge (one blank space after the word) instead of as
+      // an independent sibling field, and brightened off the black point (misses #d07070,
+      // parens/slash #d0d0d8, hits #82c882). Ratio stays 9px even on the 12px MISS badge.
       var capIdKey = '';
       try { capIdKey = tmCapIdentityKey(cap) || ''; } catch (e) {}
       var rowStats = (capIdKey && modalCostsStore) ? modalCostsStore[capIdKey] : null;
       var rowHits = Number((rowStats && rowStats._cache_hits) || 0);
       var rowMisses = Number((rowStats && rowStats._cache_misses) || 0);
-      var hitRatioBadge = '';
+      var hitRatioInner = '';
       if (rowHits > 0 || rowMisses > 0) {
-        hitRatioBadge = '<span title="session totals (misses / hits) — cumulative, this identity" ' +
-          'style="display:inline-block;margin-left:4px;margin-right:6px;font-size:9px;font-weight:600;white-space:nowrap;color:#a0a0ab;">' +
-          '(' + '<span style="color:#9e4a4a;">' + rowMisses + '</span>' +
+        hitRatioInner = '&nbsp;<span title="session totals (misses / hits) — cumulative, this identity" ' +
+          'style="font-size:9px;font-weight:600;white-space:nowrap;color:#d0d0d8;">' +
+          '(' + '<span style="color:#d07070;">' + rowMisses + '</span>' +
           ' / ' +
-          '<span style="color:#487e48;">' + rowHits + '</span>' + ')' +
+          '<span style="color:#82c882;">' + rowHits + '</span>' + ')' +
           '</span>';
       }
+      // v4.267: fixed 30px/58px badge widths REMOVED (would clip the merged ratio parenthetical);
+      // nowrap keeps 'HIT (3 / 18)' / 'MISS (12 / 4)' on one line as a single field.
+      var hitBadge = isHit
+        ? '<span title="cache hit" style="display:inline-block;color:#7dd67d;font-size:9px;font-weight:bold;white-space:nowrap;">HIT' + hitRatioInner + '</span>'
+        : '<span title="cache miss" style="display:inline-block;color:#ff6b6b;font-size:12px;font-weight:bold;white-space:nowrap;">MISS' + hitRatioInner + '</span>';
       // v4.261: permanent per-capture marker for a response whose Kimi tool-call ID was repaired.
       var capIdRepairCount = Number(cap._tool_id_repair_count || 0);
       var capIdRepairBadge = '';
@@ -7900,7 +7925,7 @@
       html += '<div style="font-weight:600;overflow:visible;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:18px;">' +
               '<span style="display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;">' +
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
-              hitBadge + hitRatioBadge + capIdRepairBadge + sessionCostStr +
+              hitBadge + capIdRepairBadge + sessionCostStr +
               '</span>' +
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
