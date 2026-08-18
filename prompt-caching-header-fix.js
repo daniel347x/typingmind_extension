@@ -1,6 +1,25 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.258
+// Version: 4.260
 // Issues Fixed:
+//   - v4.260: KIMI TOOL-ID COLLISION ORACLE WIDENING. The v4.259 response guard now
+//     reserves IDs from BOTH normalized history halves: assistant `tool_calls[].id` and
+//     `role:'tool'` message `tool_call_id`. If history conversion/pruning retains only the tool
+//     response, that surviving ID still blocks provider reuse. This is the deployment-marker
+//     bump proving the refreshed TypingMind extension loaded the finalized guard.
+//   - v4.259: KIMI DUPLICATE TOOL-CALL-ID RESPONSE GUARD. An intermittent Moonshot/Kimi
+//     streaming failure can emit a response-local fallback id such as `edit_file_0` again on
+//     later turns (the local tool index legitimately resets, but the correlation id must not).
+//     TypingMind persists that duplicate and its tool-inspection modal later resolves the FIRST
+//     matching result, showing a stale output beside the clicked call's current input. For every
+//     Kimi chat-completions request, collect the historical assistant
+//     `messages[].tool_calls[].id` AND tool-message `messages[].tool_call_id` union; transform
+//     the returned SSE/JSON before TypingMind consumes it; preserve healthy unique ids
+//     byte-for-byte, but replace a missing/history-duplicate/current-response-duplicate id with a
+//     collision-checked `call_tm_<random>` id. A response-local map keyed by choice+tool index
+//     keeps fragmented stream deltas and parallel tool calls paired. TypingMind therefore stores
+//     the repaired assistant id and automatically echoes it on the tool response -- prevention
+//     before IndexedDB, with no polling or historical database mutation. Non-Kimi responses are
+//     untouched; Kimi responses with healthy ids are semantically unchanged.
 //   - v4.258: RAW-SEGMENT SIZE SAFETY for Responses-API SSE. The final `response.completed`
 //     event on OpenRouter/OpenAI Responses echoes the ENTIRE response object -- including the
 //     full `tools` array (~megabytes on big MCP setups) -- so a single 'usage segment' could
@@ -650,7 +669,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.258';
+  const EXT_VERSION = '4.260';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -9388,6 +9407,218 @@
     }
   }
 
+  // Kimi/Moonshot tool-call IDs are opaque correlation keys. `tool_calls[].index` is only
+  // response-local and may legitimately restart at 0 every turn; the `id` must not collide with
+  // any historical call carried in the next request. These small helpers collect the exact
+  // outbound-history set and mint an Anthropic-safe / OpenAI-safe replacement when needed.
+  function tmIsKimiToolIdGuardModel(model) {
+    return /kimi|moonshot/i.test(String(model || ''));
+  }
+
+  function tmCollectChatCompletionToolIds(body) {
+    var ids = new Set();
+    if (!body || !Array.isArray(body.messages)) return ids;
+    for (var mi = 0; mi < body.messages.length; mi++) {
+      var msg = body.messages[mi];
+      if (!msg) continue;
+
+      // Collect BOTH halves of the normalized OpenAI correlation pair. A history conversion or
+      // context-prune can retain the tool response even when its assistant tool_calls container is
+      // absent; that surviving tool_call_id must still reserve the ID against reuse.
+      if (msg.tool_call_id != null && String(msg.tool_call_id)) {
+        ids.add(String(msg.tool_call_id));
+      }
+
+      if (!Array.isArray(msg.tool_calls)) continue;
+      for (var ti = 0; ti < msg.tool_calls.length; ti++) {
+        var tc = msg.tool_calls[ti];
+        if (!tc || tc.id == null) continue;
+        var id = String(tc.id);
+        if (id) ids.add(id);
+      }
+    }
+    return ids;
+  }
+
+  function tmFreshKimiToolCallId(occupied) {
+    var token = '';
+    try {
+      if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+        token = crypto.randomUUID().replace(/-/g, '');
+      }
+    } catch (e) {}
+    if (!token) {
+      token = Date.now().toString(36) + '_' + Math.random().toString(36).slice(2) + '_' + Math.random().toString(36).slice(2);
+    }
+    var candidate = 'call_tm_' + token.replace(/[^a-zA-Z0-9_-]/g, '');
+    while (occupied.has(candidate)) {
+      candidate += '_' + Math.random().toString(36).slice(2, 8);
+    }
+    return candidate;
+  }
+
+  // @beacon[
+  //   id=tm-payload@kimi-tool-id-guard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Dynamic Kimi response-boundary guard: preserves healthy unique tool-call IDs but replaces missing/history-duplicate/current-response-duplicate IDs before TypingMind persists them; SSE fragments and parallel calls stay paired by choice+local-index.,
+  // ]
+  function tmWrapKimiToolIdResponse(response, historicalIds, modelLabel) {
+    if (!response || !response.body) return response;
+
+    var occupied = new Set();
+    try {
+      if (historicalIds && typeof historicalIds.forEach === 'function') {
+        historicalIds.forEach(function(id) {
+          if (id != null && String(id)) occupied.add(String(id));
+        });
+      }
+    } catch (e) {}
+
+    // One fetch response == one assistant turn. Streaming deltas identify parallel calls by their
+    // response-local index; once an index is assigned a canonical ID, every later fragment reuses it.
+    var responseIdsByIndex = new Map();
+
+    function rewriteToolCallList(toolCalls, choiceKey) {
+      if (!Array.isArray(toolCalls)) return false;
+      var changed = false;
+      for (var ti = 0; ti < toolCalls.length; ti++) {
+        var tc = toolCalls[ti];
+        if (!tc || typeof tc !== 'object') continue;
+        var localIndex = (tc.index != null) ? tc.index : ti;
+        var mapKey = String(choiceKey) + ':' + String(localIndex);
+
+        if (responseIdsByIndex.has(mapKey)) {
+          // Later streamed fragments normally omit id. If a provider repeats/changes it, force the
+          // already-chosen canonical value so TypingMind never sees two identities for one call.
+          if (tc.id != null && String(tc.id) !== responseIdsByIndex.get(mapKey)) {
+            tc.id = responseIdsByIndex.get(mapKey);
+            changed = true;
+          }
+          continue;
+        }
+
+        var providerId = (tc.id == null) ? '' : String(tc.id);
+        var duplicateOrMissing = !providerId || occupied.has(providerId);
+        var canonicalId = duplicateOrMissing ? tmFreshKimiToolCallId(occupied) : providerId;
+        responseIdsByIndex.set(mapKey, canonicalId);
+        occupied.add(canonicalId);
+
+        if (providerId !== canonicalId) {
+          tc.id = canonicalId;
+          changed = true;
+          console.error(
+            '🚨 [v' + EXT_VERSION + '] Kimi tool-call id repaired BEFORE TypingMind persistence: ' +
+            (providerId || '<missing>') + ' -> ' + canonicalId +
+            ' (model=' + String(modelLabel || 'kimi') + ', choice/index=' + mapKey + ')'
+          );
+        }
+      }
+      return changed;
+    }
+
+    function rewriteResponseObject(obj) {
+      if (!obj || typeof obj !== 'object') return false;
+      var changed = false;
+      if (Array.isArray(obj.choices)) {
+        for (var ci = 0; ci < obj.choices.length; ci++) {
+          var choice = obj.choices[ci];
+          if (!choice || typeof choice !== 'object') continue;
+          var choiceKey = (choice.index != null) ? choice.index : ci;
+          if (choice.delta && rewriteToolCallList(choice.delta.tool_calls, choiceKey)) changed = true;
+          if (choice.message && rewriteToolCallList(choice.message.tool_calls, choiceKey)) changed = true;
+        }
+      }
+      // Defensive compatibility for adapters that return tool_calls at the response root.
+      if (rewriteToolCallList(obj.tool_calls, 'root')) changed = true;
+      return changed;
+    }
+
+    var contentType = '';
+    try { contentType = String(response.headers.get('content-type') || '').toLowerCase(); } catch (e) {}
+
+    if (contentType.indexOf('text/event-stream') !== -1 &&
+        typeof TransformStream !== 'undefined' &&
+        typeof TextDecoder !== 'undefined' &&
+        typeof TextEncoder !== 'undefined' &&
+        response.body && typeof response.body.pipeThrough === 'function') {
+      var decoder = new TextDecoder();
+      var encoder = new TextEncoder();
+      var carry = '';
+
+      function rewriteSseLine(line) {
+        var ending = '';
+        var bare = line;
+        if (bare.slice(-2) === '\r\n') {
+          ending = '\r\n';
+          bare = bare.slice(0, -2);
+        } else if (bare.slice(-1) === '\n') {
+          ending = '\n';
+          bare = bare.slice(0, -1);
+        }
+        var match = bare.match(/^(\s*data:\s*)(.*)$/);
+        if (!match || !match[2] || match[2].trim() === '[DONE]') return line;
+        try {
+          var parsed = JSON.parse(match[2]);
+          if (!rewriteResponseObject(parsed)) return line; // healthy line stays byte-identical
+          return match[1] + JSON.stringify(parsed) + ending;
+        } catch (e) {
+          return line;
+        }
+      }
+
+      var transform = new TransformStream({
+        transform: function(chunk, controller) {
+          carry += decoder.decode(chunk, { stream: true });
+          var newlineAt;
+          while ((newlineAt = carry.indexOf('\n')) !== -1) {
+            var line = carry.slice(0, newlineAt + 1);
+            carry = carry.slice(newlineAt + 1);
+            controller.enqueue(encoder.encode(rewriteSseLine(line)));
+          }
+        },
+        flush: function(controller) {
+          carry += decoder.decode();
+          if (carry) controller.enqueue(encoder.encode(rewriteSseLine(carry)));
+        }
+      });
+
+      try {
+        var headers = new Headers(response.headers);
+        headers.delete('content-length');
+        var transformedBody = response.body.pipeThrough(transform);
+        return new Response(transformedBody, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: headers
+        });
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Kimi tool-id SSE guard could not wrap response:', e);
+        return response;
+      }
+    }
+
+    // Non-streaming OpenAI-compatible response. Consume only a CLONE; if there is no repair (or
+    // parsing fails), return the untouched original response.
+    var clone;
+    try { clone = response.clone(); } catch (e) { return response; }
+    return clone.text().then(function(text) {
+      try {
+        var parsed = JSON.parse(text);
+        if (!rewriteResponseObject(parsed)) return response;
+        var headers = new Headers(response.headers);
+        headers.delete('content-length');
+        return new Response(JSON.stringify(parsed), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: headers
+        });
+      } catch (e) {
+        return response;
+      }
+    }).catch(function() { return response; });
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.originalFetch@1-rkgc,
   //   role=__lambdao_1.originalFetch@1,
@@ -10100,19 +10331,27 @@
       // Never break requests due to capture
     }
 
-    const fetchPromise = originalFetch(...args);
-
-    // v4.158: Determine whether this request targets Sol Pro (model name contains 'sol-pro').
-    // We parse the FINAL outbound body (after all endpoint-specific modifications).
+    // Derive response-transform policy from the FINAL outbound body before the network call.
+    // For Kimi, the exact historical id set is the collision oracle for the incoming turn.
     var shouldSanitizeSolProUsage = false;
+    var shouldGuardKimiToolIds = false;
+    var kimiHistoricalToolIds = null;
+    var kimiToolIdModel = '';
     try {
       if (options && typeof options.body === 'string') {
         var finalBody = JSON.parse(options.body);
         if (finalBody && tmIsSolProModel(finalBody.model)) {
           shouldSanitizeSolProUsage = true;
         }
+        if (finalBody && tmIsKimiToolIdGuardModel(finalBody.model) && Array.isArray(finalBody.messages)) {
+          shouldGuardKimiToolIds = true;
+          kimiToolIdModel = String(finalBody.model || 'kimi');
+          kimiHistoricalToolIds = tmCollectChatCompletionToolIds(finalBody);
+        }
       }
     } catch (e) {}
+
+    const fetchPromise = originalFetch(...args);
 
     // Capture response headers/body (best-effort, does not affect the original response stream)
     var fetchPromiseCaptured = fetchPromise.then(function(response) {
@@ -10136,8 +10375,20 @@
       return response;
     });
 
+    // Kimi response-boundary guard runs AFTER OpenRouter retry/error handling, so a retried final
+    // response is guarded exactly once. Promise adoption handles the non-streaming async branch.
+    var fetchPromiseToolIdGuarded = fetchPromiseCaptured.then(function(response) {
+      if (!shouldGuardKimiToolIds) return response;
+      try {
+        return tmWrapKimiToolIdResponse(response, kimiHistoricalToolIds, kimiToolIdModel);
+      } catch (e) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Kimi tool-id guard failed open:', e);
+        return response;
+      }
+    });
+
     if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
-      return fetchPromiseCaptured.then(function(response) {
+      return fetchPromiseToolIdGuarded.then(function(response) {
         try {
           const clone = response.clone();
           clone.text().then(function(text) {
@@ -10177,7 +10428,7 @@
       });
     }
 
-    return fetchPromiseCaptured;
+    return fetchPromiseToolIdGuarded;
   };
 
   // Initial render from any persisted usage in localStorage so widget appears on load
