@@ -1,6 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.272
+// Version: 4.273
 // Issues Fixed:
+//   - v4.273: FOUR-LEVEL PROVIDER CATALOG TREE (RATINGS + SET COSTS). The v4.272 flat model-family
+//     grouping was still unusable for questions such as 'which OpenRouter Kimi-K3 provider works?'.
+//     Both modals now project the unchanged model::provider stores into one colored nested tree:
+//       LEVEL 1 broad family (Claude / GPT / Kimi / Gemini / DeepSeek / GLM / Qwen / Grok / MiniMax)
+//       LEVEL 2 specific model (claude-opus-5, kimi-k3, deepseek-v4-flash-0731, ...)
+//       LEVEL 3 route target (OpenRouter / DeepInfra / Moonshot / Anthropic / OpenAI / Google Gemini)
+//       LEAF serving provider (Fireworks, Morph, Decart, StreamLake Fp8, direct host, ...)
+//     Each leaf shows the FULL stored request model beneath the provider name and then the original
+//     ratings/comment/delete controls or pricing inputs. OpenRouter leaf identity is the ACTUAL
+//     serving provider (the distinction the ratings are for), while the model string remains visible
+//     as secondary text. TypingMind proxy is an annotation badge on the endpoint branch, never an
+//     extra hierarchy level. ONE shared tmBuildProviderCatalogTree projection drives both modals;
+//     Ratings preserves its existing base-provider dedup, Set Costs preserves every distinct pricing
+//     key. NO ratings/comments/prices/tombstones are re-keyed or reset. NEW full-path persistence
+//     stores the most recently interacted branch separately for each modal and reconstructs all
+//     ancestors on reopen; multiple branches may remain open during the current visit. Legacy
+//     expansion keys remain untouched on disk but are no longer read. Validated against Dan's live
+//     route/rating/cost/lock vocabulary, including Kimi OpenRouter + DeepInfra direct + Moonshot direct.
 //   - v4.272: DIRECT-ENDPOINT PROVIDER DISCOVERY + MODEL-FAMILY CATALOG ORGANIZATION. TWO linked
 //     fixes across both Provider Ratings and Set Costs. (1) DIRECT PROVIDERS NO LONGER VANISH:
 //     discovery previously required cap._provider_label or cap.response_provider. Successful direct
@@ -792,7 +810,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.272';
+  const EXT_VERSION = '4.273';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1116,6 +1134,7 @@
     var h = String(host || '').toLowerCase();
     if (h === 'openrouter.ai') return 'OpenRouter';
     if (h === 'api.deepinfra.com') return 'DeepInfra';
+    if (h === 'api.moonshot.ai') return 'Moonshot';
     if (h === 'api.anthropic.com') return 'Anthropic';
     if (h === 'generativelanguage.googleapis.com') return 'Google Gemini';
     if (h === 'api.openai.com') return 'OpenAI';
@@ -1195,6 +1214,127 @@
     };
   }
 
+  // (v4.273) Broadest tree family: first hyphen-delimited token of the specific model name.
+  // Display aliases keep acronym/canonical casing readable while the key remains lowercase.
+  function tmProviderBroadFamily(model) {
+    var specific = tmProviderModelFamily(model).replace(/^~+/, '');
+    var key = (specific.split('-')[0] || specific || 'other').toLowerCase();
+    var labels = {
+      claude: 'Claude', gpt: 'GPT', kimi: 'Kimi', gemini: 'Gemini', deepseek: 'DeepSeek',
+      glm: 'GLM', qwen: 'Qwen', grok: 'Grok', minimax: 'MiniMax', user: 'Other'
+    };
+    return { key: key, label: labels[key] || (key.charAt(0).toUpperCase() + key.slice(1)) };
+  }
+
+  // Resolve the route TARGET (tree level 3) independently from the serving provider (leaf).
+  // Exact ring evidence wins. Historical namespaced model rows without ring evidence are known
+  // OpenRouter catalog records; concrete host provider keys identify direct routes.
+  function tmProviderEndpointForStoredEntry(model, provider, routeInfo) {
+    var p = String(provider || '');
+    var pl = p.toLowerCase();
+    var host = routeInfo && routeInfo.host ? String(routeInfo.host).toLowerCase() : '';
+    if (!host && pl.indexOf('.') !== -1) host = pl;
+    if (!host && (pl === 'openrouter.ai' || String(model || '').indexOf('/') !== -1)) host = 'openrouter.ai';
+    var label = host ? tmProviderEndpointLabel(host) : (p || 'Unclassified route');
+    return {
+      key: (host || label).toLowerCase(),
+      label: label,
+      host: host,
+      viaProxy: !!(routeInfo && routeInfo.isProxy)
+    };
+  }
+
+  function tmProviderLeafDisplay(provider, endpointInfo, routeInfo) {
+    var p = String(provider || '');
+    if (endpointInfo && endpointInfo.host === 'openrouter.ai' && p.toLowerCase() === 'openrouter.ai') {
+      return 'Unresolved serving provider';
+    }
+    return (routeInfo && routeInfo.providerDisplay) ? routeInfo.providerDisplay : p;
+  }
+
+  // Shared 4-level projection used by BOTH Provider Ratings and Set Costs:
+  // broad family → specific model → route endpoint → serving-provider leaf.
+  // `dedupeBase=true` preserves Ratings' existing v4.236 base-provider dedup; Set Costs passes
+  // false because every distinct persisted pricing key must remain independently editable.
+  function tmBuildProviderCatalogTree(records, routeCatalog, dedupeBase) {
+    var tree = {};
+    for (var i = 0; i < records.length; i++) {
+      var rec = records[i];
+      if (!rec || !rec.storageModel || !rec.provider) continue;
+      var broad = tmProviderBroadFamily(rec.storageModel);
+      var specific = tmProviderModelFamily(rec.storageModel);
+      var routeInfo = tmProviderRouteForStoredEntry(rec.storageModel, rec.provider, routeCatalog);
+      var endpoint = tmProviderEndpointForStoredEntry(rec.storageModel, rec.provider, routeInfo);
+      if (!tree[broad.key]) tree[broad.key] = { key: broad.key, label: broad.label, variants: {} };
+      var variants = tree[broad.key].variants;
+      if (!variants[specific]) variants[specific] = { key: specific, label: specific, endpoints: {} };
+      var endpoints = variants[specific].endpoints;
+      if (!endpoints[endpoint.key]) endpoints[endpoint.key] = {
+        key: endpoint.key, label: endpoint.label, host: endpoint.host,
+        viaProxy: endpoint.viaProxy, leaves: {}
+      };
+      var leafKey = rec.storageModel + '::' + rec.provider;
+      if (dedupeBase) leafKey = rec.storageModel + '::' + tmNormalizeProviderBaseSlug(rec.provider);
+      var candidate = {
+        storageModel: rec.storageModel,
+        provider: rec.provider,
+        value: rec.value,
+        routeInfo: routeInfo,
+        endpoint: endpoint,
+        leafDisplay: tmProviderLeafDisplay(rec.provider, endpoint, routeInfo)
+      };
+      var old = endpoints[endpoint.key].leaves[leafKey];
+      var granular = rec.provider.indexOf('/') !== -1 || /\s/.test(rec.provider);
+      if (!old || (dedupeBase && granular && old.provider.indexOf('/') === -1 && !/\s/.test(old.provider))) {
+        endpoints[endpoint.key].leaves[leafKey] = candidate;
+      }
+      if (endpoint.viaProxy) endpoints[endpoint.key].viaProxy = true;
+    }
+    return tree;
+  }
+
+  var TM_RATINGS_TREE_PATH_KEY = 'tm_provider_ratings_tree_path_v1';
+  var TM_COSTS_TREE_PATH_KEY = 'tm_provider_costs_tree_path_v1';
+  var tmRatingsTreeExpanded = {};
+  var tmCostsTreeExpanded = {};
+
+  function tmTreePathId(path) { return (path || []).join('\u001f'); }
+  function tmReadTreePath(key) {
+    try { var v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; }
+    catch (e) { return []; }
+  }
+  function tmWriteTreePath(key, path) {
+    try {
+      if (path && path.length) localStorage.setItem(key, JSON.stringify(path));
+      else localStorage.removeItem(key);
+    } catch (e) {}
+  }
+  function tmSeedTreeExpanded(path) {
+    var out = {};
+    for (var i = 1; i <= (path || []).length; i++) out[tmTreePathId(path.slice(0, i))] = true;
+    return out;
+  }
+  function tmTreePathStartsWith(full, prefix) {
+    if (!full || !prefix || full.length < prefix.length) return false;
+    for (var i = 0; i < prefix.length; i++) if (full[i] !== prefix[i]) return false;
+    return true;
+  }
+  function tmToggleTreePath(expanded, path, storageKey) {
+    var id = tmTreePathId(path);
+    if (expanded[id]) {
+      for (var k in expanded) {
+        if (expanded.hasOwnProperty(k) && (k === id || k.indexOf(id + '\u001f') === 0)) delete expanded[k];
+      }
+      var remembered = tmReadTreePath(storageKey);
+      if (tmTreePathStartsWith(remembered, path)) tmWriteTreePath(storageKey, path.slice(0, -1));
+      return false;
+    }
+    expanded[id] = true;
+    for (var i = 1; i < path.length; i++) expanded[tmTreePathId(path.slice(0, i))] = true;
+    tmWriteTreePath(storageKey, path);
+    return true;
+  }
+
   // ==================== PROVIDER RATINGS (v4.229) ====================
   // Tracks per-model, per-provider ratings (red = failures, green = successes)
   // and free-text comments. Independent of any session — persisted in localStorage.
@@ -1242,37 +1382,9 @@
     } catch (e) {}
   }
 
-  // (v4.236) Persist which model family is expanded in the ratings modal. We store the FULL set
-  // (simple object map model->true) so the user's expansions survive reopening the modal.
-  var TM_RATINGS_EXPANDED_KEY = 'tm_provider_ratings_expanded_v1';
-  function tmGetRatingsExpanded() {
-    try { var r = localStorage.getItem(TM_RATINGS_EXPANDED_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
-  }
-  function tmSetRatingsExpandedModel(model, expanded) {
-    try {
-      var m = tmGetRatingsExpanded();
-      if (expanded) m[model] = true; else delete m[model];
-      localStorage.setItem(TM_RATINGS_EXPANDED_KEY, JSON.stringify(m));
-    } catch (e) {}
-  }
-
-  // (v4.246) Set Costs modal expansion state. DELIBERATELY DIFFERENT from the ratings modal above:
-  // that one persists the FULL expanded set, while Set Costs persists only the SINGLE
-  // most-recently-expanded family, because the requirement is that Set Costs always opens fully
-  // COLLAPSED except for the one family expanded last -- even if several were open at close time.
-  // Multiple families may still be open DURING a visit; that lives in tmCostEditorSessionExpanded
-  // (memory only, rebuilt from the persisted single family on each fresh open).
-  var TM_COSTS_EXPANDED_KEY = 'tm_provider_costs_expanded_v1';
-  function tmGetCostsLastExpanded() {
-    try { return localStorage.getItem(TM_COSTS_EXPANDED_KEY) || null; } catch (e) { return null; }
-  }
-  function tmSetCostsLastExpanded(model) {
-    try {
-      if (model) localStorage.setItem(TM_COSTS_EXPANDED_KEY, String(model));
-      else localStorage.removeItem(TM_COSTS_EXPANDED_KEY);
-    } catch (e) {}
-  }
-  var tmCostEditorSessionExpanded = {};
+  // (v4.273) Expansion state now uses the shared full-path tree helpers above. Legacy v4.236/
+  // v4.246 localStorage keys are intentionally left untouched on disk, but are no longer read;
+  // ratings and costs each remember their most recently interacted full tree branch.
 
   // Scan the ring buffer for all observed model→provider combos. Also adds entries for
   // locked providers (tm_provider_locks_v1) and model→provider map entries — so a provider
@@ -6583,10 +6695,11 @@
 
   // (v4.229) Provider ratings modal: hierarchical model→provider list with
   // red/green counts with +/− buttons and free-text comments.
-  function tmShowProviderRatingsModal() {
+  function tmShowProviderRatingsModal(_isRerender) {
     if (typeof document === 'undefined') return;
     tmDiscoverAndMergeProviderRatings();
     var ratings = tmGetProviderRatings();
+    if (!_isRerender) tmRatingsTreeExpanded = tmSeedTreeExpanded(tmReadTreePath(TM_RATINGS_TREE_PATH_KEY));
     var existing = document.getElementById('tm-provider-ratings-overlay');
     if (existing) existing.parentNode.removeChild(existing);
 
@@ -6612,53 +6725,29 @@
 
     var sub = document.createElement('div');
     sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
-    sub.textContent = 'Grouped by model family. Each item shows the observed route first, then the serving provider and controls. 🔴 = failures / frustrations, 🟢 = successes / satisfaction. Click +/− to adjust. Click 📝 to add notes.';
+    sub.textContent = 'Tree: broad family → specific model → route endpoint → serving provider. Leaves carry ratings/comments. The most recently used branch reopens automatically.';
     box.appendChild(sub);
 
-    // (v4.272) Build a MODEL-FAMILY hierarchy for presentation only. Persisted records remain
-    // keyed by their original FULL model::provider strings, so all ratings/comments survive.
-    // OpenRouter anthropic/claude-fable-5 and direct claude-fable-5 now share the single
-    // claude-fable-5 disclosure section. Provider-base dedup remains scoped to each FULL model.
-    var expandedMap = tmGetRatingsExpanded();
+    // (v4.273) Four-level tree: broad family → specific model → endpoint → provider leaf.
+    // Persisted rating keys remain the original FULL model::provider strings.
     var routeCatalog = tmBuildProviderRouteCatalog();
-    var modelMap = {};
+    var ratingRecords = [];
     for (var key in ratings) {
       if (!ratings.hasOwnProperty(key)) continue;
       var parts = key.split('::');
-      if (parts.length < 2) continue;
-      var storageModel = parts[0];
-      var family = tmProviderModelFamily(storageModel);
-      var prov = parts.slice(1).join('::');
-      if (!modelMap[family]) modelMap[family] = {};
-      var grp = modelMap[family];
-      var base = tmNormalizeProviderBaseSlug(prov);
-      var dedupeKey = storageModel + '::' + base;
-      var isGranular = (prov.indexOf('/') !== -1) || (/\s/.test(prov));
-      var routeInfo = tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
-      var candidate = { storageModel: storageModel, provider: prov, rating: ratings[key], routeInfo: routeInfo };
-      if (!grp[dedupeKey]) {
-        grp[dedupeKey] = candidate;
-      } else if (isGranular && grp[dedupeKey].provider.indexOf('/') === -1 && !/\s/.test(grp[dedupeKey].provider)) {
-        grp[dedupeKey] = candidate; // preserve v4.236's preference for the granular variant
-      }
+      if (parts.length < 2) continue; // skips _deleted metadata
+      ratingRecords.push({
+        storageModel: parts[0],
+        provider: parts.slice(1).join('::'),
+        value: ratings[key]
+      });
     }
+    var ratingTree = tmBuildProviderCatalogTree(ratingRecords, routeCatalog, true);
+    var broadKeys = Object.keys(ratingTree).sort(function(a, b) {
+      return ratingTree[a].label.localeCompare(ratingTree[b].label);
+    });
 
-    // One-time, lossless expansion-state normalization: old keys were full model strings; new keys
-    // are model families. This migrates only the tiny UI-state map, never rating records.
-    var normalizedExpanded = {};
-    for (var exKey in expandedMap) {
-      if (expandedMap.hasOwnProperty(exKey) && expandedMap[exKey]) normalizedExpanded[tmProviderModelFamily(exKey)] = true;
-    }
-    try {
-      if (JSON.stringify(normalizedExpanded) !== JSON.stringify(expandedMap)) {
-        localStorage.setItem(TM_RATINGS_EXPANDED_KEY, JSON.stringify(normalizedExpanded));
-      }
-    } catch (e) {}
-    expandedMap = normalizedExpanded;
-
-    var sortedModels = Object.keys(modelMap).sort();
-
-    if (!sortedModels.length) {
+    if (!broadKeys.length) {
       var empty = document.createElement('div');
       empty.style.cssText = 'color:#777;font-size:12px;text-align:center;padding:40px 0;';
       empty.textContent = 'No provider data yet. Send some messages and providers will appear here automatically.';
@@ -6667,182 +6756,145 @@
       var listWrap = document.createElement('div');
       listWrap.style.cssText = 'flex:1;overflow:auto;';
 
-      sortedModels.forEach(function(mdl) {
-        var isOpen = !!expandedMap[mdl];
-        var grp = modelMap[mdl];
-        var provCount = Object.keys(grp).length;
-
-        // (v4.236) Collapsible model-family header. Click toggles + persists.
-        var modelHeader = document.createElement('div');
-        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#8ef0a0;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;cursor:pointer;user-select:none;';
-        modelHeader.dataset.action = 'rating-toggle-model';
-        modelHeader.dataset.model = mdl;
-        modelHeader.title = 'Click to expand/collapse';
+      function appendRatingTreeHeader(parent, path, label, count, level, viaProxy) {
+        var palette = [
+          { color:'#8ef0a0', bg:'rgba(30,80,45,0.28)', border:'#326040', pad:4, size:14 },
+          { color:'#8fc4ff', bg:'rgba(30,55,85,0.28)', border:'#31536f', pad:18, size:13 },
+          { color:'#ffd166', bg:'rgba(85,65,25,0.25)', border:'#665126', pad:34, size:12 }
+        ][level];
+        var isOpen = !!tmRatingsTreeExpanded[tmTreePathId(path)];
+        var h = document.createElement('div');
+        h.dataset.action = 'rating-tree-toggle';
+        h.dataset.path = JSON.stringify(path);
+        h.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:' + (level === 0 ? 6 : 2) + 'px;padding:5px 6px 5px ' + palette.pad + 'px;background:' + palette.bg + ';border-left:3px solid ' + palette.border + ';color:' + palette.color + ';font-size:' + palette.size + 'px;font-weight:700;cursor:pointer;user-select:none;';
         var arrow = document.createElement('span');
-        arrow.style.cssText = 'display:inline-block;width:16px;color:#6a6a7a;';
+        arrow.style.cssText = 'display:inline-block;width:12px;flex-shrink:0;';
         arrow.textContent = isOpen ? '▾' : '▸';
-        modelHeader.appendChild(arrow);
-        var mname = document.createElement('span');
-        mname.textContent = mdl + '  ';
-        modelHeader.appendChild(mname);
+        h.appendChild(arrow);
+        var text = document.createElement('span');
+        text.textContent = label;
+        h.appendChild(text);
+        if (viaProxy) {
+          var proxy = document.createElement('span');
+          proxy.style.cssText = 'color:#c8a8ff;font-size:9px;font-weight:600;border:1px solid #684b88;border-radius:8px;padding:0 5px;';
+          proxy.textContent = 'via TypingMind proxy';
+          h.appendChild(proxy);
+        }
         var cnt = document.createElement('span');
-        cnt.style.cssText = 'color:#9aa4b2;font-weight:normal;font-size:11px;';
-        cnt.textContent = '(' + provCount + ')';
-        modelHeader.appendChild(cnt);
-        listWrap.appendChild(modelHeader);
+        cnt.style.cssText = 'color:#8b93a3;font-size:10px;font-weight:normal;';
+        cnt.textContent = '(' + count + ')';
+        h.appendChild(cnt);
+        parent.appendChild(h);
+        return isOpen;
+      }
 
-        var providers = Object.keys(grp).map(function(b) { return grp[b]; }).sort(function(a, b) {
-          var ar = (a.routeInfo && a.routeInfo.route) || (a.storageModel + ' ' + a.provider);
-          var br = (b.routeInfo && b.routeInfo.route) || (b.storageModel + ' ' + b.provider);
-          return ar.localeCompare(br) || a.provider.localeCompare(b.provider);
-        });
+      broadKeys.forEach(function(broadKey) {
+        var broad = ratingTree[broadKey];
+        var variantKeys = Object.keys(broad.variants).sort();
+        var broadPath = [broad.key];
+        if (!appendRatingTreeHeader(listWrap, broadPath, broad.label, variantKeys.length, 0, false)) return;
 
-        var provWrap = document.createElement('div');
-        provWrap.style.display = isOpen ? '' : 'none';
-        listWrap.appendChild(provWrap);
+        variantKeys.forEach(function(variantKey) {
+          var variant = broad.variants[variantKey];
+          var endpointKeys = Object.keys(variant.endpoints).sort(function(a, b) {
+            return variant.endpoints[a].label.localeCompare(variant.endpoints[b].label);
+          });
+          var variantPath = [broad.key, variant.key];
+          if (!appendRatingTreeHeader(listWrap, variantPath, variant.label, endpointKeys.length, 1, false)) return;
 
-        providers.forEach(function(entry) {
-          var storageModel = entry.storageModel;
-          var prov = entry.provider;
-          var r = entry.rating;
-          var routeInfo = entry.routeInfo || tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
-          var ratingIdBase = (storageModel + '__' + prov).replace(/[^a-zA-Z0-9]/g, '_');
+          endpointKeys.forEach(function(endpointKey) {
+            var endpoint = variant.endpoints[endpointKey];
+            var leaves = Object.keys(endpoint.leaves).map(function(k) { return endpoint.leaves[k]; }).sort(function(a, b) {
+              return a.leafDisplay.localeCompare(b.leafDisplay);
+            });
+            var endpointPath = [broad.key, variant.key, endpoint.key];
+            if (!appendRatingTreeHeader(listWrap, endpointPath, endpoint.label, leaves.length, 2, endpoint.viaProxy)) return;
 
-          // (v4.272) Two-row entry: the first row gets the full observed route path; the second
-          // contains provider identity, ctx/status, rating controls, comment, and delete.
-          var entryWrap = document.createElement('div');
-          entryWrap.style.cssText = 'padding:6px 8px 7px 16px;border-bottom:1px solid rgba(70,70,80,0.35);';
+            leaves.forEach(function(leaf) {
+              var storageModel = leaf.storageModel;
+              var prov = leaf.provider;
+              var r = leaf.value || { red:0, green:0, comment:'' };
+              var ratingIdBase = (storageModel + '__' + prov).replace(/[^a-zA-Z0-9]/g, '_');
 
-          var routeLine = document.createElement('div');
-          routeLine.style.cssText = 'color:#e6e6ee;font-size:12px;font-weight:600;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;';
-          routeLine.textContent = routeInfo.route;
-          routeLine.title = routeInfo.route;
-          entryWrap.appendChild(routeLine);
+              var row = document.createElement('div');
+              row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px 6px 52px;border-bottom:1px solid rgba(70,70,80,0.32);font-size:12px;min-width:0;';
 
-          var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;min-width:0;';
+              var labelWrap = document.createElement('span');
+              labelWrap.style.cssText = 'display:flex;flex-direction:column;min-width:210px;max-width:340px;overflow:hidden;flex-shrink:0;';
+              var label = document.createElement('span');
+              label.style.cssText = 'color:#e6e6ee;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+              label.textContent = leaf.leafDisplay;
+              label.title = prov;
+              labelWrap.appendChild(label);
+              var modelLine = document.createElement('span');
+              modelLine.style.cssText = 'color:#7f8a9a;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+              modelLine.textContent = storageModel;
+              modelLine.title = storageModel;
+              labelWrap.appendChild(modelLine);
 
-          var labelSpan = document.createElement('span');
-          labelSpan.style.cssText = 'color:#9fb7d8;min-width:185px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
-          labelSpan.title = prov;
-          labelSpan.appendChild(document.createTextNode('Provider: ' + (routeInfo.providerDisplay || prov)));
+              try {
+                var entries = tmGetProviderEntries(storageModel);
+                var base = tmNormalizeProviderBaseSlug(prov);
+                for (var ei = 0; ei < entries.length; ei++) {
+                  if (tmNormalizeProviderBaseSlug(entries[ei].slug) === base && entries[ei].maxContext != null) {
+                    var ctx = document.createElement('span');
+                    ctx.style.cssText = 'color:#7fb3ff;font-size:9px;';
+                    ctx.textContent = 'ctx ' + tmFmtCtx(entries[ei].maxContext);
+                    labelWrap.appendChild(ctx);
+                    break;
+                  }
+                }
+              } catch (e) {}
+              row.appendChild(labelWrap);
 
-          // (v4.236) Show the provider's max context window when known (from live Endpoints-API
-          // entries). Use the FULL stored model, not the normalized disclosure-family key.
-          try {
-            var _entries = tmGetProviderEntries(storageModel);
-            var _base = tmNormalizeProviderBaseSlug(prov);
-            var _mc = null;
-            for (var _ei = 0; _ei < _entries.length; _ei++) {
-              if (tmNormalizeProviderBaseSlug(_entries[_ei].slug) === _base && _entries[_ei].maxContext != null) { _mc = _entries[_ei].maxContext; break; }
-            }
-            if (_mc != null) {
-              var ctxSpan = document.createElement('span');
-              ctxSpan.style.cssText = 'color:#7fb3ff;font-size:10px;margin-left:6px;';
-              ctxSpan.textContent = '(ctx ' + (_mc >= 1000 ? (Math.round(_mc / 1000) + 'k') : _mc) + ')';
-              ctxSpan.title = 'Max context window: ' + _mc + ' tokens';
-              labelSpan.appendChild(ctxSpan);
-            }
-          } catch (e) {}
-          row.appendChild(labelSpan);
+              function ratingButton(text, action, field, css) {
+                var b = document.createElement('button');
+                b.textContent = text;
+                b.style.cssText = css;
+                b.dataset.action = action;
+                b.dataset.field = field;
+                b.dataset.model = storageModel;
+                b.dataset.provider = prov;
+                return b;
+              }
+              var redCss = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+              var greenCss = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
+              row.appendChild(ratingButton('+', 'rating-increment', 'red', redCss));
+              var redCount = document.createElement('span');
+              redCount.textContent = String(r.red || 0);
+              redCount.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
+              redCount.id = 'tm-rating-red-' + ratingIdBase;
+              row.appendChild(redCount);
+              row.appendChild(ratingButton('−', 'rating-decrement', 'red', redCss));
+              var sep = document.createElement('span'); sep.textContent = '|'; sep.style.cssText = 'color:#555;margin:0 4px;'; row.appendChild(sep);
+              row.appendChild(ratingButton('−', 'rating-decrement', 'green', greenCss));
+              var greenCount = document.createElement('span');
+              greenCount.textContent = String(r.green || 0);
+              greenCount.style.cssText = 'color:#7dd67d;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
+              greenCount.id = 'tm-rating-green-' + ratingIdBase;
+              row.appendChild(greenCount);
+              row.appendChild(ratingButton('+', 'rating-increment', 'green', greenCss));
 
-          // Red rating: [+] count [−]  (plus on left so you slam it when angry)
-          var redPlus = document.createElement('button');
-          redPlus.textContent = '+';
-          redPlus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
-          redPlus.dataset.action = 'rating-increment';
-          redPlus.dataset.field = 'red';
-          redPlus.dataset.model = storageModel;
-          redPlus.dataset.provider = prov;
-
-          var redCount = document.createElement('span');
-          redCount.textContent = String(r.red || 0);
-          redCount.style.cssText = 'color:#ff6b6b;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
-          redCount.id = 'tm-rating-red-' + ratingIdBase;
-
-          var redMinus = document.createElement('button');
-          redMinus.textContent = '−';
-          redMinus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
-          redMinus.dataset.action = 'rating-decrement';
-          redMinus.dataset.field = 'red';
-          redMinus.dataset.model = storageModel;
-          redMinus.dataset.provider = prov;
-
-          row.appendChild(redPlus);
-          row.appendChild(redCount);
-          row.appendChild(redMinus);
-
-          // Separator
-          var sep = document.createElement('span');
-          sep.style.cssText = 'color:#555;margin:0 4px;flex-shrink:0;';
-          sep.textContent = '|';
-          row.appendChild(sep);
-
-          // Green rating: [−] count [+]
-          var greenMinus = document.createElement('button');
-          greenMinus.textContent = '−';
-          greenMinus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
-          greenMinus.dataset.action = 'rating-decrement';
-          greenMinus.dataset.field = 'green';
-          greenMinus.dataset.model = storageModel;
-          greenMinus.dataset.provider = prov;
-
-          var greenCount = document.createElement('span');
-          greenCount.textContent = String(r.green || 0);
-          greenCount.style.cssText = 'color:#7dd67d;font-weight:bold;font-size:16px;min-width:28px;text-align:center;';
-          greenCount.id = 'tm-rating-green-' + ratingIdBase;
-
-          var greenPlus = document.createElement('button');
-          greenPlus.textContent = '+';
-          greenPlus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
-          greenPlus.dataset.action = 'rating-increment';
-          greenPlus.dataset.field = 'green';
-          greenPlus.dataset.model = storageModel;
-          greenPlus.dataset.provider = prov;
-
-          row.appendChild(greenMinus);
-          row.appendChild(greenCount);
-          row.appendChild(greenPlus);
-
-          // Comment button
-          var commentBtn = document.createElement('button');
-          commentBtn.textContent = '📝';
-          commentBtn.style.cssText = 'background:' + (r.comment ? '#4a4a1a' : '#333') + ';color:' + (r.comment ? '#ffe0a0' : '#fff') + ';border:1px solid ' + (r.comment ? '#6a6a2a' : '#555') + ';border-radius:3px;width:28px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
-          commentBtn.dataset.action = 'rating-comment';
-          commentBtn.dataset.model = storageModel;
-          commentBtn.dataset.provider = prov;
-          commentBtn.title = r.comment ? ('Edit comment: ' + r.comment.substring(0, 80)) : 'Add comment';
-          row.appendChild(commentBtn);
-
-          // Comment preview — display only: lines joined with " - ", ellipsis if overflow.
-          var previewSpan = document.createElement('span');
-          previewSpan.className = 'tm-rating-comment-preview';
-          // (v4.237) Keep this span as a flex spacer (flex:1) even when there is NO comment, so the
-          // trailing delete button stays right-justified. Previously we set display:'none' on empty,
-          // which collapsed the spacer and pulled the trash icon up against the buttons on the left.
-          previewSpan.style.cssText = 'color:#9aa4b2;font-size:11px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;';
-          var previewText = tmFormatCommentPreview(r.comment);
-          if (previewText) {
-            previewSpan.textContent = previewText;
-            previewSpan.title = previewText;
-          }
-          row.appendChild(previewSpan);
-
-          // (v4.236) Delete button to permanently remove this provider-rating row (cleanup).
-          var delBtn = document.createElement('button');
-          delBtn.textContent = '🗑';
-          delBtn.style.cssText = 'background:#3a1a1a;color:#ff9b9b;border:1px solid #5a2a2a;border-radius:3px;width:26px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
-          delBtn.dataset.action = 'rating-delete';
-          delBtn.dataset.model = storageModel;
-          delBtn.dataset.provider = prov;
-          delBtn.title = 'Delete this provider rating row';
-          row.appendChild(delBtn);
-
-          entryWrap.appendChild(row);
-          provWrap.appendChild(entryWrap);
+              var commentBtn = document.createElement('button');
+              commentBtn.textContent = '📝';
+              commentBtn.style.cssText = 'background:' + (r.comment ? '#4a4a1a' : '#333') + ';color:' + (r.comment ? '#ffe0a0' : '#fff') + ';border:1px solid ' + (r.comment ? '#6a6a2a' : '#555') + ';border-radius:3px;width:28px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
+              commentBtn.dataset.action = 'rating-comment'; commentBtn.dataset.model = storageModel; commentBtn.dataset.provider = prov;
+              row.appendChild(commentBtn);
+              var preview = document.createElement('span');
+              preview.className = 'tm-rating-comment-preview';
+              preview.style.cssText = 'color:#9aa4b2;font-size:11px;margin-left:6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0;';
+              preview.textContent = tmFormatCommentPreview(r.comment);
+              preview.title = preview.textContent;
+              row.appendChild(preview);
+              var del = document.createElement('button');
+              del.textContent = '🗑'; del.style.cssText = 'background:#3a1a1a;color:#ff9b9b;border:1px solid #5a2a2a;border-radius:3px;width:26px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
+              del.dataset.action = 'rating-delete'; del.dataset.model = storageModel; del.dataset.provider = prov;
+              row.appendChild(del);
+              listWrap.appendChild(row);
+            });
+          });
         });
       });
-
       box.appendChild(listWrap);
     }
 
@@ -6882,7 +6934,7 @@
           var _rs = tmGetProviderRatings();
           if (_rs && _rs._deleted) { delete _rs._deleted; tmSaveProviderRatings(_rs); }
         } catch (e) {}
-        tmShowProviderRatingsModal(); // re-render (runs discovery, which re-adds the rows)
+        tmShowProviderRatingsModal(true); // re-render (runs discovery, preserves tree state)
         return;
       }
       if (t.dataset && (t.dataset.action === 'rating-increment' || t.dataset.action === 'rating-decrement')) {
@@ -6906,20 +6958,21 @@
         tmShowProviderRatingCommentModal(cModel, cProv, overlay);
         return;
       }
-      // (v4.236) Expand/collapse a model family. Persist + re-render so the arrow/state update.
-      if (t.dataset && t.dataset.action === 'rating-toggle-model') {
+      // (v4.273) Nested tree disclosure. Resolve through closest() so arrow/text/count clicks work.
+      var treeToggle = (t && t.closest) ? t.closest('[data-action="rating-tree-toggle"]') : null;
+      if (treeToggle && treeToggle.dataset) {
         ev.stopPropagation();
-        var tgModel = t.dataset.model;
-        var cur = tmGetRatingsExpanded();
-        tmSetRatingsExpandedModel(tgModel, !cur[tgModel]);
-        tmShowProviderRatingsModal(); // re-render
+        var treePath = [];
+        try { treePath = JSON.parse(treeToggle.dataset.path || '[]'); } catch (e) {}
+        if (treePath.length) tmToggleTreePath(tmRatingsTreeExpanded, treePath, TM_RATINGS_TREE_PATH_KEY);
+        tmShowProviderRatingsModal(true);
         return;
       }
       // (v4.236) Delete a provider-rating row, then re-render.
       if (t.dataset && t.dataset.action === 'rating-delete') {
         ev.stopPropagation();
         tmDeleteProviderRating(t.dataset.model, t.dataset.provider);
-        tmShowProviderRatingsModal(); // re-render
+        tmShowProviderRatingsModal(true); // re-render, preserving tree state
         return;
       }
     });
@@ -7027,24 +7080,13 @@
   //   comment=Set Costs modal: hierarchical model→provider list with per-million pricing inputs for client-side cost calculation.,
   // ]
   // (v4.233) Set Costs modal: hierarchical model→provider list with per-million pricing inputs.
-  // (v4.246) _isRerender is set ONLY by this modal's own family-toggle handler. A FRESH open
-  // rebuilds the in-visit expansion set from the single persisted 'most recently expanded' family,
-  // so the modal always appears fully collapsed except that one; a re-render preserves whatever
-  // the user has open right now.
+  // (v4.273) _isRerender preserves the in-visit tree expansion map. A fresh open reconstructs the
+  // most recently interacted full branch from tm_provider_costs_tree_path_v1.
   function tmShowCostEditorModal(_isRerender) {
     if (typeof document === 'undefined') return;
     tmDiscoverAndMergeProviderCosts();
     var costs = tmGetProviderCosts();
-    if (!_isRerender) {
-      tmCostEditorSessionExpanded = {};
-      var lastExpanded = tmGetCostsLastExpanded();
-      if (lastExpanded) {
-        lastExpanded = tmProviderModelFamily(lastExpanded);
-        tmCostEditorSessionExpanded[lastExpanded] = true;
-        // Normalize the old full-model UI-state key to the new family key. Pricing data untouched.
-        tmSetCostsLastExpanded(lastExpanded);
-      }
-    }
+    if (!_isRerender) tmCostsTreeExpanded = tmSeedTreeExpanded(tmReadTreePath(TM_COSTS_TREE_PATH_KEY));
     var existing = document.getElementById('tm-cost-editor-overlay');
     if (existing) existing.parentNode.removeChild(existing);
 
@@ -7063,32 +7105,25 @@
 
     var sub = document.createElement('div');
     sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
-    sub.textContent = 'Grouped by model family. Each item shows the observed route first, then its provider pricing. When a response carries no API cost, the extension calculates cost from these rates × token usage. All values are $ per 1M tokens.';
+    sub.textContent = 'Tree: broad family → specific model → route endpoint → serving provider. Leaves carry per-million pricing. The most recently used branch reopens automatically.';
     box.appendChild(sub);
 
-    // (v4.272) Group visually by normalized MODEL FAMILY while retaining each record's original
-    // full model::provider storage key. Route metadata comes from the current 500-entry ring.
+    // (v4.273) The same four-level tree as Provider Ratings. Pricing records retain their
+    // original FULL model::provider keys and remain independently editable.
     var routeCatalog = tmBuildProviderRouteCatalog();
-    var modelMap = {};
+    var costRecords = [];
     for (var key in costs) {
       if (!costs.hasOwnProperty(key)) continue;
       var parts = key.split('::');
       if (parts.length < 2) continue;
-      var storageModel = parts[0];
-      var family = tmProviderModelFamily(storageModel);
-      var prov = parts.slice(1).join('::');
-      if (!modelMap[family]) modelMap[family] = [];
-      modelMap[family].push({
-        storageModel: storageModel,
-        provider: prov,
-        cost: costs[key],
-        routeInfo: tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog)
-      });
+      costRecords.push({ storageModel: parts[0], provider: parts.slice(1).join('::'), value: costs[key] });
     }
+    var costTree = tmBuildProviderCatalogTree(costRecords, routeCatalog, false);
+    var broadKeys = Object.keys(costTree).sort(function(a, b) {
+      return costTree[a].label.localeCompare(costTree[b].label);
+    });
 
-    var sortedModels = Object.keys(modelMap).sort();
-
-    if (!sortedModels.length) {
+    if (!broadKeys.length) {
       var empty = document.createElement('div');
       empty.style.cssText = 'color:#777;font-size:12px;text-align:center;padding:40px 0;';
       empty.textContent = 'No cost entries yet. Send some messages and providers will appear here automatically.';
@@ -7097,98 +7132,68 @@
       var listWrap = document.createElement('div');
       listWrap.style.cssText = 'flex:1;overflow:auto;';
 
-      sortedModels.forEach(function(mdl) {
-        var isOpen = !!tmCostEditorSessionExpanded[mdl];
-        var providers = modelMap[mdl].sort(function(a, b) {
-          var ar = (a.routeInfo && a.routeInfo.route) || (a.storageModel + ' ' + a.provider);
-          var br = (b.routeInfo && b.routeInfo.route) || (b.storageModel + ' ' + b.provider);
-          return ar.localeCompare(br) || a.provider.localeCompare(b.provider);
-        });
+      function appendCostTreeHeader(parent, path, label, count, level, viaProxy) {
+        var palette = [
+          { color:'#a0c0ff', bg:'rgba(35,55,90,0.32)', border:'#405d91', pad:4, size:14 },
+          { color:'#8ed9d1', bg:'rgba(25,75,72,0.25)', border:'#346b67', pad:18, size:13 },
+          { color:'#ffd166', bg:'rgba(85,65,25,0.25)', border:'#665126', pad:34, size:12 }
+        ][level];
+        var isOpen = !!tmCostsTreeExpanded[tmTreePathId(path)];
+        var h = document.createElement('div');
+        h.dataset.action = 'cost-tree-toggle';
+        h.dataset.path = JSON.stringify(path);
+        h.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:' + (level === 0 ? 6 : 2) + 'px;padding:5px 6px 5px ' + palette.pad + 'px;background:' + palette.bg + ';border-left:3px solid ' + palette.border + ';color:' + palette.color + ';font-size:' + palette.size + 'px;font-weight:700;cursor:pointer;user-select:none;';
+        var arrow = document.createElement('span'); arrow.style.cssText = 'display:inline-block;width:12px;'; arrow.textContent = isOpen ? '▾' : '▸'; h.appendChild(arrow);
+        var text = document.createElement('span'); text.textContent = label; h.appendChild(text);
+        if (viaProxy) {
+          var proxy = document.createElement('span'); proxy.style.cssText = 'color:#c8a8ff;font-size:9px;font-weight:600;border:1px solid #684b88;border-radius:8px;padding:0 5px;'; proxy.textContent = 'via TypingMind proxy'; h.appendChild(proxy);
+        }
+        var cnt = document.createElement('span'); cnt.style.cssText = 'color:#8b93a3;font-size:10px;font-weight:normal;'; cnt.textContent = '(' + count + ')'; h.appendChild(cnt);
+        parent.appendChild(h);
+        return isOpen;
+      }
 
-        // (v4.246) Collapsible family header: disclosure arrow + name + provider count. The whole
-        // header is the hit target (data-action is resolved via closest(), so clicking the arrow
-        // or the count works too -- not just the bare text).
-        var modelHeader = document.createElement('div');
-        modelHeader.style.cssText = 'font-weight:bold;font-size:13px;color:#a0c0ff;padding:8px 4px 4px 4px;border-top:1px solid #2a2a2a;margin-top:4px;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;';
-        modelHeader.dataset.action = 'cost-toggle-model';
-        modelHeader.dataset.model = mdl;
-        modelHeader.title = 'Click to expand/collapse';
+      broadKeys.forEach(function(broadKey) {
+        var broad = costTree[broadKey];
+        var variantKeys = Object.keys(broad.variants).sort();
+        if (!appendCostTreeHeader(listWrap, [broad.key], broad.label, variantKeys.length, 0, false)) return;
+        variantKeys.forEach(function(variantKey) {
+          var variant = broad.variants[variantKey];
+          var endpointKeys = Object.keys(variant.endpoints).sort(function(a, b) { return variant.endpoints[a].label.localeCompare(variant.endpoints[b].label); });
+          if (!appendCostTreeHeader(listWrap, [broad.key, variant.key], variant.label, endpointKeys.length, 1, false)) return;
+          endpointKeys.forEach(function(endpointKey) {
+            var endpoint = variant.endpoints[endpointKey];
+            var leaves = Object.keys(endpoint.leaves).map(function(k) { return endpoint.leaves[k]; }).sort(function(a, b) { return a.leafDisplay.localeCompare(b.leafDisplay); });
+            if (!appendCostTreeHeader(listWrap, [broad.key, variant.key, endpoint.key], endpoint.label, leaves.length, 2, endpoint.viaProxy)) return;
+            leaves.forEach(function(leaf) {
+              var storageModel = leaf.storageModel;
+              var prov = leaf.provider;
+              var c = leaf.value || { input:0, output:0, cache_read:0, cache_write:null };
+              var row = document.createElement('div');
+              row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:6px 8px 6px 52px;border-bottom:1px solid rgba(70,70,80,0.32);font-size:12px;flex-wrap:wrap;';
+              var labelWrap = document.createElement('span');
+              labelWrap.style.cssText = 'display:flex;flex-direction:column;min-width:210px;max-width:340px;overflow:hidden;flex-shrink:0;';
+              var label = document.createElement('span'); label.style.cssText = 'color:#e6e6ee;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'; label.textContent = leaf.leafDisplay; label.title = prov; labelWrap.appendChild(label);
+              var modelLine = document.createElement('span'); modelLine.style.cssText = 'color:#7f8a9a;font-size:9px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'; modelLine.textContent = storageModel; modelLine.title = storageModel; labelWrap.appendChild(modelLine);
+              row.appendChild(labelWrap);
 
-        var arrow = document.createElement('span');
-        arrow.style.cssText = 'display:inline-block;width:10px;flex-shrink:0;opacity:0.8;';
-        arrow.textContent = isOpen ? '\u25BE' : '\u25B8';
-        modelHeader.appendChild(arrow);
-
-        var nameSpan = document.createElement('span');
-        nameSpan.textContent = mdl;
-        modelHeader.appendChild(nameSpan);
-
-        var countSpan = document.createElement('span');
-        countSpan.style.cssText = 'color:#6b7280;font-weight:normal;font-size:11px;';
-        countSpan.textContent = '(' + providers.length + ')';
-        modelHeader.appendChild(countSpan);
-
-        listWrap.appendChild(modelHeader);
-
-        if (!isOpen) return;
-
-        providers.forEach(function(entry) {
-          var storageModel = entry.storageModel;
-          var prov = entry.provider;
-          var c = entry.cost;
-          var routeInfo = entry.routeInfo || tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
-
-          // (v4.272) Match Provider Ratings: full route on row one; pricing/status controls on row two.
-          var entryWrap = document.createElement('div');
-          entryWrap.style.cssText = 'padding:6px 8px 7px 16px;border-bottom:1px solid rgba(70,70,80,0.35);';
-
-          var routeLine = document.createElement('div');
-          routeLine.style.cssText = 'color:#e6e6ee;font-size:12px;font-weight:600;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;';
-          routeLine.textContent = routeInfo.route;
-          routeLine.title = routeInfo.route;
-          entryWrap.appendChild(routeLine);
-
-          var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap;';
-
-          var labelSpan = document.createElement('span');
-          labelSpan.style.cssText = 'color:#9fb7d8;min-width:185px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
-          labelSpan.textContent = 'Provider: ' + (routeInfo.providerDisplay || prov);
-          labelSpan.title = prov;
-          row.appendChild(labelSpan);
-
-          var fields = [
-            { key: 'input', label: 'In', color: '#ffccd5', val: c.input },
-            { key: 'output', label: 'Out', color: '#ff9d9d', val: c.output },
-            { key: 'cache_read', label: 'Cache\u21BA', color: '#5ab0ff', val: c.cache_read },
-            { key: 'cache_write', label: 'Cache+', color: '#9aa4b2', val: c.cache_write }
-          ];
-
-          fields.forEach(function(f) {
-            var lbl = document.createElement('span');
-            lbl.style.cssText = 'color:' + f.color + ';font-size:10px;flex-shrink:0;';
-            lbl.textContent = f.label;
-            row.appendChild(lbl);
-
-            var inp = document.createElement('input');
-            inp.type = 'number';
-            inp.step = '0.01';
-            inp.min = '0';
-            inp.value = (f.val != null && f.val !== 0) ? f.val : '';
-            inp.placeholder = '0';
-            inp.style.cssText = 'width:55px;background:#0d0d11;border:1px solid #333;border-radius:3px;color:' + f.color + ';font-size:11px;padding:1px 3px;flex-shrink:0;';
-            inp.dataset.action = 'set-cost-field';
-            inp.dataset.model = storageModel;
-            inp.dataset.provider = prov;
-            inp.dataset.field = f.key;
-            row.appendChild(inp);
+              var fields = [
+                { key:'input', label:'In', color:'#ffccd5', val:c.input },
+                { key:'output', label:'Out', color:'#ff9d9d', val:c.output },
+                { key:'cache_read', label:'Cache↺', color:'#5ab0ff', val:c.cache_read },
+                { key:'cache_write', label:'Cache+', color:'#9aa4b2', val:c.cache_write }
+              ];
+              fields.forEach(function(f) {
+                var lbl = document.createElement('span'); lbl.style.cssText = 'color:' + f.color + ';font-size:10px;flex-shrink:0;'; lbl.textContent = f.label; row.appendChild(lbl);
+                var inp = document.createElement('input'); inp.type = 'number'; inp.step = '0.01'; inp.min = '0'; inp.value = (f.val != null && f.val !== 0) ? f.val : ''; inp.placeholder = '0';
+                inp.style.cssText = 'width:55px;background:#0d0d11;border:1px solid #333;border-radius:3px;color:' + f.color + ';font-size:11px;padding:1px 3px;flex-shrink:0;';
+                inp.dataset.action = 'set-cost-field'; inp.dataset.model = storageModel; inp.dataset.provider = prov; inp.dataset.field = f.key; row.appendChild(inp);
+              });
+              listWrap.appendChild(row);
+            });
           });
-
-          entryWrap.appendChild(row);
-          listWrap.appendChild(entryWrap);
         });
       });
-
       box.appendChild(listWrap);
     }
 
@@ -7220,19 +7225,12 @@
       var actionEl = (t && t.closest) ? t.closest('[data-action]') : null;
       var act = (actionEl && actionEl.dataset) ? actionEl.dataset.action : null;
       if (act === 'close-cost-editor') { close(); return; }
-      if (act === 'cost-toggle-model') {
+      if (act === 'cost-tree-toggle') {
         ev.stopPropagation();
-        var tgModel = actionEl.dataset.model;
-        if (tmCostEditorSessionExpanded[tgModel]) {
-          delete tmCostEditorSessionExpanded[tgModel];
-          // Collapsing the remembered family clears the memory, so the next fresh open is fully
-          // collapsed rather than re-expanding something the user just closed.
-          if (tmGetCostsLastExpanded() === tgModel) tmSetCostsLastExpanded(null);
-        } else {
-          tmCostEditorSessionExpanded[tgModel] = true;
-          tmSetCostsLastExpanded(tgModel);
-        }
-        tmShowCostEditorModal(true); // re-render, preserving the in-visit expansion set
+        var treePath = [];
+        try { treePath = JSON.parse(actionEl.dataset.path || '[]'); } catch (e) {}
+        if (treePath.length) tmToggleTreePath(tmCostsTreeExpanded, treePath, TM_COSTS_TREE_PATH_KEY);
+        tmShowCostEditorModal(true);
         return;
       }
     });
