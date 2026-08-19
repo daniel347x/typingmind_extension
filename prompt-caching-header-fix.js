@@ -1,6 +1,40 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.269
+// Version: 4.271
 // Issues Fixed:
+//   - v4.271: RING-MODAL SESSION-FILTER CUSTOM LISTBOX (MISS-COUNT RED). Replaces the native
+//     <select data-action="set-modal-filter"> in renderPayloadCaptureModal with a div-based,
+//     custom-styled listbox so the session Filter dropdown can render the miss count in the MISS
+//     badge red (#ff6b6b) -- native <option> elements are single-color plain text, so they could
+//     not (this was the v4.269 deferred item). Each identity row = [session label] [disambiguation?]
+//     ($total) (misses / hits); the label + ($total) + slash + hits all inherit the session hue,
+//     ONLY the miss number is #ff6b6b. Semantics preserved: selection still writes
+//     tmModalFilterIdentity then re-renders; the All (empty) row clears the filter; selected state
+//     survives re-renders. GOTCHAS handled the same way this file already handles them: (1) RE-RENDER
+//     SURVIVAL -- open state is a module flag (tmModalFilterListboxOpen) and the whole modal
+//     re-renders every captured turn, so an open listbox STAYS open (no v4.227-4.228 flash-close; no
+//     parallel path). (2) ESCAPE -- Escape closes ONLY the listbox first, decided inside the existing
+//     DOM-authoritative window-keyup guard (the v4.246/4.247-scarred territory); NO new per-render
+//     document keydown listener is added; the flag resets on modal close. (3) CLICK-AWAY + DELEGATION
+//     -- clicks resolve via closest('[data-action]') inside the modal's ONE delegated click listener
+//     (never fighting it); clicking outside the listbox dismisses it. The panel is absolutely
+//     positioned (own max-height + overflow-y) so it layers above ring rows without breaking the
+//     modal's own scrolling. NOTE TO DAN: ships WITHOUT arrow-key navigation (the native select gave
+//     that for free); can be added later on request.
+//   - v4.270: OPENROUTER→GEMINI SILENT-DROP GUARD + GENERIC PROMPT-INGESTION MISMATCH. PROVEN via
+//     billed-usage forensics: OpenRouter's OpenAI→Gemini translation silently empties large
+//     tool-result content (~43K prompt tokens billed for a ~350K-token conversation; direct Google
+//     billed 253K for the same history). (1) HARD BLOCK (default ON): every OpenRouter→Gemini
+//     request (proxy-aware via x-target-endpoint) is refused with a synthetic non-retryable 422
+//     BEFORE any network call, and a permanent 'openrouter_gemini_blocked' warning is stamped on
+//     the capture's ring entry. (2) GENERIC MISMATCH (all providers, heuristic): compares exact
+//     UTF-8 outbound bytes (new body_bytes_utf8) against provider-reported prompt tokens
+//     (cache-aware: Anthropic cached tokens count as content received); a sub-50% ratio stamps a
+//     soft 'prompt_ingestion_mismatch' warning. Both persist as FIRST-CLASS _warnings[] objects
+//     (underscore-prefixed so they survive the rich→compact ring strip). Widget shows a red
+//     identity-guarded banner RECOMPUTED FROM THE RING each render (survives refresh), dismissible
+//     per-warning-id only (a dismissal never hides the NEXT turn's new warning); the ring modal
+//     renders every warning as a permanent per-entry row, and gains a 🚫 OR→Gemini block toggle
+//     (default BLOCKED; ALLOWED shown alarm-orange for controlled testing).
 //   - v4.269: WIDGET MISS-COUNT RED. The persistent widget's (misses / hits) superscript now
 //     renders the MISS COUNT in #ff6b6b (the MISS badge red -- the only red in the cost/cache
 //     feedback system, since the hue palette deliberately avoids red); slash + hits stay #ccffcc.
@@ -739,7 +773,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.269';
+  const EXT_VERSION = '4.271';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2276,11 +2310,26 @@
   const TM_PAYLOAD_CAPTURE_MAX_OUTBOUND_CHARS = 1000;
   const TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS = 1000;
 
+  // (v4.270) PROMPT-INGESTION MISMATCH thresholds. A heuristic response-time detector comparing
+  // the final outbound payload size against the provider-reported prompt tokens. Only checked for
+  // large payloads; below 50KB per-message overhead dominates and the ratio is meaningless.
+  const TM_PAYLOAD_MISMATCH_MIN_BYTES = 50 * 1024;
+  // Warn when provider-reported prompt tokens fall below 50% of (bytes/4) -- i.e. fewer than one
+  // prompt token per eight outbound bytes, a screaming anomaly. The proven OpenRouter→Gemini drop
+  // landed at ~0.17-0.27, far below this; normal tokenizer differences stay well above it.
+  const TM_PAYLOAD_MISMATCH_RATIO = 0.5;
+  // (v4.270) Default-ON hard block of the OpenRouter→Gemini route (silent large-tool-result drop).
+  const TM_BLOCK_OR_GEMINI_KEY = 'tm_block_openrouter_gemini';
+
   // Escape-key handler reference (added on modal open, removed on close).
   var tmPayloadCaptureModalEscapeHandler = null;
 
   var tmPromptActive = false;
   var tmPayloadCaptureSuppressEscapeUntil = 0;
+  // (v4.271) Whether the ring-modal session-Filter custom listbox is currently open. A module
+  // flag (not DOM-scoped) so the whole-modal re-render that fires on every captured turn SURVIVES
+  // an open listbox; Escape / click-away dismiss it, and it resets on modal close.
+  var tmModalFilterListboxOpen = false;
 
   // (v4.246) DOM-AUTHORITATIVE child-modal test. Every modal openable from within the ring-buffer
   // modal owns a fixed overlay id; if one is present in the DOM it owns the Escape key and the
@@ -2866,6 +2915,15 @@
       const bodyRaw = options && options.body;
       if (typeof bodyRaw === 'string') {
         record.body_chars_estimate = bodyRaw.length;
+        // (v4.270) Exact UTF-8 byte count for the prompt-ingestion-mismatch heuristic. String
+        // length counts UTF-16 code units, so multi-byte chars (emoji, CJK, box-drawing) inflate
+        // the true byte size; the mismatch detector needs the real outbound byte size. Legacy
+        // body_chars_estimate is preserved for backward compatibility / older ring entries.
+        try {
+          record.body_bytes_utf8 = (typeof TextEncoder !== 'undefined')
+            ? new TextEncoder().encode(bodyRaw).length
+            : bodyRaw.length;
+        } catch (eBytes) { record.body_bytes_utf8 = bodyRaw.length; }
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
         record._model = (parsed && parsed.model) ? String(parsed.model) : null;
@@ -3096,6 +3154,100 @@
       dst[k] = v;
     }
     return dst;
+  }
+
+  // ==================== (v4.270) OPENROUTER→GEMINI GUARD + INGESTION MISMATCH ====================
+
+  // Resolve the EFFECTIVE target URL for a request. TypingMind can route real provider traffic
+  // through its own same-origin /api/cors-proxy, in which case the true endpoint is carried in
+  // the x-target-endpoint header, not the request URL. The OpenRouter→Gemini detector MUST use
+  // this, or it will silently miss proxied OpenRouter traffic (the exact case we're guarding).
+  function tmResolveEffectiveTargetUrl(url, options) {
+    var effective = String(url || '');
+    try {
+      var headers = tmNormalizeHeaders(options && options.headers);
+      var target = headers && (headers['x-target-endpoint'] || headers['X-Target-Endpoint']);
+      if (target) effective = String(target);
+    } catch (e) {}
+    return effective;
+  }
+
+  // Detect the PROVEN-lossy OpenRouter→Gemini route. Returns a descriptor object, or null if the
+  // request is not OpenRouter→Gemini. A hard block applies to ALL such requests (not only large
+  // ones) because the silent large-tool-result drop cannot be predicted from the outside.
+  function tmDetectOpenRouterGeminiRoute(url, options, body) {
+    try {
+      var target = tmResolveEffectiveTargetUrl(url, options).toLowerCase();
+      if (target.indexOf('openrouter.ai') === -1) return null;
+      var model = String((body && body.model) || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+      var isGemini = model.indexOf('gemini') !== -1 &&
+        (model.indexOf('google/') === 0 || model.indexOf('gemini') === 0);
+      if (!isGemini) return null;
+      return {
+        code: 'openrouter_gemini_blocked',
+        model: model,
+        effective_target_url: target
+      };
+    } catch (e) { return null; }
+  }
+
+  // The default-ON toggle. Only an explicit localStorage 'false' disables the block. Controlled
+  // from the ring-buffer modal's 🚫 button (not the crowded persistent widget).
+  function tmShouldBlockOpenRouterGemini() {
+    try { return localStorage.getItem(TM_BLOCK_OR_GEMINI_KEY) !== 'false'; } catch (e) { return true; }
+  }
+
+  // Provider-aware effective prompt-token count from a capture's recorded usage evidence.
+  // CRITICAL: a bare input_tokens is WRONG for cached Anthropic turns (input_tokens:2 while
+  // cache_creation_input_tokens:348324). Cached prompt tokens still count as content that
+  // reached the provider. Precedence: OpenRouter/OpenAI prompt_tokens first, then the summed
+  // Anthropic counters (uncached + cache-read + cache-write), then generic fallbacks.
+  function tmEffectivePromptTokens(cap) {
+    if (!cap) return null;
+    function n(v) { var x = Number(v); return (isFinite(x) && x > 0) ? x : 0; }
+    var u = cap.response_usage || {};
+    var a = cap.response_anthropic_usage || {};
+    var openai = n(u.prompt_tokens);
+    if (openai > 0) return openai;
+    var anthropic = n(a.input_tokens) + n(a.cache_read_input_tokens) + n(a.cache_creation_input_tokens);
+    if (anthropic > 0) return anthropic;
+    var generic = n(u.input_tokens);
+    if (generic > 0) return generic;
+    var total = n(u.total_tokens);
+    if (total > 0) return total;
+    return null;
+  }
+
+  // Response-time heuristic: does the provider-reported prompt-token count fall egregiously below
+  // what the outbound payload size predicts? This does NOT prove content was dropped (providers may
+  // legitimately differ); it raises a soft 'prompt_ingestion_mismatch' warning for investigation.
+  // Prefers the exact UTF-8 byte count (body_bytes_utf8) over the legacy UTF-16 code-unit count.
+  function tmDetectPromptIngestionMismatch(cap) {
+    try {
+      if (!cap) return null;
+      var bytes = Number(cap.body_bytes_utf8 || cap.body_chars_estimate || 0);
+      if (!isFinite(bytes) || bytes < TM_PAYLOAD_MISMATCH_MIN_BYTES) return null;
+      var reported = tmEffectivePromptTokens(cap);
+      if (!reported || reported <= 0) return null;
+      var estimated = Math.ceil(bytes / 4);
+      if (estimated <= 0) return null;
+      var ratio = reported / estimated;
+      if (ratio >= TM_PAYLOAD_MISMATCH_RATIO) return null;
+      return {
+        code: 'prompt_ingestion_mismatch',
+        severity: 'critical',
+        title: 'Prompt ingestion mismatch',
+        message: 'Provider reported far fewer prompt tokens than the outbound payload size predicts.',
+        ts: Date.now(),
+        details: {
+          outbound_bytes: bytes,
+          estimated_prompt_tokens: estimated,
+          reported_prompt_tokens: reported,
+          reported_to_estimated_ratio: Math.round(ratio * 1000) / 1000,
+          estimated_deficit_tokens: Math.max(estimated - reported, 0)
+        }
+      };
+    } catch (e) { return null; }
   }
 
   // @beacon[
@@ -3405,6 +3557,31 @@
                 } catch (e) {}
               }
             } catch (e) {}
+            // (v4.270) PROMPT-INGESTION MISMATCH (generic, heuristic). Runs for EVERY provider
+            // (not just Gemini) once response_usage is stamped above. Compares the exact outbound
+            // byte count against the provider-reported prompt tokens; a sub-50% ratio means far
+            // fewer tokens reached the model than the payload size predicts -- possibly silently
+            // dropped / transformed content. Soft warning (code 'prompt_ingestion_mismatch'); it
+            // does NOT assert data was dropped, only that the counts diverge suspiciously. The
+            // widget banner is recomputed from the ring at render time; here we only persist the
+            // warning onto the ring entry so it survives reload and shows in the modal row.
+            try {
+              var capForMismatch = getCaptureById(captureId);
+              var mmWarn = tmDetectPromptIngestionMismatch(capForMismatch);
+              if (mmWarn) {
+                var mmArr = (capForMismatch && Array.isArray(capForMismatch._warnings)) ? capForMismatch._warnings.slice() : [];
+                var mmId = 'prompt_ingestion_mismatch:' + captureId;
+                var mmDup = false;
+                for (var mmi = 0; mmi < mmArr.length; mmi++) { if (mmArr[mmi] && mmArr[mmi].id === mmId) { mmDup = true; break; } }
+                if (!mmDup) {
+                  mmWarn.id = mmId;
+                  mmArr.push(mmWarn);
+                  tmUpdateCaptureRecord(captureId, { _warnings: mmArr });
+                  console.warn('\uD83D\uDEA8 [v' + EXT_VERSION + '] Prompt-ingestion mismatch: reported ' + mmWarn.details.reported_prompt_tokens + ' prompt tokens vs ~' + mmWarn.details.estimated_prompt_tokens + ' estimated (' + Math.round(mmWarn.details.reported_to_estimated_ratio * 100) + '%). Investigate possible silent content drop.');
+                }
+              }
+            } catch (eMm) {}
+
             // (v4.72) Accumulate per-turn cost into the running total.
             // (v4.218) UNGATED: error responses can carry real usage/cost (e.g. a 502 streamed
             // error with upstream_inference_cost). The tokens were consumed and the provider
@@ -4235,6 +4412,16 @@
             ev.preventDefault();
             return;
           }
+          // (v4.270) Dismiss the prompt-warning banner. Request-scoped: records ONLY this exact
+          // warning id, so the NEXT turn's new warning still surfaces. The ring keeps the warning
+          // permanently; this only hides the persistent widget banner for the dismissed warning.
+          if (target.dataset.action === 'dismiss-warning-banner') {
+            try { tmDismissWarningBanner(target.dataset.warningId || ''); } catch (e) {}
+            try { renderGpt51UsageWidget(); } catch (e) {}
+            ev.stopPropagation();
+            ev.preventDefault();
+            return;
+          }
           // (Fix 16, v4.200) Provider routing dropdown — handled by the 'change' listener
           // (v4.228), NOT on click. Clicking a <select> to OPEN it also dispatches a click
           // whose target.value is the PRE-change value; when a provider is already locked that
@@ -4770,6 +4957,46 @@
         }
       }
     } catch (e) {}
+
+    // (v4.270) PROMPT-WARNING banner — the RING is the source of truth (survives refresh). Scan
+    // backward for the newest capture carrying a critical warning for THIS identity; suppress it
+    // only if that exact warning id was dismissed (a dismissal never hides a later turn's new
+    // warning). Identity-guarded like the error/endpoint banners so parallel conversations don't
+    // cross-contaminate.
+    try {
+      var wWidgetKey = (widgetIdentity && widgetIdentity.key) || '';
+      var newestWarn = null;
+      try {
+        var warnRing = tmReadCaptureRing();
+        for (var wri = warnRing.length - 1; wri >= 0; wri--) {
+          var wCap = warnRing[wri];
+          if (!wCap || !Array.isArray(wCap._warnings) || !wCap._warnings.length) continue;
+          if (wWidgetKey) { var wCapKey = tmCapIdentityKey(wCap); if (wCapKey && wCapKey !== wWidgetKey) continue; }
+          for (var wwi = wCap._warnings.length - 1; wwi >= 0; wwi--) {
+            var cand = wCap._warnings[wwi];
+            if (cand && cand.severity === 'critical') { newestWarn = cand; break; }
+          }
+          if (newestWarn) break;
+        }
+      } catch (eScan) {}
+      if (newestWarn && !tmIsWarningBannerDismissed(newestWarn.id)) {
+        var wTitle = escapeHtml(newestWarn.title || 'Prompt warning');
+        var wMsg = escapeHtml(newestWarn.message || '');
+        var wDetail = '';
+        try {
+          var dd = newestWarn.details || {};
+          if (dd.reported_prompt_tokens != null && dd.estimated_prompt_tokens != null) {
+            wDetail = ' (~' + Math.round(dd.estimated_prompt_tokens / 1000) + 'K est vs ' + Math.round(dd.reported_prompt_tokens / 1000) + 'K reported)';
+          } else if (dd.model) {
+            wDetail = ' (' + escapeHtml(String(dd.model)) + ')';
+          }
+        } catch (eD) {}
+        lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;background:#3a0000;border:1px solid #ff3333;border-radius:4px;padding:3px 6px;">' +
+          '<span style="color:#ff4444;font-size:11px;font-weight:bold;font-family:monospace;line-height:1.3;flex:1;">\uD83D\uDEA8 ' + wTitle + wDetail + ' — ' + wMsg + '</span>' +
+          '<span data-action="dismiss-warning-banner" data-warning-id="' + escapeHtml(String(newestWarn.id || '')) + '" title="Dismiss (this turn only)" style="cursor:pointer;color:#ff4444;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">×</span>' +
+          '</div>');
+      }
+    } catch (eWarn) {}
 
     if (collapsed) {
       el.innerHTML = lines.join('');
@@ -5396,6 +5623,37 @@
         return;
       }
 
+      // (v4.271) Custom session-Filter listbox: trigger toggle, option selection, click-away.
+      // Resolved via closest() because listbox rows contain child <span>s -- deliberately does
+      // NOT fight the modal's own delegated data-action click handling. Selection writes
+      // tmModalFilterIdentity then re-renders (identical to the old set-modal-filter handler).
+      if (t && t.closest) {
+        var lbEl = t.closest('[data-action="toggle-modal-filter-listbox"], [data-action="set-modal-filter-listbox"]');
+        if (lbEl && lbEl.dataset) {
+          if (lbEl.dataset.action === 'toggle-modal-filter-listbox') {
+            tmModalFilterListboxOpen = !tmModalFilterListboxOpen;
+            renderPayloadCaptureModal();
+            ev.stopPropagation();
+            return;
+          }
+          if (lbEl.dataset.action === 'set-modal-filter-listbox') {
+            tmModalFilterIdentity = lbEl.dataset.identityKey || null;
+            tmModalFilterListboxOpen = false;
+            renderPayloadCaptureModal();
+            ev.stopPropagation();
+            return;
+          }
+        }
+        // Click-away: if the listbox is open and this click is nowhere on it, dismiss it.
+        if (tmModalFilterListboxOpen &&
+            !t.closest('[data-role="modal-filter-listbox"], [data-action="toggle-modal-filter-listbox"]')) {
+          tmModalFilterListboxOpen = false;
+          renderPayloadCaptureModal();
+          ev.stopPropagation();
+          return;
+        }
+      }
+
       if (t.dataset && t.dataset.action === 'close-payload-capture-modal') {
         closePayloadCaptureModal();
         return;
@@ -5404,6 +5662,19 @@
       // (v4.210) Toggle retry/429 row visibility and re-render.
       if (t.dataset && t.dataset.action === 'toggle-hide-retries') {
         tmSetHideRetries(!tmGetHideRetries());
+        renderPayloadCaptureModal();
+        ev.stopPropagation();
+        return;
+      }
+
+      // (v4.270) Toggle the OpenRouter→Gemini hard block (default ON). Persisted to localStorage;
+      // the fetch override reads it on every request. Re-render to reflect the new state.
+      if (t.dataset && t.dataset.action === 'toggle-or-gemini-block') {
+        try {
+          var nextOn = !tmShouldBlockOpenRouterGemini();
+          localStorage.setItem(TM_BLOCK_OR_GEMINI_KEY, nextOn ? 'true' : 'false');
+          console.log('\uD83D\uDEAB [v' + EXT_VERSION + '] OpenRouter→Gemini hard block: ' + (nextOn ? 'ON (blocked)' : 'OFF (allowed -- testing only)'));
+        } catch (eT) {}
         renderPayloadCaptureModal();
         ev.stopPropagation();
         return;
@@ -5477,12 +5748,6 @@
           tmSetSolReasoningEffort(newLevel);
           console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
         }
-        ev.stopPropagation();
-      }
-      // v4.163: Identity filter dropdown
-      if (t && t.dataset && t.dataset.action === 'set-modal-filter') {
-        tmModalFilterIdentity = t.value || null;
-        renderPayloadCaptureModal();
         ev.stopPropagation();
       }
       // (v4.224) Time-window filter dropdown
@@ -5621,6 +5886,34 @@
   // remedy for. Separate from tmMostRecentError (which auto-clears on success) because Dan wants
   // this reminder to STAY until he clicks its X. { model, provider, ts, idKey }
   var tmEndpointNotFound = null;
+
+  // (v4.270) A dismissal is REQUEST-scoped: dismissing a banner for turn N must not permanently
+  // suppress warnings for turn N+1. We persist ONLY the dismissed warning's id here; the banner
+  // itself is recomputed from the RING each render (survives reload), and suppressed only when
+  // the newest matching warning still carries this exact dismissed id. localStorage-backed so it
+  // also survives a TypingMind refresh. Identity-guarded like the other widget banners.
+  var TM_WARNING_DISMISS_KEY = 'tm_warning_banner_dismissed_v1';
+  function tmGetDismissedWarnings() {
+    try { return JSON.parse(localStorage.getItem(TM_WARNING_DISMISS_KEY) || '{}') || {}; } catch (e) { return {}; }
+  }
+  function tmDismissWarningBanner(id) {
+    if (!id) return;
+    try {
+      var d = tmGetDismissedWarnings();
+      d[id] = Date.now();
+      // bound the map
+      var keys = Object.keys(d);
+      if (keys.length > 60) {
+        keys.sort(function(a, b) { return d[a] - d[b]; });
+        while (keys.length > 60) { delete d[keys.shift()]; }
+      }
+      localStorage.setItem(TM_WARNING_DISMISS_KEY, JSON.stringify(d));
+    } catch (e) {}
+  }
+  function tmIsWarningBannerDismissed(id) {
+    if (!id) return false;
+    try { return !!tmGetDismissedWarnings()[id]; } catch (e) { return false; }
+  }
 
   // Scan raw response text (SSE or bare JSON) for an OpenRouter-style error object.
   // Returns a structured summary or null. Uses fromCharCode(10) for newline to avoid escapes.
@@ -7603,14 +7896,21 @@
       pillsHtml += '<button data-action="set-modal-sort" data-sort-mode="' + mode + '" style="' + pillStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:4px;">' + sortLabels[mode] + '</button>';
     }
 
-    // v4.163: Identity filter dropdown — populated from ring entries
+    // v4.271: CUSTOM session-Filter LISTBOX (replaces the native <select data-action="set-modal-filter">).
+    // Native <option> elements are single-color plain text, so the miss count in the trailing
+    // (misses / hits) parenthetical could never render in the MISS red. This div-based listbox
+    // renders per-word spans: the label + ($total) + (misses / hits) all inherit the session hue,
+    // EXCEPT the miss number which is #ff6b6b -- the system's one reserved red, matching the
+    // persistent widget's v4.269 treatment. Open state is a module flag (tmModalFilterListboxOpen)
+    // so the whole-modal re-render (every captured turn) SURVIVES an open listbox; Escape and
+    // click-away dismiss it; it resets on modal close. Selection still writes tmModalFilterIdentity
+    // then re-renders (identical semantics to the old change handler).
     var filterHtml = '<span style="font-size:10px;opacity:0.85;margin-left:8px;">Filter:&nbsp;</span>' +
-      '<select data-action="set-modal-filter" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
-    filterHtml += '<option value=""' + (!tmModalFilterIdentity ? ' selected' : '') + '>All</option>';
+      '<span style="position:relative;display:inline-block;vertical-align:top;">';
+    // -- Collect unique identities from the ring (same source as the old <select> loop). --
+    var idMap = {};
+    var idEntries = [];
     if (ring.length > 0) {
-      // Collect unique identities
-      var idMap = {};
-      var idEntries = [];
       for (var ri = ring.length - 1; ri >= 0; ri--) {
         var rcap = ring[ri];
         if (!rcap) continue;
@@ -7620,46 +7920,72 @@
         var idInfo = tmCapIdentityLabel(rcap);
         idEntries.push({ key: ikey, label: idInfo.label, host: idInfo.host, isProxy: idInfo.isProxy, model: idInfo.model, sid: idInfo.sid });
       }
-      // Check for duplicate sid+model labels that need disambiguation
-      var labelCounts = {};
-      for (var ei = 0; ei < idEntries.length; ei++) {
-        var lbl = idEntries[ei].label;
-        labelCounts[lbl] = (labelCounts[lbl] || 0) + 1;
-      }
-      // (v4.267) Hoist session-ledger read for the identity loop so option labels can carry
-      // the cumulative cache ratio without a localStorage re-parse per identity.
-      var idFilterCosts = {};
-      try { idFilterCosts = tmGetSessionCosts() || {}; } catch (e) {}
-      for (var ei2 = 0; ei2 < idEntries.length; ei2++) {
-        var entry = idEntries[ei2];
-        var displayLabel = entry.label;
-        if (labelCounts[displayLabel] > 1) {
-          // Disambiguate
-          displayLabel += ' (' + (entry.isProxy ? 'proxy' : 'direct') + ' @ ' + (entry.host || 'unknown') + ')';
-        }
-        // v4.167: Look up the total session cost for this identity and append in parentheses.
-        var totalCost = tmGetSessionCost(entry.sid || '', entry.model || '', entry.host, entry.isProxy);
-        if (totalCost > 0) {
-          displayLabel += ' ($' + totalCost.toFixed(2) + ')';
-        } else {
-          displayLabel += ' (—)';
-        }
-        // v4.267: Append the cumulative session cache ratio (misses / hits) after the cost
-        // parenthetical. Plain escaped text — option labels inherit the session hue (no spans).
-        var idfStats = idFilterCosts[entry.key];
-        var idfHits = Number((idfStats && idfStats._cache_hits) || 0);
-        var idfMisses = Number((idfStats && idfStats._cache_misses) || 0);
-        if (idfHits > 0 || idfMisses > 0) {
-          displayLabel += ' (' + idfMisses + ' / ' + idfHits + ')';
-        }
-        // v4.164: Color the option text with the identity's hue (Chrome/Edge renders option colors)
-        var optColor = tmModelEndpointColor(entry.model || '', entry.host, entry.isProxy, entry.sid || '');
-        var optStyle = 'style="color:' + optColor + ';font-weight:bold;"';
-        var selected = (tmModalFilterIdentity === entry.key) ? ' selected' : '';
-        filterHtml += '<option value="' + escapeHtml(entry.key) + '"' + selected + ' ' + optStyle + '>' + escapeHtml(displayLabel) + '</option>';
-      }
     }
-    filterHtml += '</select>';
+    // (v4.267) Hoist session-ledger read for the identity loop so labels carry the cumulative
+    // cache ratio without a localStorage re-parse per identity.
+    var idFilterCosts = {};
+    try { idFilterCosts = tmGetSessionCosts() || {}; } catch (e) {}
+    // Disambiguation: duplicate sid+model labels need a (proxy|direct @ host) suffix.
+    var labelCounts = {};
+    for (var ei = 0; ei < idEntries.length; ei++) { var lbl = idEntries[ei].label; labelCounts[lbl] = (labelCounts[lbl] || 0) + 1; }
+    // Build a per-entry display spec: escaped label, ($total), (misses / hits) numbers, and hue.
+    for (var ei2 = 0; ei2 < idEntries.length; ei2++) {
+      var entry = idEntries[ei2];
+      var displayLabel = entry.label;
+      if (labelCounts[displayLabel] > 1) {
+        // Disambiguate
+        displayLabel += ' (' + (entry.isProxy ? 'proxy' : 'direct') + ' @ ' + (entry.host || 'unknown') + ')';
+      }
+      // v4.167: total session cost for this identity.
+      var totalCost = tmGetSessionCost(entry.sid || '', entry.model || '', entry.host, entry.isProxy);
+      entry.costLabel = (totalCost > 0) ? '($' + totalCost.toFixed(2) + ')' : '(—)';
+      // v4.267: cumulative session cache ratio (misses / hits).
+      var idfStats = idFilterCosts[entry.key];
+      var idfHits = Number((idfStats && idfStats._cache_hits) || 0);
+      var idfMisses = Number((idfStats && idfStats._cache_misses) || 0);
+      entry.showLabel = displayLabel;
+      entry.hits = idfHits;
+      entry.misses = idfMisses;
+      entry.hasRatio = (idfHits > 0 || idfMisses > 0);
+      // v4.164: color the label with the identity's hue.
+      entry.color = tmModelEndpointColor(entry.model || '', entry.host, entry.isProxy, entry.sid || '');
+    }
+    // -- Closed trigger: show the current selection (All, or the selected identity + hue). --
+    var filterSelected = null;
+    for (var es = 0; es < idEntries.length; es++) { if (tmModalFilterIdentity === idEntries[es].key) { filterSelected = idEntries[es]; break; } }
+    var trigColor = '#fff';
+    var trigLabel = 'All';
+    if (filterSelected) {
+      trigColor = filterSelected.color;
+      trigLabel = filterSelected.showLabel + ' ' + filterSelected.costLabel +
+        (filterSelected.hasRatio ? (' (' + filterSelected.misses + ' / ' + filterSelected.hits + ')') : '');
+    }
+    filterHtml += '<button type="button" data-action="toggle-modal-filter-listbox" title="Filter ring buffer to a single session" style="font-size:10px;background:#222;color:' + trigColor + ';border:1px solid #555;border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis;vertical-align:top;">' +
+      '<span style="font-weight:bold;">' + escapeHtml(trigLabel) + '</span> <span style="opacity:0.7;">&#9660;</span>' +
+      '</button>';
+    // -- Listbox panel (rendered only while open). Absolutely positioned under the trigger; own
+    //    max-height + overflow-y so long identity lists scroll WITHIN the panel (never breaking
+    //    the modal's own scrolling); z-index keeps it above ring rows. --
+    if (tmModalFilterListboxOpen) {
+      filterHtml += '<div data-role="modal-filter-listbox" style="position:absolute;top:calc(100% + 2px);left:0;z-index:100;min-width:280px;max-width:520px;max-height:300px;overflow-y:auto;background:rgba(20,20,26,0.98);border:1px solid #555;border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,0.6);padding:2px;">';
+      // All row
+      var allSelected = !tmModalFilterIdentity;
+      filterHtml += '<div data-action="set-modal-filter-listbox" data-identity-key="" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;' + (allSelected ? 'background:rgba(90,58,142,0.5);' : '') + '"><span style="color:#fff;font-weight:bold;">All</span></div>';
+      // Identity rows -- the miss number in #ff6b6b; everything else inherits the session hue.
+      for (var eo = 0; eo < idEntries.length; eo++) {
+        var e2 = idEntries[eo];
+        var sel = (tmModalFilterIdentity === e2.key);
+        filterHtml += '<div data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
+          '<span style="font-weight:bold;">' + escapeHtml(e2.showLabel) + '</span> ' +
+          '<span>' + escapeHtml(e2.costLabel) + '</span>' +
+          (e2.hasRatio
+            ? ' (<span style="color:#ff6b6b;font-weight:bold;">' + e2.misses + '</span> / ' + e2.hits + ')'
+            : '') +
+          '</div>';
+      }
+      filterHtml += '</div>';
+    }
+    filterHtml += '</span>';
 
     // (v4.210) Retry-visibility toggle button. Default ON (hide retry/429 rows) to kill backoff
     // spam; click to reveal them. Shows a live count of hidden rows when hiding is active.
@@ -7719,8 +8045,17 @@
     timeFilterHtml += '<option value="24h"' + (tmModalTimeFilter === '24h' ? ' selected' : '') + '>Current 24h</option>';
     timeFilterHtml += '</select>';
 
+    // (v4.270) OpenRouter→Gemini hard-block toggle. Default ON (red/guarded); OFF is shown
+    // alarm-orange because it re-enables the PROVEN silent large-tool-result drop route.
+    var orGemBlockOn = tmShouldBlockOpenRouterGemini();
+    var orGemBtnStyle = orGemBlockOn
+      ? 'background:#3a0d0d;color:#ff8a8a;border:1px solid #8a2a2a;'
+      : 'background:#3a2a00;color:#ffb84d;border:1px solid #8a6a1a;';
+    var orGemBtnLabel = orGemBlockOn ? '\uD83D\uDEAB OR→Gemini: BLOCKED' : '\u26A0\uFE0F OR→Gemini: ALLOWED';
+    var orGemToggleHtml = '<button data-action="toggle-or-gemini-block" title="Hard-block OpenRouter→Gemini requests (proven silent large-tool-result drop). Default ON. Click to allow for controlled testing." style="' + orGemBtnStyle + 'border-radius:10px;padding:1px 8px;font-size:10px;cursor:pointer;margin-left:8px;">' + orGemBtnLabel + '</button>';
+
     html += '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(30,30,40,0.7);border:1px solid #2a2a2a;display:flex;align-items:center;flex-wrap:wrap;gap:2px;">' +
-      solSelectHtml + pillsHtml + filterHtml + timeFilterHtml + retryToggleHtml +
+      solSelectHtml + pillsHtml + filterHtml + timeFilterHtml + retryToggleHtml + orGemToggleHtml +
       '</div>';
     html += initRowHtml;
 
@@ -7985,6 +8320,41 @@
 
 
 
+      // (v4.270) Per-entry WARNINGS row — generic, first-class, persisted on the ring entry.
+      // Rendered between the cost/repair/cache row and the bottom hash/session row. Shows every
+      // warning object in cap._warnings (critical=red, warning=orange, info=blue). Survives the
+      // rich→compact strip because _warnings is underscore-prefixed.
+      try {
+        if (Array.isArray(cap._warnings) && cap._warnings.length) {
+          for (var cwi = 0; cwi < cap._warnings.length; cwi++) {
+            var cwarn = cap._warnings[cwi];
+            if (!cwarn) continue;
+            var csev = String(cwarn.severity || 'info');
+            var cBorder = csev === 'critical' ? '#ff3333' : (csev === 'warning' ? '#ff9500' : '#4a9eff');
+            var cBg = csev === 'critical' ? 'rgba(58,0,0,0.6)' : (csev === 'warning' ? 'rgba(58,34,0,0.6)' : 'rgba(20,40,60,0.6)');
+            var cColor = csev === 'critical' ? '#ff6666' : (csev === 'warning' ? '#ffb84d' : '#8fc4ff');
+            var cIcon = csev === 'critical' ? '\uD83D\uDEA8' : (csev === 'warning' ? '\u26A0\uFE0F' : '\u2139\uFE0F');
+            var cTitle = escapeHtml(String(cwarn.title || cwarn.code || 'warning'));
+            var cMsg = escapeHtml(String(cwarn.message || ''));
+            var cDetail = '';
+            try {
+              var cd = cwarn.details || {};
+              var cdParts = [];
+              if (cd.outbound_bytes != null) cdParts.push('out ' + Math.round(cd.outbound_bytes / 1024) + 'KB');
+              if (cd.estimated_prompt_tokens != null) cdParts.push('~' + Math.round(cd.estimated_prompt_tokens / 1000) + 'K est');
+              if (cd.reported_prompt_tokens != null) cdParts.push(Math.round(cd.reported_prompt_tokens / 1000) + 'K reported');
+              if (cd.reported_to_estimated_ratio != null) cdParts.push(Math.round(cd.reported_to_estimated_ratio * 100) + '%');
+              if (cd.model) cdParts.push(String(cd.model));
+              if (cdParts.length) cDetail = ' <span style="opacity:0.75;">(' + escapeHtml(cdParts.join(' · ')) + ')</span>';
+            } catch (eCD) {}
+            html += '<div style="margin-top:3px;padding:3px 6px;background:' + cBg + ';border:1px solid ' + cBorder + ';border-radius:4px;font-size:10px;line-height:1.4;">' +
+              '<span style="color:' + cColor + ';font-weight:bold;">' + cIcon + ' ' + cTitle + ':</span> ' +
+              '<span style="color:' + cColor + ';">' + cMsg + '</span>' + cDetail +
+              '</div>';
+          }
+        }
+      } catch (eWarnRow) {}
+
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
       // (v4.134) Bottom row: session name support.
@@ -8058,6 +8428,16 @@
           if (ev.preventDefault) ev.preventDefault();
           return;
         }
+        // (v4.271) If the session-filter listbox is open, Escape closes ONLY it (re-render), not
+        // the modal -- swallow so it cannot bubble anywhere. Decided here, inside the existing
+        // DOM-authoritative keyup guard; no new per-render keydown listener is added.
+        if (tmModalFilterListboxOpen) {
+          tmModalFilterListboxOpen = false;
+          renderPayloadCaptureModal();
+          ev.stopPropagation();
+          if (ev.preventDefault) ev.preventDefault();
+          return;
+        }
         closePayloadCaptureModal();
       };
       window.addEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
@@ -8077,6 +8457,8 @@
       tmPayloadCaptureModalEscapeKeydownSnapshotter = null;
     }
     tmEscapeGuardSnapshot = null;
+    // (v4.271) Reset the listbox open-flag so a fresh open starts closed.
+    tmModalFilterListboxOpen = false;
   }
 
   // ==================== FETCH OVERRIDE ====================
@@ -10652,6 +11034,62 @@
     } catch (e) {
       // Never break requests due to capture
     }
+
+    // ==================== (v4.270) OPENROUTER→GEMINI HARD BLOCK (default ON) ====================
+    // PROVEN silent-data-loss route: OpenRouter's OpenAI→Gemini translation empties/drops large
+    // tool-result content before Google's tokenizer ever sees it (measured: ~43K prompt tokens
+    // billed for a ~350K-token conversation; direct Google billed 253K for the same). The request
+    // SUCCEEDS and Gemini confidently answers from a corrupted view -- the worst failure class.
+    // Block ALL OpenRouter→Gemini requests by default (size-agnostic: the drop threshold is not
+    // externally predictable). The capture above already recorded the final outbound payload; we
+    // stamp a permanent 'openrouter_gemini_blocked' warning onto that ring entry, refresh the
+    // widget (banner recomputed from ring), and return a synthetic non-retryable 422 so TypingMind
+    // surfaces a real error instead of silently sending. NO network request reaches OpenRouter.
+    try {
+      var orGemBlockBody = null;
+      if (options && typeof options.body === 'string') { try { orGemBlockBody = JSON.parse(options.body); } catch (eP) {} }
+      var orGemRoute = tmDetectOpenRouterGeminiRoute(url, options, orGemBlockBody);
+      if (orGemRoute && tmShouldBlockOpenRouterGemini()) {
+        try {
+          if (captureId) {
+            var blCap = getCaptureById(captureId);
+            var blArr = (blCap && Array.isArray(blCap._warnings)) ? blCap._warnings.slice() : [];
+            var blId = 'openrouter_gemini_blocked:' + captureId;
+            var blDup = false;
+            for (var bli = 0; bli < blArr.length; bli++) { if (blArr[bli] && blArr[bli].id === blId) { blDup = true; break; } }
+            if (!blDup) {
+              blArr.push({
+                id: blId,
+                code: 'openrouter_gemini_blocked',
+                severity: 'critical',
+                title: 'OpenRouter→Gemini blocked',
+                message: 'This route silently discards large tool-result history. Use the direct Google endpoint (generativelanguage.googleapis.com). Disable only for controlled testing via the ring-buffer modal 🚫 toggle.',
+                ts: Date.now(),
+                details: { model: orGemRoute.model, effective_target_url: orGemRoute.effective_target_url }
+              });
+              tmUpdateCaptureRecord(captureId, { _warnings: blArr });
+            }
+          }
+        } catch (eW) {}
+        console.error('\uD83D\uDEAB [v' + EXT_VERSION + '] BLOCKED OpenRouter→Gemini request (' + orGemRoute.model + '): silent large-tool-result drop risk. Route direct to Google. Disable via ring-buffer modal 🚫 toggle.');
+        try { renderGpt51UsageWidget(); } catch (eR) {}
+        var orGemErrBody = JSON.stringify({
+          error: {
+            message: 'Blocked by Payload Extension (v' + EXT_VERSION + '): OpenRouter→Gemini silently discards large tool-result history before it reaches the model. Use the direct Google endpoint instead. To override (testing only): localStorage.setItem(\'' + TM_BLOCK_OR_GEMINI_KEY + '\',\'false\') or the ring-buffer modal 🚫 toggle.',
+            type: 'extension_blocked',
+            code: 'openrouter_gemini_payload_drop'
+          }
+        });
+        var orGemResp;
+        try {
+          orGemResp = new Response(orGemErrBody, { status: 422, statusText: 'Unprocessable Entity', headers: { 'Content-Type': 'application/json' } });
+        } catch (eResp) {
+          orGemResp = { ok: false, status: 422, clone: function() { return this; }, text: function() { return Promise.resolve(orGemErrBody); }, json: function() { return Promise.resolve(JSON.parse(orGemErrBody)); }, headers: { get: function() { return null; } } };
+        }
+        try { if (captureId && orGemResp) tmCaptureResponse(captureId, orGemResp); } catch (eCap) {}
+        return Promise.resolve(orGemResp);
+      }
+    } catch (eBlock) {}
 
     // Derive response-transform policy from the FINAL outbound body before the network call.
     // For Kimi, the exact historical id set is the collision oracle for the incoming turn.
