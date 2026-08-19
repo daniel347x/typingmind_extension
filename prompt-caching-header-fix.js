@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.273
+// Version: 4.274
 // Issues Fixed:
+//   - v4.274: DIRECT MOONSHOT EMPTY-MESSAGE REPAIR. The existing OpenAI-compatible
+//     repairChatCompletionsEmptyMessageContent() helper already protected OpenRouter Kimi traffic,
+//     but the later direct api.moonshot.ai branch only injected prompt_cache_key and let historic
+//     assistant messages with content:"" pass through unchanged. Moonshot rejects those requests
+//     ('message ... with role assistant must not be empty'). Direct Moonshot chat-completions now
+//     applies the same conservative placeholder repair, records the count in the existing repair
+//     tally captured by the ring/widget, and reserializes whenever either caching or repair changes
+//     the body. The tool_calls exemption is also narrowed to a genuinely NONEMPTY array, so a stale
+//     tool_calls:[] field cannot let an otherwise empty assistant message escape repair.
 //   - v4.273: FOUR-LEVEL PROVIDER CATALOG TREE (RATINGS + SET COSTS). The v4.272 flat model-family
 //     grouping was still unusable for questions such as 'which OpenRouter Kimi-K3 provider works?'.
 //     Both modals now project the unchanged model::provider stores into one colored nested tree:
@@ -810,7 +819,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.273';
+  const EXT_VERSION = '4.274';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8738,8 +8747,9 @@
         (typeof c === 'string' && c.trim() === '') ||
         (Array.isArray(c) && c.length === 0);
       if (empty) {
-        // v4.188: Skip replacement when message has tool_calls — the tool call is the real content.
-        if (msg.tool_calls) return;
+        // v4.188: Skip replacement when a real tool call is the message content.
+        // v4.274: An empty tool_calls:[] is not content and must not suppress this repair.
+        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return;
         // Replace empty content (string or array) with placeholder.
         msg.content = `[tm_repaired_empty_${msg.role}_message]`;
         console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
@@ -11146,8 +11156,9 @@
     // /v1/chat/completions endpoint. The API supports a top-level `prompt_cache_key` parameter
     // (confirmed in Kimi API Platform docs) which improves cross-instance KV cache hit rate
     // on their serverless fleet. Uses the same stable per-conversation derivation as DeepInfra's
-    // prompt_cache_key and OpenRouter's session_id.
-    // No body repairs or cache_control injection needed — just the cache key.
+    // prompt_cache_key and OpenRouter's session_id. Direct Moonshot also gets the shared
+    // OpenAI-compatible empty-message repair: Moonshot rejects historic assistant content:"".
+    // No cache_control injection is performed.
     // NOTE: Moonshot's API returns usage with cached_tokens but NO cost/dollar field; cost must
     // be calculated client-side from published pricing (see v4.233 Set Costs modal).
     else if (typeof url === 'string' && url.includes('api.moonshot.ai')) {
@@ -11156,6 +11167,14 @@
         if (options.body) {
           const body = JSON.parse(options.body);
           let modified = false;
+          const tally = { family: null, toolResultName: 0, historicToolInputs: 0, emptyMessageContent: 0, missingToolResults: 0, orphanedToolCalls: 0 };
+
+          // (v4.274) Direct Moonshot uses OpenAI-compatible chat-completions and rejects empty
+          // historic messages (observed: assistant content:"" at messages[95]). Reuse the same
+          // conservative string-placeholder repair already proven on OpenRouter Kimi traffic.
+          tally.emptyMessageContent = repairChatCompletionsEmptyMessageContent(body, 'Moonshot chat-completions') || 0;
+          if (tally.emptyMessageContent) modified = true;
+          repairTallyForThisCall = tally;
 
           // (v4.232) Inject prompt_cache_key for cross-instance cache pinning.
           // Uses the same stable per-conversation derivation as DeepInfra's prompt_cache_key
@@ -11180,9 +11199,9 @@
 
           if (modified) {
             options.body = JSON.stringify(body);
-            console.log('✅ [v' + EXT_VERSION + '] Moonshot request body updated (prompt_cache_key injected)');
+            console.log('✅ [v' + EXT_VERSION + '] Moonshot request body updated (prompt_cache_key and/or chat-completions repairs)');
           }
-          // No repairs, no cache_control injection — passthrough with capture only.
+          // No cache_control injection; the final repaired body is captured below.
         }
       } catch (e) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Failed to parse Moonshot request:', e);
