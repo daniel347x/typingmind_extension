@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.275
+// Version: 4.276
 // Issues Fixed:
+//   - v4.276: BEST-EFFORT RETROACTIVE ERROR BACKFILL. On extension load, pre-v4.275 ring entries
+//     that still retain a JSON response body, raw response head, or saved SSE error segment are
+//     scanned once and upgraded with the same persistent `error` record. This can recover the
+//     already-captured Moonshot empty-assistant 400 without reproducing the now-fixed request.
+//     Entries whose heavy response evidence was already quota-stripped remain honestly unchanged.
 //   - v4.275: PERSISTENT PROVIDER-ERROR HISTORY. Every captured provider failure now gets a
 //     first-class `error` field on its existing ring-buffer entry: non-streaming JSON errors,
 //     HTTP>=400 bodies without a conventional error wrapper, error-bearing SSE chunks (including
@@ -828,7 +833,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.275';
+  const EXT_VERSION = '4.276';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3484,6 +3489,68 @@
       message: msg,
       payload: tmBoundCapturedErrorPayload(payload)
     };
+  }
+
+  // Best-effort one-time upgrade for errors captured before v4.275. If their rich response body
+  // or raw SSE evidence still exists, preserve it now before a later compaction pass removes it.
+  function tmBackfillCapturedErrorsFromRing() {
+    var ring = tmReadCaptureRing();
+    var changed = 0;
+    for (var ri = 0; ri < ring.length; ri++) {
+      var cap = ring[ri];
+      if (!cap || cap.error) continue;
+      var payload = null;
+      var source = null;
+
+      if (cap.response_body != null) {
+        payload = tmFindProviderErrorPayload(cap.response_body);
+        if (payload == null && Number(cap.response_status) >= 400) payload = cap.response_body;
+        if (payload != null) source = 'backfill-json';
+      }
+
+      if (payload == null && Array.isArray(cap.response_usage_segments)) {
+        for (var si = 0; si < cap.response_usage_segments.length; si++) {
+          try {
+            var segObj = JSON.parse(cap.response_usage_segments[si]);
+            var segErr = tmFindProviderErrorPayload(segObj);
+            if (segErr != null) { payload = segErr; source = 'backfill-sse'; break; }
+          } catch (eSeg) {}
+        }
+      }
+
+      if (payload == null && typeof cap.response_body_head === 'string' && cap.response_body_head) {
+        var head = cap.response_body_head;
+        try {
+          var headObj = JSON.parse(head);
+          payload = tmFindProviderErrorPayload(headObj);
+          if (payload == null && Number(cap.response_status) >= 400) payload = headObj;
+          if (payload != null) source = 'backfill-head-json';
+        } catch (eHeadJson) {}
+        if (payload == null) {
+          var headLines = head.split('\n');
+          for (var hi = 0; hi < headLines.length; hi++) {
+            var hline = headLines[hi].trim();
+            if (!hline.startsWith('data: ')) continue;
+            try {
+              var hobj = JSON.parse(hline.slice(6).trim());
+              var herr = tmFindProviderErrorPayload(hobj);
+              if (herr != null) { payload = herr; source = 'backfill-head-sse'; break; }
+            } catch (eHeadSse) {}
+          }
+        }
+        if (payload == null && Number(cap.response_status) >= 400) {
+          payload = head;
+          source = 'backfill-http-text';
+        }
+      }
+
+      if (payload != null) {
+        cap.error = tmBuildCapturedProviderError(payload, cap.response_status, source || 'backfill');
+        changed++;
+      }
+    }
+    if (changed) tmWriteCaptureRing(ring);
+    return changed;
   }
 
   // ==================== (v4.270) OPENROUTER→GEMINI GUARD + INGESTION MISMATCH ====================
@@ -11544,6 +11611,10 @@
   try {
     if (typeof document !== 'undefined') {
       try { tmRepairLockLabelsFromEntries(); } catch (e) {}  // (v4.216) repair stale lock labels once on load
+      try {
+        var backfilledErrors = tmBackfillCapturedErrorsFromRing();
+        if (backfilledErrors) console.log('\uD83D\uDEA8 [v' + EXT_VERSION + '] Backfilled persistent errors onto ' + backfilledErrors + ' older capture row(s).');
+      } catch (e) {}
       renderGpt51UsageWidget();
     }
   } catch (e) {
