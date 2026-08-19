@@ -1,6 +1,25 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.271
+// Version: 4.272
 // Issues Fixed:
+//   - v4.272: DIRECT-ENDPOINT PROVIDER DISCOVERY + MODEL-FAMILY CATALOG ORGANIZATION. TWO linked
+//     fixes across both Provider Ratings and Set Costs. (1) DIRECT PROVIDERS NO LONGER VANISH:
+//     discovery previously required cap._provider_label or cap.response_provider. Successful direct
+//     DeepInfra turns carry neither even though URL/model/usage/cost are complete, so
+//     moonshotai/Kimi-K3 @ api.deepinfra.com was skipped by BOTH modals. ONE shared resolver
+//     (tmObservedProviderKey) now falls back to the concrete target host (rejecting 'unknown') and is
+//     used by ratings discovery, cost discovery, route display, and no-API-cost calculation. The
+//     supplied live shape now creates the existing-schema keys
+//     moonshotai/kimi-k3::api.deepinfra.com in both stores. (2) GENERAL MODEL-FAMILY EXPANDERS:
+//     top-level sections now group only by the final model-family segment, so
+//     anthropic/claude-fable-5 and direct claude-fable-5 appear together under claude-fable-5.
+//     Inside is one flat route list. Every item is TWO ROWS: row 1 shows all observable hops
+//     (e.g. TypingMind proxy → OpenRouter → anthropic/claude-fable-5, or
+//     DeepInfra → moonshotai/kimi-k3); row 2 holds Provider identity + ctx/status + rating/comment
+//     controls, or the pricing fields in Set Costs. NO RATING/COST RESET OR SCHEMA MIGRATION:
+//     underlying full model::provider keys and all counts/comments/prices remain byte-for-byte.
+//     Only UI expansion state normalizes losslessly to family keys: Ratings keeps its persisted full
+//     expanded set; Set Costs still remembers one most-recent family across opens and preserves
+//     multiple open families in memory during a visit.
 //   - v4.271: RING-MODAL SESSION-FILTER CUSTOM LISTBOX (MISS-COUNT RED). Replaces the native
 //     <select data-action="set-modal-filter"> in renderPayloadCaptureModal with a div-based,
 //     custom-styled listbox so the session Filter dropdown can render the miss count in the MISS
@@ -773,7 +792,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.271';
+  const EXT_VERSION = '4.272';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1081,6 +1100,101 @@
     } catch (e) { return ''; }
   }
 
+  // (v4.272) Normalize a provider-catalog model to its MODEL FAMILY for modal grouping only.
+  // OpenRouter commonly names models as vendor/model (e.g. anthropic/claude-fable-5), while
+  // direct endpoints use the bare model (claude-fable-5). The persisted rating/cost key remains
+  // the FULL model::provider pair; only the disclosure-header grouping uses the final path segment.
+  function tmProviderModelFamily(model) {
+    var s = String(model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+    var parts = s.split('/').filter(function(p) { return !!p; });
+    return parts.length ? parts[parts.length - 1] : s;
+  }
+
+  // (v4.272) Friendly label for a concrete target endpoint. This is presentation-only; storage
+  // continues to use the exact provider label/host that existing rating and cost lookups expect.
+  function tmProviderEndpointLabel(host) {
+    var h = String(host || '').toLowerCase();
+    if (h === 'openrouter.ai') return 'OpenRouter';
+    if (h === 'api.deepinfra.com') return 'DeepInfra';
+    if (h === 'api.anthropic.com') return 'Anthropic';
+    if (h === 'generativelanguage.googleapis.com') return 'Google Gemini';
+    if (h === 'api.openai.com') return 'OpenAI';
+    if (!h) return '';
+    return h;
+  }
+
+  // (v4.272) ONE provider-key resolver shared by ratings discovery, cost discovery, route display,
+  // and the no-API-cost calculation path. Direct providers such as DeepInfra may return complete
+  // usage/cost evidence without response_provider or _provider_label; in that case the concrete
+  // target host is the durable fallback key (e.g. api.deepinfra.com).
+  function tmObservedProviderKey(cap) {
+    if (!cap) return '';
+    if (typeof cap._provider_label === 'string' && cap._provider_label) return cap._provider_label;
+    if (typeof cap.response_provider === 'string' && cap.response_provider) return cap.response_provider;
+    try {
+      var host = tmExtractEndpointHost(cap) || '';
+      return (host && host !== 'unknown') ? host : '';
+    } catch (e) { return ''; }
+  }
+
+  // (v4.272) Build route-path presentation metadata from the ring. The key matches the existing
+  // persisted model::provider key exactly, so this adds no migration/reset blast radius. Newest
+  // observation wins. Example paths:
+  //   TypingMind proxy → OpenRouter → anthropic/claude-fable-5
+  //   DeepInfra → moonshotai/kimi-k3
+  function tmBuildProviderRouteCatalog() {
+    var out = {};
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = 0; i < ring.length; i++) {
+        var cap = ring[i];
+        if (!cap) continue;
+        var model = '';
+        try { model = tmCaptureModel(cap); } catch (e) {}
+        if (!model) continue;
+        model = String(model).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        var provider = tmObservedProviderKey(cap);
+        if (!provider) continue;
+        var host = '';
+        var isProxy = false;
+        try { host = tmExtractEndpointHost(cap) || ''; } catch (e) {}
+        try { isProxy = tmIsProxyCapture(cap); } catch (e) {}
+        var hops = [];
+        if (isProxy) hops.push('TypingMind proxy');
+        var endpointLabel = tmProviderEndpointLabel(host);
+        if (endpointLabel) hops.push(endpointLabel);
+        hops.push(model);
+        var providerDisplay = provider;
+        if (host && String(provider).toLowerCase() === String(host).toLowerCase()) {
+          providerDisplay = endpointLabel ? (endpointLabel + ' (' + host + ')') : host;
+        }
+        out[model + '::' + provider] = {
+          route: hops.join(' \u2192 '),
+          providerDisplay: providerDisplay,
+          host: host,
+          isProxy: isProxy
+        };
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function tmProviderRouteForStoredEntry(model, provider, catalog) {
+    var key = model + '::' + provider;
+    if (catalog && catalog[key]) return catalog[key];
+    var providerStr = String(provider || '');
+    var looksLikeHost = providerStr.indexOf('.') !== -1;
+    var endpointLabel = looksLikeHost ? tmProviderEndpointLabel(providerStr) : providerStr;
+    return {
+      route: (endpointLabel || providerStr) + ' \u2192 ' + model,
+      providerDisplay: (looksLikeHost && endpointLabel && endpointLabel !== providerStr)
+        ? (endpointLabel + ' (' + providerStr + ')')
+        : providerStr,
+      host: '',
+      isProxy: false
+    };
+  }
+
   // ==================== PROVIDER RATINGS (v4.229) ====================
   // Tracks per-model, per-provider ratings (red = failures, green = successes)
   // and free-text comments. Independent of any session — persisted in localStorage.
@@ -1179,9 +1293,7 @@
         try { model = tmCaptureModel(cap); } catch (e) {}
         if (!model) continue;
         model = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-        var provider = '';
-        if (typeof cap._provider_label === 'string' && cap._provider_label) provider = cap._provider_label;
-        else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
+        var provider = tmObservedProviderKey(cap);
         if (provider) {
           var key = model + '::' + provider;
           if (!ratings[key] && !deleted[key]) { ratings[key] = { red: 0, green: 0, comment: '' }; changed = true; }
@@ -1316,9 +1428,7 @@
         try { model = tmCaptureModel(cap); } catch (e) {}
         if (!model) continue;
         model = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-        var provider = '';
-        if (typeof cap._provider_label === 'string' && cap._provider_label) provider = cap._provider_label;
-        else if (typeof cap.response_provider === 'string' && cap.response_provider) provider = cap.response_provider;
+        var provider = tmObservedProviderKey(cap);
         if (provider) {
           var key = model + '::' + provider;
           if (!costs[key]) { costs[key] = { input: 0, output: 0, cache_read: 0, cache_write: null }; changed = true; }
@@ -3636,10 +3746,7 @@
               );
               if (apiTurnCost == 0 && capRec && idModel) {
                 var tcModel = String(idModel).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-                var tcProvider = '';
-                if (capRec._provider_label) tcProvider = capRec._provider_label;
-                else if (capRec.response_provider) tcProvider = capRec.response_provider;
-                else tcProvider = idHost || '';
+                var tcProvider = tmObservedProviderKey(capRec);
 
                 if (tcProvider) {
                   var tcEntry = tmGetProviderCostEntry(tcModel, tcProvider);
@@ -6505,30 +6612,49 @@
 
     var sub = document.createElement('div');
     sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
-    sub.textContent = 'Track your experience with each provider per model. 🔴 = failures / frustrations, 🟢 = successes / satisfaction. Click +/− to adjust. Click 📝 to add notes.';
+    sub.textContent = 'Grouped by model family. Each item shows the observed route first, then the serving provider and controls. 🔴 = failures / frustrations, 🟢 = successes / satisfaction. Click +/− to adjust. Click 📝 to add notes.';
     box.appendChild(sub);
 
-    // Build hierarchical data: group by model, then sort.
-    // (v4.236) DEDUP providers to their BASE slug so e.g. 'DeepInfra' and 'DeepInfra Fp8' collapse
-    // to ONE row (we keep the most granular entry -- the one carrying a variant word or slash).
+    // (v4.272) Build a MODEL-FAMILY hierarchy for presentation only. Persisted records remain
+    // keyed by their original FULL model::provider strings, so all ratings/comments survive.
+    // OpenRouter anthropic/claude-fable-5 and direct claude-fable-5 now share the single
+    // claude-fable-5 disclosure section. Provider-base dedup remains scoped to each FULL model.
     var expandedMap = tmGetRatingsExpanded();
+    var routeCatalog = tmBuildProviderRouteCatalog();
     var modelMap = {};
     for (var key in ratings) {
       if (!ratings.hasOwnProperty(key)) continue;
       var parts = key.split('::');
       if (parts.length < 2) continue;
-      var mdl = parts[0];
+      var storageModel = parts[0];
+      var family = tmProviderModelFamily(storageModel);
       var prov = parts.slice(1).join('::');
-      if (!modelMap[mdl]) modelMap[mdl] = {};
-      var grp = modelMap[mdl];
+      if (!modelMap[family]) modelMap[family] = {};
+      var grp = modelMap[family];
       var base = tmNormalizeProviderBaseSlug(prov);
+      var dedupeKey = storageModel + '::' + base;
       var isGranular = (prov.indexOf('/') !== -1) || (/\s/.test(prov));
-      if (!grp[base]) {
-        grp[base] = { provider: prov, rating: ratings[key] };
-      } else if (isGranular && grp[base].provider.indexOf('/') === -1 && !/\s/.test(grp[base].provider)) {
-        grp[base] = { provider: prov, rating: ratings[key] }; // upgrade to the more granular entry
+      var routeInfo = tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
+      var candidate = { storageModel: storageModel, provider: prov, rating: ratings[key], routeInfo: routeInfo };
+      if (!grp[dedupeKey]) {
+        grp[dedupeKey] = candidate;
+      } else if (isGranular && grp[dedupeKey].provider.indexOf('/') === -1 && !/\s/.test(grp[dedupeKey].provider)) {
+        grp[dedupeKey] = candidate; // preserve v4.236's preference for the granular variant
       }
     }
+
+    // One-time, lossless expansion-state normalization: old keys were full model strings; new keys
+    // are model families. This migrates only the tiny UI-state map, never rating records.
+    var normalizedExpanded = {};
+    for (var exKey in expandedMap) {
+      if (expandedMap.hasOwnProperty(exKey) && expandedMap[exKey]) normalizedExpanded[tmProviderModelFamily(exKey)] = true;
+    }
+    try {
+      if (JSON.stringify(normalizedExpanded) !== JSON.stringify(expandedMap)) {
+        localStorage.setItem(TM_RATINGS_EXPANDED_KEY, JSON.stringify(normalizedExpanded));
+      }
+    } catch (e) {}
+    expandedMap = normalizedExpanded;
 
     var sortedModels = Object.keys(modelMap).sort();
 
@@ -6566,7 +6692,9 @@
         listWrap.appendChild(modelHeader);
 
         var providers = Object.keys(grp).map(function(b) { return grp[b]; }).sort(function(a, b) {
-          return a.provider.localeCompare(b.provider);
+          var ar = (a.routeInfo && a.routeInfo.route) || (a.storageModel + ' ' + a.provider);
+          var br = (b.routeInfo && b.routeInfo.route) || (b.storageModel + ' ' + b.provider);
+          return ar.localeCompare(br) || a.provider.localeCompare(b.provider);
         });
 
         var provWrap = document.createElement('div');
@@ -6574,25 +6702,35 @@
         listWrap.appendChild(provWrap);
 
         providers.forEach(function(entry) {
+          var storageModel = entry.storageModel;
           var prov = entry.provider;
           var r = entry.rating;
-          var ratingIdBase = (mdl + '__' + prov).replace(/[^a-zA-Z0-9]/g, '_');
+          var routeInfo = entry.routeInfo || tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
+          var ratingIdBase = (storageModel + '__' + prov).replace(/[^a-zA-Z0-9]/g, '_');
+
+          // (v4.272) Two-row entry: the first row gets the full observed route path; the second
+          // contains provider identity, ctx/status, rating controls, comment, and delete.
+          var entryWrap = document.createElement('div');
+          entryWrap.style.cssText = 'padding:6px 8px 7px 16px;border-bottom:1px solid rgba(70,70,80,0.35);';
+
+          var routeLine = document.createElement('div');
+          routeLine.style.cssText = 'color:#e6e6ee;font-size:12px;font-weight:600;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;';
+          routeLine.textContent = routeInfo.route;
+          routeLine.title = routeInfo.route;
+          entryWrap.appendChild(routeLine);
 
           var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 16px;font-size:12px;';
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;min-width:0;';
 
-          // (v4.240) The ctx parenthetical now lives INSIDE the provider-name label (as a blue
-          // child span) rather than as its own row slot, so every row's rating buttons start at the
-          // same x and line up. Label slot widened a touch so name + ctx never clip.
           var labelSpan = document.createElement('span');
-          labelSpan.style.cssText = 'color:#d0d0d8;min-width:150px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
+          labelSpan.style.cssText = 'color:#9fb7d8;min-width:185px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
           labelSpan.title = prov;
-          labelSpan.appendChild(document.createTextNode(prov));
+          labelSpan.appendChild(document.createTextNode('Provider: ' + (routeInfo.providerDisplay || prov)));
 
           // (v4.236) Show the provider's max context window when known (from live Endpoints-API
-          // entries). This is the field that explains 'No endpoints found' on long conversations.
+          // entries). Use the FULL stored model, not the normalized disclosure-family key.
           try {
-            var _entries = tmGetProviderEntries(mdl);
+            var _entries = tmGetProviderEntries(storageModel);
             var _base = tmNormalizeProviderBaseSlug(prov);
             var _mc = null;
             for (var _ei = 0; _ei < _entries.length; _ei++) {
@@ -6614,7 +6752,7 @@
           redPlus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
           redPlus.dataset.action = 'rating-increment';
           redPlus.dataset.field = 'red';
-          redPlus.dataset.model = mdl;
+          redPlus.dataset.model = storageModel;
           redPlus.dataset.provider = prov;
 
           var redCount = document.createElement('span');
@@ -6627,7 +6765,7 @@
           redMinus.style.cssText = 'background:#3a1a1a;color:#ff6b6b;border:1px solid #5a2a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
           redMinus.dataset.action = 'rating-decrement';
           redMinus.dataset.field = 'red';
-          redMinus.dataset.model = mdl;
+          redMinus.dataset.model = storageModel;
           redMinus.dataset.provider = prov;
 
           row.appendChild(redPlus);
@@ -6646,7 +6784,7 @@
           greenMinus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
           greenMinus.dataset.action = 'rating-decrement';
           greenMinus.dataset.field = 'green';
-          greenMinus.dataset.model = mdl;
+          greenMinus.dataset.model = storageModel;
           greenMinus.dataset.provider = prov;
 
           var greenCount = document.createElement('span');
@@ -6659,7 +6797,7 @@
           greenPlus.style.cssText = 'background:#1a3a1a;color:#7dd67d;border:1px solid #2a5a2a;border-radius:3px;width:22px;height:20px;font-size:13px;cursor:pointer;flex-shrink:0;padding:0;line-height:1;';
           greenPlus.dataset.action = 'rating-increment';
           greenPlus.dataset.field = 'green';
-          greenPlus.dataset.model = mdl;
+          greenPlus.dataset.model = storageModel;
           greenPlus.dataset.provider = prov;
 
           row.appendChild(greenMinus);
@@ -6671,7 +6809,7 @@
           commentBtn.textContent = '📝';
           commentBtn.style.cssText = 'background:' + (r.comment ? '#4a4a1a' : '#333') + ';color:' + (r.comment ? '#ffe0a0' : '#fff') + ';border:1px solid ' + (r.comment ? '#6a6a2a' : '#555') + ';border-radius:3px;width:28px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
           commentBtn.dataset.action = 'rating-comment';
-          commentBtn.dataset.model = mdl;
+          commentBtn.dataset.model = storageModel;
           commentBtn.dataset.provider = prov;
           commentBtn.title = r.comment ? ('Edit comment: ' + r.comment.substring(0, 80)) : 'Add comment';
           row.appendChild(commentBtn);
@@ -6695,12 +6833,13 @@
           delBtn.textContent = '🗑';
           delBtn.style.cssText = 'background:#3a1a1a;color:#ff9b9b;border:1px solid #5a2a2a;border-radius:3px;width:26px;height:20px;font-size:12px;cursor:pointer;margin-left:6px;flex-shrink:0;padding:0;line-height:1;';
           delBtn.dataset.action = 'rating-delete';
-          delBtn.dataset.model = mdl;
+          delBtn.dataset.model = storageModel;
           delBtn.dataset.provider = prov;
           delBtn.title = 'Delete this provider rating row';
           row.appendChild(delBtn);
 
-          provWrap.appendChild(row);
+          entryWrap.appendChild(row);
+          provWrap.appendChild(entryWrap);
         });
       });
 
@@ -6899,7 +7038,12 @@
     if (!_isRerender) {
       tmCostEditorSessionExpanded = {};
       var lastExpanded = tmGetCostsLastExpanded();
-      if (lastExpanded) tmCostEditorSessionExpanded[lastExpanded] = true;
+      if (lastExpanded) {
+        lastExpanded = tmProviderModelFamily(lastExpanded);
+        tmCostEditorSessionExpanded[lastExpanded] = true;
+        // Normalize the old full-model UI-state key to the new family key. Pricing data untouched.
+        tmSetCostsLastExpanded(lastExpanded);
+      }
     }
     var existing = document.getElementById('tm-cost-editor-overlay');
     if (existing) existing.parentNode.removeChild(existing);
@@ -6919,18 +7063,27 @@
 
     var sub = document.createElement('div');
     sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:10px;line-height:1.4;';
-    sub.textContent = 'Set per-million-token pricing for each model\u2192provider combination. When a response carries no cost from the API, the extension calculates cost from these rates \u00d7 token usage. All values are $ per 1M tokens.';
+    sub.textContent = 'Grouped by model family. Each item shows the observed route first, then its provider pricing. When a response carries no API cost, the extension calculates cost from these rates × token usage. All values are $ per 1M tokens.';
     box.appendChild(sub);
 
+    // (v4.272) Group visually by normalized MODEL FAMILY while retaining each record's original
+    // full model::provider storage key. Route metadata comes from the current 500-entry ring.
+    var routeCatalog = tmBuildProviderRouteCatalog();
     var modelMap = {};
     for (var key in costs) {
       if (!costs.hasOwnProperty(key)) continue;
       var parts = key.split('::');
       if (parts.length < 2) continue;
-      var mdl = parts[0];
+      var storageModel = parts[0];
+      var family = tmProviderModelFamily(storageModel);
       var prov = parts.slice(1).join('::');
-      if (!modelMap[mdl]) modelMap[mdl] = [];
-      modelMap[mdl].push({ provider: prov, cost: costs[key] });
+      if (!modelMap[family]) modelMap[family] = [];
+      modelMap[family].push({
+        storageModel: storageModel,
+        provider: prov,
+        cost: costs[key],
+        routeInfo: tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog)
+      });
     }
 
     var sortedModels = Object.keys(modelMap).sort();
@@ -6947,7 +7100,9 @@
       sortedModels.forEach(function(mdl) {
         var isOpen = !!tmCostEditorSessionExpanded[mdl];
         var providers = modelMap[mdl].sort(function(a, b) {
-          return a.provider.localeCompare(b.provider);
+          var ar = (a.routeInfo && a.routeInfo.route) || (a.storageModel + ' ' + a.provider);
+          var br = (b.routeInfo && b.routeInfo.route) || (b.storageModel + ' ' + b.provider);
+          return ar.localeCompare(br) || a.provider.localeCompare(b.provider);
         });
 
         // (v4.246) Collapsible family header: disclosure arrow + name + provider count. The whole
@@ -6978,15 +7133,27 @@
         if (!isOpen) return;
 
         providers.forEach(function(entry) {
+          var storageModel = entry.storageModel;
           var prov = entry.provider;
           var c = entry.cost;
+          var routeInfo = entry.routeInfo || tmProviderRouteForStoredEntry(storageModel, prov, routeCatalog);
+
+          // (v4.272) Match Provider Ratings: full route on row one; pricing/status controls on row two.
+          var entryWrap = document.createElement('div');
+          entryWrap.style.cssText = 'padding:6px 8px 7px 16px;border-bottom:1px solid rgba(70,70,80,0.35);';
+
+          var routeLine = document.createElement('div');
+          routeLine.style.cssText = 'color:#e6e6ee;font-size:12px;font-weight:600;margin-bottom:4px;white-space:normal;overflow-wrap:anywhere;';
+          routeLine.textContent = routeInfo.route;
+          routeLine.title = routeInfo.route;
+          entryWrap.appendChild(routeLine);
 
           var row = document.createElement('div');
-          row.style.cssText = 'display:flex;align-items:center;gap:6px;padding:4px 8px 4px 16px;font-size:12px;flex-wrap:wrap;';
+          row.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12px;flex-wrap:wrap;';
 
           var labelSpan = document.createElement('span');
-          labelSpan.style.cssText = 'color:#d0d0d8;min-width:100px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
-          labelSpan.textContent = prov;
+          labelSpan.style.cssText = 'color:#9fb7d8;min-width:185px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;';
+          labelSpan.textContent = 'Provider: ' + (routeInfo.providerDisplay || prov);
           labelSpan.title = prov;
           row.appendChild(labelSpan);
 
@@ -7011,13 +7178,14 @@
             inp.placeholder = '0';
             inp.style.cssText = 'width:55px;background:#0d0d11;border:1px solid #333;border-radius:3px;color:' + f.color + ';font-size:11px;padding:1px 3px;flex-shrink:0;';
             inp.dataset.action = 'set-cost-field';
-            inp.dataset.model = mdl;
+            inp.dataset.model = storageModel;
             inp.dataset.provider = prov;
             inp.dataset.field = f.key;
             row.appendChild(inp);
           });
 
-          listWrap.appendChild(row);
+          entryWrap.appendChild(row);
+          listWrap.appendChild(entryWrap);
         });
       });
 
