@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.274
+// Version: 4.275
 // Issues Fixed:
+//   - v4.275: PERSISTENT PROVIDER-ERROR HISTORY. Every captured provider failure now gets a
+//     first-class `error` field on its existing ring-buffer entry: non-streaming JSON errors,
+//     HTTP>=400 bodies without a conventional error wrapper, error-bearing SSE chunks (including
+//     HTTP-200 streamed failures), the extension's synthetic OpenRouter→Gemini 422, and fetch-level
+//     rejections. The compact bounded record preserves status/source, a display message, and the
+//     provider's actual error payload; unlike response_body/raw segments it survives the rich-entry
+//     stripping pass, so old failures remain diagnosable. Each error renders as a loud red clickable
+//     row near the bottom of its capture entry; clicking copies the full error JSON and opens the
+//     existing formatted JSON viewer with its explicit Copy button. Summary JSON now includes error.
 //   - v4.274: DIRECT MOONSHOT EMPTY-MESSAGE REPAIR. The existing OpenAI-compatible
 //     repairChatCompletionsEmptyMessageContent() helper already protected OpenRouter Kimi traffic,
 //     but the later direct api.moonshot.ai branch only injected prompt_cache_key and let historic
@@ -819,7 +828,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.274';
+  const EXT_VERSION = '4.275';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3387,6 +3396,96 @@
     return dst;
   }
 
+  // ==================== (v4.275) PERSISTENT PROVIDER ERROR CAPTURE ====================
+  // Responses were already stored best-effort, but old entries lose response_body/raw SSE segments
+  // when the rich window is compacted. `error` is deliberately a separate small metadata field, so
+  // the exact provider failure remains visible and inspectable for the lifetime of the ring entry.
+  const TM_CAPTURE_ERROR_MAX_CHARS = 24 * 1024;
+
+  function tmFindProviderErrorPayload(root) {
+    if (root == null || typeof root !== 'object') return null;
+    var queue = [{ value: root, depth: 0 }];
+    var seen = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
+    var scanned = 0;
+    while (queue.length && scanned < 200) {
+      var item = queue.shift();
+      var node = item.value;
+      var depth = item.depth;
+      if (!node || typeof node !== 'object') continue;
+      scanned++;
+      try { if (seen) { if (seen.has(node)) continue; seen.add(node); } } catch (e) {}
+      if (!Array.isArray(node)) {
+        if (Object.prototype.hasOwnProperty.call(node, 'error') && node.error != null && node.error !== false && node.error !== '') {
+          return node.error;
+        }
+        if (Array.isArray(node.errors) && node.errors.length) return node.errors;
+        if (String(node.type || '').toLowerCase() === 'error' &&
+            (node.message != null || node.detail != null || node.code != null)) return node;
+      }
+      if (depth >= 6) continue;
+      var vals = Array.isArray(node) ? node : Object.keys(node).map(function(k) { return node[k]; });
+      for (var i = 0; i < vals.length && queue.length < 200; i++) {
+        if (vals[i] && typeof vals[i] === 'object') queue.push({ value: vals[i], depth: depth + 1 });
+      }
+    }
+    return null;
+  }
+
+  function tmCapturedErrorMessage(payload) {
+    try {
+      if (payload == null) return 'Unknown provider error';
+      if (typeof payload === 'string') return payload;
+      if (Array.isArray(payload)) {
+        var parts = [];
+        for (var ai = 0; ai < payload.length && ai < 5; ai++) parts.push(tmCapturedErrorMessage(payload[ai]));
+        return parts.filter(Boolean).join(' | ') || 'Provider returned an error array';
+      }
+      var keys = ['message', 'detail', 'error_description', 'reason', 'title', 'statusText'];
+      for (var ki = 0; ki < keys.length; ki++) {
+        var v = payload[keys[ki]];
+        if (typeof v === 'string' && v.trim()) return v.trim();
+      }
+      if (payload.error != null && payload.error !== payload) return tmCapturedErrorMessage(payload.error);
+      var s = JSON.stringify(payload);
+      return s || 'Unknown provider error';
+    } catch (e) { return String(payload); }
+  }
+
+  function tmBoundCapturedErrorPayload(payload) {
+    try {
+      if (typeof payload === 'string') {
+        return payload.length <= TM_CAPTURE_ERROR_MAX_CHARS
+          ? payload
+          : payload.slice(0, TM_CAPTURE_ERROR_MAX_CHARS) + '... [tm_error_truncated]';
+      }
+      var raw = JSON.stringify(payload);
+      if (raw.length <= TM_CAPTURE_ERROR_MAX_CHARS) return payload;
+      var compact = tmTruncateStringsDeep(payload, 4000);
+      var compactRaw = JSON.stringify(compact);
+      if (compactRaw.length <= TM_CAPTURE_ERROR_MAX_CHARS) return compact;
+      return {
+        _tm_error_compacted: true,
+        _original_chars: raw.length,
+        raw_json_head: raw.slice(0, TM_CAPTURE_ERROR_MAX_CHARS - 120) + '... [tm_error_compacted]'
+      };
+    } catch (e) {
+      return String(payload).slice(0, TM_CAPTURE_ERROR_MAX_CHARS);
+    }
+  }
+
+  function tmBuildCapturedProviderError(payload, status, source) {
+    var statusNum = Number(status);
+    if (!isFinite(statusNum) || statusNum <= 0) statusNum = null;
+    var msg = tmCapturedErrorMessage(payload);
+    if (msg.length > 2000) msg = msg.slice(0, 2000) + '... [tm_error_message_truncated]';
+    return {
+      status: statusNum,
+      source: source || 'response',
+      message: msg,
+      payload: tmBoundCapturedErrorPayload(payload)
+    };
+  }
+
   // ==================== (v4.270) OPENROUTER→GEMINI GUARD + INGESTION MISMATCH ====================
 
   // Resolve the EFFECTIVE target URL for a request. TypingMind can route real provider traffic
@@ -3529,8 +3628,14 @@
             if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
               patch.response_provider = parsed.provider;
             }
-            // (v4.211) A top-level error object marks this as an error response.
-            if (parsed && parsed.error) { capHadError = true; }
+            // (v4.275) Persist the provider's actual error separately from response_body. For an
+            // HTTP failure without a conventional nested `error`, preserve the whole JSON body.
+            var jsonErrorPayload = tmFindProviderErrorPayload(parsed);
+            if (jsonErrorPayload == null && Number(response.status) >= 400) jsonErrorPayload = parsed;
+            if (jsonErrorPayload != null) {
+              patch.error = tmBuildCapturedProviderError(jsonErrorPayload, response.status, 'json');
+              capHadError = true;
+            }
           } catch (e) {
             // SSE/streaming: store head for context
             var s = String(text || '');
@@ -3591,8 +3696,14 @@
                   // provider (extracted above) but had NO Raw Seg button — you couldn't see the error
                   // without opening the network tab. A chunk with an `error` field is exactly the
                   // diagnostic you want, so mark it as worth keeping.
-                  // (v4.211) ...and flag the capture as an error response for the widget-feed gate.
-                  if (parsed2 && parsed2.error) { hit = true; capHadError = true; }
+                  // (v4.275) Persist the first actual streamed error as a compact first-class field.
+                  // Keep the raw segment too (v4.198), but `error` survives old-entry compaction.
+                  var sseErrorPayload = tmFindProviderErrorPayload(parsed2);
+                  if (sseErrorPayload != null) {
+                    hit = true;
+                    capHadError = true;
+                    if (!patch.error) patch.error = tmBuildCapturedProviderError(sseErrorPayload, response.status, 'sse');
+                  }
                   // (v4.258) Build a compact skeleton for an oversized SSE segment: preserve usage/cost/error
   // verbatim, strip the giant echoed fields (tools, large output arrays, reasoning content).
   // Returns a JSON string capped near TM_RAW_SEG_SKELETON_MAX. Never throws.
@@ -3662,6 +3773,11 @@
               if (lastUsage) { patch.response_usage = lastUsage; }
               if (anthropicUsage) { patch.response_anthropic_usage = anthropicUsage; }
               if (sseProvider) { patch.response_provider = sseProvider; }
+              // HTTP errors sometimes return plain text or nonstandard SSE with no JSON `error`.
+              // Preserve that exact bounded body rather than recording only status:false.
+              if (capHadError && !patch.error) {
+                patch.error = tmBuildCapturedProviderError(s, response.status, 'http-text');
+              }
             } catch (usageErr) {}
           }
           tmUpdateCaptureRecord(captureId, patch);
@@ -7392,7 +7508,8 @@
       response_ok: cap.response_ok,
       response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null,
       response_usage: cap.response_usage || null,
-      response_anthropic_usage: cap.response_anthropic_usage || null
+      response_anthropic_usage: cap.response_anthropic_usage || null,
+      error: cap.error || null
     };
   }
 
@@ -7589,6 +7706,9 @@
     } else if (part === 'summary') {
       obj = tmBuildCaptureSummary(cap);
       label = 'Capture summary';
+    } else if (part === 'error') {
+      obj = cap.error;
+      label = 'Provider error';
     } else if (part === 'in_headers') {
       obj = cap.response_headers;
       label = 'Response headers';
@@ -8529,6 +8649,25 @@
           }
         }
       } catch (eWarnRow) {}
+
+      // (v4.275) Per-entry PROVIDER ERROR row. `error` is first-class compact metadata rather
+      // than a view synthesized from response_body, so it remains clickable after rich payloads
+      // and raw SSE segments have been stripped. Reuse the existing copy+JSON-viewer path.
+      try {
+        if (cap.error) {
+          var capErrStatus = cap.error.status != null ? ('HTTP ' + String(cap.error.status) + ' · ') : '';
+          var capErrSource = cap.error.source ? (' [' + String(cap.error.source) + ']') : '';
+          var capErrMsg = String(cap.error.message || tmCapturedErrorMessage(cap.error.payload) || 'Unknown provider error');
+          html += '<div data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="error" ' +
+            'title="Click to copy and inspect the full persisted provider error" ' +
+            'style="margin-top:3px;padding:4px 7px;background:rgba(70,0,0,0.72);border:1px solid #ff3333;border-radius:4px;' +
+            'font-size:10px;line-height:1.45;color:#ff7777;cursor:pointer;white-space:pre-wrap;word-break:break-word;">' +
+            '<span style="font-weight:bold;color:#ff4444;">\uD83D\uDEA8 ERROR · ' + escapeHtml(capErrStatus) + '</span>' +
+            '<span>' + escapeHtml(capErrMsg) + '</span>' +
+            '<span style="opacity:0.65;">' + escapeHtml(capErrSource) + ' · click for full JSON</span>' +
+            '</div>';
+        }
+      } catch (eErrorRow) {}
 
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
       var capPastedId = cap.pasted_session_id || null;
@@ -11318,6 +11457,26 @@
         return tmWrapSolProResponse(response);
       }
       return response;
+    }, function(fetchErr) {
+      // (v4.275) A rejected fetch has no Response object, but it is still a permanent failure of
+      // this captured turn. Stamp it without swallowing/changing the rejection seen by TypingMind.
+      try {
+        if (captureId) {
+          var fetchPayload = {
+            name: fetchErr && fetchErr.name ? String(fetchErr.name) : 'FetchError',
+            message: fetchErr && fetchErr.message ? String(fetchErr.message) : String(fetchErr),
+            stack: fetchErr && fetchErr.stack ? String(fetchErr.stack) : null
+          };
+          tmUpdateCaptureRecord(captureId, {
+            response_ok: false,
+            error: tmBuildCapturedProviderError(fetchPayload, null, 'fetch')
+          });
+          try {
+            if (payloadCaptureModalInnerEl && payloadCaptureModalInnerEl.isConnected) renderPayloadCaptureModal();
+          } catch (eRender) {}
+        }
+      } catch (eStamp) {}
+      throw fetchErr;
     });
 
     // Kimi response-boundary guard runs AFTER OpenRouter retry/error handling, so a retried final
