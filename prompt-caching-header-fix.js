@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.278
+// Version: 4.279
 // Issues Fixed:
 //   - v4.276: BEST-EFFORT RETROACTIVE ERROR BACKFILL. On extension load, pre-v4.275 ring entries
 //     that still retain a JSON response body, raw response head, or saved SSE error segment are
@@ -833,7 +833,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.278';
+  const EXT_VERSION = '4.279';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8748,7 +8748,7 @@
         bottomPartsHtml.push('<span style="opacity:0.5;">pasted: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to name this session" style="cursor:pointer;color:' + modelColor + ';font-size:12px;">' + escapeHtml(capPastedId) + '</span>');
       }
       if (sessionName) {
-        bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:16px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
+        bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:18px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
       }
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
