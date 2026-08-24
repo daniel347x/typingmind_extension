@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.284
+// Version: 4.285
 // Issues Fixed:
+//   - v4.285: SILENCE WATCHDOG FOR DEAD-ENDPOINT HANGS. Arms a per-request 15-minute timer
+//     (configurable via localStorage tm_stall_watchdog_ms, min 60s) on every session-identified
+//     outbound call; the timer resets on every received response chunk and cancels on stream
+//     completion or fetch rejection. On expiry it queues the v4.281 auto-resume actuator with
+//     reason 'stall_no_bytes'. Covers the failure that silently killed a live Kimi session: a
+//     direct Moonshot endpoint accepting a tool-result payload and then going SILENT -- no SSE
+//     error chunk exists for the continuity tap to parse, and no fetch rejection fires. 15 minutes
+//     is deliberately generous so slow-but-alive models (Claude Fable's >5-minute pre-first-byte
+//     thinking, which already forces the direct-Anthropic route around OpenRouter's 5-min idle
+//     cutoff) can never false-trigger.
 //   - v4.284: GUARD LOCATION INDEXES + GUARD REPORT POP-UP. Every stubbed/recovered entry now
 //     carries its payload location ('messages[20]', 'messages[20].content[1]', 'input[7]',
 //     'contents[12].parts[0]') so a 🛡️ badge on any turn maps straight back to the Network-tab
@@ -876,7 +886,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.284';
+  const EXT_VERSION = '4.285';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7012,6 +7022,17 @@
   var tmAutoContinueQueue = [];
   var tmAutoContinueActive = null;
 
+  // (v4.285) Silence watchdog tunable: per-request timer with no received bytes before we
+  // conclude the endpoint went silent and queue an auto-resume. Default 15 min; floor 60s.
+  var TM_STALL_WATCHDOG_KEY = 'tm_stall_watchdog_ms';
+  var TM_STALL_WATCHDOG_DEFAULT_MS = 15 * 60 * 1000;
+  function tmGetStallWatchdogMs() {
+    try {
+      var v = parseInt(localStorage.getItem(TM_STALL_WATCHDOG_KEY), 10);
+      return (!isNaN(v) && v >= 60000) ? v : TM_STALL_WATCHDOG_DEFAULT_MS;
+    } catch (e) { return TM_STALL_WATCHDOG_DEFAULT_MS; }
+  }
+
   // (v4.282) Cumulative auto-resume ledger. Tiny counts-only store; snapshotted onto each capture
   // row so the ring modal shows the running total 'as of that turn' with a reason breakdown.
   var TM_AUTORESUME_STATS_KEY = 'tm_autoresume_stats_v1';
@@ -7037,6 +7058,7 @@
   function tmAutoResumeReasonLabel(k) {
     if (k === 'oversized_result_recovery') return 'tool recovery';
     if (k === 'turn_limit') return 'turn limit';
+    if (k === 'stall_no_bytes') return 'no response (stall)';
     if (k === 'manual_debug') return 'manual';
     var m = String(k || '').match(/^stream_error_(\d+)$/);
     if (m) {
@@ -7280,12 +7302,15 @@
     if (obj.type === 'response.output_item.added' && obj.item && obj.item.type === 'function_call') state.sawToolCall = true;
   }
 
-  function tmTapContinuitySignals(response, sessionId, stubbedIds) {
+  function tmTapContinuitySignals(response, sessionId, stubbedIds, hooks) {
+    hooks = hooks || {};
+    function petWatchdog() { try { if (hooks.pet) hooks.pet(); } catch (e) {} }
+    function disarmWatchdog() { try { if (hooks.disarm) hooks.disarm(); } catch (e) {} }
     var ids = {};
     (stubbedIds || []).forEach(function(id) { ids[String(id)] = true; });
-    if (!sessionId || !response || typeof response.clone !== 'function') return response;
+    if (!sessionId || !response || typeof response.clone !== 'function') { disarmWatchdog(); return response; }
     var clone;
-    try { clone = response.clone(); } catch (e) { return response; }
+    try { clone = response.clone(); } catch (e) { disarmWatchdog(); return response; }
     var state = { textTail: '', rawCarry: '', transientError: null, sawToolCall: false };
     function inspectLine(line) {
       var s = String(line || '').trim();
@@ -7295,6 +7320,7 @@
       try { tmInspectContinuityObject(JSON.parse(s), state); } catch (e) {}
     }
     function finish() {
+      disarmWatchdog();
       if (state.rawCarry) inspectLine(state.rawCarry);
       if (state.transientError) {
         tmQueueAutoContinue(sessionId, 'stream_error_' + state.transientError.code, state.transientError.message);
@@ -7312,6 +7338,7 @@
         (function pump() {
           reader.read().then(function(r) {
             if (r.done) { state.rawCarry += decoder.decode(); finish(); return; }
+            petWatchdog();
             state.rawCarry += decoder.decode(r.value, { stream: true });
             var nl;
             while ((nl = state.rawCarry.indexOf('\n')) !== -1) {
@@ -7320,15 +7347,16 @@
               inspectLine(line);
             }
             pump();
-          }).catch(function() {});
+          }).catch(function() { disarmWatchdog(); });
         })();
       } else {
         clone.text().then(function(text) {
+          petWatchdog();
           String(text || '').split(/\r?\n/).forEach(inspectLine);
           finish();
-        }).catch(function() {});
+        }).catch(function() { disarmWatchdog(); });
       }
-    } catch (e) {}
+    } catch (e) { disarmWatchdog(); }
     return response;
   }
 
@@ -12293,6 +12321,34 @@
       }
     } catch (e) {}
 
+    // (v4.285) SILENCE WATCHDOG: if NO response bytes arrive for N minutes (default 15) on a
+    // session-identified request, queue the auto-resume actuator. Covers direct-endpoint silent
+    // hangs (e.g. Moonshot direct accepting a tool-result payload then going silent), where no SSE
+    // error chunk ever exists for the continuity tap to inspect. Reset per chunk; cancelled on
+    // completion/rejection. Generous by design: Fable can think >5 min before its first byte.
+    var stallWatchdog = null;
+    try {
+      if (continuitySessionIdForThisCall) {
+        var tmStallWaitMs = tmGetStallWatchdogMs();
+        stallWatchdog = {
+          fired: false,
+          timer: null,
+          cancel: function() { if (this.timer) { try { clearTimeout(this.timer); } catch (e) {} this.timer = null; } },
+          pet: function() {
+            if (this.fired) return;
+            this.cancel();
+            var self = this;
+            this.timer = setTimeout(function() {
+              self.fired = true;
+              console.warn('⏱️ [v' + EXT_VERSION + '] Silence watchdog: no response bytes for ' + Math.round(tmStallWaitMs / 60000) + 'm on session ' + continuitySessionIdForThisCall + ' — queueing auto-resume.');
+              tmQueueAutoContinue(continuitySessionIdForThisCall, 'stall_no_bytes', 'silence>' + Math.round(tmStallWaitMs / 60000) + 'm');
+            }, tmStallWaitMs);
+          }
+        };
+        stallWatchdog.pet();
+      }
+    } catch (eWD) {}
+
     const fetchPromise = originalFetch(...args);
 
     // Capture response headers/body (best-effort, does not affect the original response stream)
@@ -12318,6 +12374,7 @@
     }, function(fetchErr) {
       // (v4.275) A rejected fetch has no Response object, but it is still a permanent failure of
       // this captured turn. Stamp it without swallowing/changing the rejection seen by TypingMind.
+      try { if (stallWatchdog) stallWatchdog.cancel(); } catch (eWD2) {}
       try {
         if (captureId) {
           var fetchPayload = {
@@ -12360,7 +12417,10 @@
         if (oversizedGuardReportForThisCall && Array.isArray(oversizedGuardReportForThisCall.stubbed)) {
           stubbedIds = oversizedGuardReportForThisCall.stubbed.map(function(x) { return x && x.id; }).filter(Boolean);
         }
-        return tmTapContinuitySignals(response, continuitySessionIdForThisCall, stubbedIds);
+        return tmTapContinuitySignals(response, continuitySessionIdForThisCall, stubbedIds, {
+          pet: function() { try { if (stallWatchdog) stallWatchdog.pet(); } catch (e) {} },
+          disarm: function() { try { if (stallWatchdog) stallWatchdog.cancel(); } catch (e) {} }
+        });
       } catch (e) { return response; }
     });
 
