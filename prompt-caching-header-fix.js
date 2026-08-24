@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.292
+// Version: 4.293
 // Issues Fixed:
+//   - v4.293: MANAGEMENT-MODE IDLE CONFIRMATION + CAPITAL-C ACTUATOR + SESSION SUSPICION BADGES.
+//     Rapid tool turns leave a sub-second DOM gap before TypingMind mounts the spinner, so the
+//     v4.292 liveness probe could catch a false gap between tool calls. The management sweep now
+//     requires two idle snapshots one second apart after the existing five-second timer comparison,
+//     and the typed fallback submits `Continue` with a capital C. While management mode is enabled,
+//     the widget's existing session/name row and each session's most-recent ring row carry a small
+//     inline tool-suspicion badge: green `🧰 clear` for no pending tool call, muted red `🧰 idle`
+//     for a confirmed idle candidate, and `…pending` inside the 75-second grace window. No extra
+//     widget row is added and the badges disappear entirely when management mode is off.
 //   - v4.292: AGENT MANAGEMENT MODE FOR BACKGROUND TOOL-SWARM STALLS. TypingMind removes its
 //     native turn-limit Continue UI after navigating away, so the v4.291 visible-only observer
 //     cannot recover a background session. A persisted, pulsing widget offshoot now enables a
@@ -960,7 +969,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.292';
+  const EXT_VERSION = '4.293';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5451,9 +5460,9 @@
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
       var nameSid = displaySessionId || displayPastedId || '';
       if (displaySessionName) {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + tmAgentManagementBadge(nameSid) + '</div>');
       } else {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + tmAgentManagementBadge(nameSid) + '</div>');
       }
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
@@ -7263,6 +7272,23 @@
   var tmAgentManagementTimerDue = 0;
   var tmAgentManagementBusy = false;
 
+  // (v4.293) Shared one-badge formatter for both status surfaces: the persistent widget's current
+  // session/name row and the most-recent ring row for each managed session. Returns '' when
+  // management mode is off or the caller supplies no usable session id. Age is marked explicitly
+  // because a suspicion inside the grace window is intentionally not actionable yet.
+  function tmAgentManagementBadge(sessionId) {
+    if (!tmAgentManagementEnabled() || !sessionId) return '';
+    var s = tmAgentManagementSessions[String(sessionId)];
+    var pending = !!(s && s.pendingToolCall);
+    var fresh = !!(pending && s.responseFinishedAt && (Date.now() - s.responseFinishedAt) < TM_AGENT_MANAGEMENT_GRACE_MS);
+    var text = pending ? (fresh ? '🧰 idle…pending' : '🧰 idle') : '🧰 clear';
+    var color = pending ? '#d08b8b' : '#8fcf98';
+    var tip = pending
+      ? (fresh ? 'Tool-call suspicion noted; waiting out the 75-second grace window before inspection.' : 'Tool-call suspicion: response ended on a tool call, no outbound payload followed, and DOM is idle.')
+      : 'Agent management: no pending tool-call suspicion for this session.';
+    return ' <span title="' + escapeHtml(tip) + '" style="color:' + color + ';font-size:9px;font-weight:600;white-space:nowrap;">' + text + '</span>';
+  }
+
   function tmAgentManagementEnabled() {
     try { return localStorage.getItem(TM_AGENT_MANAGEMENT_KEY) === 'true'; } catch (e) { return false; }
   }
@@ -7400,13 +7426,27 @@
         var timerAdvanced = !!(first.timer && second.timer && first.timer !== second.timer);
         if (second.spinner || timerAdvanced) { tmFinishAgentManagementSweep(); return; }
 
-        var queued = tmQueueAutoContinue(state.sessionId, 'tool_swarm_stall', 'healthy response ended with tool call; no outbound payload; DOM idle');
-        if (queued) {
-          state.resumeQueuedAt = Date.now();
-          try { if (state.captureId) tmUpdateCaptureRecord(state.captureId, { _auto_resume_triggered: 'tool_swarm_stall' }); } catch (e) {}
-          console.warn('🧭 [v' + EXT_VERSION + '] Agent management confirmed an idle tool-call session; queueing continue for ' + state.sessionId + '.');
-        }
-        tmFinishAgentManagementSweep();
+        // (v4.293) FINAL GAP GUARD: TypingMind can take a sub-second moment to mount the spinner
+        // after issuing a rapid next tool call. Require TWO one-second-apart idle snapshots after
+        // the timer comparison so that transient DOM gap can never masquerade as a stall.
+        setTimeout(function() {
+          if (!tmAgentManagementEnabled() || !tmAgentManagementPending(state.sessionId)) { tmFinishAgentManagementSweep(); return; }
+          var third = tmVisibleToolExecutionSnapshot();
+          if (third.spinner) { tmFinishAgentManagementSweep(); return; }
+          setTimeout(function() {
+            if (!tmAgentManagementEnabled() || !tmAgentManagementPending(state.sessionId)) { tmFinishAgentManagementSweep(); return; }
+            var fourth = tmVisibleToolExecutionSnapshot();
+            if (fourth.spinner) { tmFinishAgentManagementSweep(); return; }
+
+            var queued = tmQueueAutoContinue(state.sessionId, 'tool_swarm_stall', 'healthy response ended with tool call; no outbound payload; DOM idle');
+            if (queued) {
+              state.resumeQueuedAt = Date.now();
+              try { if (state.captureId) tmUpdateCaptureRecord(state.captureId, { _auto_resume_triggered: 'tool_swarm_stall' }); } catch (e) {}
+              console.warn('🧭 [v' + EXT_VERSION + '] Agent management confirmed an idle tool-call session; queueing Continue for ' + state.sessionId + '.');
+            }
+            tmFinishAgentManagementSweep();
+          }, 1000);
+        }, 1000);
       }, 5000);
     }, 900);
   }
@@ -7580,11 +7620,11 @@
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-      setter.call(input, 'continue');
+      setter.call(input, 'Continue');
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (input.contentEditable === 'true') {
-      input.textContent = 'continue';
+      input.textContent = 'Continue';
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
@@ -7791,7 +7831,7 @@
       }
     } catch (eAI) {}
     box.innerHTML = '<div style="font-size:17px;font-weight:700;color:#8bc2ff;margin-bottom:8px;">▶ Auto-resume queued</div>' +
-      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + escapeHtml(attemptInfo) + '</b>.<br>TypingMind will switch to it and submit <code>continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
+      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + escapeHtml(attemptInfo) + '</b>.<br>TypingMind will switch to it and submit <code>Continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
       '<div style="display:flex;gap:8px;justify-content:flex-end;"><button id="tm-auto-continue-cancel" style="padding:6px 12px;background:#6a3030;color:#fff;border:1px solid #b75;border-radius:5px;cursor:pointer;">Cancel</button><button id="tm-auto-continue-now" style="padding:6px 12px;background:#245f9e;color:#fff;border:1px solid #68aef5;border-radius:5px;cursor:pointer;">Resume now</button></div>';
     overlay.appendChild(box);
     document.body.appendChild(overlay);
@@ -9649,6 +9689,20 @@
     // Status banner first, in ALL states.
     let html = tmBuildCaptureStatusBanner();
 
+    // (v4.293) Management suspicion badges are shown only on each session's MOST RECENT visible
+    // ring row. Compute that set before the render loop so badge state follows row order, sorting,
+    // and the session filter naturally.
+    var latestManagedCapIds = {};
+    if (tmAgentManagementEnabled()) {
+      for (var mli = 0; mli < items.length; mli++) {
+        var mlCap = items[mli];
+        var mlSid = mlCap && (mlCap.session_id || mlCap.pasted_session_id || '');
+        if (!mlSid) continue;
+        var mlKey = String(mlSid);
+        if (!latestManagedCapIds[mlKey] && mlCap.id) latestManagedCapIds[mlKey] = mlCap.id;
+      }
+    }
+
     // v4.162: Sol reasoning effort dropdown + v4.163: sort pills + filter dropdown — on one row.
     var solEffort = tmGetSolReasoningEffort();
     var solOpts = ['medium', 'high', 'xhigh', 'max'];
@@ -10033,7 +10087,7 @@
           var arBy = cap._autoresume_by_reason || {};
           var arParts = [];
           Object.keys(arBy).forEach(function(k) { arParts.push(tmAutoResumeReasonLabel(k) + ': ' + arBy[k]); });
-          var arTip = 'Auto-resumes (typed "continue") as of this turn' + (arParts.length ? (' — ' + arParts.join(' | ')) : '');
+          var arTip = 'Auto-resumes (typed "Continue") as of this turn' + (arParts.length ? (' — ' + arParts.join(' | ')) : '');
           capGuardBadges += '<span title="' + escapeHtml(arTip) + '" ' +
             'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #6aa8ff;' +
             'border-radius:8px;color:#6aa8ff;font-size:9px;font-weight:bold;white-space:nowrap;">▶️' + capArTotal + '</span>';
@@ -10048,6 +10102,7 @@
         }
       } catch (eGuardBadge) {}
       var capSessionId = cap.session_id || null;
+      var capPastedId = cap.pasted_session_id || null;
       var capIdentity = cap._identity || null;
       var capModel = capIdentity ? (capIdentity.model || '') : tmCaptureModel(cap);
       var capModelHtml = escapeHtml(capModel);
@@ -10198,10 +10253,13 @@
       } catch (eErrorRow) {}
 
       // (v4.118) Bottom row: prefix hash + session ID + pasted ID.
-      var capPastedId = cap.pasted_session_id || null;
       // (v4.134) Bottom row: session name support.
       // (v4.135) Dim only the non-colored labels, not the session ID/name values.
+      // (v4.293) The tool-suspicion badge belongs to the latest row per session only.
       var sessionName = (capSessionId || capPastedId) ? tmGetSessionName(capSessionId || capPastedId) : '';
+      var managementBadge = ((capSessionId || capPastedId) && latestManagedCapIds[String(capSessionId || capPastedId)] === cap.id)
+        ? tmAgentManagementBadge(capSessionId || capPastedId)
+        : '';
       var bottomPartsHtml = [];
       if (prefixHash) bottomPartsHtml.push('<span style="opacity:0.5;">h:' + escapeHtml(prefixHash) + '</span>');
       if (capSessionId) bottomPartsHtml.push('<span style="opacity:0.5;">Session ID: </span><span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId) + '" title="Click to name this session" style="cursor:pointer;opacity:0.5;">' + escapeHtml(capSessionId) + '</span>');
@@ -10211,6 +10269,7 @@
       if (sessionName) {
         bottomPartsHtml.push('<span data-action="set-session-name" data-session-id="' + escapeHtml(capSessionId || capPastedId) + '" title="Click to rename this session" style="cursor:pointer;color:' + modelColor + ';font-size:18px;font-weight:bold;">' + escapeHtml(sessionName) + '</span>');
       }
+      if (managementBadge) bottomPartsHtml.push(managementBadge);
       if (bottomPartsHtml.length > 0) {
         html += '<div style="font-size:10px;font-family:monospace;margin-top:2px;">' + bottomPartsHtml.join(' | ') + '</div>';
       } else {
