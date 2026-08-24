@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.285
+// Version: 4.286
 // Issues Fixed:
+//   - v4.286: CONNECTION-CLOSED DETECTION + PER-TURN TRIGGER MARKER. Three new dead-turn sensors
+//     feed the same auto-resume actuator: (1) EMPTY STREAM -- HTTP 200 closes cleanly with zero
+//     parsed data events (proxy/upstream died silently); (2) STREAM ABORTED -- the response stream
+//     errors after bytes were flowing (connection dropped mid-turn); (3) FETCH DROPPED -- a fetch
+//     rejects after >=30s in flight (dropped connection), while fast <30s failures (CORS/DNS/
+//     refused) are still NEVER auto-resumed so hard failures cannot loop. Each detection stamps
+//     the capture row with _auto_resume_triggered, rendered as a small clock marker beside the
+//     guard badges (tooltip names the reason); the cumulative auto-resume badge + Guard report
+//     break counts down by reason, now including 'no response (stall)', 'stream aborted',
+//     'connection dropped', and 'empty response'.
 //   - v4.285: SILENCE WATCHDOG FOR DEAD-ENDPOINT HANGS. Arms a per-request 15-minute timer
 //     (configurable via localStorage tm_stall_watchdog_ms, min 60s) on every session-identified
 //     outbound call; the timer resets on every received response chunk and cancels on stream
@@ -886,7 +896,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.285';
+  const EXT_VERSION = '4.286';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7059,6 +7069,9 @@
     if (k === 'oversized_result_recovery') return 'tool recovery';
     if (k === 'turn_limit') return 'turn limit';
     if (k === 'stall_no_bytes') return 'no response (stall)';
+    if (k === 'stream_aborted') return 'stream aborted';
+    if (k === 'fetch_dropped') return 'connection dropped';
+    if (k === 'empty_stream') return 'empty response';
     if (k === 'manual_debug') return 'manual';
     var m = String(k || '').match(/^stream_error_(\d+)$/);
     if (m) {
@@ -7283,6 +7296,7 @@
 
   function tmInspectContinuityObject(obj, state) {
     if (!obj || typeof obj !== 'object') return;
+    state.sawAnyData = true;
     if (obj.error && typeof obj.error === 'object') {
       var code = Number(obj.error.code);
       if (code === 429 || (code >= 500 && code < 600)) state.transientError = { code: code, message: String(obj.error.message || 'streamed provider error') };
@@ -7311,7 +7325,8 @@
     if (!sessionId || !response || typeof response.clone !== 'function') { disarmWatchdog(); return response; }
     var clone;
     try { clone = response.clone(); } catch (e) { disarmWatchdog(); return response; }
-    var state = { textTail: '', rawCarry: '', transientError: null, sawToolCall: false };
+    var state = { textTail: '', rawCarry: '', transientError: null, sawToolCall: false, sawAnyData: false, bytesReceived: 0 };
+    function stampTrigger(reason) { try { if (hooks.stamp) hooks.stamp(reason); } catch (e) {} }
     function inspectLine(line) {
       var s = String(line || '').trim();
       if (!s) return;
@@ -7323,13 +7338,24 @@
       disarmWatchdog();
       if (state.rawCarry) inspectLine(state.rawCarry);
       if (state.transientError) {
+        stampTrigger('stream_error_' + state.transientError.code);
         tmQueueAutoContinue(sessionId, 'stream_error_' + state.transientError.code, state.transientError.message);
+        return;
+      }
+      // (v4.286) EMPTY STREAM: the response closed cleanly with NO parsed data events at all --
+      // an upstream/proxy that died silently. Not a tool call, not a phrase: a dead turn.
+      if (!state.sawAnyData) {
+        stampTrigger('empty_stream');
+        tmQueueAutoContinue(sessionId, 'empty_stream', 'response closed with no data');
         return;
       }
       if (state.sawToolCall || !Object.keys(ids).length) return;
       var text = state.textTail.trim();
       var m = text.match(/^Please restore tool result\s+([^\s]+)$/);
-      if (m && ids[String(m[1])]) tmQueueAutoContinue(sessionId, 'oversized_result_recovery', String(m[1]));
+      if (m && ids[String(m[1])]) {
+        stampTrigger('oversized_result_recovery');
+        tmQueueAutoContinue(sessionId, 'oversized_result_recovery', String(m[1]));
+      }
     }
     try {
       if (clone.body && typeof clone.body.getReader === 'function') {
@@ -7339,6 +7365,7 @@
           reader.read().then(function(r) {
             if (r.done) { state.rawCarry += decoder.decode(); finish(); return; }
             petWatchdog();
+            state.bytesReceived += (r.value && r.value.length) || 0;
             state.rawCarry += decoder.decode(r.value, { stream: true });
             var nl;
             while ((nl = state.rawCarry.indexOf('\n')) !== -1) {
@@ -7347,7 +7374,14 @@
               inspectLine(line);
             }
             pump();
-          }).catch(function() { disarmWatchdog(); });
+          }).catch(function() {
+            // (v4.286) STREAM ABORTED: connection dropped mid-turn after bytes were flowing.
+            if (state.bytesReceived > 0) {
+              stampTrigger('stream_aborted');
+              tmQueueAutoContinue(sessionId, 'stream_aborted', 'stream errored after ' + state.bytesReceived + ' bytes');
+            }
+            disarmWatchdog();
+          });
         })();
       } else {
         clone.text().then(function(text) {
@@ -9368,6 +9402,14 @@
           capGuardBadges += '<span title="' + escapeHtml(arTip) + '" ' +
             'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #6aa8ff;' +
             'border-radius:8px;color:#6aa8ff;font-size:9px;font-weight:bold;white-space:nowrap;">▶️' + capArTotal + '</span>';
+        }
+        // (v4.286) Per-turn trigger marker: THIS row is the dead turn that caused an auto-resume.
+        var capArTrig = cap._auto_resume_triggered ? String(cap._auto_resume_triggered) : '';
+        if (capArTrig) {
+          var trigTip = 'Auto-resume was TRIGGERED on this turn: ' + tmAutoResumeReasonLabel(capArTrig);
+          capGuardBadges += '<span title="' + escapeHtml(trigTip) + '" ' +
+            'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #6aa8ff;' +
+            'border-radius:8px;background:rgba(106,168,255,0.15);color:#9cc4ff;font-size:9px;font-weight:bold;white-space:nowrap;">⏱</span>';
         }
       } catch (eGuardBadge) {}
       var capSessionId = cap.session_id || null;
@@ -12327,6 +12369,7 @@
     // error chunk ever exists for the continuity tap to inspect. Reset per chunk; cancelled on
     // completion/rejection. Generous by design: Fable can think >5 min before its first byte.
     var stallWatchdog = null;
+    var fetchStartTs = Date.now();
     try {
       if (continuitySessionIdForThisCall) {
         var tmStallWaitMs = tmGetStallWatchdogMs();
@@ -12342,6 +12385,7 @@
               self.fired = true;
               console.warn('⏱️ [v' + EXT_VERSION + '] Silence watchdog: no response bytes for ' + Math.round(tmStallWaitMs / 60000) + 'm on session ' + continuitySessionIdForThisCall + ' — queueing auto-resume.');
               tmQueueAutoContinue(continuitySessionIdForThisCall, 'stall_no_bytes', 'silence>' + Math.round(tmStallWaitMs / 60000) + 'm');
+              try { if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: 'stall_no_bytes' }); } catch (eS) {}
             }, tmStallWaitMs);
           }
         };
@@ -12375,6 +12419,18 @@
       // (v4.275) A rejected fetch has no Response object, but it is still a permanent failure of
       // this captured turn. Stamp it without swallowing/changing the rejection seen by TypingMind.
       try { if (stallWatchdog) stallWatchdog.cancel(); } catch (eWD2) {}
+      // (v4.286) FETCH DROPPED: a request that survived >=30s in flight and then rejected is a
+      // dropped connection (the 'connection closed, nothing received' case) -> auto-resume.
+      // Fast failures (<30s: CORS/DNS/refused/cert) are hard errors TypingMind surfaces; we must
+      // NEVER auto-resume those -- an instant-fail continue loop would spam the modal forever.
+      try {
+        var tmDropElapsed = Date.now() - fetchStartTs;
+        if (continuitySessionIdForThisCall && tmDropElapsed >= 30000) {
+          console.warn('🔌 [v' + EXT_VERSION + '] Fetch dropped after ' + Math.round(tmDropElapsed / 1000) + 's in flight — queueing auto-resume.');
+          tmQueueAutoContinue(continuitySessionIdForThisCall, 'fetch_dropped', 'rejected after ' + Math.round(tmDropElapsed / 1000) + 's in flight');
+          if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: 'fetch_dropped' });
+        }
+      } catch (eDrop) {}
       try {
         if (captureId) {
           var fetchPayload = {
@@ -12419,7 +12475,8 @@
         }
         return tmTapContinuitySignals(response, continuitySessionIdForThisCall, stubbedIds, {
           pet: function() { try { if (stallWatchdog) stallWatchdog.pet(); } catch (e) {} },
-          disarm: function() { try { if (stallWatchdog) stallWatchdog.cancel(); } catch (e) {} }
+          disarm: function() { try { if (stallWatchdog) stallWatchdog.cancel(); } catch (e) {} },
+          stamp: function(reason) { try { if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: reason }); } catch (e) {} }
         });
       } catch (e) { return response; }
     });
