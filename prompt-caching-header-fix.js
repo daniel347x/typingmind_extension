@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.286
+// Version: 4.287
 // Issues Fixed:
+//   - v4.287: CODE-LESS STREAMED ERRORS + HTTP-STATUS SENSOR. Two holes let a direct-Moonshot 429
+//     die silently: (1) its error chunk carries only {message, type:'engine_overloaded_error'} with
+//     NO numeric error.code, so the v4.286 transient classifier (Number(code) === 429/5xx) never
+//     matched; (2) the tap never inspected response.status at all, so a real HTTP 429/5xx on a
+//     non-OpenRouter endpoint (where the v4.202 retry engine deliberately does not run) never
+//     queued a resume. The classifier now maps code-less errors by type/message heuristics
+//     (overload/rate-limit -> 429, timeout -> 504, server/unavailable -> 503), and finish() checks
+//     the HTTP status first: any 429/5xx response queues 'http_error_<status>' with the badge
+//     tooltip breakdown. empty_stream stays gated to 2xx-with-no-data so error bodies never
+//     misclassify.
 //   - v4.286: CONNECTION-CLOSED DETECTION + PER-TURN TRIGGER MARKER. Three new dead-turn sensors
 //     feed the same auto-resume actuator: (1) EMPTY STREAM -- HTTP 200 closes cleanly with zero
 //     parsed data events (proxy/upstream died silently); (2) STREAM ABORTED -- the response stream
@@ -896,7 +906,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.286';
+  const EXT_VERSION = '4.287';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7073,6 +7083,8 @@
     if (k === 'fetch_dropped') return 'connection dropped';
     if (k === 'empty_stream') return 'empty response';
     if (k === 'manual_debug') return 'manual';
+    var mh = String(k || '').match(/^http_error_(\d+)$/);
+    if (mh) return 'HTTP ' + mh[1];
     var m = String(k || '').match(/^stream_error_(\d+)$/);
     if (m) {
       if (m[1] === '504') return 'timeouts (504)';
@@ -7299,6 +7311,15 @@
     state.sawAnyData = true;
     if (obj.error && typeof obj.error === 'object') {
       var code = Number(obj.error.code);
+      // (v4.287) CODE-LESS provider errors: many endpoints (direct Moonshot confirmed live) ship
+      // {error:{message, type:'engine_overloaded_error'}} with NO numeric code. Classify by
+      // type/message heuristics into the same numeric buckets the retry logic already uses.
+      if (isNaN(code)) {
+        var etext = (String(obj.error.type || '') + ' ' + String(obj.error.message || '')).toLowerCase();
+        if (/overload|overloaded|capacity|rate.?limit|too many|busy|throttl/.test(etext)) code = 429;
+        else if (/timeout|timed.?out|deadline|idle/.test(etext)) code = 504;
+        else if (/server|internal|unavailable|upstream|bad.?gateway|overload/.test(etext)) code = 503;
+      }
       if (code === 429 || (code >= 500 && code < 600)) state.transientError = { code: code, message: String(obj.error.message || 'streamed provider error') };
     }
     if (Array.isArray(obj.choices)) obj.choices.forEach(function(choice) {
@@ -7326,6 +7347,8 @@
     var clone;
     try { clone = response.clone(); } catch (e) { disarmWatchdog(); return response; }
     var state = { textTail: '', rawCarry: '', transientError: null, sawToolCall: false, sawAnyData: false, bytesReceived: 0 };
+    var httpStatus = 0;
+    try { httpStatus = Number(response.status) || 0; } catch (eStatus) {}
     function stampTrigger(reason) { try { if (hooks.stamp) hooks.stamp(reason); } catch (e) {} }
     function inspectLine(line) {
       var s = String(line || '').trim();
@@ -7337,14 +7360,22 @@
     function finish() {
       disarmWatchdog();
       if (state.rawCarry) inspectLine(state.rawCarry);
+      // (v4.287) HTTP STATUS sensor (checked first -- authoritative): a 429/5xx RESPONSE on any
+      // endpoint queues a resume. On OpenRouter this only fires after the v4.202 retry engine has
+      // already exhausted its own attempts; on other endpoints it is the first line of defense.
+      if (httpStatus === 429 || (httpStatus >= 500 && httpStatus < 600)) {
+        stampTrigger('http_error_' + httpStatus);
+        tmQueueAutoContinue(sessionId, 'http_error_' + httpStatus, 'HTTP ' + httpStatus + ' response');
+        return;
+      }
       if (state.transientError) {
         stampTrigger('stream_error_' + state.transientError.code);
         tmQueueAutoContinue(sessionId, 'stream_error_' + state.transientError.code, state.transientError.message);
         return;
       }
       // (v4.286) EMPTY STREAM: the response closed cleanly with NO parsed data events at all --
-      // an upstream/proxy that died silently. Not a tool call, not a phrase: a dead turn.
-      if (!state.sawAnyData) {
+      // an upstream/proxy that died silently. 2xx-only: error bodies set sawAnyData above.
+      if (!state.sawAnyData && httpStatus < 400) {
         stampTrigger('empty_stream');
         tmQueueAutoContinue(sessionId, 'empty_stream', 'response closed with no data');
         return;
