@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.294 Changes:
+ * - Duplicate-session warning now SUPPRESSED when one match dominates: if the strongest match's
+ *   strength is >= 5x the runner-up's, the match is treated as unambiguous and the orange warning
+ *   bar is not shown. Kills false positives like a genuine 8,469-char session match vs a 12-char
+ *   coincidental 'Load GLIMPSE' first-user-message match. Strongest-match auto-select unchanged.
+ *
  * v3.293 Changes:
  * - Session name row (name + colon + ✓) in the Append button is now BOLD (font-weight:700).
  *
@@ -1088,7 +1094,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.293',
+  VERSION: '3.294',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3472,11 +3478,20 @@
   }
 
   /** Show/hide the duplicate-session warning bar. v3.291: includes match strength per session
-   *  so a weak coincidental match (6 chars) is distinguishable from a genuine one (707 chars). */
+   *  so a weak coincidental match (6 chars) is distinguishable from a genuine one (707 chars).
+   *  v3.294: dominance-ratio suppression — when the strongest match outweighs the runner-up by
+   *  >= 5x, the match is treated as unambiguous and the warning is NOT shown. */
   function updateDuplicateWarning(matchedSessions, strengths, matchIdx) {
     var el = document.getElementById('deepgram-refine-duplicate-warning');
     if (!el) return;
     if (!matchedSessions || matchedSessions.length <= 1) { el.style.display = 'none'; return; }
+    if (strengths) {
+      var DUP_DOMINANCE_RATIO = 5;  // strongest >= 5x runner-up => treat as a single unambiguous match
+      var ranked = matchedSessions.map(function(si) { return strengths[si] || 0; })
+        .sort(function(a, b) { return b - a; });
+      var runnerUp = ranked.length > 1 ? ranked[1] : 0;
+      if (ranked[0] >= DUP_DOMINANCE_RATIO * runnerUp) { el.style.display = 'none'; return; }
+    }
     el.style.display = '';
     if (strengths && matchIdx !== undefined && matchIdx !== -1) {
       var curStr = (strengths[matchIdx] || 0).toLocaleString();
