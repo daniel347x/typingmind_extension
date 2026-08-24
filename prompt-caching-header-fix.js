@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.280
+// Version: 4.281
 // Issues Fixed:
+//   - v4.281: WALK-AWAY AUTO-RESUME. A passive clone-reader taps completed response streams without
+//     delaying, suppressing, or rewriting the bytes TypingMind receives/persists. It detects late
+//     streamed transient errors (including Kimi/OpenRouter mid-stream 504 idle timeouts) and, only
+//     for requests where v4.280 actually stubbed a result, reconstructs a bounded final-text tail
+//     to recognize the exact recovery phrase for one of those call IDs. Either signal queues one
+//     session-ID-gated DOM actuator: a cancellable 10-second modal, exact sidebar-title-prefix
+//     match, visible-conversation Session-ID verification, empty-draft guard, then React-compatible
+//     insertion/submission of `continue`. Missing/ambiguous identity and verification failures all
+//     fail closed; no cap is imposed on legitimate future resumes.
 //   - v4.280: OVERSIZED TOOL-RESULT SAFETY GUARD. Every final outbound conversation payload is
 //     scanned for individual tool results over a widget-configurable limit (default 100 KB). Large
 //     results are replaced wire-only with one deterministic, cache-stable safety stub containing
@@ -843,7 +852,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.280';
+  const EXT_VERSION = '4.281';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4197,7 +4206,12 @@
     // NEW: always-on payload capture ring buffer
     getCaptures: () => tmReadCaptureRing(),
     exportCapturesToClipboard: () => tmExportPayloadCapturesToClipboard(),
-    clearCaptures: () => tmClearPayloadCaptures()
+    clearCaptures: () => tmClearPayloadCaptures(),
+    testOversizedToolGuard: (body) => {
+      var clone = JSON.parse(JSON.stringify(body));
+      return { body: clone, report: tmApplyOversizedToolResultGuard(clone) };
+    },
+    queueAutoContinue: (sessionId, reason) => tmQueueAutoContinue(sessionId, reason || 'manual_debug')
   };
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
@@ -6897,6 +6911,297 @@
       }
       return tmHandleOpenRouterError(response, err, status, args, shouldSanitizeSolProUsage, attempt, response);
     }).catch(function() { return response; });
+  }
+
+  // ==================== WALK-AWAY CONTINUITY ACTUATOR + PASSIVE STREAM TAP (v4.281) ====================
+  // TypingMind continues receiving/persisting the original response stream. We consume a CLONE in
+  // parallel, retain only bounded text/raw tails, and use the DOM solely after the turn has ended.
+  var TM_AUTO_CONTINUE_COUNTDOWN_SECONDS = 10;
+  var tmAutoContinueQueue = [];
+  var tmAutoContinueActive = null;
+
+  function tmFindVisibleChatContainer() {
+    try {
+      var els = document.querySelectorAll('div.dynamic-chat-content-container');
+      for (var i = 0; i < els.length; i++) if (els[i].offsetParent !== null) return els[i];
+      return els.length ? els[els.length - 1] : null;
+    } catch (e) { return null; }
+  }
+
+  function tmVisibleConversationHasSessionId(sessionId) {
+    var container = tmFindVisibleChatContainer();
+    if (!container || !sessionId) return false;
+    try {
+      var users = container.querySelectorAll('[data-element-id="user-message"]');
+      var max = Math.min(users.length, 10);
+      for (var i = 0; i < max; i++) {
+        var text = String(users[i].innerText || users[i].textContent || '');
+        var m = text.match(/^\s*Session\s+ID\s*:\s*([^\s`]+)/im);
+        if (m && String(m[1]).replace(/^`+|`+$/g, '').replace(/[.,;:]+$/g, '') === String(sessionId)) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function tmFindSidebarConversation(sessionId) {
+    var matches = [];
+    try {
+      var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+      var sid = String(sessionId || '').toLowerCase();
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim() : '';
+        if (title.toLowerCase().indexOf(sid) === 0) matches.push({ row: rows[i], title: title });
+      }
+    } catch (e) {}
+    return matches;
+  }
+
+  function tmFindVisibleChatInput() {
+    var selectors = [
+      '#chat-input-textbox', '[data-element-id="chat-input-textbox"]',
+      'textarea[placeholder*="Press"]', 'textarea.main-chat-input',
+      'textarea[placeholder*="Message"]', 'div[contenteditable="true"]',
+      '[contenteditable="true"]', 'div[role="textbox"]', 'textarea'
+    ];
+    try {
+      for (var s = 0; s < selectors.length; s++) {
+        var els = document.querySelectorAll(selectors[s]);
+        for (var i = 0; i < els.length; i++) {
+          var el = els[i];
+          if (el.offsetParent !== null && !el.closest('#deepgram-panel') && !el.closest('#gpt51-usage-widget') && String(el.id || '').indexOf('deepgram') === -1) return el;
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function tmSubmitContinueIntoVisibleConversation() {
+    var input = tmFindVisibleChatInput();
+    if (!input) throw new Error('visible TypingMind chat input not found');
+    var existing = (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') ? String(input.value || '') : String(input.textContent || '');
+    if (existing.trim()) throw new Error('chat input contains an unsent draft; refusing to overwrite it');
+
+    if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+      var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+      var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      setter.call(input, 'continue');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (input.contentEditable === 'true') {
+      input.textContent = 'continue';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      throw new Error('unsupported TypingMind chat input element');
+    }
+    input.focus();
+    var down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
+    var up = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
+    input.dispatchEvent(down);
+    input.dispatchEvent(up);
+  }
+
+  function tmClickVisibleContinueButton() {
+    var container = tmFindVisibleChatContainer();
+    if (!container) return false;
+    try {
+      var buttons = container.querySelectorAll('button');
+      for (var i = buttons.length - 1; i >= 0; i--) {
+        if (String(buttons[i].innerText || buttons[i].textContent || '').trim().toLowerCase() === 'continue' && buttons[i].offsetParent !== null) {
+          buttons[i].click();
+          return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function tmWaitForConversationAndResume(item, match) {
+    var started = Date.now();
+    function check() {
+      if (!tmVisibleConversationHasSessionId(item.sessionId)) {
+        if (Date.now() - started < 6000) { setTimeout(check, 150); return; }
+        tmFinishAutoContinue(false, 'switched conversation failed Session-ID verification');
+        return;
+      }
+      try {
+        // For TypingMind's own turn-limit stop, prefer its native Continue affordance. Timeout and
+        // recovery-phrase cases normally have none, so use the proven text-submit path.
+        var clicked = (item.reason === 'turn_limit') ? tmClickVisibleContinueButton() : false;
+        if (!clicked) tmSubmitContinueIntoVisibleConversation();
+        console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
+        tmFinishAutoContinue(true, null);
+      } catch (e) {
+        tmFinishAutoContinue(false, e && e.message ? e.message : String(e));
+      }
+    }
+    check();
+  }
+
+  function tmExecuteAutoContinue(item) {
+    if (!item || !item.sessionId) { tmFinishAutoContinue(false, 'missing Session ID'); return; }
+    // A currently-visible matching conversation needs no sidebar row at all (its folder may be
+    // collapsed or virtualized). Verify it directly and avoid needless navigation.
+    if (tmVisibleConversationHasSessionId(item.sessionId)) {
+      tmWaitForConversationAndResume(item, null);
+      return;
+    }
+    var matches = tmFindSidebarConversation(item.sessionId);
+    if (matches.length !== 1) {
+      tmFinishAutoContinue(false, matches.length ? 'ambiguous sidebar Session-ID match' : 'sidebar conversation not found');
+      return;
+    }
+    var match = matches[0];
+    try {
+      var clickTarget = match.row.querySelector('button') || match.row;
+      clickTarget.click();
+      tmWaitForConversationAndResume(item, match);
+    } catch (e) {
+      tmFinishAutoContinue(false, 'failed to click sidebar conversation');
+    }
+  }
+
+  function tmFinishAutoContinue(ok, error) {
+    var item = tmAutoContinueActive;
+    var overlay = null;
+    try { overlay = document.getElementById('tm-auto-continue-overlay'); } catch (e) {}
+    if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    if (!ok) console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume aborted' + (item ? ' for ' + item.sessionId : '') + ': ' + error);
+    tmAutoContinueActive = null;
+    // Give TypingMind time to register the just-submitted request before a second queued session
+    // switches the visible UI again. Parallel fetches may continue normally after that handoff.
+    setTimeout(tmProcessAutoContinueQueue, 1500);
+  }
+
+  function tmShowAutoContinueCountdown(item) {
+    if (typeof document === 'undefined' || !document.body) { tmFinishAutoContinue(false, 'DOM unavailable'); return; }
+    var old = document.getElementById('tm-auto-continue-overlay');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-auto-continue-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:min(560px,88vw);background:#15151b;color:#fff;border:2px solid #5da9ff;border-radius:10px;padding:18px;box-shadow:0 12px 55px #000;';
+    var remaining = TM_AUTO_CONTINUE_COUNTDOWN_SECONDS;
+    box.innerHTML = '<div style="font-size:17px;font-weight:700;color:#8bc2ff;margin-bottom:8px;">▶ Auto-resume queued</div>' +
+      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + '</b>.<br>TypingMind will switch to it and submit <code>continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;"><button id="tm-auto-continue-cancel" style="padding:6px 12px;background:#6a3030;color:#fff;border:1px solid #b75;border-radius:5px;cursor:pointer;">Cancel</button><button id="tm-auto-continue-now" style="padding:6px 12px;background:#245f9e;color:#fff;border:1px solid #68aef5;border-radius:5px;cursor:pointer;">Resume now</button></div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    var finished = false;
+    function finish(run) {
+      if (finished) return;
+      finished = true;
+      clearInterval(timer);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (run) tmExecuteAutoContinue(item); else tmFinishAutoContinue(false, 'cancelled by user');
+    }
+    box.querySelector('#tm-auto-continue-cancel').onclick = function() { finish(false); };
+    box.querySelector('#tm-auto-continue-now').onclick = function() { finish(true); };
+    var timer = setInterval(function() {
+      remaining--;
+      var span = box.querySelector('#tm-auto-continue-seconds');
+      if (span) span.textContent = String(Math.max(remaining, 0));
+      if (remaining <= 0) finish(true);
+    }, 1000);
+  }
+
+  function tmProcessAutoContinueQueue() {
+    if (tmAutoContinueActive || !tmAutoContinueQueue.length) return;
+    tmAutoContinueActive = tmAutoContinueQueue.shift();
+    tmShowAutoContinueCountdown(tmAutoContinueActive);
+  }
+
+  function tmQueueAutoContinue(sessionId, reason, detail) {
+    if (!sessionId) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume skipped: no explicit Session ID in request.');
+      return false;
+    }
+    var key = String(sessionId) + '::' + String(reason || 'unknown') + '::' + String(detail || '');
+    if (tmAutoContinueActive && tmAutoContinueActive.key === key) return false;
+    for (var i = 0; i < tmAutoContinueQueue.length; i++) if (tmAutoContinueQueue[i].key === key) return false;
+    tmAutoContinueQueue.push({ key: key, sessionId: String(sessionId), reason: String(reason || 'unknown'), detail: detail || null, ts: Date.now() });
+    tmProcessAutoContinueQueue();
+    return true;
+  }
+
+  function tmAppendContinuityText(state, text) {
+    if (typeof text !== 'string' || !text) return;
+    state.textTail = (state.textTail + text).slice(-2048);
+  }
+
+  function tmInspectContinuityObject(obj, state) {
+    if (!obj || typeof obj !== 'object') return;
+    if (obj.error && typeof obj.error === 'object') {
+      var code = Number(obj.error.code);
+      if (code === 429 || (code >= 500 && code < 600)) state.transientError = { code: code, message: String(obj.error.message || 'streamed provider error') };
+    }
+    if (Array.isArray(obj.choices)) obj.choices.forEach(function(choice) {
+      if (!choice) return;
+      var d = choice.delta || {};
+      if (typeof d.content === 'string') tmAppendContinuityText(state, d.content);
+      if (choice.message && typeof choice.message.content === 'string') tmAppendContinuityText(state, choice.message.content);
+      if (Array.isArray(d.tool_calls) && d.tool_calls.length) state.sawToolCall = true;
+      if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call') state.sawToolCall = true;
+    });
+    if (obj.type === 'content_block_delta' && obj.delta && typeof obj.delta.text === 'string') tmAppendContinuityText(state, obj.delta.text);
+    if (obj.type === 'content_block_start' && obj.content_block && obj.content_block.type === 'tool_use') state.sawToolCall = true;
+    if (obj.type === 'message_delta' && obj.delta && obj.delta.stop_reason === 'tool_use') state.sawToolCall = true;
+    if (obj.type === 'response.output_text.delta' && typeof obj.delta === 'string') tmAppendContinuityText(state, obj.delta);
+    if (obj.type === 'response.output_item.added' && obj.item && obj.item.type === 'function_call') state.sawToolCall = true;
+  }
+
+  function tmTapContinuitySignals(response, sessionId, stubbedIds) {
+    var ids = {};
+    (stubbedIds || []).forEach(function(id) { ids[String(id)] = true; });
+    if (!sessionId || !response || typeof response.clone !== 'function') return response;
+    var clone;
+    try { clone = response.clone(); } catch (e) { return response; }
+    var state = { textTail: '', rawCarry: '', transientError: null, sawToolCall: false };
+    function inspectLine(line) {
+      var s = String(line || '').trim();
+      if (!s) return;
+      if (s.indexOf('data:') === 0) s = s.slice(5).trim();
+      if (!s || s === tmDoneMarker()) return;
+      try { tmInspectContinuityObject(JSON.parse(s), state); } catch (e) {}
+    }
+    function finish() {
+      if (state.rawCarry) inspectLine(state.rawCarry);
+      if (state.transientError) {
+        tmQueueAutoContinue(sessionId, 'stream_error_' + state.transientError.code, state.transientError.message);
+        return;
+      }
+      if (state.sawToolCall || !Object.keys(ids).length) return;
+      var text = state.textTail.trim();
+      var m = text.match(/^Please restore tool result\s+([^\s]+)$/);
+      if (m && ids[String(m[1])]) tmQueueAutoContinue(sessionId, 'oversized_result_recovery', String(m[1]));
+    }
+    try {
+      if (clone.body && typeof clone.body.getReader === 'function') {
+        var reader = clone.body.getReader();
+        var decoder = new TextDecoder();
+        (function pump() {
+          reader.read().then(function(r) {
+            if (r.done) { state.rawCarry += decoder.decode(); finish(); return; }
+            state.rawCarry += decoder.decode(r.value, { stream: true });
+            var nl;
+            while ((nl = state.rawCarry.indexOf('\n')) !== -1) {
+              var line = state.rawCarry.slice(0, nl);
+              state.rawCarry = state.rawCarry.slice(nl + 1);
+              inspectLine(line);
+            }
+            pump();
+          }).catch(function() {});
+        })();
+      } else {
+        clone.text().then(function(text) {
+          String(text || '').split(/\r?\n/).forEach(inspectLine);
+          finish();
+        }).catch(function() {});
+      }
+    } catch (e) {}
+    return response;
   }
 
   // (Fix 17, v4.202) Minimal popup showing the full raw error JSON for the most-recent error.
@@ -10946,6 +11251,8 @@
     let convIdForThisCall = null;
     let vendorForThisCall = null;
     let repairTallyForThisCall = null;
+    let oversizedGuardReportForThisCall = null;
+    let continuitySessionIdForThisCall = null;
 
     // ==================== PASSTHROUGH GUARD (cooperate with sibling extensions) ====================
     // Some of Dan's OTHER extensions (e.g. the Whisper Transcription widget's "✨ Refine" feature)
@@ -11677,6 +11984,7 @@
       if (options && typeof options.body === 'string') {
         var tmGuardBody = JSON.parse(options.body);
         var tmGuardReport = tmApplyOversizedToolResultGuard(tmGuardBody);
+        oversizedGuardReportForThisCall = tmGuardReport;
         if (tmGuardReport && tmGuardReport.changed) options.body = JSON.stringify(tmGuardBody);
       }
     } catch (tmGuardErr) {
@@ -11760,6 +12068,7 @@
     try {
       if (options && typeof options.body === 'string') {
         var finalBody = JSON.parse(options.body);
+        continuitySessionIdForThisCall = deriveConversationIdFromBody(finalBody);
         if (finalBody && tmIsSolProModel(finalBody.model)) {
           shouldSanitizeSolProUsage = true;
         }
@@ -11832,8 +12141,18 @@
       }
     });
 
+    var fetchPromiseContinuityTapped = fetchPromiseToolIdGuarded.then(function(response) {
+      try {
+        var stubbedIds = [];
+        if (oversizedGuardReportForThisCall && Array.isArray(oversizedGuardReportForThisCall.stubbed)) {
+          stubbedIds = oversizedGuardReportForThisCall.stubbed.map(function(x) { return x && x.id; }).filter(Boolean);
+        }
+        return tmTapContinuitySignals(response, continuitySessionIdForThisCall, stubbedIds);
+      } catch (e) { return response; }
+    });
+
     if (url.includes('api.openai.com') && url.includes('/v1/responses')) {
-      return fetchPromiseToolIdGuarded.then(function(response) {
+      return fetchPromiseContinuityTapped.then(function(response) {
         try {
           const clone = response.clone();
           clone.text().then(function(text) {
@@ -11873,7 +12192,7 @@
       });
     }
 
-    return fetchPromiseToolIdGuarded;
+    return fetchPromiseContinuityTapped;
   };
 
   // Initial render from any persisted usage in localStorage so widget appears on load
