@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.290
+// Version: 4.291
 // Issues Fixed:
+//   - v4.291: TURN-COUNT ('INFINITE LOOP') STOP SENSOR. TypingMind's turn-limit stop is purely
+//     CLIENT-SIDE: the last request completed healthy and TypingMind simply declines to send the
+//     next one -- no fetch, no payload, no error, so every network-layer sensor (tap, watchdog,
+//     status) is blind to it by construction. A debounced MutationObserver now watches the visible
+//     chat container for the stop UI (last rendered turns matching /infinite loop/i + a visible
+//     'Continue' button) and feeds the SAME auto-resume actuator with reason 'turn_limit' --
+//     whose native-button path (tmClickVisibleContinueButton) finally has its sensor. Session ID
+//     is extracted from the selected sidebar row's hash-first title (no payload exists to derive
+//     it from). Re-fire suppressed for 120s per identical stop text so one stop = one resume, but
+//     a genuinely new stop (Dan's 'keep it going' intent) always fires again. v1 watches the
+//     VISIBLE conversation only (hidden background containers carry no session-title mapping).
 //   - v4.290: CONSUMED-PHRASE STRIPPING (ROLE-ALTERNATION SAFE). The approved v4.280 algorithm
 //     called for removing the agent's verbatim recovery-phrase message from the wire once its
 //     result is restored (it stays in AssemblyDB; we re-strip every turn, deterministically), but
@@ -937,7 +948,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.290';
+  const EXT_VERSION = '4.291';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7348,6 +7359,74 @@
     }, 200);
   }
 
+  // ==================== TURN-LIMIT STOP WATCHER (v4.291) ====================
+  // The turn-count stop is CLIENT-SIDE: no fetch/payload exists, so only a DOM watcher can catch
+  // it. Feeds the shared actuator (reason 'turn_limit' -> native Continue button, then text-submit).
+  function tmExtractActiveSessionId() {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="selected-chat-item"]');
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim() : '';
+        var m = title.match(/^([A-Za-z0-9]{6,})\b/);
+        if (m && m[1]) return m[1];
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  function tmDetectTurnLimitStop() {
+    var container = tmFindVisibleChatContainer();
+    if (!container) return null;
+    try {
+      // Scan only the LAST few rendered turns for the stop text (whole-container innerText is
+      // expensive on long histories and could false-match an old discussion ABOUT infinite loops).
+      var kids = container.children;
+      var from = Math.max(0, kids.length - 6);
+      var stopEl = null;
+      for (var i = kids.length - 1; i >= from; i--) {
+        var t = String(kids[i].innerText || '');
+        if (/infinite loop/i.test(t)) { stopEl = kids[i]; break; }
+      }
+      if (!stopEl) return null;
+      var btn = null;
+      var buttons = container.querySelectorAll('button');
+      for (var j = buttons.length - 1; j >= 0; j--) {
+        if (String(buttons[j].innerText || buttons[j].textContent || '').trim().toLowerCase() === 'continue' && buttons[j].offsetParent !== null) { btn = buttons[j]; break; }
+      }
+      if (!btn) return null;
+      return { stopEl: stopEl, button: btn };
+    } catch (e) { return null; }
+  }
+
+  var tmTurnLimitLastHandled = { sig: '', ts: 0 };
+  function tmCheckTurnLimitStop() {
+    var det = tmDetectTurnLimitStop();
+    if (!det) return;
+    var sig = String(det.stopEl.innerText || '').slice(0, 200);
+    if (tmTurnLimitLastHandled.sig === sig && (Date.now() - tmTurnLimitLastHandled.ts) < 120000) return;
+    var sessionId = tmExtractActiveSessionId();
+    if (!sessionId) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Turn-limit stop detected but no Session ID could be extracted from the sidebar title; skipping auto-continue.');
+      return;
+    }
+    tmTurnLimitLastHandled = { sig: sig, ts: Date.now() };
+    console.warn('⏳ [v' + EXT_VERSION + '] Turn-limit stop detected for session ' + sessionId + ' — queueing auto-continue.');
+    tmQueueAutoContinue(sessionId, 'turn_limit', 'typingmind turn-count stop');
+  }
+
+  var tmTurnLimitObserver = null;
+  function tmInitTurnLimitWatcher() {
+    if (tmTurnLimitObserver || typeof document === 'undefined' || !document.body) return;
+    var debounceTimer = null;
+    tmTurnLimitObserver = new MutationObserver(function() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(tmCheckTurnLimitStop, 700);
+    });
+    tmTurnLimitObserver.observe(document.body, { childList: true, subtree: true });
+    console.log('✅ [v' + EXT_VERSION + '] Turn-limit stop watcher initialized.');
+  }
+
   function tmClickVisibleContinueButton() {
     var container = tmFindVisibleChatContainer();
     if (!container) return false;
@@ -12801,6 +12880,7 @@
   try {
     if (typeof document !== 'undefined') {
       try { tmRepairLockLabelsFromEntries(); } catch (e) {}  // (v4.216) repair stale lock labels once on load
+      try { tmInitTurnLimitWatcher(); } catch (eW) {}  // (v4.291) turn-count stop sensor
       try {
         var backfilledErrors = tmBackfillCapturedErrorsFromRing();
         if (backfilledErrors) console.log('\uD83D\uDEA8 [v' + EXT_VERSION + '] Backfilled persistent errors onto ' + backfilledErrors + ' older capture row(s).');
