@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.291
+// Version: 4.292
 // Issues Fixed:
+//   - v4.292: AGENT MANAGEMENT MODE FOR BACKGROUND TOOL-SWARM STALLS. TypingMind removes its
+//     native turn-limit Continue UI after navigating away, so the v4.291 visible-only observer
+//     cannot recover a background session. A persisted, pulsing widget offshoot now enables a
+//     suspicion-driven manager: an in-memory per-Session-ID ledger records healthy responses that
+//     ended in tool calls across OpenAI chat/OpenRouter, Anthropic Messages, OpenAI Responses, and
+//     Gemini-native functionCall shapes; the next outbound request clears the suspicion. After a
+//     grace period the manager navigates only to suspicious sessions, scrolls the virtualized chat
+//     pane to the bottom, and refuses to act while either the expanded animate-spin indicator is
+//     visible or the collapsed tool timer advances over a 5-second sample. A native turn-limit UI
+//     still uses its Continue button; otherwise the existing identity-verified, draft-safe actuator
+//     types `continue`. Per-session cooldowns prevent duplicate management resumes; protocol state
+//     remains memory-only while the intentional management-mode toggle survives refresh.
 //   - v4.291: TURN-COUNT ('INFINITE LOOP') STOP SENSOR. TypingMind's turn-limit stop is purely
 //     CLIENT-SIDE: the last request completed healthy and TypingMind simply declines to send the
 //     next one -- no fetch, no payload, no error, so every network-layer sensor (tap, watchdog,
@@ -948,7 +960,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.291';
+  const EXT_VERSION = '4.292';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4307,7 +4319,16 @@
       var clone = JSON.parse(JSON.stringify(body));
       return { body: clone, report: tmApplyOversizedToolResultGuard(clone) };
     },
-    queueAutoContinue: (sessionId, reason) => tmQueueAutoContinue(sessionId, reason || 'manual_debug')
+    queueAutoContinue: (sessionId, reason) => tmQueueAutoContinue(sessionId, reason || 'manual_debug'),
+    getAgentManagementState: () => JSON.parse(JSON.stringify(tmAgentManagementSessions || {})),
+    setAgentManagementEnabled: (enabled) => tmSetAgentManagementEnabled(!!enabled),
+    runAgentManagementSweep: () => tmRunAgentManagementSweep(),
+    inspectManagedDom: () => tmVisibleToolExecutionSnapshot(),
+    classifyContinuityObject: (obj) => {
+      var state = { textTail: '', transientError: null, sawToolCall: false, sawAnyData: false };
+      tmInspectContinuityObject(obj, state);
+      return { sawToolCall: state.sawToolCall, sawAnyData: state.sawAnyData, transientError: state.transientError };
+    }
   };
 
   // ==================== PAYLOAD ANALYSIS HELPERS ====================
@@ -4861,6 +4882,16 @@
   function ensureGpt51UsageWidget() {
     let el = document.getElementById('gpt51-usage-widget');
     if (!el) {
+      // (v4.292) One shared animation definition for the narrow management-mode offshoot.
+      // The offshoot itself is rebuilt with the widget's innerHTML, but this style node is stable.
+      try {
+        if (!document.getElementById('tm-agent-management-style')) {
+          var mgStyle = document.createElement('style');
+          mgStyle.id = 'tm-agent-management-style';
+          mgStyle.textContent = '@keyframes tmAgentManagePulse{0%,100%{box-shadow:0 0 0 0 rgba(255,70,70,.25)}50%{box-shadow:0 0 0 7px rgba(255,70,70,.55)}}';
+          document.head.appendChild(mgStyle);
+        }
+      } catch (e) {}
       el = document.createElement('div');
       el.id = 'gpt51-usage-widget';
       el.style.position = 'fixed';
@@ -4903,6 +4934,16 @@
             }
             renderGpt51UsageWidget();
             ev.stopPropagation();
+            return;
+          }
+
+          // (v4.292) Explicit walk-away agent-management mode. The mode is persisted so a
+          // TypingMind refresh cannot silently disarm an unattended run; response suspicion stays
+          // memory-only and is rebuilt naturally from subsequent network traffic.
+          if (target.dataset.action === 'toggle-agent-management') {
+            tmSetAgentManagementEnabled(!tmAgentManagementEnabled());
+            ev.stopPropagation();
+            ev.preventDefault();
             return;
           }
 
@@ -5340,6 +5381,11 @@
       (!el.dataset.collapsed && localStorage.getItem('gpt51_widget_collapsed') === 'true');
 
     const lines = [];
+    const managing = tmAgentManagementEnabled();
+    lines.push(
+      '<button type="button" data-action="toggle-agent-management" title="Agent management mode — monitor tool-call sessions and auto-continue confirmed stalls" ' +
+      'style="position:absolute;right:100%;top:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;cursor:pointer;pointer-events:auto;font-size:14px;font-weight:bold;line-height:26px;text-align:center;color:' + (managing ? '#fff' : '#e6a35c') + ';background:' + (managing ? '#b51515' : '#4b2b10') + ';border:1px solid ' + (managing ? '#ff6666' : '#9a5a22') + ';animation:' + (managing ? 'tmAgentManagePulse 1.4s ease-in-out infinite' : 'none') + ';">&#9881;</button>'
+    );
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
       '<div data-action="copy-session-id" title="Click to copy Session ID to clipboard" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
@@ -7179,6 +7225,7 @@
   function tmAutoResumeReasonLabel(k) {
     if (k === 'oversized_result_recovery') return 'tool recovery';
     if (k === 'turn_limit') return 'turn limit';
+    if (k === 'tool_swarm_stall') return 'tool swarm stall';
     if (k === 'stall_no_bytes') return 'no response (stall)';
     if (k === 'stream_aborted') return 'stream aborted';
     if (k === 'fetch_dropped') return 'connection dropped';
@@ -7201,6 +7248,208 @@
       for (var i = 0; i < els.length; i++) if (els[i].offsetParent !== null) return els[i];
       return els.length ? els[els.length - 1] : null;
     } catch (e) { return null; }
+  }
+
+  // ==================== AGENT MANAGEMENT MODE (v4.292) ====================
+  // Network truth narrows the candidate set: a healthy response ended in a tool call and no
+  // later outbound payload followed for that Session ID. DOM truth then excludes a still-running
+  // client-side tool before the existing auto-continue actuator is allowed to submit anything.
+  var TM_AGENT_MANAGEMENT_KEY = 'tm_agent_management_enabled_v1';
+  var TM_AGENT_MANAGEMENT_SWEEP_MS = 60000;
+  var TM_AGENT_MANAGEMENT_GRACE_MS = 75000;
+  var TM_AGENT_MANAGEMENT_RETRY_COOLDOWN_MS = 5 * 60 * 1000;
+  var tmAgentManagementSessions = {};
+  var tmAgentManagementTimer = null;
+  var tmAgentManagementTimerDue = 0;
+  var tmAgentManagementBusy = false;
+
+  function tmAgentManagementEnabled() {
+    try { return localStorage.getItem(TM_AGENT_MANAGEMENT_KEY) === 'true'; } catch (e) { return false; }
+  }
+
+  function tmSetAgentManagementEnabled(enabled) {
+    enabled = !!enabled;
+    try { localStorage.setItem(TM_AGENT_MANAGEMENT_KEY, enabled ? 'true' : 'false'); } catch (e) {}
+    if (tmAgentManagementTimer) { try { clearTimeout(tmAgentManagementTimer); } catch (e2) {} tmAgentManagementTimer = null; tmAgentManagementTimerDue = 0; }
+    if (enabled) tmScheduleAgentManagementSweep(1200);
+    try { renderGpt51UsageWidget(); } catch (e3) {}
+    console.log((enabled ? '🔴' : '🟠') + ' [v' + EXT_VERSION + '] Agent management mode ' + (enabled ? 'ENABLED' : 'disabled') + '.');
+  }
+
+  function tmAgentManagementNoteOutbound(sessionId, captureId) {
+    if (!sessionId) return;
+    var key = String(sessionId);
+    var s = tmAgentManagementSessions[key] || { sessionId: key };
+    s.pendingToolCall = false;
+    s.lastOutboundAt = Date.now();
+    s.captureId = captureId || s.captureId || null;
+    s.resumeQueuedAt = 0;
+    tmAgentManagementSessions[key] = s;
+  }
+
+  function tmAgentManagementNoteResponse(sessionId, endedWithToolCall, captureId) {
+    if (!sessionId) return;
+    var key = String(sessionId);
+    var s = tmAgentManagementSessions[key] || { sessionId: key };
+    s.pendingToolCall = !!endedWithToolCall;
+    s.responseFinishedAt = Date.now();
+    s.captureId = captureId || s.captureId || null;
+    if (!s.pendingToolCall) s.resumeQueuedAt = 0;
+    tmAgentManagementSessions[key] = s;
+    if (s.pendingToolCall && tmAgentManagementEnabled()) tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_GRACE_MS);
+  }
+
+  function tmAgentManagementPending(sessionId) {
+    var s = tmAgentManagementSessions[String(sessionId || '')];
+    return !!(s && s.pendingToolCall);
+  }
+
+  function tmScrollVisibleChatToBottom() {
+    var container = tmFindVisibleChatContainer();
+    if (!container) return null;
+    var scroller = container;
+    try {
+      var n = container;
+      while (n && n !== document.body) {
+        var cs = window.getComputedStyle ? window.getComputedStyle(n) : null;
+        var oy = cs ? String(cs.overflowY || '') : '';
+        if (/(auto|scroll)/i.test(oy) && n.scrollHeight > n.clientHeight + 4) { scroller = n; break; }
+        n = n.parentElement;
+      }
+      if (typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'auto' });
+      else scroller.scrollTop = scroller.scrollHeight;
+    } catch (e) { try { scroller.scrollTop = scroller.scrollHeight; } catch (e2) {} }
+    return scroller;
+  }
+
+  function tmVisibleToolExecutionSnapshot() {
+    var out = { spinner: false, timer: null };
+    var container = tmFindVisibleChatContainer();
+    if (!container) return out;
+    try {
+      var kids = container.children || [];
+      var from = Math.max(0, kids.length - 8);
+      for (var i = from; i < kids.length; i++) {
+        var root = kids[i];
+        var spins = root.querySelectorAll ? root.querySelectorAll('svg.animate-spin') : [];
+        for (var si = 0; si < spins.length; si++) {
+          if (spins[si].offsetParent !== null) { out.spinner = true; break; }
+        }
+        var groups = root.querySelectorAll ? root.querySelectorAll('[data-element-id="chat-plugin-group"] button') : [];
+        for (var gi = groups.length - 1; gi >= 0; gi--) {
+          if (groups[gi].offsetParent === null) continue;
+          var text = String(groups[gi].innerText || groups[gi].textContent || '');
+          var m = text.match(/(?:\b\d+\s*m\s*)?\d+\s*s\b/i);
+          if (m) { out.timer = m[0].replace(/\s+/g, ''); break; }
+        }
+        if (out.spinner) break;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function tmAgentManagementOpenSession(sessionId, cb) {
+    function waitVerified() {
+      var started = Date.now();
+      (function check() {
+        if (tmConversationVerified(sessionId)) { cb(null); return; }
+        if (Date.now() - started < 7000) { setTimeout(check, 150); return; }
+        cb(new Error('switched conversation failed Session-ID verification'));
+      })();
+    }
+    if (tmConversationVerified(sessionId)) { cb(null); return; }
+    var matches = tmFindSidebarConversation(sessionId);
+    if (matches.length === 1) {
+      try { (matches[0].titleEl || matches[0].row).click(); waitVerified(); } catch (e) { cb(e); }
+      return;
+    }
+    if (matches.length > 1) { cb(new Error('ambiguous sidebar Session-ID match')); return; }
+    tmScrollSidebarForMatch(sessionId, function(found) {
+      if (found && found.length === 1) {
+        try { (found[0].titleEl || found[0].row).click(); waitVerified(); } catch (e) { cb(e); }
+      } else if (found && found.length > 1) cb(new Error('ambiguous sidebar Session-ID match after scroll'));
+      else cb(new Error('sidebar conversation not found'));
+    });
+  }
+
+  function tmFinishAgentManagementSweep() {
+    tmAgentManagementBusy = false;
+    if (tmAgentManagementEnabled()) tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_SWEEP_MS);
+  }
+
+  function tmInspectManagedSession(state) {
+    tmScrollVisibleChatToBottom();
+    setTimeout(function() {
+      if (!tmAgentManagementEnabled() || !tmAgentManagementPending(state.sessionId)) { tmFinishAgentManagementSweep(); return; }
+
+      // If the native stop UI survived, preserve v4.291's best actuator: click its own Continue.
+      var nativeStop = tmDetectTurnLimitStop();
+      if (nativeStop) {
+        var nativeQueued = tmQueueAutoContinue(state.sessionId, 'turn_limit', 'typingmind turn-count stop');
+        if (nativeQueued) state.resumeQueuedAt = Date.now();
+        tmFinishAgentManagementSweep();
+        return;
+      }
+
+      var first = tmVisibleToolExecutionSnapshot();
+      if (first.spinner) { tmFinishAgentManagementSweep(); return; }
+      setTimeout(function() {
+        if (!tmAgentManagementEnabled() || !tmAgentManagementPending(state.sessionId)) { tmFinishAgentManagementSweep(); return; }
+        tmScrollVisibleChatToBottom();
+        var second = tmVisibleToolExecutionSnapshot();
+        var timerAdvanced = !!(first.timer && second.timer && first.timer !== second.timer);
+        if (second.spinner || timerAdvanced) { tmFinishAgentManagementSweep(); return; }
+
+        var queued = tmQueueAutoContinue(state.sessionId, 'tool_swarm_stall', 'healthy response ended with tool call; no outbound payload; DOM idle');
+        if (queued) {
+          state.resumeQueuedAt = Date.now();
+          try { if (state.captureId) tmUpdateCaptureRecord(state.captureId, { _auto_resume_triggered: 'tool_swarm_stall' }); } catch (e) {}
+          console.warn('🧭 [v' + EXT_VERSION + '] Agent management confirmed an idle tool-call session; queueing continue for ' + state.sessionId + '.');
+        }
+        tmFinishAgentManagementSweep();
+      }, 5000);
+    }, 900);
+  }
+
+  function tmRunAgentManagementSweep() {
+    tmAgentManagementTimer = null;
+    tmAgentManagementTimerDue = 0;
+    if (!tmAgentManagementEnabled() || tmAgentManagementBusy) return;
+    var now = Date.now();
+    var candidates = Object.keys(tmAgentManagementSessions).map(function(k) { return tmAgentManagementSessions[k]; }).filter(function(s) {
+      if (!s || !s.pendingToolCall || !s.responseFinishedAt) return false;
+      if (now - s.responseFinishedAt < TM_AGENT_MANAGEMENT_GRACE_MS) return false;
+      if (s.resumeQueuedAt && now - s.resumeQueuedAt < TM_AGENT_MANAGEMENT_RETRY_COOLDOWN_MS) return false;
+      return true;
+    }).sort(function(a, b) { return a.responseFinishedAt - b.responseFinishedAt; });
+    if (!candidates.length) { tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_SWEEP_MS); return; }
+    tmAgentManagementBusy = true;
+    var state = candidates[0];
+    tmAgentManagementOpenSession(state.sessionId, function(err) {
+      if (err) {
+        console.warn('⚠️ [v' + EXT_VERSION + '] Agent management could not inspect ' + state.sessionId + ': ' + err.message);
+        state.resumeQueuedAt = Date.now();
+        tmFinishAgentManagementSweep();
+        return;
+      }
+      tmInspectManagedSession(state);
+    });
+  }
+
+  function tmScheduleAgentManagementSweep(delayMs) {
+    if (!tmAgentManagementEnabled()) return;
+    var delay = Math.max(250, Number(delayMs) || TM_AGENT_MANAGEMENT_SWEEP_MS);
+    var due = Date.now() + delay;
+    // Keep the earliest pending sweep. A busy second session producing rapid tool calls must not
+    // postpone inspection of an older already-stalled session indefinitely.
+    if (tmAgentManagementTimer && tmAgentManagementTimerDue && tmAgentManagementTimerDue <= due) return;
+    if (tmAgentManagementTimer) { try { clearTimeout(tmAgentManagementTimer); } catch (e) {} }
+    tmAgentManagementTimerDue = due;
+    tmAgentManagementTimer = setTimeout(tmRunAgentManagementSweep, delay);
+  }
+
+  function tmInitAgentManagement() {
+    if (tmAgentManagementEnabled()) tmScheduleAgentManagementSweep(2500);
   }
 
   function tmVisibleConversationHasSessionId(sessionId) {
@@ -7628,6 +7877,10 @@
 
   function tmInspectContinuityObject(obj, state) {
     if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      for (var ai = 0; ai < obj.length; ai++) tmInspectContinuityObject(obj[ai], state);
+      return;
+    }
     state.sawAnyData = true;
     if (obj.error && typeof obj.error === 'object') {
       var code = Number(obj.error.code);
@@ -7648,13 +7901,30 @@
       if (typeof d.content === 'string') tmAppendContinuityText(state, d.content);
       if (choice.message && typeof choice.message.content === 'string') tmAppendContinuityText(state, choice.message.content);
       if (Array.isArray(d.tool_calls) && d.tool_calls.length) state.sawToolCall = true;
+      if (d.function_call) state.sawToolCall = true;
+      if (choice.message && Array.isArray(choice.message.tool_calls) && choice.message.tool_calls.length) state.sawToolCall = true;
+      if (choice.message && choice.message.function_call) state.sawToolCall = true;
       if (choice.finish_reason === 'tool_calls' || choice.finish_reason === 'function_call') state.sawToolCall = true;
+      // Gemini native streamGenerateContent: tool turns usually finish with STOP, so the only
+      // reliable signal is a functionCall part inside candidates[].content.parts[].
+      var gp = choice.content && Array.isArray(choice.content.parts) ? choice.content.parts : [];
+      for (var gpi = 0; gpi < gp.length; gpi++) if (gp[gpi] && gp[gpi].functionCall) state.sawToolCall = true;
+    });
+    if (Array.isArray(obj.candidates)) obj.candidates.forEach(function(candidate) {
+      var parts = candidate && candidate.content && Array.isArray(candidate.content.parts) ? candidate.content.parts : [];
+      for (var pi = 0; pi < parts.length; pi++) if (parts[pi] && parts[pi].functionCall) state.sawToolCall = true;
     });
     if (obj.type === 'content_block_delta' && obj.delta && typeof obj.delta.text === 'string') tmAppendContinuityText(state, obj.delta.text);
     if (obj.type === 'content_block_start' && obj.content_block && obj.content_block.type === 'tool_use') state.sawToolCall = true;
     if (obj.type === 'message_delta' && obj.delta && obj.delta.stop_reason === 'tool_use') state.sawToolCall = true;
+    if (obj.stop_reason === 'tool_use') state.sawToolCall = true;
+    if (obj.message && obj.message.stop_reason === 'tool_use') state.sawToolCall = true;
+    var anthropicContent = Array.isArray(obj.content) ? obj.content : (obj.message && Array.isArray(obj.message.content) ? obj.message.content : []);
+    for (var aci = 0; aci < anthropicContent.length; aci++) if (anthropicContent[aci] && anthropicContent[aci].type === 'tool_use') state.sawToolCall = true;
     if (obj.type === 'response.output_text.delta' && typeof obj.delta === 'string') tmAppendContinuityText(state, obj.delta);
-    if (obj.type === 'response.output_item.added' && obj.item && obj.item.type === 'function_call') state.sawToolCall = true;
+    if ((obj.type === 'response.output_item.added' || obj.type === 'response.output_item.done') && obj.item && obj.item.type === 'function_call') state.sawToolCall = true;
+    var responseOutput = obj.response && Array.isArray(obj.response.output) ? obj.response.output : (Array.isArray(obj.output) ? obj.output : []);
+    for (var roi = 0; roi < responseOutput.length; roi++) if (responseOutput[roi] && responseOutput[roi].type === 'function_call') state.sawToolCall = true;
   }
 
   function tmTapContinuitySignals(response, sessionId, stubbedIds, hooks) {
@@ -7675,7 +7945,17 @@
       if (!s) return;
       if (s.indexOf('data:') === 0) s = s.slice(5).trim();
       if (!s || s === tmDoneMarker()) return;
-      try { tmInspectContinuityObject(JSON.parse(s), state); } catch (e) {}
+      state.sawAnyData = true;
+      try {
+        tmInspectContinuityObject(JSON.parse(s), state);
+      } catch (e) {
+        // Pretty-printed/non-SSE JSON can split one object across many lines. Preserve the four
+        // protocol terminal-tool signals without buffering an unbounded full response merely to
+        // reassemble it at close.
+        if (/"functionCall"\s*:|"type"\s*:\s*"(?:tool_use|function_call)"|"finish_reason"\s*:\s*"(?:tool_calls|function_call)"/.test(s)) {
+          state.sawToolCall = true;
+        }
+      }
     }
     function finish() {
       disarmWatchdog();
@@ -7700,6 +7980,10 @@
       }
       // (v4.288) HEALTHY finish (no error sensor fired): clear this session's resume backoff.
       tmResetAutoResumeBackoff(sessionId);
+      // (v4.292) This is the authoritative per-session handoff marker for agent management.
+      // A later outbound payload clears it; until then the DOM liveness probe decides whether the
+      // client is still executing the tool or TypingMind stopped at its 50-tool safety boundary.
+      tmAgentManagementNoteResponse(sessionId, state.sawToolCall, hooks.captureId || null);
       if (state.sawToolCall || !Object.keys(ids).length) return;
       var text = state.textTail.trim();
       var m = text.match(/^Please restore tool result\s+([^\s]+)$/);
@@ -12703,6 +12987,9 @@
       if (options && typeof options.body === 'string') {
         var finalBody = JSON.parse(options.body);
         continuitySessionIdForThisCall = deriveConversationIdFromBody(finalBody);
+        // (v4.292) Any outbound request proves TypingMind advanced beyond the prior assistant
+        // tool-call response for this session, so clear that in-memory suspicion immediately.
+        tmAgentManagementNoteOutbound(continuitySessionIdForThisCall, captureId);
         if (finalBody && tmIsSolProModel(finalBody.model)) {
           shouldSanitizeSolProUsage = true;
         }
@@ -12827,7 +13114,8 @@
         return tmTapContinuitySignals(response, continuitySessionIdForThisCall, stubbedIds, {
           pet: function() { try { if (stallWatchdog) stallWatchdog.pet(); } catch (e) {} },
           disarm: function() { try { if (stallWatchdog) stallWatchdog.cancel(); } catch (e) {} },
-          stamp: function(reason) { try { if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: reason }); } catch (e) {} }
+          stamp: function(reason) { try { if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: reason }); } catch (e) {} },
+          captureId: captureId
         });
       } catch (e) { return response; }
     });
@@ -12880,7 +13168,8 @@
   try {
     if (typeof document !== 'undefined') {
       try { tmRepairLockLabelsFromEntries(); } catch (e) {}  // (v4.216) repair stale lock labels once on load
-      try { tmInitTurnLimitWatcher(); } catch (eW) {}  // (v4.291) turn-count stop sensor
+      try { tmInitTurnLimitWatcher(); } catch (eW) {}  // (v4.291) visible turn-count stop sensor
+      try { tmInitAgentManagement(); } catch (eM) {}  // (v4.292) background tool-swarm manager
       try {
         var backfilledErrors = tmBackfillCapturedErrorsFromRing();
         if (backfilledErrors) console.log('\uD83D\uDEA8 [v' + EXT_VERSION + '] Backfilled persistent errors onto ' + backfilledErrors + ' older capture row(s).');
