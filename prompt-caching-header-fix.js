@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.282
+// Version: 4.283
 // Issues Fixed:
+//   - v4.283: GEMINI-NATIVE SUPPORT FOR THE OVERSIZED TOOL-RESULT GUARD. The v4.280 walker only
+//     knew messages[]/input[]; Gemini's native contents[] shape (model parts[].functionCall -> user
+//     parts[].functionResponse) silently bypassed the guard, so an oversized Gemini tool result
+//     flowed through in full on every turn (confirmed live via DevTools Network tab on a 150 KB
+//     read_text_file result to Gemini 3.7 Flash). The guard now walks contents[] with the
+//     protocol's positional pairing, synthesizing deterministic call IDs ('gm-<name>-<occurrence>')
+//     that are byte-stable across turns and unique even for identical parallel calls (a name+args
+//     hash would collide exactly there). functionResponse parts are measured/stubbed/restored with
+//     the same threshold, GLIMPSE/Lightning-Rod whitelist, 3-point sample, and recovery-phrase
+//     protocol; thoughtSignature parts are never touched.
 //   - v4.282: GUARD + AUTO-RESUME HISTORY BADGES IN THE RING MODAL. Each capture row now carries
 //     three tiny persisted markers next to HIT/MISS: 🛡️N = oversized tool results stubbed on THAT
 //     turn, ♻️N = oversized results restored in full on that turn via the recovery phrase (tooltips
@@ -859,7 +869,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.282';
+  const EXT_VERSION = '4.283';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5867,6 +5877,43 @@
     return ids;
   }
 
+  // (v4.283) Gemini-native contents[] tool pairing. Gemini carries NO tool-call IDs: model turns
+  // hold parts[].functionCall and the following user turn answers POSITIONALLY via
+  // parts[].functionResponse (matched by name + order). We synthesize deterministic IDs
+  // 'gm-<name>-<n>' (n = per-name occurrence across the conversation) -- byte-stable across turns
+  // for the same history, and unique even for identical parallel calls with identical args.
+  function tmWalkGeminiToolPairs(body, onCall, onResult) {
+    if (!body || !Array.isArray(body.contents)) return;
+    var nameCounts = {};
+    var pending = []; // queue of {id, name} from model functionCalls awaiting their functionResponse
+    function nextId(name) {
+      nameCounts[name] = (nameCounts[name] || 0) + 1;
+      return 'gm-' + name + '-' + nameCounts[name];
+    }
+    body.contents.forEach(function(node) {
+      if (!node || !Array.isArray(node.parts)) return;
+      var isModel = (node.role === 'model');
+      node.parts.forEach(function(part) {
+        if (!part) return;
+        if (isModel && part.functionCall && part.functionCall.name) {
+          var cname = String(part.functionCall.name);
+          var cid = nextId(cname);
+          pending.push({ id: cid, name: cname });
+          if (onCall) onCall(cid, cname, part.functionCall.args);
+        } else if (!isModel && part.functionResponse && part.functionResponse.name) {
+          var rname = String(part.functionResponse.name);
+          // Match the earliest pending call with this name (positional protocol); orphan -> synthesize.
+          var idx = -1;
+          for (var i = 0; i < pending.length; i++) { if (pending[i].name === rname) { idx = i; break; } }
+          var rid;
+          if (idx >= 0) { rid = pending[idx].id; pending.splice(idx, 1); }
+          else { rid = nextId(rname); }
+          if (onResult) onResult(rid, rname, part);
+        }
+      });
+    });
+  }
+
   function tmCollectToolCallMetadata(body) {
     var map = {};
     function put(id, name, args) {
@@ -5908,6 +5955,8 @@
         put(block.call_id || block.id, block.name, a2);
       });
     });
+    // (v4.283) Gemini-native contents[]: synthetic deterministic call IDs via positional pairing.
+    tmWalkGeminiToolPairs(body, function(id, name, args) { put(id, name, args); }, null);
     return map;
   }
 
@@ -5918,22 +5967,29 @@
     var recoveryIds = tmCollectRecoveryToolIds(body);
     var callMap = tmCollectToolCallMetadata(body);
 
-    function processResult(id, content, replace) {
+    function processResult(id, content, replace, opts) {
+      opts = opts || {};
       id = String(id || 'unknown');
       var meta = callMap[id] || { id: id, name: 'unknown_tool', args: {} };
       if (tmToolNameIsLargeResultWhitelisted(meta.name)) {
         report.whitelisted.push({ id: id, name: meta.name });
         return;
       }
-      var serialized;
-      try { serialized = JSON.stringify(content); } catch (e) { serialized = String(content); }
-      var sizeBytes = tmUtf8ByteLength(serialized);
+      var sizeBytes;
+      if (typeof opts.sizeBytes === 'number') {
+        sizeBytes = opts.sizeBytes;
+      } else {
+        var serialized;
+        try { serialized = JSON.stringify(content); } catch (e) { serialized = String(content); }
+        sizeBytes = tmUtf8ByteLength(serialized);
+      }
       if (sizeBytes <= limitBytes) return;
       if (recoveryIds[id]) {
         report.recovered.push({ id: id, name: meta.name, bytes: sizeBytes });
         return;
       }
-      var stub = tmBuildOversizedToolStub(meta, content, sizeBytes, limitBytes);
+      var sampleSource = (opts.sampleContent != null) ? opts.sampleContent : content;
+      var stub = tmBuildOversizedToolStub(meta, sampleSource, sizeBytes, limitBytes);
       replace(stub);
       report.changed = true;
       report.stubbed.push({ id: id, name: meta.name, bytes: sizeBytes });
@@ -5959,6 +6015,27 @@
       } else if (item.role === 'tool' && (item.tool_call_id || item.call_id)) {
         processResult(item.tool_call_id || item.call_id, item.content, function(stub) { item.content = stub; });
       }
+    });
+
+    // (v4.283) Gemini-native contents[]: measure/stub/restore parts[].functionResponse with the
+    // same policy. Size is measured on the full serialized response node; the 3-point sample is
+    // built from the joined response.content[].text so it reads like the real tool output.
+    tmWalkGeminiToolPairs(body, null, function(id, name, part) {
+      var resp = part && part.functionResponse ? part.functionResponse.response : null;
+      var serialized;
+      try { serialized = JSON.stringify(resp); } catch (e) { serialized = String(resp); }
+      var sizeBytes = tmUtf8ByteLength(serialized);
+      var sampleText;
+      try {
+        if (resp && Array.isArray(resp.content)) {
+          sampleText = resp.content.map(function(c) { return (c && typeof c.text === 'string') ? c.text : tmStableJson(c); }).join('\n');
+        } else {
+          sampleText = (typeof resp === 'string') ? resp : tmStableJson(resp);
+        }
+      } catch (e) { sampleText = serialized; }
+      processResult(id, resp, function(stub) {
+        part.functionResponse.response = { name: name, content: [{ text: stub }] };
+      }, { sizeBytes: sizeBytes, sampleContent: sampleText });
     });
 
     if (report.stubbed.length) console.warn('🛡️ [v' + EXT_VERSION + '] Withheld ' + report.stubbed.length + ' oversized tool result(s):', report.stubbed);
