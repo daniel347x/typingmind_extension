@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.294
+// Version: 4.295
 // Issues Fixed:
+//   - v4.295: LIVE TOOL-HANDOFF BADGE FEEDBACK. The management badge used to stay 'clear' through
+//     entire healthy tool swarms because (a) its wording treated the pendingToolCall flag purely
+//     as a stall warning and (b) neither the widget nor the ring modal re-rendered when the flag
+//     flipped, so the tool-call handoff state was invisible. The existing flag's lifecycle already
+//     matches the desired display exactly -- set the moment a response finishes on a tool call,
+//     cleared the instant any outbound payload leaves for that session -- so no second state is
+//     introduced. The badge now shows '🔵 clear' (blue) when no handoff is in flight and '🧰 tool'
+//     (red) the moment a session enters the tool-execution handoff, and both state transitions
+//     force an immediate widget + open-ring-modal re-render so the flip is visible live. Purely
+//     presentational: sweep/actuator logic untouched.
 //   - v4.294: SIDEBAR TOOL-ACTIVITY CONFIRMATION + 1.5s GAP-GUARD DELAYS. The DOM gap between
 //     rapid tool calls is slightly longer than one second, so the two final idle confirmations
 //     in the management sweep now wait 1500ms each. More importantly, TypingMind maintains a
@@ -979,7 +989,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.294';
+  const EXT_VERSION = '4.295';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7282,21 +7292,30 @@
   var tmAgentManagementTimerDue = 0;
   var tmAgentManagementBusy = false;
 
-  // (v4.293) Shared one-badge formatter for both status surfaces: the persistent widget's current
+  // (v4.295) Shared one-badge formatter for both status surfaces: the persistent widget's current
   // session/name row and the most-recent ring row for each managed session. Returns '' when
-  // management mode is off or the caller supplies no usable session id. Age is marked explicitly
-  // because a suspicion inside the grace window is intentionally not actionable yet.
+  // management mode is off or the caller supplies no usable session id. The badge mirrors the
+  // pendingToolCall lifecycle DIRECTLY as live turn feedback: '🧰 tool' the moment a response ends
+  // on a tool call (TypingMind now owes the next outbound payload), '🔵 clear' the instant any
+  // outbound request leaves. A badge stuck on 'tool' = the exact stall signature to watch for.
   function tmAgentManagementBadge(sessionId) {
     if (!tmAgentManagementEnabled() || !sessionId) return '';
     var s = tmAgentManagementSessions[String(sessionId)];
     var pending = !!(s && s.pendingToolCall);
-    var fresh = !!(pending && s.responseFinishedAt && (Date.now() - s.responseFinishedAt) < TM_AGENT_MANAGEMENT_GRACE_MS);
-    var text = pending ? (fresh ? '🧰 idle…pending' : '🧰 idle') : '🧰 clear';
-    var color = pending ? '#d08b8b' : '#8fcf98';
+    var text = pending ? '🧰 tool' : '🔵 clear';
+    var color = pending ? '#d08b8b' : '#8fb8ff';
     var tip = pending
-      ? (fresh ? 'Tool-call suspicion noted; waiting out the 75-second grace window before inspection.' : 'Tool-call suspicion: response ended on a tool call, no outbound payload followed, and DOM is idle.')
-      : 'Agent management: no pending tool-call suspicion for this session.';
+      ? 'Agent management: response ended on a tool call — TypingMind is executing client-side and owes the next outbound payload. Healthy swarms flicker tool→clear each turn; a badge STUCK on tool is the stall signature.'
+      : 'Agent management: no tool-call handoff in flight for this session.';
     return ' <span title="' + escapeHtml(tip) + '" style="color:' + color + ';font-size:9px;font-weight:600;white-space:nowrap;">' + text + '</span>';
+  }
+
+  // (v4.295) Force both badge surfaces to reflect a state flip the moment it happens, without
+  // waiting for the next capture-driven render. Guarded no-ops when management mode is off.
+  function tmAgentManagementRefreshBadgeUI() {
+    if (!tmAgentManagementEnabled()) return;
+    try { renderGpt51UsageWidget(); } catch (e) {}
+    try { if (typeof payloadCaptureModalInnerEl !== 'undefined' && payloadCaptureModalInnerEl && payloadCaptureModalInnerEl.isConnected) renderPayloadCaptureModal(); } catch (e2) {}
   }
 
   function tmAgentManagementEnabled() {
@@ -7316,22 +7335,26 @@
     if (!sessionId) return;
     var key = String(sessionId);
     var s = tmAgentManagementSessions[key] || { sessionId: key };
+    var flipped = !!s.pendingToolCall; // (v4.295) true→false flip drives the live badge update
     s.pendingToolCall = false;
     s.lastOutboundAt = Date.now();
     s.captureId = captureId || s.captureId || null;
     s.resumeQueuedAt = 0;
     tmAgentManagementSessions[key] = s;
+    if (flipped) tmAgentManagementRefreshBadgeUI();
   }
 
   function tmAgentManagementNoteResponse(sessionId, endedWithToolCall, captureId) {
     if (!sessionId) return;
     var key = String(sessionId);
     var s = tmAgentManagementSessions[key] || { sessionId: key };
+    var flipped = (!!s.pendingToolCall) !== (!!endedWithToolCall); // (v4.295) any flip repaints
     s.pendingToolCall = !!endedWithToolCall;
     s.responseFinishedAt = Date.now();
     s.captureId = captureId || s.captureId || null;
     if (!s.pendingToolCall) s.resumeQueuedAt = 0;
     tmAgentManagementSessions[key] = s;
+    if (flipped) tmAgentManagementRefreshBadgeUI();
     if (s.pendingToolCall && tmAgentManagementEnabled()) tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_GRACE_MS);
   }
 
