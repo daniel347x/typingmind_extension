@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.293
+// Version: 4.294
 // Issues Fixed:
+//   - v4.294: SIDEBAR TOOL-ACTIVITY CONFIRMATION + 1.5s GAP-GUARD DELAYS. The DOM gap between
+//     rapid tool calls is slightly longer than one second, so the two final idle confirmations
+//     in the management sweep now wait 1500ms each. More importantly, TypingMind maintains a
+//     continuous animate-spin indicator inside the session's left-sidebar row for the ENTIRE
+//     client-side tool-execution window, with no mount/unmount gaps. When the existing chat-pane
+//     checks conclude 'idle' (no spinner, static timer), the sweep now performs one final
+//     authority check against that sidebar spinner. Presence of the sidebar spinner overrides the
+//     idle conclusion and aborts the resume; absence confirms the stall and allows the Continue.
+//     This removes the last race condition for sub-1.5s tool-turn gaps without replacing the
+//     existing signals that short-circuit on proven activity.
 //   - v4.293: MANAGEMENT-MODE IDLE CONFIRMATION + CAPITAL-C ACTUATOR + SESSION SUSPICION BADGES.
 //     Rapid tool turns leave a sub-second DOM gap before TypingMind mounts the spinner, so the
 //     v4.292 liveness probe could catch a false gap between tool calls. The management sweep now
@@ -969,7 +979,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.293';
+  const EXT_VERSION = '4.294';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7374,6 +7384,26 @@
     return out;
   }
 
+  // (v4.294) SIDEBAR TOOL-ACTIVITY CONFIRMATION. TypingMind renders a continuous animate-spin
+  // inside the session's left-sidebar row for the whole client-side tool-execution window. This
+  // is the most reliable 'do not act' signal because it has no sub-second gaps. Locate the row
+  // using the same Session-ID prefix logic as the auto-resume actuator, then test for the spinner.
+  function tmSidebarHasToolActivity(sessionId) {
+    if (!sessionId) return false;
+    try {
+      var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+      var sid = String(sessionId).toLowerCase();
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim().toLowerCase() : '';
+        if (title.indexOf(sid) !== 0) continue;
+        var spinner = rows[i].querySelector('svg.animate-spin');
+        if (spinner && spinner.offsetParent !== null) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
   function tmAgentManagementOpenSession(sessionId, cb) {
     function waitVerified() {
       var started = Date.now();
@@ -7426,9 +7456,10 @@
         var timerAdvanced = !!(first.timer && second.timer && first.timer !== second.timer);
         if (second.spinner || timerAdvanced) { tmFinishAgentManagementSweep(); return; }
 
-        // (v4.293) FINAL GAP GUARD: TypingMind can take a sub-second moment to mount the spinner
-        // after issuing a rapid next tool call. Require TWO one-second-apart idle snapshots after
-        // the timer comparison so that transient DOM gap can never masquerade as a stall.
+        // (v4.294) FINAL GAP GUARD: require TWO 1.5-second-apart idle snapshots after the timer
+        // comparison, then confirm with the sidebar's continuous tool-activity spinner before
+        // acting. The 1.5s delay covers the observed mount gap; the sidebar check eliminates
+        // any residual uncertainty for sub-1.5s tool-turn gaps.
         setTimeout(function() {
           if (!tmAgentManagementEnabled() || !tmAgentManagementPending(state.sessionId)) { tmFinishAgentManagementSweep(); return; }
           var third = tmVisibleToolExecutionSnapshot();
@@ -7438,6 +7469,14 @@
             var fourth = tmVisibleToolExecutionSnapshot();
             if (fourth.spinner) { tmFinishAgentManagementSweep(); return; }
 
+            // FINAL AUTHORITY: the sidebar spinner runs continuously for the entire tool window.
+            // If it is present, TypingMind is still executing; abort rather than risk a duplicate.
+            if (tmSidebarHasToolActivity(state.sessionId)) {
+              console.log('🧭 [v' + EXT_VERSION + '] Agent management: sidebar tool activity detected for ' + state.sessionId + '; aborting idle conclusion.');
+              tmFinishAgentManagementSweep();
+              return;
+            }
+
             var queued = tmQueueAutoContinue(state.sessionId, 'tool_swarm_stall', 'healthy response ended with tool call; no outbound payload; DOM idle');
             if (queued) {
               state.resumeQueuedAt = Date.now();
@@ -7445,8 +7484,8 @@
               console.warn('🧭 [v' + EXT_VERSION + '] Agent management confirmed an idle tool-call session; queueing Continue for ' + state.sessionId + '.');
             }
             tmFinishAgentManagementSweep();
-          }, 1000);
-        }, 1000);
+          }, 1500);
+        }, 1500);
       }, 5000);
     }, 900);
   }
