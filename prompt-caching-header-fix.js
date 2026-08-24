@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.288
+// Version: 4.289
 // Issues Fixed:
+//   - v4.289: ACTUATOR FIXES FROM DAN'S LIVE MODAL-FIRED-BUT-NOTHING-HAPPENED TESTS. Two root
+//     causes: (1) IDENTITY CHECK -- tmVisibleConversationHasSessionId scanned only the first 10
+//     rendered user-message elements; on long conversations the FIRST user turn (the one carrying
+//     the 'Session ID:' line) is virtualized OUT of the DOM, so the check failed even when the
+//     target conversation was already active, and every path aborted (silently pre-v4.288). The
+//     actuator now ALSO accepts the sidebar SELECTED row's title prefix (Dan's convention: the
+//     session hash is always first in the conversation name) -- as the already-active test and
+//     inside the post-switch verification loop. (2) SUBMIT RACE -- the continue text was set and
+//     Ctrl+Enter dispatched SYNCHRONOUSLY, racing React's input registration (the transcription
+//     widget's 200ms settle exists precisely for this); the submit now mirrors that proven
+//     sequence: native setter + input/change events + focus, 200ms settle, re-find the input,
+//     then dispatch Ctrl+Enter.
 //   - v4.288: PER-SESSION EXPONENTIAL BACKOFF FOR ERROR-TRIGGERED AUTO-RESUMES. v4.287's floor was
 //     the 10s modal alone: an instantly-failing endpoint (Moonshot overloaded for an hour) would be
 //     hit ~every 12s (~300 full-payload attempts/hour). Error-triggered resumes (http_error_,
@@ -915,7 +927,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.288';
+  const EXT_VERSION = '4.289';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7189,6 +7201,28 @@
     setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 15000);
   }
 
+  // (v4.289) SIDEBAR-TITLE identity check: the currently-ACTIVE conversation's selected sidebar
+  // row. Robust where the message-DOM check fails (long conversations virtualize the first user
+  // turn -- which carries the Session ID line -- out of the rendered list). Relies on Dan's
+  // naming convention: the session hash is always the first text of the conversation title.
+  function tmActiveSidebarConversationHasSessionId(sessionId) {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="selected-chat-item"]');
+      var sid = String(sessionId || '').toLowerCase();
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim().toLowerCase() : '';
+        if (title.indexOf(sid) === 0) return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function tmConversationVerified(sessionId) {
+    if (tmVisibleConversationHasSessionId(sessionId)) return true;
+    return tmActiveSidebarConversationHasSessionId(sessionId);
+  }
+
   function tmFindVisibleChatInput() {
     var selectors = [
       '#chat-input-textbox', '[data-element-id="chat-input-textbox"]',
@@ -7208,7 +7242,7 @@
     return null;
   }
 
-  function tmSubmitContinueIntoVisibleConversation() {
+  function tmSubmitContinueIntoVisibleConversation(onDone) {
     var input = tmFindVisibleChatInput();
     if (!input) throw new Error('visible TypingMind chat input not found');
     var existing = (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') ? String(input.value || '') : String(input.textContent || '');
@@ -7228,10 +7262,21 @@
       throw new Error('unsupported TypingMind chat input element');
     }
     input.focus();
-    var down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
-    var up = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
-    input.dispatchEvent(down);
-    input.dispatchEvent(up);
+    // (v4.289) The transcription widget's proven rhythm: WAIT ~200ms for React/TypingMind to
+    // process the insertion, RE-FIND the input, then dispatch Ctrl+Enter. v4.281-4.288 fired
+    // Enter synchronously after the value-set, racing registration -- the submit silently no-oped.
+    setTimeout(function() {
+      try {
+        var input2 = tmFindVisibleChatInput() || input;
+        var down = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
+        var up = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
+        input2.dispatchEvent(down);
+        input2.dispatchEvent(up);
+        if (onDone) onDone(null);
+      } catch (e2) {
+        if (onDone) onDone(e2);
+      }
+    }, 200);
   }
 
   function tmClickVisibleContinueButton() {
@@ -7252,7 +7297,7 @@
   function tmWaitForConversationAndResume(item, match) {
     var started = Date.now();
     function check() {
-      if (!tmVisibleConversationHasSessionId(item.sessionId)) {
+      if (!tmConversationVerified(item.sessionId)) {
         if (Date.now() - started < 6000) { setTimeout(check, 150); return; }
         tmFinishAutoContinue(false, 'switched conversation failed Session-ID verification');
         return;
@@ -7261,13 +7306,22 @@
         // For TypingMind's own turn-limit stop, prefer its native Continue affordance. Timeout and
         // recovery-phrase cases normally have none, so use the proven text-submit path.
         var clicked = (item.reason === 'turn_limit') ? tmClickVisibleContinueButton() : false;
-        if (!clicked) tmSubmitContinueIntoVisibleConversation();
-        try { tmRecordAutoResumeSuccess(item.reason); } catch (eRec) {}
-        // (v4.288) Escalate the session's backoff only when an ERROR-triggered resume was actually
-        // submitted; recovery-phrase/turn-limit resumes never decelerate.
-        try { if (tmAutoResumeIsErrorReason(item.reason)) tmNoteAutoResumeAttempt(item.sessionId); } catch (eBk) {}
-        console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
-        tmFinishAutoContinue(true, null);
+        if (clicked) {
+          try { tmRecordAutoResumeSuccess(item.reason); } catch (eRec) {}
+          try { if (tmAutoResumeIsErrorReason(item.reason)) tmNoteAutoResumeAttempt(item.sessionId); } catch (eBk) {}
+          console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
+          tmFinishAutoContinue(true, null);
+          return;
+        }
+        tmSubmitContinueIntoVisibleConversation(function(submitErr) {
+          if (submitErr) { tmFinishAutoContinue(false, submitErr.message || String(submitErr)); return; }
+          try { tmRecordAutoResumeSuccess(item.reason); } catch (eRec) {}
+          // (v4.288) Escalate the session's backoff only when an ERROR-triggered resume was actually
+          // submitted; recovery-phrase/turn-limit resumes never decelerate.
+          try { if (tmAutoResumeIsErrorReason(item.reason)) tmNoteAutoResumeAttempt(item.sessionId); } catch (eBk) {}
+          console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
+          tmFinishAutoContinue(true, null);
+        });
       } catch (e) {
         tmFinishAutoContinue(false, e && e.message ? e.message : String(e));
       }
@@ -7292,7 +7346,7 @@
     if (!item || !item.sessionId) { tmFinishAutoContinue(false, 'missing Session ID'); return; }
     // A currently-visible matching conversation needs no sidebar row at all (its folder may be
     // collapsed or virtualized). Verify it directly and avoid needless navigation.
-    if (tmVisibleConversationHasSessionId(item.sessionId)) {
+    if (tmConversationVerified(item.sessionId)) {
       tmWaitForConversationAndResume(item, null);
       return;
     }
