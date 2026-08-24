@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.287
+// Version: 4.288
 // Issues Fixed:
+//   - v4.288: PER-SESSION EXPONENTIAL BACKOFF FOR ERROR-TRIGGERED AUTO-RESUMES. v4.287's floor was
+//     the 10s modal alone: an instantly-failing endpoint (Moonshot overloaded for an hour) would be
+//     hit ~every 12s (~300 full-payload attempts/hour). Error-triggered resumes (http_error_,
+//     stream_error_, stall_no_bytes, stream_aborted, fetch_dropped, empty_stream) now space out
+//     per session: 15s -> 30s -> 60s -> 120s -> 240s -> 480s -> clamp 600s, reset on the first
+//     healthy response for that session. This is NOT a cap -- attempts never stop, they just
+//     decelerate (~10 attempts/hour of outage instead of ~300). Recovery-phrase, turn-limit, and
+//     manual resumes are never delayed; the modal shows the attempt number. In-memory by design:
+//     a page refresh (Dan taking manual control) resets the clock.
 //   - v4.287: CODE-LESS STREAMED ERRORS + HTTP-STATUS SENSOR. Two holes let a direct-Moonshot 429
 //     die silently: (1) its error chunk carries only {message, type:'engine_overloaded_error'} with
 //     NO numeric error.code, so the v4.286 transient classifier (Number(code) === 429/5xx) never
@@ -906,7 +915,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.287';
+  const EXT_VERSION = '4.288';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7125,10 +7134,59 @@
       for (var i = 0; i < rows.length; i++) {
         var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
         var title = titleEl ? String(titleEl.textContent || '').trim() : '';
-        if (title.toLowerCase().indexOf(sid) === 0) matches.push({ row: rows[i], title: title });
+        if (title.toLowerCase().indexOf(sid) === 0) matches.push({ row: rows[i], title: title, titleEl: titleEl });
       }
     } catch (e) {}
     return matches;
+  }
+
+  // (v4.288) TypingMind VIRTUALIZES the sidebar list (and folders may be collapsed): a target
+  // conversation that is not currently rendered cannot be found by a single querySelector sweep.
+  // Sweep the scroll container top->bottom to force rows to mount, re-querying at each stop.
+  function tmScrollSidebarForMatch(sessionId, cb) {
+    var sc = null;
+    try {
+      var cands = document.querySelectorAll('#navbar nav .overflow-y-auto');
+      for (var i = 0; i < cands.length; i++) {
+        if (cands[i].offsetParent !== null && cands[i].scrollHeight > cands[i].clientHeight) { sc = cands[i]; break; }
+      }
+      if (!sc && cands.length) sc = cands[0];
+    } catch (e) {}
+    if (!sc) { cb([]); return; }
+    var origTop = sc.scrollTop;
+    var maxTop = Math.max(sc.scrollHeight - sc.clientHeight, 0);
+    var positions = [];
+    for (var y = 0; y <= maxTop; y += Math.max(400, Math.floor(sc.clientHeight * 0.8))) positions.push(y);
+    if (positions.length > 40) positions = positions.slice(0, 40);
+    var i2 = 0;
+    (function stepFn() {
+      if (i2 >= positions.length) { try { sc.scrollTop = origTop; } catch (e) {} cb([]); return; }
+      try { sc.scrollTop = positions[i2]; } catch (e) {}
+      i2++;
+      setTimeout(function() {
+        var m = tmFindSidebarConversation(sessionId);
+        if (m.length) { try { sc.scrollTop = origTop; } catch (e) {} cb(m); return; }
+        stepFn();
+      }, 90);
+    })();
+  }
+
+  // (v4.288) Failures must NEVER be silent: a dismissible red toast names the abort reason so Dan
+  // can see exactly why a resume did not fire (previously console-only, invisible unless DevTools
+  // happened to be open on the right tab).
+  function tmShowAutoContinueAbort(item, reason) {
+    if (typeof document === 'undefined' || !document.body) return;
+    var old = document.getElementById('tm-auto-continue-abort');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-auto-continue-abort';
+    overlay.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:2147483647;max-width:420px;background:#2a0d0d;color:#ffd9d9;border:2px solid #ff6b6b;border-radius:8px;padding:12px 14px;font-family:system-ui,sans-serif;font-size:12px;box-shadow:0 8px 40px #000;cursor:pointer;';
+    overlay.innerHTML = '<div style="font-weight:700;color:#ff8a8a;margin-bottom:4px;">⛔ Auto-resume aborted</div>' +
+      '<div>' + escapeHtml(String(reason || 'unknown')) + (item && item.sessionId ? (' — session <b>' + escapeHtml(String(item.sessionId)) + '</b>') : '') + '</div>' +
+      '<div style="margin-top:6px;opacity:0.8;">Click to dismiss (auto-dismiss 15s).</div>';
+    overlay.onclick = function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); };
+    document.body.appendChild(overlay);
+    setTimeout(function() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }, 15000);
   }
 
   function tmFindVisibleChatInput() {
@@ -7205,6 +7263,9 @@
         var clicked = (item.reason === 'turn_limit') ? tmClickVisibleContinueButton() : false;
         if (!clicked) tmSubmitContinueIntoVisibleConversation();
         try { tmRecordAutoResumeSuccess(item.reason); } catch (eRec) {}
+        // (v4.288) Escalate the session's backoff only when an ERROR-triggered resume was actually
+        // submitted; recovery-phrase/turn-limit resumes never decelerate.
+        try { if (tmAutoResumeIsErrorReason(item.reason)) tmNoteAutoResumeAttempt(item.sessionId); } catch (eBk) {}
         console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
         tmFinishAutoContinue(true, null);
       } catch (e) {
@@ -7212,6 +7273,19 @@
       }
     }
     check();
+  }
+
+  function tmClickSidebarMatch(item, match) {
+    try {
+      // Click the TITLE element (what a user actually clicks); it bubbles to whichever ancestor
+      // carries React's navigation handler. Deliberately NOT any inner <button> -- on some rows
+      // the first inner button is a hover action icon (menu), not the open-conversation target.
+      var clickTarget = match.titleEl || match.row;
+      clickTarget.click();
+      tmWaitForConversationAndResume(item, match);
+    } catch (e) {
+      tmFinishAutoContinue(false, 'failed to click sidebar conversation');
+    }
   }
 
   function tmExecuteAutoContinue(item) {
@@ -7223,18 +7297,14 @@
       return;
     }
     var matches = tmFindSidebarConversation(item.sessionId);
-    if (matches.length !== 1) {
-      tmFinishAutoContinue(false, matches.length ? 'ambiguous sidebar Session-ID match' : 'sidebar conversation not found');
-      return;
-    }
-    var match = matches[0];
-    try {
-      var clickTarget = match.row.querySelector('button') || match.row;
-      clickTarget.click();
-      tmWaitForConversationAndResume(item, match);
-    } catch (e) {
-      tmFinishAutoContinue(false, 'failed to click sidebar conversation');
-    }
+    if (matches.length === 1) { tmClickSidebarMatch(item, matches[0]); return; }
+    if (matches.length > 1) { tmFinishAutoContinue(false, 'ambiguous sidebar Session-ID match'); return; }
+    // Not rendered: sweep the virtualized sidebar to force rows to mount, then retry the match.
+    tmScrollSidebarForMatch(item.sessionId, function(found) {
+      if (found && found.length === 1) { tmClickSidebarMatch(item, found[0]); return; }
+      if (found && found.length > 1) { tmFinishAutoContinue(false, 'ambiguous sidebar Session-ID match (after scroll)'); return; }
+      tmFinishAutoContinue(false, 'sidebar conversation not found (folder collapsed or row not rendered)');
+    });
   }
 
   function tmFinishAutoContinue(ok, error) {
@@ -7242,7 +7312,10 @@
     var overlay = null;
     try { overlay = document.getElementById('tm-auto-continue-overlay'); } catch (e) {}
     if (overlay && overlay.parentNode) overlay.parentNode.removeChild(overlay);
-    if (!ok) console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume aborted' + (item ? ' for ' + item.sessionId : '') + ': ' + error);
+    if (!ok) {
+      console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume aborted' + (item ? ' for ' + item.sessionId : '') + ': ' + error);
+      try { tmShowAutoContinueAbort(item, error); } catch (eT) {}
+    }
     tmAutoContinueActive = null;
     // Give TypingMind time to register the just-submitted request before a second queued session
     // switches the visible UI again. Parallel fetches may continue normally after that handoff.
@@ -7259,8 +7332,15 @@
     var box = document.createElement('div');
     box.style.cssText = 'width:min(560px,88vw);background:#15151b;color:#fff;border:2px solid #5da9ff;border-radius:10px;padding:18px;box-shadow:0 12px 55px #000;';
     var remaining = TM_AUTO_CONTINUE_COUNTDOWN_SECONDS;
+    var attemptInfo = '';
+    try {
+      if (tmAutoResumeIsErrorReason(item.reason)) {
+        var bkNow = tmAutoResumeBackoff[String(item.sessionId)];
+        if (bkNow && bkNow.fails > 0) attemptInfo = ' (attempt ' + (bkNow.fails + 1) + ')';
+      }
+    } catch (eAI) {}
     box.innerHTML = '<div style="font-size:17px;font-weight:700;color:#8bc2ff;margin-bottom:8px;">▶ Auto-resume queued</div>' +
-      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + '</b>.<br>TypingMind will switch to it and submit <code>continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
+      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + escapeHtml(attemptInfo) + '</b>.<br>TypingMind will switch to it and submit <code>continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
       '<div style="display:flex;gap:8px;justify-content:flex-end;"><button id="tm-auto-continue-cancel" style="padding:6px 12px;background:#6a3030;color:#fff;border:1px solid #b75;border-radius:5px;cursor:pointer;">Cancel</button><button id="tm-auto-continue-now" style="padding:6px 12px;background:#245f9e;color:#fff;border:1px solid #68aef5;border-radius:5px;cursor:pointer;">Resume now</button></div>';
     overlay.appendChild(box);
     document.body.appendChild(overlay);
@@ -7284,8 +7364,46 @@
 
   function tmProcessAutoContinueQueue() {
     if (tmAutoContinueActive || !tmAutoContinueQueue.length) return;
+    var head = tmAutoContinueQueue[0];
+    // (v4.288) Error-triggered resumes respect the session's backoff window; the modal only
+    // appears once the window elapses. Non-error resumes (recovery, turn-limit, manual) never wait.
+    if (tmAutoResumeIsErrorReason(head.reason)) {
+      var delayMs = tmGetAutoResumeDelayMs(head.sessionId);
+      if (delayMs > 250) {
+        setTimeout(tmProcessAutoContinueQueue, delayMs);
+        return;
+      }
+    }
     tmAutoContinueActive = tmAutoContinueQueue.shift();
     tmShowAutoContinueCountdown(tmAutoContinueActive);
+  }
+
+  // (v4.288) Per-session exponential backoff for ERROR-triggered resumes. Never caps attempts --
+  // only spaces them: 15s, 30s, 60s, 120s, 240s, 480s, then clamp 600s, resetting on the first
+  // healthy response for that session. In-memory by design (refresh = manual reset).
+  var tmAutoResumeBackoff = {};
+  function tmAutoResumeIsErrorReason(reason) {
+    return /^(http_error_|stream_error_|stall_no_bytes|stream_aborted|fetch_dropped|empty_stream)/.test(String(reason || ''));
+  }
+  function tmGetAutoResumeDelayMs(sessionId) {
+    try {
+      var b = tmAutoResumeBackoff[String(sessionId)];
+      if (!b || !b.nextTs) return 0;
+      return Math.max(0, b.nextTs - Date.now());
+    } catch (e) { return 0; }
+  }
+  function tmNoteAutoResumeAttempt(sessionId) {
+    try {
+      var k = String(sessionId);
+      var b = tmAutoResumeBackoff[k] || { fails: 0, nextTs: 0 };
+      b.fails++;
+      var waitSec = Math.min(15 * Math.pow(2, b.fails - 1), 600);
+      b.nextTs = Date.now() + waitSec * 1000;
+      tmAutoResumeBackoff[k] = b;
+    } catch (e) {}
+  }
+  function tmResetAutoResumeBackoff(sessionId) {
+    try { delete tmAutoResumeBackoff[String(sessionId)]; } catch (e) {}
   }
 
   function tmQueueAutoContinue(sessionId, reason, detail) {
@@ -7360,26 +7478,26 @@
     function finish() {
       disarmWatchdog();
       if (state.rawCarry) inspectLine(state.rawCarry);
-      // (v4.287) HTTP STATUS sensor (checked first -- authoritative): a 429/5xx RESPONSE on any
-      // endpoint queues a resume. On OpenRouter this only fires after the v4.202 retry engine has
-      // already exhausted its own attempts; on other endpoints it is the first line of defense.
+      var queuedReason = null;
+      // (v4.287) HTTP STATUS sensor (authoritative, checked first). On OpenRouter this only fires
+      // after the v4.202 retry engine has exhausted its own attempts; elsewhere it is first-line.
       if (httpStatus === 429 || (httpStatus >= 500 && httpStatus < 600)) {
-        stampTrigger('http_error_' + httpStatus);
-        tmQueueAutoContinue(sessionId, 'http_error_' + httpStatus, 'HTTP ' + httpStatus + ' response');
+        queuedReason = 'http_error_' + httpStatus;
+      } else if (state.transientError) {
+        queuedReason = 'stream_error_' + state.transientError.code;
+      } else if (!state.sawAnyData && httpStatus < 400) {
+        // (v4.286) EMPTY STREAM: clean close with NO parsed data events (2xx only).
+        queuedReason = 'empty_stream';
+      }
+      if (queuedReason) {
+        stampTrigger(queuedReason);
+        tmQueueAutoContinue(sessionId, queuedReason,
+          queuedReason === 'empty_stream' ? 'response closed with no data'
+            : (state.transientError ? state.transientError.message : ('HTTP ' + httpStatus + ' response')));
         return;
       }
-      if (state.transientError) {
-        stampTrigger('stream_error_' + state.transientError.code);
-        tmQueueAutoContinue(sessionId, 'stream_error_' + state.transientError.code, state.transientError.message);
-        return;
-      }
-      // (v4.286) EMPTY STREAM: the response closed cleanly with NO parsed data events at all --
-      // an upstream/proxy that died silently. 2xx-only: error bodies set sawAnyData above.
-      if (!state.sawAnyData && httpStatus < 400) {
-        stampTrigger('empty_stream');
-        tmQueueAutoContinue(sessionId, 'empty_stream', 'response closed with no data');
-        return;
-      }
+      // (v4.288) HEALTHY finish (no error sensor fired): clear this session's resume backoff.
+      tmResetAutoResumeBackoff(sessionId);
       if (state.sawToolCall || !Object.keys(ids).length) return;
       var text = state.textTail.trim();
       var m = text.match(/^Please restore tool result\s+([^\s]+)$/);
