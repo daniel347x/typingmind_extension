@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.289
+// Version: 4.290
 // Issues Fixed:
+//   - v4.290: CONSUMED-PHRASE STRIPPING (ROLE-ALTERNATION SAFE). The approved v4.280 algorithm
+//     called for removing the agent's verbatim recovery-phrase message from the wire once its
+//     result is restored (it stays in AssemblyDB; we re-strip every turn, deterministically), but
+//     the initial implementation left it in place. Stripping is now implemented with two safety
+//     rules discovered during review: (1) only strip a message whose ENTIRE content is exactly
+//     the phrase (never carve a phrase line out of a longer message); (2) never strip when removal
+//     would create consecutive same-role neighbors -- e.g. [tool_result, assistant(phrase),
+//     user('continue')] on Anthropic/Gemini shapes would become [user, user] and 400 on role
+//     alternation, so those are left in place (harmless); on the OpenAI chat shape (tool -> user
+//     is valid) the phrase is removed.
 //   - v4.289: ACTUATOR FIXES FROM DAN'S LIVE MODAL-FIRED-BUT-NOTHING-HAPPENED TESTS. Two root
 //     causes: (1) IDENTITY CHECK -- tmVisibleConversationHasSessionId scanned only the first 10
 //     rendered user-message elements; on long conversations the FIRST user turn (the one carrying
@@ -927,7 +937,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.289';
+  const EXT_VERSION = '4.290';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6019,6 +6029,52 @@
     return map;
   }
 
+  // (v4.290) Remove consumed recovery-phrase messages from the wire once their result is
+  // restored. Two safety rules: strip ONLY a message whose entire content is exactly the phrase,
+  // and NEVER when removal would create consecutive same-role neighbors (Anthropic/Gemini role
+  // alternation 400s -- e.g. phrase between a tool_result user message and a 'continue' user
+  // message must be left in place). Deterministic: same history -> same decision, every turn.
+  function tmStripConsumedRecoveryPhrases(body, recoveredIdMap) {
+    var removed = 0;
+    function phraseOf(text) {
+      if (typeof text !== 'string') return null;
+      var m = text.trim().match(/^Please restore tool result\s+([^\s]+)$/);
+      return (m && recoveredIdMap[String(m[1])]) ? String(m[1]) : null;
+    }
+    function wholeMessagePhrase(msg) {
+      if (!msg) return false;
+      if (typeof msg.content === 'string') return !!phraseOf(msg.content);
+      if (Array.isArray(msg.content) && msg.content.length === 1) {
+        var b = msg.content[0];
+        if (b && typeof b.text === 'string' && (b.type === 'text' || b.type === 'output_text' || !b.type)) return !!phraseOf(b.text);
+      }
+      if (Array.isArray(msg.parts) && msg.parts.length === 1) {
+        var p = msg.parts[0];
+        if (p && typeof p.text === 'string' && !p.thought) return !!phraseOf(p.text);
+      }
+      return false;
+    }
+    function stripFrom(arr, roleOf) {
+      if (!Array.isArray(arr)) return;
+      for (var i = arr.length - 1; i >= 0; i--) {
+        var msg = arr[i];
+        if (!msg) continue;
+        var role = roleOf(msg);
+        if (role !== 'assistant' && role !== 'model') continue;
+        if (!wholeMessagePhrase(msg)) continue;
+        var prev = i > 0 ? roleOf(arr[i - 1]) : null;
+        var next = i < arr.length - 1 ? roleOf(arr[i + 1]) : null;
+        if (prev && next && prev === next) continue; // alternation hazard: keep the message
+        arr.splice(i, 1);
+        removed++;
+      }
+    }
+    if (Array.isArray(body.messages)) stripFrom(body.messages, function(m) { return m && m.role; });
+    if (Array.isArray(body.input)) stripFrom(body.input, function(m) { return m && m.role; });
+    if (Array.isArray(body.contents)) stripFrom(body.contents, function(n) { return n && (n.role === 'model' ? 'model' : 'user'); });
+    return removed;
+  }
+
   function tmApplyOversizedToolResultGuard(body) {
     var report = { changed: false, stubbed: [], recovered: [], whitelisted: [] };
     if (!body || typeof body !== 'object') return report;
@@ -6098,7 +6154,20 @@
     });
 
     if (report.stubbed.length) console.warn('🛡️ [v' + EXT_VERSION + '] Withheld ' + report.stubbed.length + ' oversized tool result(s):', report.stubbed);
-    if (report.recovered.length) console.log('✅ [v' + EXT_VERSION + '] Recovery phrase found; passing full tool result(s):', report.recovered);
+    if (report.recovered.length) {
+      console.log('✅ [v' + EXT_VERSION + '] Recovery phrase found; passing full tool result(s):', report.recovered);
+      // (v4.290) Remove the consumed phrase message(s) from the wire where role-alternation-safe.
+      try {
+        var recoveredIdMap = {};
+        report.recovered.forEach(function(x) { recoveredIdMap[String(x.id)] = true; });
+        var strippedPhrases = tmStripConsumedRecoveryPhrases(body, recoveredIdMap);
+        if (strippedPhrases > 0) {
+          report.changed = true;
+          report.phrases_stripped = strippedPhrases;
+          console.log('✂️ [v' + EXT_VERSION + '] Stripped ' + strippedPhrases + ' consumed recovery-phrase message(s) from outbound payload (kept in AssemblyDB).');
+        }
+      } catch (eStrip) {}
+    }
     return report;
   }
 
