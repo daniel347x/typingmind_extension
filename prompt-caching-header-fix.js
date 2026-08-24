@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.283
+// Version: 4.284
 // Issues Fixed:
+//   - v4.284: GUARD LOCATION INDEXES + GUARD REPORT POP-UP. Every stubbed/recovered entry now
+//     carries its payload location ('messages[20]', 'messages[20].content[1]', 'input[7]',
+//     'contents[12].parts[0]') so a 🛡️ badge on any turn maps straight back to the Network-tab
+//     payload. The stub text itself gains a deterministic 'Payload location:' line (indices are
+//     stable because history only appends), badge tooltips lead with the location, and rows with
+//     guard data gain a Guard button that opens a formatted report (location, tool, id, size, plus
+//     the auto-resume snapshot) in the existing JSON viewer with Copy.
 //   - v4.283: GEMINI-NATIVE SUPPORT FOR THE OVERSIZED TOOL-RESULT GUARD. The v4.280 walker only
 //     knew messages[]/input[]; Gemini's native contents[] shape (model parts[].functionCall -> user
 //     parts[].functionResponse) silently bypassed the guard, so an oversized Gemini tool result
@@ -869,7 +876,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.283';
+  const EXT_VERSION = '4.284';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5838,12 +5845,13 @@
       '\n… [end sample] …\n' + take(lines.length - 3, 3);
   }
 
-  function tmBuildOversizedToolStub(meta, content, sizeBytes, limitBytes) {
+  function tmBuildOversizedToolStub(meta, content, sizeBytes, limitBytes, at) {
     var args = tmStableJson(meta.args == null ? {} : meta.args);
     if (args.length > 4000) args = args.slice(0, 4000) + '…[arguments clipped]';
     return '[TM OVERSIZED TOOL RESULT SAFETY]\n' +
       'Tool: ' + String(meta.name || 'unknown_tool') + '\n' +
       'Tool call ID: ' + String(meta.id || 'unknown') + '\n' +
+      (at ? ('Payload location: ' + String(at) + '\n') : '') +
       'Serialized result size: ' + sizeBytes + ' bytes (' + (sizeBytes / 1024).toFixed(1) + ' KB)\n' +
       'Configured safety limit: ' + limitBytes + ' bytes (' + (limitBytes / 1024).toFixed(1) + ' KB)\n' +
       'Arguments: ' + args + '\n\n' +
@@ -5890,10 +5898,10 @@
       nameCounts[name] = (nameCounts[name] || 0) + 1;
       return 'gm-' + name + '-' + nameCounts[name];
     }
-    body.contents.forEach(function(node) {
+    body.contents.forEach(function(node, nodeIndex) {
       if (!node || !Array.isArray(node.parts)) return;
       var isModel = (node.role === 'model');
-      node.parts.forEach(function(part) {
+      node.parts.forEach(function(part, partIndex) {
         if (!part) return;
         if (isModel && part.functionCall && part.functionCall.name) {
           var cname = String(part.functionCall.name);
@@ -5908,7 +5916,7 @@
           var rid;
           if (idx >= 0) { rid = pending[idx].id; pending.splice(idx, 1); }
           else { rid = nextId(rname); }
-          if (onResult) onResult(rid, rname, part);
+          if (onResult) onResult(rid, rname, part, 'contents[' + nodeIndex + '].parts[' + partIndex + ']');
         }
       });
     });
@@ -5985,42 +5993,42 @@
       }
       if (sizeBytes <= limitBytes) return;
       if (recoveryIds[id]) {
-        report.recovered.push({ id: id, name: meta.name, bytes: sizeBytes });
+        report.recovered.push({ id: id, name: meta.name, bytes: sizeBytes, at: opts.at || null });
         return;
       }
       var sampleSource = (opts.sampleContent != null) ? opts.sampleContent : content;
-      var stub = tmBuildOversizedToolStub(meta, sampleSource, sizeBytes, limitBytes);
+      var stub = tmBuildOversizedToolStub(meta, sampleSource, sizeBytes, limitBytes, opts.at);
       replace(stub);
       report.changed = true;
-      report.stubbed.push({ id: id, name: meta.name, bytes: sizeBytes });
+      report.stubbed.push({ id: id, name: meta.name, bytes: sizeBytes, at: opts.at || null });
     }
 
-    if (Array.isArray(body.messages)) body.messages.forEach(function(msg) {
+    if (Array.isArray(body.messages)) body.messages.forEach(function(msg, msgIndex) {
       if (!msg) return;
       if (msg.role === 'tool' && (msg.tool_call_id || msg.call_id)) {
-        processResult(msg.tool_call_id || msg.call_id, msg.content, function(stub) { msg.content = stub; });
+        processResult(msg.tool_call_id || msg.call_id, msg.content, function(stub) { msg.content = stub; }, { at: 'messages[' + msgIndex + ']' });
       }
-      if (Array.isArray(msg.content)) msg.content.forEach(function(block) {
+      if (Array.isArray(msg.content)) msg.content.forEach(function(block, blockIndex) {
         if (!block || block.type !== 'tool_result' || !block.tool_use_id) return;
         processResult(block.tool_use_id, block.content, function(stub) {
           block.content = [{ type: 'text', text: stub }];
-        });
+        }, { at: 'messages[' + msgIndex + '].content[' + blockIndex + ']' });
       });
     });
 
-    if (Array.isArray(body.input)) body.input.forEach(function(item) {
+    if (Array.isArray(body.input)) body.input.forEach(function(item, inputIndex) {
       if (!item) return;
       if (item.type === 'function_call_output' && (item.call_id || item.id)) {
-        processResult(item.call_id || item.id, item.output, function(stub) { item.output = stub; });
+        processResult(item.call_id || item.id, item.output, function(stub) { item.output = stub; }, { at: 'input[' + inputIndex + ']' });
       } else if (item.role === 'tool' && (item.tool_call_id || item.call_id)) {
-        processResult(item.tool_call_id || item.call_id, item.content, function(stub) { item.content = stub; });
+        processResult(item.tool_call_id || item.call_id, item.content, function(stub) { item.content = stub; }, { at: 'input[' + inputIndex + ']' });
       }
     });
 
     // (v4.283) Gemini-native contents[]: measure/stub/restore parts[].functionResponse with the
     // same policy. Size is measured on the full serialized response node; the 3-point sample is
     // built from the joined response.content[].text so it reads like the real tool output.
-    tmWalkGeminiToolPairs(body, null, function(id, name, part) {
+    tmWalkGeminiToolPairs(body, null, function(id, name, part, at) {
       var resp = part && part.functionResponse ? part.functionResponse.response : null;
       var serialized;
       try { serialized = JSON.stringify(resp); } catch (e) { serialized = String(resp); }
@@ -6035,7 +6043,7 @@
       } catch (e) { sampleText = serialized; }
       processResult(id, resp, function(stub) {
         part.functionResponse.response = { name: name, content: [{ text: stub }] };
-      }, { sizeBytes: sizeBytes, sampleContent: sampleText });
+      }, { sizeBytes: sizeBytes, sampleContent: sampleText, at: at || null });
     });
 
     if (report.stubbed.length) console.warn('🛡️ [v' + EXT_VERSION + '] Withheld ' + report.stubbed.length + ' oversized tool result(s):', report.stubbed);
@@ -8456,6 +8464,36 @@
     } else if (part === 'error') {
       obj = cap.error;
       label = 'Provider error';
+    } else if (part === 'guard') {
+      // (v4.284) Oversized tool-result guard report: payload locations, tool names, ids, sizes,
+      // plus the auto-resume snapshot -- formatted text in the shared viewer (with Copy).
+      var gStub = Array.isArray(cap._tool_stubbed) ? cap._tool_stubbed : [];
+      var gRec = Array.isArray(cap._tool_recovered) ? cap._tool_recovered : [];
+      if (!gStub.length && !gRec.length) return;
+      var gLines = ['OVERSIZED TOOL-RESULT GUARD REPORT', ''];
+      if (gStub.length) {
+        gLines.push('STUBBED (deterministic stub sent on this turn):');
+        gStub.forEach(function(x) {
+          gLines.push('  ' + String(x.at || '?') + '  ' + String(x.name || '?') + '  ' + String(x.id || '?') + '  ' + humanReadableSize(Number(x.bytes || 0)));
+        });
+        gLines.push('');
+      }
+      if (gRec.length) {
+        gLines.push('RECOVERED (full result restored on this turn):');
+        gRec.forEach(function(x) {
+          gLines.push('  ' + String(x.at || '?') + '  ' + String(x.name || '?') + '  ' + String(x.id || '?') + '  ' + humanReadableSize(Number(x.bytes || 0)));
+        });
+        gLines.push('');
+      }
+      if (Number(cap._autoresume_total || 0) > 0) {
+        gLines.push('Auto-resumes as of this turn: ' + cap._autoresume_total);
+        var gBy = cap._autoresume_by_reason || {};
+        Object.keys(gBy).forEach(function(k) { gLines.push('  ' + tmAutoResumeReasonLabel(k) + ': ' + gBy[k]); });
+      }
+      var gText = gLines.join('\n');
+      copyTextToClipboard(gText, 'Guard report');
+      tmShowJsonViewerModal(gText, 'Guard report');
+      return;
     } else if (part === 'in_headers') {
       obj = cap.response_headers;
       label = 'Response headers';
@@ -9223,6 +9261,13 @@
                 var segTitle = hasSegs ? 'Copy raw usage/error SSE segment(s)' : 'Copy raw response head (failure row — no parsed segment)';
                 return '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="' + segPart + '" title="' + segTitle + '" style="background:#5a3a6e;color:#fff;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">' + segLabel + '</button>';
               })() +
+              (function() {
+                // (v4.284) Guard report button on rows that carry stub/recovery data.
+                var hasGuardData = (Array.isArray(cap._tool_stubbed) && cap._tool_stubbed.length) ||
+                                   (Array.isArray(cap._tool_recovered) && cap._tool_recovered.length);
+                if (!hasGuardData) return '';
+                return '<button data-action="copy-payload-capture" data-capture-id="' + capId + '" data-part="guard" title="Oversized tool-result guard report (payload locations, tool, id, size)" style="background:#4a3a10;color:#ffd166;border:none;border-radius:3px;padding:1px 6px;font-size:10px;cursor:pointer;margin-left:4px;">Guard</button>';
+              })() +
               disabledNote +
               capRouteDropdown +
               '</div>';
@@ -9274,14 +9319,14 @@
         var capRecArr = Array.isArray(cap._tool_recovered) ? cap._tool_recovered : [];
         if (capStubArr.length) {
           var stubTip = 'Oversized tool result(s) withheld this turn (deterministic stub sent): ' +
-            capStubArr.map(function(x) { return String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
+            capStubArr.map(function(x) { return (x.at ? (String(x.at) + ' ') : '') + String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
           capGuardBadges += '<span title="' + escapeHtml(stubTip) + '" ' +
             'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #e0b050;' +
             'border-radius:8px;color:#e0b050;font-size:9px;font-weight:bold;white-space:nowrap;">🛡️' + capStubArr.length + '</span>';
         }
         if (capRecArr.length) {
           var recTip = 'Oversized tool result(s) restored in full this turn (recovery phrase found): ' +
-            capRecArr.map(function(x) { return String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
+            capRecArr.map(function(x) { return (x.at ? (String(x.at) + ' ') : '') + String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
           capGuardBadges += '<span title="' + escapeHtml(recTip) + '" ' +
             'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #7dd67d;' +
             'border-radius:8px;color:#7dd67d;font-size:9px;font-weight:bold;white-space:nowrap;">♻️' + capRecArr.length + '</span>';
