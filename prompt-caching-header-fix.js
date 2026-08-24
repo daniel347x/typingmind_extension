@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.281
+// Version: 4.282
 // Issues Fixed:
+//   - v4.282: GUARD + AUTO-RESUME HISTORY BADGES IN THE RING MODAL. Each capture row now carries
+//     three tiny persisted markers next to HIT/MISS: 🛡️N = oversized tool results stubbed on THAT
+//     turn, ♻️N = oversized results restored in full on that turn via the recovery phrase (tooltips
+//     list tool name/id/size), and ▶️N = cumulative auto-resume count as of that turn (tooltip
+//     breaks down by reason: timeouts/rate limits/other 5xx/tool recovery/turn limit). Counts are
+//     stamped onto the ring record at capture time; the auto-resume ledger lives in the tiny
+//     tm_autoresume_stats_v1 store and is incremented only on a successful continue submission.
 //   - v4.281: WALK-AWAY AUTO-RESUME. A passive clone-reader taps completed response streams without
 //     delaying, suppressing, or rewriting the bytes TypingMind receives/persists. It detects late
 //     streamed transient errors (including Kimi/OpenRouter mid-stream 504 idle timeouts) and, only
@@ -852,7 +859,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.281';
+  const EXT_VERSION = '4.282';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6920,6 +6927,41 @@
   var tmAutoContinueQueue = [];
   var tmAutoContinueActive = null;
 
+  // (v4.282) Cumulative auto-resume ledger. Tiny counts-only store; snapshotted onto each capture
+  // row so the ring modal shows the running total 'as of that turn' with a reason breakdown.
+  var TM_AUTORESUME_STATS_KEY = 'tm_autoresume_stats_v1';
+  function tmGetAutoResumeStats() {
+    try {
+      var s = JSON.parse(localStorage.getItem(TM_AUTORESUME_STATS_KEY) || '{}');
+      if (!s || typeof s !== 'object') s = {};
+      if (typeof s.total !== 'number' || isNaN(s.total)) s.total = 0;
+      if (!s.by_reason || typeof s.by_reason !== 'object') s.by_reason = {};
+      return s;
+    } catch (e) { return { total: 0, by_reason: {} }; }
+  }
+  function tmRecordAutoResumeSuccess(reason) {
+    try {
+      var s = tmGetAutoResumeStats();
+      s.total++;
+      var r = String(reason || 'unknown');
+      s.by_reason[r] = (s.by_reason[r] || 0) + 1;
+      s.last_ts = Date.now();
+      localStorage.setItem(TM_AUTORESUME_STATS_KEY, JSON.stringify(s));
+    } catch (e) {}
+  }
+  function tmAutoResumeReasonLabel(k) {
+    if (k === 'oversized_result_recovery') return 'tool recovery';
+    if (k === 'turn_limit') return 'turn limit';
+    if (k === 'manual_debug') return 'manual';
+    var m = String(k || '').match(/^stream_error_(\d+)$/);
+    if (m) {
+      if (m[1] === '504') return 'timeouts (504)';
+      if (m[1] === '429') return 'rate limits (429)';
+      return 'error ' + m[1];
+    }
+    return String(k || 'unknown');
+  }
+
   function tmFindVisibleChatContainer() {
     try {
       var els = document.querySelectorAll('div.dynamic-chat-content-container');
@@ -7030,6 +7072,7 @@
         // recovery-phrase cases normally have none, so use the proven text-submit path.
         var clicked = (item.reason === 'turn_limit') ? tmClickVisibleContinueButton() : false;
         if (!clicked) tmSubmitContinueIntoVisibleConversation();
+        try { tmRecordAutoResumeSuccess(item.reason); } catch (eRec) {}
         console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
         tmFinishAutoContinue(true, null);
       } catch (e) {
@@ -9146,6 +9189,37 @@
           'border-radius:8px;color:#ffd166;font-size:10px;font-weight:bold;white-space:nowrap;">ID↺' +
           (capIdRepairCount > 1 ? (' ' + capIdRepairCount) : '') + '</span>';
       }
+      // (v4.282) Guard + auto-resume history badges: 🛡️ stubbed / ♻️ recovered THIS turn,
+      // ▶️ cumulative auto-resumes as of this turn (tooltip = reason breakdown).
+      var capGuardBadges = '';
+      try {
+        var capStubArr = Array.isArray(cap._tool_stubbed) ? cap._tool_stubbed : [];
+        var capRecArr = Array.isArray(cap._tool_recovered) ? cap._tool_recovered : [];
+        if (capStubArr.length) {
+          var stubTip = 'Oversized tool result(s) withheld this turn (deterministic stub sent): ' +
+            capStubArr.map(function(x) { return String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
+          capGuardBadges += '<span title="' + escapeHtml(stubTip) + '" ' +
+            'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #e0b050;' +
+            'border-radius:8px;color:#e0b050;font-size:9px;font-weight:bold;white-space:nowrap;">🛡️' + capStubArr.length + '</span>';
+        }
+        if (capRecArr.length) {
+          var recTip = 'Oversized tool result(s) restored in full this turn (recovery phrase found): ' +
+            capRecArr.map(function(x) { return String(x.name || '?') + ' ' + String(x.id || '?') + ' (' + Math.round(Number(x.bytes || 0) / 1024) + 'KB)'; }).join('; ');
+          capGuardBadges += '<span title="' + escapeHtml(recTip) + '" ' +
+            'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #7dd67d;' +
+            'border-radius:8px;color:#7dd67d;font-size:9px;font-weight:bold;white-space:nowrap;">♻️' + capRecArr.length + '</span>';
+        }
+        var capArTotal = Number(cap._autoresume_total || 0);
+        if (capArTotal > 0) {
+          var arBy = cap._autoresume_by_reason || {};
+          var arParts = [];
+          Object.keys(arBy).forEach(function(k) { arParts.push(tmAutoResumeReasonLabel(k) + ': ' + arBy[k]); });
+          var arTip = 'Auto-resumes (typed "continue") as of this turn' + (arParts.length ? (' — ' + arParts.join(' | ')) : '');
+          capGuardBadges += '<span title="' + escapeHtml(arTip) + '" ' +
+            'style="display:inline-block;margin-right:4px;padding:0 4px;border:1px solid #6aa8ff;' +
+            'border-radius:8px;color:#6aa8ff;font-size:9px;font-weight:bold;white-space:nowrap;">▶️' + capArTotal + '</span>';
+        }
+      } catch (eGuardBadge) {}
       var capSessionId = cap.session_id || null;
       var capIdentity = cap._identity || null;
       var capModel = capIdentity ? (capIdentity.model || '') : tmCaptureModel(cap);
@@ -9194,7 +9268,7 @@
       html += '<div style="font-weight:600;overflow:visible;display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-height:18px;">' +
               '<span style="display:inline-flex;align-items:center;flex-shrink:0;white-space:nowrap;">' +
               '<span style="' + idxStyle + '">#' + (idx + 1) + '</span>' +
-              hitBadge + capIdRepairBadge + sessionCostStr +
+              hitBadge + capIdRepairBadge + capGuardBadges + sessionCostStr +
               '</span>' +
               (cost12hStr || cost24hStr
                 ? ('<span style="display:inline-flex;align-items:center;gap:6px;flex-shrink:0;">' + cost12hStr + cost24hStr + '</span>')
@@ -12002,6 +12076,23 @@
     } catch (e) {
       // Never break requests due to capture
     }
+
+    // (v4.282) Stamp guard outcome + auto-resume snapshot onto the ring record for history badges.
+    try {
+      if (captureId) {
+        var tmStampStubbed = (oversizedGuardReportForThisCall && Array.isArray(oversizedGuardReportForThisCall.stubbed)) ? oversizedGuardReportForThisCall.stubbed : [];
+        var tmStampRecovered = (oversizedGuardReportForThisCall && Array.isArray(oversizedGuardReportForThisCall.recovered)) ? oversizedGuardReportForThisCall.recovered : [];
+        var tmStampAr = tmGetAutoResumeStats();
+        if (tmStampStubbed.length || tmStampRecovered.length || tmStampAr.total > 0) {
+          tmUpdateCaptureRecord(captureId, {
+            _tool_stubbed: tmStampStubbed,
+            _tool_recovered: tmStampRecovered,
+            _autoresume_total: tmStampAr.total,
+            _autoresume_by_reason: tmStampAr.by_reason
+          });
+        }
+      }
+    } catch (eStampGuard) {}
 
     // ==================== (v4.270) OPENROUTER→GEMINI HARD BLOCK (default ON) ====================
     // PROVEN silent-data-loss route: OpenRouter's OpenAI→Gemini translation empties/drops large
