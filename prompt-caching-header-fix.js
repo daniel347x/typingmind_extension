@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.295
+// Version: 4.296
 // Issues Fixed:
+//   - v4.296: TOOL-HANDOFF BADGE IDENTITY-ALIAS FIX. The v4.295 ledger DID flip correctly, but
+//     the visible badge always rendered `clear`: continuity state is keyed by the raw pasted
+//     Session ID (`a6f657d7`) used for sidebar navigation, while capture/widget identity stores
+//     the derived routing form (`tm-a6f657d7`) and prefers it for display. Badge lookup therefore
+//     missed the live ledger entry every time. The display resolver now tries the exact key first,
+//     then its canonical raw alias with one leading `tm-` removed. This repairs both the persistent
+//     widget and newest-per-session ring badge without changing the tested suspicion ledger,
+//     sweep, navigation, or actuator logic.
 //   - v4.295: LIVE TOOL-HANDOFF BADGE FEEDBACK. The management badge used to stay 'clear' through
 //     entire healthy tool swarms because (a) its wording treated the pendingToolCall flag purely
 //     as a stall warning and (b) neither the widget nor the ring modal re-rendered when the flag
@@ -989,7 +997,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.295';
+  const EXT_VERSION = '4.296';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7292,15 +7300,28 @@
   var tmAgentManagementTimerDue = 0;
   var tmAgentManagementBusy = false;
 
-  // (v4.295) Shared one-badge formatter for both status surfaces: the persistent widget's current
-  // session/name row and the most-recent ring row for each managed session. Returns '' when
-  // management mode is off or the caller supplies no usable session id. The badge mirrors the
-  // pendingToolCall lifecycle DIRECTLY as live turn feedback: '🧰 tool' the moment a response ends
-  // on a tool call (TypingMind now owes the next outbound payload), '🔵 clear' the instant any
-  // outbound request leaves. A badge stuck on 'tool' = the exact stall signature to watch for.
+  // (v4.296) Resolve the display identity onto the continuity ledger's raw Session-ID key.
+  // Capture/widget surfaces prefer tmDeriveStableSessionId(), which prepends `tm-` to an explicit
+  // pasted ID; the continuity/DOM actuator deliberately uses the raw pasted ID itself. Try exact
+  // first (future-proof if the ledger changes), then remove exactly one routing prefix.
+  function tmAgentManagementDisplayState(sessionId) {
+    var id = String(sessionId || '');
+    if (!id) return null;
+    if (tmAgentManagementSessions[id]) return tmAgentManagementSessions[id];
+    if (id.indexOf('tm-') === 0) {
+      var raw = id.slice(3);
+      if (tmAgentManagementSessions[raw]) return tmAgentManagementSessions[raw];
+    }
+    return null;
+  }
+
+  // (v4.295/v4.296) Shared one-badge formatter for both status surfaces: the persistent widget's
+  // current session/name row and the most-recent ring row for each managed session. The badge
+  // mirrors pendingToolCall directly; v4.296 normalizes derived `tm-…` display IDs back onto the
+  // raw continuity-ledger key so the live flip is actually visible.
   function tmAgentManagementBadge(sessionId) {
     if (!tmAgentManagementEnabled() || !sessionId) return '';
-    var s = tmAgentManagementSessions[String(sessionId)];
+    var s = tmAgentManagementDisplayState(sessionId);
     var pending = !!(s && s.pendingToolCall);
     var text = pending ? '🧰 tool' : '🔵 clear';
     var color = pending ? '#d08b8b' : '#8fb8ff';
