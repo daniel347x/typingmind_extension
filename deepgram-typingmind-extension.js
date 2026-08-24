@@ -3323,6 +3323,13 @@
   }
 
   /** The last '---'-delimited block of any text, normalized for comparison. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.getLastBlockNormForText-fyg7,
+  //   role=__lambdao_1.getLastBlockNormForText,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function getLastBlockNormForText(text) {
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
@@ -3451,6 +3458,13 @@
    *  expanded tool call counts as a turn) AND keep marching until minUserTurns USER turns have been
    *  seen (or the start of the list). Only norms with length >= 5 are returned for matching, but
    *  EVERY classified turn counts toward the march. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.getRecentChatTurnNorms-oey4,
+  //   role=__lambdao_1.getRecentChatTurnNorms,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function getRecentChatTurnNorms(maxTurns, minUserTurns) {
     maxTurns = maxTurns || 10;
     minUserTurns = minUserTurns || 0;
@@ -3481,6 +3495,13 @@
    *  so a weak coincidental match (6 chars) is distinguishable from a genuine one (707 chars).
    *  v3.294: dominance-ratio suppression — when the strongest match outweighs the runner-up by
    *  >= 5x, the match is treated as unambiguous and the warning is NOT shown. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.updateDuplicateWarning-3gr0,
+  //   role=__lambdao_1.updateDuplicateWarning,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function updateDuplicateWarning(matchedSessions, strengths, matchIdx) {
     var el = document.getElementById('deepgram-refine-duplicate-warning');
     if (!el) return;
@@ -3712,6 +3733,13 @@
    *  entire session block) always qualifies. Reverse direction (session block contains the turn
    *  norm) also qualifies — the v3.289 30% threshold was REVERTED in v3.290 in favor of
    *  match-strength comparison in refineComputeMatches (strongest match wins, no arbitrary cutoff). */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.isSessionTurnMatch-c24b,
+  //   role=__lambdao_1.isSessionTurnMatch,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function isSessionTurnMatch(sessionNorm, turnNorm) {
     if (!sessionNorm || sessionNorm.length < 5 || !turnNorm) return false;
     return turnNorm.includes(sessionNorm) || sessionNorm.includes(turnNorm);
@@ -3721,6 +3749,13 @@
    *  v3.290: match-strength comparison — the STRONGEST match wins (not the first). Strength =
    *  min(block.length, turnNorm.length): the length of the shorter side. A 6-char "deploy"
    *  matching a 93-char block (strength 6) always loses to a genuine full-length match. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.refineComputeMatches-0h9z,
+  //   role=__lambdao_1.refineComputeMatches,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function refineComputeMatches(turnNorms) {
     var contexts = refineGetContexts();
     var bestIdx = -1, bestStrength = 0;
@@ -3742,6 +3777,13 @@
   }
 
   /** Auto-select the session matching the current conversation (if any), and update the border. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.refineAutoSelectMatch-7uy7,
+  //   role=__lambdao_1.refineAutoSelectMatch,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  //   comment=Session matching subsystem entry points (v3.294 curation),
+  // ]
   function refineAutoSelectMatch() {
     var turnNorms = getRecentChatTurnNorms(10, 4);
     var m = refineComputeMatches(turnNorms);
