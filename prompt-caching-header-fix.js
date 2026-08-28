@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.301
+// Version: 4.302
 // Issues Fixed:
+//   - v4.302: SWEEP PRE-FLIGHT KILLS NEEDLESS SESSION FLIPS. With the heartbeat ON, any session
+//     whose tool call ran longer than the 75s grace got an inspection NAVIGATION -- the sweep
+//     flipped to a visibly ACTIVE session (sidebar spinner spinning), parked through the ~9s
+//     verification chain, then correctly aborted at the sidebar-authority step. All wasted
+//     motion in front of the user (Dan: 'it just flips to the session, looks for something,
+//     and sits there parked'). The sweep's candidate filter now runs the chain's OWN final
+//     authority (tmSidebarHasToolActivity -- a sidebar-only DOM query that needs NO navigation)
+//     BEFORE any switch: spinner positively present => actively executing => skip WITHOUT
+//     navigating; spinner absent (incl. row not rendered / collapsed folder) => fall through
+//     to the unchanged proven chain. Safe-direction only: this can never suppress a real
+//     Continue (the full chain treats the same signal as conclusive do-not-act; a stalled
+//     session shows no sidebar spinner), and the worst case in a transitional race is one
+//     extra sweep-cycle delay, never a miss. The 10s-modal resume path is untouched.
 //   - v4.301: FILTER LISTBOX USABILITY POLISH. (1) The ring-modal session Filter trigger had no
 //     minimum width, so with 'All' selected it collapsed to a tiny pill that was hard to spot --
 //     now min-width:150px, left-aligned, so it always reads as a real dropdown. (2) Rollover
@@ -1051,7 +1064,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.301';
+  const EXT_VERSION = '4.302';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7926,6 +7939,12 @@
       if (!s || !s.pendingToolCall || !s.responseFinishedAt) return false;
       if (now - s.responseFinishedAt < TM_AGENT_MANAGEMENT_GRACE_MS) return false;
       if (s.resumeQueuedAt && now - s.resumeQueuedAt < TM_AGENT_MANAGEMENT_RETRY_COOLDOWN_MS) return false;
+      // (v4.302) PRE-FLIGHT: the sidebar tool-activity spinner is the inspection chain's OWN
+      // final authority, and it is queryable WITHOUT navigating. Positively present => this
+      // session is executing a tool right now => skip the inspection navigation entirely
+      // (the chain would only park ~9s and abort on this same signal). Absent (incl. row not
+      // rendered) => fall through to the unchanged proven chain; safe-direction only.
+      if (tmSidebarHasToolActivity(s.sessionId)) return false;
       return true;
     }).sort(function(a, b) { return a.responseFinishedAt - b.responseFinishedAt; });
     if (!candidates.length) { tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_SWEEP_MS); return; }
