@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.304
+// Version: 4.305
 // Issues Fixed:
+//   - v4.305: MISMATCH GUARD IMAGE FALSE-POSITIVE FIX (all 4 protocols). The v4.270 prompt-
+//     ingestion-mismatch heuristic estimated expected prompt tokens as (outbound bytes)/4 over
+//     the RAW body -- but a vision part (one high-detail screenshot) is hundreds of KB of
+//     base64 and only ~1-2K tokens via tile tokenization, so ANY session containing an image
+//     tripped the critical warning on EVERY turn (Dan's first-ever image chat, on Fable 5).
+//     Fix: a capture-time scan (tmScanNonTextParts, run while the FULL body is present --
+//     skeletonization would strip the very base64 being measured) totals inline
+//     image/document bytes + a per-part token estimate (1500/img, 3000/doc) across all four
+//     protocol shapes (chat-completions image_url, Anthropic image/document source.data,
+//     Responses input_image/input_file, Gemini inline_data/inlineData; recurses into nested
+//     containers like tool_result content arrays). The detector now estimates from
+//     (bytes - nontext_bytes)/4 + nontext_tokens, gates the minimum-bytes check on the
+//     effective bytes, and reports the exclusion in details. Real text-crop events (the
+//     original silent tool-result-cropping case) still slash the text-byte estimate exactly
+//     as before -- the guard's teeth are unchanged for text. Pre-v4.305 records lack the
+//     stamps (0) and behave exactly as before.
 //   - v4.304: COST-CALC CACHE-WRITE GATE FIX + FALLBACK AUDIT. The v4.236 cache-write gate
 //     (bill creation only when cache_read > 0, 'evidence of reuse') silently zeroed the single
 //     most expensive turn shape: a pure cache-MISS turn on a provider with no API cost field
@@ -1090,7 +1106,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.304';
+  const EXT_VERSION = '4.305';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3453,6 +3469,20 @@
         } catch (eBytes) { record.body_bytes_utf8 = bodyRaw.length; }
         const parsed = JSON.parse(bodyRaw);
         record.protocol = tmDetectProtocol(url, parsed);
+        // (v4.305) Scan for NON-TEXT inline-data parts (images/documents) NOW, while the full
+        // body is guaranteed present -- a skeletonized record would strip the very base64 we
+        // need to measure. The mismatch detector subtracts these bytes from its bytes/4
+        // estimate and substitutes the per-part token estimates (base64 is enormous in bytes,
+        // tiny in tokens).
+        try {
+          var ntScan = tmScanNonTextParts(parsed);
+          if (ntScan && ntScan.bytes > 0) {
+            record._nontext_bytes = ntScan.bytes;
+            record._nontext_tokens = ntScan.tokens;
+            record._nontext_images = ntScan.images;
+            record._nontext_docs = ntScan.docs;
+          }
+        } catch (eNt) {}
         record._model = (parsed && parsed.model) ? String(parsed.model) : null;
 
         // (v4.244) Gemini-native traffic carries NO body.model — the model lives in the URL path
@@ -3906,6 +3936,73 @@
     return null;
   }
 
+  // (v4.305) Scan an outbound body for NON-TEXT inline-data parts (images/documents) across
+  // all four protocol shapes; totals their inline byte size plus a realistic per-part TOKEN
+  // estimate. Vision parts are huge in bytes (base64) but tiny in tokens (tile-based ~1-2K),
+  // so the raw bytes/4 heuristic in tmDetectPromptIngestionMismatch false-positives on every
+  // turn of any session containing an image. Computed at CAPTURE time (full body guaranteed
+  // present); stamped as _nontext_* so skeletonized records stay correct.
+  const TM_MISMATCH_IMAGE_TOKEN_EST = 1500;  // high-detail image, tile tokenization (~85 low / ~170xN high)
+  const TM_MISMATCH_DOC_TOKEN_EST = 3000;    // document/file part (PDF etc.)
+  function tmScanNonTextParts(bodyObj) {
+    var out = { bytes: 0, tokens: 0, images: 0, docs: 0 };
+    if (!bodyObj || typeof bodyObj !== 'object') return out;
+    function addData(str, isImage) {
+      var len = 0;
+      try { len = String(str || '').length; } catch (e) {}
+      if (len <= 0) return;
+      out.bytes += len;
+      if (isImage) { out.images++; out.tokens += TM_MISMATCH_IMAGE_TOKEN_EST; }
+      else { out.docs++; out.tokens += TM_MISMATCH_DOC_TOKEN_EST; }
+    }
+    function scanParts(parts) {
+      if (!Array.isArray(parts)) return;
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (!p || typeof p !== 'object') continue;
+        // OpenAI chat-completions: {type:'image_url', image_url:{url:'data:...'}}
+        if (p.type === 'image_url') {
+          var u = p.image_url;
+          addData(u && typeof u === 'object' ? u.url : u, true); continue;
+        }
+        // Anthropic messages: {type:'image'|'document', source:{data}}
+        if ((p.type === 'image' || p.type === 'document') && p.source && typeof p.source === 'object') {
+          addData(p.source.data, p.type === 'image'); continue;
+        }
+        // Responses API: {type:'input_image'|'input_file', ...}
+        if (p.type === 'input_image') { addData(typeof p.image_url === 'string' ? p.image_url : (p.image_url && p.image_url.url), true); continue; }
+        if (p.type === 'input_file') { addData(p.file_data || p.fileData || (p.file && (p.file.file_data || p.file.fileData)), false); continue; }
+        // OpenAI chat file part: {type:'file', file:{file_data}}
+        if (p.type === 'file' && p.file && typeof p.file === 'object') { addData(p.file.file_data || p.file.fileData, false); continue; }
+        // Gemini native: {inline_data|inlineData:{mime_type|mimeType, data}}
+        var inline = p.inline_data || p.inlineData || null;
+        if (inline && typeof inline === 'object') {
+          var mime = inline.mime_type || inline.mimeType || '';
+          addData(inline.data, /^image\//i.test(String(mime || ''))); continue;
+        }
+        // Nested containers (e.g. Anthropic tool_result content arrays carrying images)
+        if (Array.isArray(p.content)) scanParts(p.content);
+      }
+    }
+    try {
+      var msgs = Array.isArray(bodyObj.messages) ? bodyObj.messages : (Array.isArray(bodyObj.input) ? bodyObj.input : null);
+      if (msgs) {
+        for (var mi = 0; mi < msgs.length; mi++) {
+          var c = msgs[mi] && msgs[mi].content;
+          if (Array.isArray(c)) scanParts(c);
+        }
+      }
+      var contents = Array.isArray(bodyObj.contents) ? bodyObj.contents : null;
+      if (contents) {
+        for (var ci = 0; ci < contents.length; ci++) {
+          var ps = contents[ci] && contents[ci].parts;
+          if (Array.isArray(ps)) scanParts(ps);
+        }
+      }
+    } catch (e) {}
+    return out;
+  }
+
   // Response-time heuristic: does the provider-reported prompt-token count fall egregiously below
   // what the outbound payload size predicts? This does NOT prove content was dropped (providers may
   // legitimately differ); it raises a soft 'prompt_ingestion_mismatch' warning for investigation.
@@ -3914,10 +4011,17 @@
     try {
       if (!cap) return null;
       var bytes = Number(cap.body_bytes_utf8 || cap.body_chars_estimate || 0);
-      if (!isFinite(bytes) || bytes < TM_PAYLOAD_MISMATCH_MIN_BYTES) return null;
+      // (v4.305) Exclude non-text inline-data bytes (images/documents) BEFORE the bytes/4
+      // estimate and substitute per-part token estimates: base64 is enormous in bytes but
+      // tiny in tokens, so unadjusted bytes/4 false-positives on EVERY turn of an image-
+      // bearing session. Pre-v4.305 records lack the stamps (0) -> behavior unchanged.
+      var nonTextBytes = Number(cap._nontext_bytes || 0);
+      var nonTextTokens = Number(cap._nontext_tokens || 0);
+      var effectiveBytes = Math.max(0, bytes - nonTextBytes);
+      if (!isFinite(effectiveBytes) || effectiveBytes < TM_PAYLOAD_MISMATCH_MIN_BYTES) return null;
       var reported = tmEffectivePromptTokens(cap);
       if (!reported || reported <= 0) return null;
-      var estimated = Math.ceil(bytes / 4);
+      var estimated = Math.ceil(effectiveBytes / 4) + nonTextTokens;
       if (estimated <= 0) return null;
       var ratio = reported / estimated;
       if (ratio >= TM_PAYLOAD_MISMATCH_RATIO) return null;
@@ -3929,6 +4033,10 @@
         ts: Date.now(),
         details: {
           outbound_bytes: bytes,
+          nontext_excluded_bytes: nonTextBytes,
+          nontext_estimated_tokens: nonTextTokens,
+          nontext_images: Number(cap._nontext_images || 0),
+          nontext_docs: Number(cap._nontext_docs || 0),
           estimated_prompt_tokens: estimated,
           reported_prompt_tokens: reported,
           reported_to_estimated_ratio: Math.round(ratio * 1000) / 1000,
