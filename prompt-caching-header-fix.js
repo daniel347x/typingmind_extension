@@ -1,6 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.311
+// Version: 4.312
 // Issues Fixed:
+//   - v4.312: AUTO-RESUME TEXT IS NOW MACHINE-SIGNPOSTED (the Kimi confusion incident). The
+//     typed auto-resume used to be the bare word 'Continue' -- and a reasoning model REASONS
+//     about words: Kimi received the auto-fired message, concluded Dan must mean 'show me the
+//     next GLIMPSE', re-ran the same tool call, got the same result back, sat confused, and
+//     stopped. The typed text is now a bracketed, extension-attributed notice that carries
+//     the interruption reason and cannot be mistaken for a human instruction:
+//       [AUTO-RESUME — TypingMind payload extension, not a user instruction. The previous
+//        turn was interrupted (<reason>). Disregard this message and continue your previous
+//        task exactly where you left off.]
+//     Threaded through tmSubmitContinueIntoVisibleConversation (new optional resumeText arg,
+//     default 'Continue' for back-compat); the draft-restore's do-not-clobber comparison now
+//     checks against the actual typed text (tmAutoResumeLastTypedText) instead of a hardcoded
+//     'Continue'; the 10s countdown modal copy now says 'submit the auto-resume message'.
+//     TypingMind's NATIVE turn-limit Continue button is untouched (its text is TypingMind's
+//     own; the typed path is ours).
 //   - v4.311: SERVICE-TIER COST VARIANTS (OpenAI fast='priority' vs default). Dan's Set Costs
 //     find: GPT-5.6 Sol fast bills 2x on the SAME model+endpoint, but both tiers pooled into
 //     one Set Costs row (gpt-5.6-sol::api.openai.com) keyed with whichever price he entered
@@ -1188,7 +1203,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.311';
+  const EXT_VERSION = '4.312';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8544,7 +8559,7 @@
           if (!input) return;
           var cur = readVal(input);
           if (cur === draft.text) { if (idx === delays.length - 1) tmClearAutoResumeDraft(); return; } // already restored
-          if (cur.trim() && cur.trim() !== 'Continue') {
+          if (cur.trim() && cur.trim() !== String(tmAutoResumeLastTypedText || 'Continue').trim()) {
             // A HUMAN (or another flow) put fresh content in the composer: never clobber it.
             if (idx === delays.length - 1) {
               console.warn('⚠️ [v' + EXT_VERSION + '] Draft restore skipped: composer has new content. Draft preserved in localStorage key ' + TM_AUTORESUME_DRAFT_KEY + '.');
@@ -8571,7 +8586,18 @@
     });
   }
 
-  function tmSubmitContinueIntoVisibleConversation(onDone) {
+  // (v4.312) The typed auto-resume text is MACHINE-SIGNPOSTED. A bare 'Continue' is a WORD,
+  // and reasoning models reason about it: Kimi once read it as 'show me the next GLIMPSE',
+  // re-ran the same tool call, got the same result, and stalled out confused. The bracketed,
+  // extension-attributed form is unmistakably not a human instruction, tells the model to
+  // disregard it, and says exactly what to do instead.
+  function tmBuildAutoResumeText(reason) {
+    var r = String(reason || 'stall').replace(/_/g, ' ');
+    return '[AUTO-RESUME — TypingMind payload extension, not a user instruction. The previous turn was interrupted (' + r + '). Disregard this message and continue your previous task exactly where you left off.]';
+  }
+  var tmAutoResumeLastTypedText = ''; // the exact text last typed (draft-restore comparison)
+
+  function tmSubmitContinueIntoVisibleConversation(onDone, resumeText) {
     var input = tmFindVisibleChatInput();
     if (!input) throw new Error('visible TypingMind chat input not found');
     var existing = (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') ? String(input.value || '') : String(input.textContent || '');
@@ -8585,11 +8611,15 @@
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
       var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-      setter.call(input, 'Continue');
+      var textToType = String(resumeText || 'Continue');
+      tmAutoResumeLastTypedText = textToType;
+      setter.call(input, textToType);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } else if (input.contentEditable === 'true') {
-      input.textContent = 'Continue';
+      var textToTypeCE = String(resumeText || 'Continue');
+      tmAutoResumeLastTypedText = textToTypeCE;
+      input.textContent = textToTypeCE;
       input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
@@ -8727,7 +8757,7 @@
           try { if (tmAutoResumeIsErrorReason(item.reason)) tmNoteAutoResumeAttempt(item.sessionId); } catch (eBk) {}
           console.log('▶️ [v' + EXT_VERSION + '] Auto-resumed session ' + item.sessionId + ' (' + item.reason + ')' + (match ? ' via ' + match.title : '') + '.');
           tmFinishAutoContinue(true, null);
-        });
+        }, tmBuildAutoResumeText(item.reason));
       } catch (e) {
         tmFinishAutoContinue(false, e && e.message ? e.message : String(e));
       }
@@ -8805,7 +8835,7 @@
       }
     } catch (eAI) {}
     box.innerHTML = '<div style="font-size:17px;font-weight:700;color:#8bc2ff;margin-bottom:8px;">▶ Auto-resume queued</div>' +
-      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + escapeHtml(attemptInfo) + '</b>.<br>TypingMind will switch to it and submit <code>Continue</code> in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
+      '<div style="font-size:13px;line-height:1.45;margin-bottom:10px;">Session <b style="color:#a8ffb0;">' + escapeHtml(String(item.sessionId)) + '</b> stopped because <b>' + escapeHtml(String(item.reason)) + escapeHtml(attemptInfo) + '</b>.<br>TypingMind will switch to it and submit the auto-resume message in <span id="tm-auto-continue-seconds">' + remaining + '</span>s.</div>' +
       '<div style="display:flex;gap:8px;justify-content:flex-end;"><button id="tm-auto-continue-cancel" style="padding:6px 12px;background:#6a3030;color:#fff;border:1px solid #b75;border-radius:5px;cursor:pointer;">Cancel</button><button id="tm-auto-continue-now" style="padding:6px 12px;background:#245f9e;color:#fff;border:1px solid #68aef5;border-radius:5px;cursor:pointer;">Resume now</button></div>';
     overlay.appendChild(box);
     document.body.appendChild(overlay);
