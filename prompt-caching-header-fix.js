@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.299
+// Version: 4.300
 // Issues Fixed:
+//   - v4.300: MANAGEMENT OFF-SWITCH IS NOW REAL (auto-resume choke gate + in-flight cancel).
+//     Dan caught the walk-away engine firing with the heartbeat toggle OFF (orange): the v4.292
+//     toggle only gated the newer cross-session sweep, while the OLDER v4.281 sensors (15m
+//     silence watchdog, stream abort/error/empty, turn-limit MutationObserver, oversized
+//     recovery) still queued auto-continues -- and once queued, the 10s countdown, session
+//     switch, and Continue submit had NO enabled checks at all. Fixes: (1) ONE choke gate in
+//     tmQueueAutoContinue refuses every autonomous resume while disabled (covers all current
+//     and FUTURE callers; only the manual debug hook's 'manual_debug' reason is exempt);
+//     (2) toggling OFF now purges the pending queue AND aborts an in-flight countdown modal
+//     (module-level cancel handle); (3) tmExecuteAutoContinue re-checks the flag before
+//     navigation (covers a toggle flipped mid-countdown); (4) the management sweep's
+//     session-switch verify loop aborts early when disabled; (5) tmCheckTurnLimitStop returns
+//     before arming its 2-minute dedupe while disabled. Enabled-path behavior is unchanged --
+//     the double-dozen proven flows are untouched.
 //   - v4.299: CTX-DIAL PROVIDER-GRANULAR OVERRIDES + GUARANTEED BACK-OUT. The dial now carries
 //     the row's provider slug (data-provider), and overrides land on the PRECISE key clicked:
 //     'model::providerSlug' when the row names a provider (parity with Set Costs / Rate Providers
@@ -1031,7 +1045,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.299';
+  const EXT_VERSION = '4.300';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7702,6 +7716,12 @@
     enabled = !!enabled;
     try { localStorage.setItem(TM_AGENT_MANAGEMENT_KEY, enabled ? 'true' : 'false'); } catch (e) {}
     if (tmAgentManagementTimer) { try { clearTimeout(tmAgentManagementTimer); } catch (e2) {} tmAgentManagementTimer = null; tmAgentManagementTimerDue = 0; }
+    // (v4.300) OFF is immediate and total: purge pending resumes and abort an in-flight
+    // countdown modal, so nothing queued while ON can fire after the toggle.
+    if (!enabled) {
+      try { tmAutoContinueQueue.length = 0; } catch (eQ) {}
+      try { tmCancelAutoContinueCountdown(); } catch (eC) {}
+    }
     if (enabled) tmScheduleAgentManagementSweep(1200);
     try { renderGpt51UsageWidget(); } catch (e3) {}
     console.log((enabled ? '🔴' : '🟠') + ' [v' + EXT_VERSION + '] Agent management mode ' + (enabled ? 'ENABLED' : 'disabled') + '.');
@@ -7807,6 +7827,8 @@
     function waitVerified() {
       var started = Date.now();
       (function check() {
+        // (v4.300) Abort the chain if management was toggled OFF mid-switch.
+        if (!tmAgentManagementEnabled()) { cb(new Error('management disabled')); return; }
         if (tmConversationVerified(sessionId)) { cb(null); return; }
         if (Date.now() - started < 7000) { setTimeout(check, 150); return; }
         cb(new Error('switched conversation failed Session-ID verification'));
@@ -8128,6 +8150,9 @@
 
   var tmTurnLimitLastHandled = { sig: '', ts: 0 };
   function tmCheckTurnLimitStop() {
+    // (v4.300) Respect the OFF switch before doing any work (also keeps the 2-minute dedupe
+    // signature from being armed by a stop we deliberately ignore while disabled).
+    if (!tmAgentManagementEnabled()) return;
     var det = tmDetectTurnLimitStop();
     if (!det) return;
     var sig = String(det.stopEl.innerText || '').slice(0, 200);
@@ -8219,6 +8244,8 @@
 
   function tmExecuteAutoContinue(item) {
     if (!item || !item.sessionId) { tmFinishAutoContinue(false, 'missing Session ID'); return; }
+    // (v4.300) Final gate before navigation: the toggle may have flipped OFF during the countdown.
+    if (!tmAgentManagementEnabled() && item.reason !== 'manual_debug') { tmFinishAutoContinue(false, 'management disabled'); return; }
     // A currently-visible matching conversation needs no sidebar row at all (its folder may be
     // collapsed or virtualized). Verify it directly and avoid needless navigation.
     if (tmConversationVerified(item.sessionId)) {
@@ -8251,6 +8278,9 @@
     setTimeout(tmProcessAutoContinueQueue, 1500);
   }
 
+  // (v4.300) Module-level handle so toggling management OFF aborts an in-flight countdown.
+  var tmAutoContinueCountdownCancel = null;
+
   function tmShowAutoContinueCountdown(item) {
     if (typeof document === 'undefined' || !document.body) { tmFinishAutoContinue(false, 'DOM unavailable'); return; }
     var old = document.getElementById('tm-auto-continue-overlay');
@@ -8274,13 +8304,15 @@
     overlay.appendChild(box);
     document.body.appendChild(overlay);
     var finished = false;
-    function finish(run) {
+    function finish(run, why) {
       if (finished) return;
       finished = true;
       clearInterval(timer);
+      tmAutoContinueCountdownCancel = null;
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-      if (run) tmExecuteAutoContinue(item); else tmFinishAutoContinue(false, 'cancelled by user');
+      if (run) tmExecuteAutoContinue(item); else tmFinishAutoContinue(false, why || 'cancelled by user');
     }
+    tmAutoContinueCountdownCancel = function() { finish(false, 'management disabled'); };
     box.querySelector('#tm-auto-continue-cancel').onclick = function() { finish(false); };
     box.querySelector('#tm-auto-continue-now').onclick = function() { finish(true); };
     var timer = setInterval(function() {
@@ -8289,6 +8321,13 @@
       if (span) span.textContent = String(Math.max(remaining, 0));
       if (remaining <= 0) finish(true);
     }, 1000);
+  }
+
+  // (v4.300) Abort an in-flight auto-continue countdown (the toggle-off path). Belt-and-
+  // suspenders: even if the cancel handle was somehow lost, remove any orphaned overlay.
+  function tmCancelAutoContinueCountdown() {
+    try { if (tmAutoContinueCountdownCancel) tmAutoContinueCountdownCancel(); } catch (e) {}
+    try { var ov = document.getElementById('tm-auto-continue-overlay'); if (ov && ov.parentNode) ov.parentNode.removeChild(ov); } catch (e2) {}
   }
 
   function tmProcessAutoContinueQueue() {
@@ -8336,6 +8375,13 @@
   }
 
   function tmQueueAutoContinue(sessionId, reason, detail) {
+    // (v4.300) THE OFF SWITCH IS REAL. Every automatic resume path (15m silence watchdog,
+    // stream abort/error/empty sensors, turn-limit observer, agent-management sweep, oversized
+    // recovery) funnels through this ONE queue. Refuse when agent management is disabled -- the
+    // v4.292 toggle had only gated the sweep, so the older v4.281 sensors kept firing the
+    // actuator (10s modal + session switch + Continue) with the toggle OFF. The only exempt
+    // reason is 'manual_debug' (an explicit human action, never autonomous monitoring).
+    if (!tmAgentManagementEnabled() && reason !== 'manual_debug') return false;
     if (!sessionId) {
       console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume skipped: no explicit Session ID in request.');
       return false;
