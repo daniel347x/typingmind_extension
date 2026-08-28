@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.306
+// Version: 4.307
 // Issues Fixed:
+//   - v4.307: WIDGET SESSION-ROW READABILITY. Per Dan: the underlined clickable 'Session ID:'
+//     label (opens the ring-buffer modal) bumps 13px -> 15px (larger font AND larger click
+//     target), and the PASTED session ID value (right of the rightmost pipe) bumps 10px -> 12px
+//     for at-a-distance readability. The 'pasted:' static label, the derived session ID value,
+//     and everything else on the row keep their current sizes. Widget-only: the ring-modal
+//     rows render their own session line and are untouched.
 //   - v4.306: MISMATCH GUARD MEDIA ESTIMATOR -- REAL DIMENSIONS, NOT FLAT GUESSES. v4.305's
 //     flat per-part estimates (1500/img, 3000/doc) killed the image false positive but were
 //     magnitude-blind (a tiny icon vs a 4K screenshot estimated identically). The estimator
@@ -1119,7 +1125,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.306';
+  const EXT_VERSION = '4.307';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6107,8 +6113,8 @@
 
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:13px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
-      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + displayPastedId + '</span>');
+      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:15px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;pointer-events:auto;">' + displayPastedId + '</span>');
       // (v4.146) Current session total at the left, before the labels.
       // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
       // and cost come from ONE identity (no more mixing sources).
