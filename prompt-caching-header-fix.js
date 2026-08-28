@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.307
+// Version: 4.308
 // Issues Fixed:
+//   - v4.308: ACTUATOR INPUT-LOCK FIX -- the draft guard refused a resume because of text in a
+//     FOREIGN widget (Dan's transcription panel), caught live: 'chat input contains an unsent
+//     draft; refusing to overwrite it' while the REAL TypingMind composer sat empty. Root
+//     cause: tmFindVisibleChatInput's generic fallback selectors (contenteditable /
+//     role=textbox / bare textarea) could select a floating widget's textarea whenever the
+//     real composer failed the specific selectors, and the old foreign exclusion was a narrow
+//     #deepgram-panel check that modern transcription widgets escape. A near-miss for an
+//     unattended stall (Dan: 'I cannot wake up to find I lost four hours'). Fixes, two
+//     independent layers: (1) tmElementLooksLikeForeignPanel walks the candidate's ancestors
+//     for deepgram/transcri/dictat/whisper/speech/stt/voice markers in id+class (no exact DOM
+//     identity needed); (2) fallback selectors now ALSO require the candidate to horizontally
+//     overlap the visible chat container's rect AND sit in its lower half (the composer lives
+//     at the bottom of the chat column; floating panels fail regardless of DOM identity).
+//     Specific selectors are trusted as before; on any uncertainty (no chat container,
+//     errors) the legacy behavior is preserved. A genuine draft in the REAL composer still
+//     refuses, exactly as designed.
 //   - v4.307: WIDGET SESSION-ROW READABILITY. Per Dan: the underlined clickable 'Session ID:'
 //     label (opens the ring-buffer modal) bumps 13px -> 15px (larger font AND larger click
 //     target), and the PASTED session ID value (right of the rightmost pipe) bumps 10px -> 12px
@@ -1125,7 +1141,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.307';
+  const EXT_VERSION = '4.308';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8342,19 +8358,69 @@
     return tmActiveSidebarConversationHasSessionId(sessionId);
   }
 
+  // (v4.308) Layer 1: generic foreign-panel blacklist. Walks the candidate's ancestors for
+  // transcription/dictation widget markers -- no exact DOM identity needed (supersedes the
+  // brittle #deepgram-panel-only exclusion, which modern transcription widgets escape).
+  function tmElementLooksLikeForeignPanel(el) {
+    try {
+      var node = el;
+      var hops = 0;
+      while (node && node !== document.body && hops < 10) {
+        var marker = (String(node.id || '') + ' ' + String(node.className || '')).toLowerCase();
+        if (/deepgram|transcri|dictat|whisper|speech|stt|voice/.test(marker)) return true;
+        node = node.parentElement; hops++;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  // (v4.308) Layer 2: chat-column geometry. The real TypingMind composer lives at the BOTTOM
+  // of the chat column: require the candidate to horizontally overlap the visible chat
+  // container's rect and sit in its lower half. Floating widgets pinned to a screen edge fail
+  // this no matter what their DOM identity is. On ANY uncertainty (no chat container, errors)
+  // return true -- degrade to legacy behavior rather than break an exotic layout.
+  function tmElementInChatColumn(el) {
+    try {
+      var container = tmFindVisibleChatContainer();
+      if (!container || !el || typeof el.getBoundingClientRect !== 'function') return true;
+      var cr = container.getBoundingClientRect();
+      var er = el.getBoundingClientRect();
+      if (!cr || !er || !er.width) return true;
+      var overlapX = Math.min(cr.right, er.right) - Math.max(cr.left, er.left);
+      if (overlapX <= 0) return false;
+      var midY = cr.top + (cr.height * 0.5);
+      if (er.top < midY - 40) return false;
+      return true;
+    } catch (e) { return true; }
+  }
+
   function tmFindVisibleChatInput() {
-    var selectors = [
+    // (v4.308) Split into SPECIFIC selectors (trusted as-is) and GENERIC fallbacks (which must
+    // additionally pass BOTH anti-foreign-widget layers) -- the bare contenteditable/textarea
+    // fallbacks are what landed on Dan's transcription widget and nearly stalled a session.
+    var specificSelectors = [
       '#chat-input-textbox', '[data-element-id="chat-input-textbox"]',
       'textarea[placeholder*="Press"]', 'textarea.main-chat-input',
-      'textarea[placeholder*="Message"]', 'div[contenteditable="true"]',
+      'textarea[placeholder*="Message"]'
+    ];
+    var fallbackSelectors = [
+      'div[contenteditable="true"]',
       '[contenteditable="true"]', 'div[role="textbox"]', 'textarea'
     ];
     try {
-      for (var s = 0; s < selectors.length; s++) {
-        var els = document.querySelectorAll(selectors[s]);
-        for (var i = 0; i < els.length; i++) {
-          var el = els[i];
-          if (el.offsetParent !== null && !el.closest('#deepgram-panel') && !el.closest('#gpt51-usage-widget') && String(el.id || '').indexOf('deepgram') === -1) return el;
+      var s, i, els, el;
+      for (s = 0; s < specificSelectors.length; s++) {
+        els = document.querySelectorAll(specificSelectors[s]);
+        for (i = 0; i < els.length; i++) {
+          el = els[i];
+          if (el.offsetParent !== null && !el.closest('#gpt51-usage-widget') && !tmElementLooksLikeForeignPanel(el)) return el;
+        }
+      }
+      for (s = 0; s < fallbackSelectors.length; s++) {
+        els = document.querySelectorAll(fallbackSelectors[s]);
+        for (i = 0; i < els.length; i++) {
+          el = els[i];
+          if (el.offsetParent !== null && !el.closest('#gpt51-usage-widget') && !tmElementLooksLikeForeignPanel(el) && tmElementInChatColumn(el)) return el;
         }
       }
     } catch (e) {}
