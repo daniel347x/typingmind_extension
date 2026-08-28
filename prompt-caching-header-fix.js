@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.303
+// Version: 4.304
 // Issues Fixed:
+//   - v4.304: COST-CALC CACHE-WRITE GATE FIX + FALLBACK AUDIT. The v4.236 cache-write gate
+//     (bill creation only when cache_read > 0, 'evidence of reuse') silently zeroed the single
+//     most expensive turn shape: a pure cache-MISS turn on a provider with no API cost field
+//     (direct Anthropic first turn / >1h TTL expiry), where cache_read=0 and the whole prompt
+//     lands in cache_creation -- ~$0.01 recorded instead of ~$2.00 true. Fix: bill cache_write
+//     whenever cache_creation > 0 and a cache_write price exists. Fallback audit of providers
+//     with NO API cost (direct Anthropic, Gemini native, direct OpenAI, Responses API, Moonshot
+//     direct): every other component verified correct -- cache_read billed at read price
+//     everywhere; Gemini/OpenAI/Responses new-input = prompt - cached (prompt INCLUDES cached
+//     on those shapes, correct); Anthropic fresh tokens correctly flow through cache_creation
+//     at the write rate (1.25x input); OpenAI/Gemini implicit caching has no write fee to bill.
+//     OPERATIONAL NOTE: Set Costs cache_write values should reflect true write rates
+//     (Anthropic = 1.25x input, e.g. $3.75/M on $3/M input) or writes stay silent-zero.
 //   - v4.303: CTX-DIAL ANTHROPIC NUMERATOR FIX (the 969-of-551K '0%' bug, caught live on
 //     claude-fable-5). Anthropic-native usage is SPLIT -- input_tokens (UNCACHED remainder
 //     only) + cache_read_input_tokens + cache_creation_input_tokens + output_tokens, with no
@@ -1077,7 +1090,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.303';
+  const EXT_VERSION = '4.304';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1901,18 +1914,20 @@
       hasCalculableCost = true;
     }
 
-    // (v4.236) Cache creation cost (quick-and-dirty: bill at output rate when cache is active)
-    // Only charge cache_write when we have evidence of cache REUSE (cached > 0), which implies
-    // the provider is actively maintaining cache entries. This deliberately overestimates
-    // (cache_write tokens billed at the output rate instead of their true 1.25x input rate)
-    // because an overestimate is better than a silent zero. Only fires when the pricing table
-    // has a cache_write value set; otherwise it's silently skipped.
+    // (v4.236) Cache creation cost (billed at whatever cache_write price the table carries).
+    // (v4.304) GATE FIX: the old `cached > 0` precondition ('evidence of reuse implies active
+    // cache maintenance') silently ZEROED the single most expensive turn shape there is -- a
+    // pure cache-MISS turn (first turn of a conversation, or >1h TTL expiry), where cache_read
+    // is 0 and the ENTIRE prompt lands in cache_creation. Anthropic bills writes regardless of
+    // reads (1.25x input rate), so a ~551K-token miss recorded ~$0.01 instead of ~$2.00. Bill
+    // whenever write tokens exist and the table has a cache_write price; still silently
+    // skipped (by design) when no price is set.
     var cacheWriteTokens = Number(
       usageEvidence.cache_creation_input_tokens ||
       usageEvidence.cache_write_tokens ||
       (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cache_write_tokens) || 0
     );
-    if (cached > 0 && cacheWriteTokens > 0 && Number(pricing.cache_write) > 0) {
+    if (cacheWriteTokens > 0 && Number(pricing.cache_write) > 0) {
       cost += (cacheWriteTokens * Number(pricing.cache_write)) / 1000000;
       hasCalculableCost = true;
     }
