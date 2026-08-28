@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.308
+// Version: 4.309
 // Issues Fixed:
+//   - v4.309: AUTO-RESUME DRAFT PRESERVE-AND-PROCEED (replaces draft refusal). The actuator
+//     used to ABORT a queued Continue when the target conversation's composer held an unsent
+//     draft ('chat input contains an unsent draft; refusing to overwrite it') -- correct
+//     caution, but a stall-critical failure mode: a forgotten draft could silently cost hours
+//     of unattended run time (Dan's workplace-crisis scenario). The actuator now SAVES the
+//     draft (in-memory primary + localStorage belt, tm_autoresume_saved_draft_v1, which
+//     survives even a page refresh mid-flight), submits Continue, then RESTORES the draft
+//     into the composer via the same React-compatible value setter (3 bounded attempts over
+//     ~2.4s, read-back verified). HARD RULE: it never overwrites fresh human typing -- if the
+//     composer gains non-draft content before a restore attempt, the restore stops and the
+//     draft stays preserved in localStorage with a console warning. Deliberately NOT the
+//     system clipboard (Dan's original framing): that would clobber his working clipboard
+//     (his entire workflow is copy/paste) and invites permission prompts at 3AM -- in-memory
+//     + localStorage gives the same durability with zero clipboard side effects.
 //   - v4.308: ACTUATOR INPUT-LOCK FIX -- the draft guard refused a resume because of text in a
 //     FOREIGN widget (Dan's transcription panel), caught live: 'chat input contains an unsent
 //     draft; refusing to overwrite it' while the REAL TypingMind composer sat empty. Root
@@ -1141,7 +1155,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.308';
+  const EXT_VERSION = '4.309';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8427,11 +8441,78 @@
     return null;
   }
 
+  // (v4.309) Draft preserve-and-proceed: save the composer's unsent draft before typing
+  // Continue, restore it afterward. In-memory primary + localStorage belt (survives a refresh
+  // mid-flight). NEVER the system clipboard (clobbers the user's working clipboard + permission
+  // prompts). HARD RULE: restore never overwrites fresh human typing.
+  var tmAutoResumeSavedDraft = null; // {text, ts}
+  const TM_AUTORESUME_DRAFT_KEY = 'tm_autoresume_saved_draft_v1';
+  function tmSaveAutoResumeDraft(text) {
+    var d = { text: String(text || ''), ts: Date.now() };
+    tmAutoResumeSavedDraft = d;
+    try { localStorage.setItem(TM_AUTORESUME_DRAFT_KEY, JSON.stringify(d)); } catch (e) {}
+  }
+  function tmClearAutoResumeDraft() {
+    tmAutoResumeSavedDraft = null;
+    try { localStorage.removeItem(TM_AUTORESUME_DRAFT_KEY); } catch (e) {}
+  }
+  function tmScheduleAutoResumeDraftRestore() {
+    var draft = tmAutoResumeSavedDraft;
+    if (!draft) {
+      try {
+        var raw = localStorage.getItem(TM_AUTORESUME_DRAFT_KEY);
+        if (raw) draft = JSON.parse(raw);
+      } catch (e) {}
+    }
+    if (!draft || !draft.text) return;
+    function readVal(el) {
+      return (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') ? String(el.value || '') : String(el.textContent || '');
+    }
+    var delays = [800, 1600, 2400];
+    delays.forEach(function(ms, idx) {
+      setTimeout(function() {
+        try {
+          var input = tmFindVisibleChatInput();
+          if (!input) return;
+          var cur = readVal(input);
+          if (cur === draft.text) { if (idx === delays.length - 1) tmClearAutoResumeDraft(); return; } // already restored
+          if (cur.trim() && cur.trim() !== 'Continue') {
+            // A HUMAN (or another flow) put fresh content in the composer: never clobber it.
+            if (idx === delays.length - 1) {
+              console.warn('⚠️ [v' + EXT_VERSION + '] Draft restore skipped: composer has new content. Draft preserved in localStorage key ' + TM_AUTORESUME_DRAFT_KEY + '.');
+            }
+            return;
+          }
+          if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+            var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            var setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+            setter.call(input, draft.text);
+          } else if (input.contentEditable === 'true') {
+            input.textContent = draft.text;
+          } else { return; }
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          if (readVal(input) === draft.text) {
+            tmClearAutoResumeDraft();
+            console.log('💾 [v' + EXT_VERSION + '] Restored composer draft (' + draft.text.length + ' chars) after auto-Continue.');
+          } else if (idx === delays.length - 1) {
+            console.warn('⚠️ [v' + EXT_VERSION + '] Draft restore read-back mismatch; draft preserved in localStorage key ' + TM_AUTORESUME_DRAFT_KEY + '.');
+          }
+        } catch (e) {}
+      }, ms);
+    });
+  }
+
   function tmSubmitContinueIntoVisibleConversation(onDone) {
     var input = tmFindVisibleChatInput();
     if (!input) throw new Error('visible TypingMind chat input not found');
     var existing = (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') ? String(input.value || '') : String(input.textContent || '');
-    if (existing.trim()) throw new Error('chat input contains an unsent draft; refusing to overwrite it');
+    if (existing.trim()) {
+      // (v4.309) DRAFT PRESERVE-AND-PROCEED: save the draft, submit Continue, restore it after.
+      // (Previously this ABORTED the resume -- a forgotten draft could cost hours of run time.)
+      tmSaveAutoResumeDraft(existing);
+      console.warn('💾 [v' + EXT_VERSION + '] Composer draft detected during auto-resume; saved (' + existing.length + ' chars) and will restore after Continue submits.');
+    }
 
     if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
       var proto = input.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -8457,6 +8538,7 @@
         var up = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, ctrlKey: true, bubbles: true, cancelable: true });
         input2.dispatchEvent(down);
         input2.dispatchEvent(up);
+        try { tmScheduleAutoResumeDraftRestore(); } catch (eR) {}
         if (onDone) onDone(null);
       } catch (e2) {
         if (onDone) onDone(e2);
