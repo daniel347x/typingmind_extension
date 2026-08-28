@@ -1,6 +1,26 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.296
+// Version: 4.297
 // Issues Fixed:
+//   - v4.297: CONTEXT-WINDOW DIAL (provider-reported ground truth, one shared gauge component).
+//     Every ring-buffer entry now stamps a _ctx_snapshot at response receipt: the provider-REPORTED
+//     token totals for that exact turn (numerator = total_tokens -- everything the model consumed:
+//     full history prompt + completion + reasoning, which TypingMind's native gauge undercounts,
+//     e.g. Kimi K3 reasoning tokens), plus prompt/completion/reasoning/cached breakdown. One shared
+//     SVG gauge renders it in TWO surfaces: each ring-modal row (cost/repair/cache/provider ribbon)
+//     and the persistent widget's session-name row (identity-matched to the widget's current
+//     session -- parallel-conversation safe, mirroring the v4.211 guards). Arc = total/max-ctx over
+//     360deg with the color ramp: solid green <=40%, mostly green at 50%, yellowing past 50%,
+//     orange ~65%, red >=75% (over 100% clamps full-red with a warning label). Denominator
+//     resolution: manual per-model override > serving-provider maxContext (live OpenRouter
+//     Endpoints discovery, v4.236) > built-in seed (kimi-k3 262144, gemini 1048576); unknown
+//     renders a dashed 'tok N' gauge. Click ANY dial to set/clear a per-model override
+//     (localStorage tm_model_ctx_overrides_v1); the denominator RE-RESOLVES live at render time,
+//     so an override instantly re-scales every historical row. The snapshot field is
+//     underscore-prefixed so it survives rich->compact ring stripping (same as _model/_identity).
+//     Also: tmExtractKnownUsageEvidence now surfaces reasoning_tokens first-class
+//     (completion_tokens_details/output_tokens_details.reasoning_tokens, top-level
+//     reasoning_tokens/thinking_tokens, Gemini thoughtsTokenCount) -- display/audit only; totals
+//     already include reasoning everywhere known.
 //   - v4.296: TOOL-HANDOFF BADGE IDENTITY-ALIAS FIX. The v4.295 ledger DID flip correctly, but
 //     the visible badge always rendered `clear`: continuity state is keyed by the raw pasted
 //     Session ID (`a6f657d7`) used for sidebar navigation, while capture/widget identity stores
@@ -997,7 +1017,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.296';
+  const EXT_VERSION = '4.297';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3540,6 +3560,15 @@
         }
         setIfAbsent('completion_tokens', completionTok);
       }
+      // (v4.297) FIRST-CLASS reasoning/thinking token extraction (the context-dial breakdown).
+      // OpenAI chat-completions: usage.completion_tokens_details.reasoning_tokens; OpenAI Responses
+      // API: usage.output_tokens_details.reasoning_tokens; Moonshot/direct: top-level
+      // reasoning_tokens; Gemini: thoughtsTokenCount. total_tokens ALREADY includes reasoning
+      // everywhere we know of, so this is display/audit only -- NEVER added into any total here.
+      var compDetails = obj.completion_tokens_details || obj.completionTokensDetails || obj.output_tokens_details || obj.outputTokensDetails || null;
+      var reasoningTok = firstNum(obj, ['reasoning_tokens', 'reasoningTokens', 'thinking_tokens', 'thinkingTokens', 'thoughtsTokenCount']);
+      if (reasoningTok == null && compDetails) reasoningTok = firstNum(compDetails, ['reasoning_tokens', 'reasoningTokens']);
+      setIfAbsent('reasoning_tokens', reasoningTok);
       if (read != null || write != null) {
         out.prompt_tokens_details = out.prompt_tokens_details || {};
         if (read != null) out.prompt_tokens_details.cached_tokens = read;
@@ -4146,6 +4175,17 @@
                   }
                   if (_histProvLabel) tmUpdateCaptureRecord(captureId, { _provider_label: _histProvLabel });
                 } catch (e) {}
+                // (v4.297) CONTEXT-WINDOW SNAPSHOT. Stamp this turn's provider-REPORTED token
+                // totals onto the ring entry (snapshot-in-time; underscore field survives
+                // rich->compact stripping). Per-entry truth regardless of error status (an errored
+                // turn still consumed real context); the WIDGET dial separately identity-matches,
+                // so error rows never leak into another conversation's display.
+                try {
+                  var _ctxUsage = patch.response_usage || (capRec && capRec.response_usage) || null;
+                  var _ctxAu = patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null;
+                  var _ctxSnap = tmComputeCtxSnapshot(_ctxUsage, _ctxAu, idModel, capRec);
+                  if (_ctxSnap) tmUpdateCaptureRecord(captureId, { _ctx_snapshot: _ctxSnap });
+                } catch (eCtx) {}
                 // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
                 // (v4.211) GATED: an error response is NOT a cache miss -- it must not break the
                 // hit streak or inflate the miss total, so the ledger is never touched on errors.
@@ -5114,6 +5154,13 @@
             ev.stopPropagation();
             return;
           }
+          // (v4.297) Context dial: set/clear the per-model max-context override.
+          if (target.dataset.action === 'ctx-dial-set') {
+            tmCtxDialPromptSet(target.dataset.model || '');
+            ev.stopPropagation();
+            ev.preventDefault();
+            return;
+          }
           // (v4.142) Set a human-readable name for the session from the widget.
           if (target.dataset.action === 'set-session-name') {
             var sid = target.dataset.sessionId;
@@ -5267,6 +5314,237 @@
         '<span title="cache write" style="color:#9aa4b2;">+' + tmFmtTok(orWrite) + '</span>' + costStr;
     }
     return '<span style="color:#7dd67d;opacity:0.55;">cache \u2013</span>' + costStr;
+  }
+
+  // ==================== CONTEXT-WINDOW DIAL (v4.297) ====================
+  // A snapshot-in-time of the provider-REPORTED context size, stamped on every ring entry at
+  // response receipt (tmCaptureResponse) and rendered by ONE shared SVG gauge in TWO surfaces:
+  // each ring-modal row and the persistent widget's session-name row. Numerator = total_tokens
+  // (everything the model consumed that turn, INCLUDING reasoning -- the ground truth that
+  // TypingMind's native gauge undercounts). Denominator = model/provider max context, resolved
+  // LIVE at render time: manual override > serving-provider maxContext (OpenRouter Endpoints
+  // discovery) > built-in seed. Live re-resolution means a later override instantly re-scales
+  // every historical row; the stamped max_ctx fields are kept only as an offline fallback.
+
+  const TM_MODEL_CTX_OVERRIDES_KEY = 'tm_model_ctx_overrides_v1';
+  // Built-in per-model-family context windows for DIRECT (non-OpenRouter) routes, where the
+  // Endpoints-API discovery cannot reach. Deliberately tiny -- only values we are confident in;
+  // everything else is one click away via the dial's override prompt. (OpenRouter-routed models
+  // get their true per-endpoint window from live discovery automatically.)
+  const TM_MODEL_CTX_SEED = [
+    [/kimi[-_]?k3/i, 262144],   // Moonshot Kimi K3: 256K published window
+    [/gemini/i, 1048576]        // Google Gemini native: 1M window
+  ];
+
+  function tmReadModelCtxOverrides() {
+    try { var r = localStorage.getItem(TM_MODEL_CTX_OVERRIDES_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+  function tmSaveModelCtxOverrides(o) {
+    try { localStorage.setItem(TM_MODEL_CTX_OVERRIDES_KEY, JSON.stringify(o || {})); } catch (e) {}
+  }
+
+  // Denominator resolution. modelKey = lowercase model (vendor-prefixed or bare); provSlug =
+  // serving provider slug when known (matched base-slug tolerant so 'fireworks' finds
+  // 'fireworks/fast' and vice versa). Returns { max, source: 'override'|'provider'|'provider-max'|'seed'|null }.
+  function tmResolveModelMaxCtx(modelKey, provSlug) {
+    var m = String(modelKey || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+    if (!m) return { max: null, source: null };
+    // 1) Manual per-model override (exact full key, then final slash segment)
+    try {
+      var ov = tmReadModelCtxOverrides();
+      var hit = ov[m];
+      if (hit == null) { var seg = m.split('/').pop(); if (seg && ov[seg] != null) hit = ov[seg]; }
+      var hn = Number(hit);
+      if (isFinite(hn) && hn > 0) return { max: hn, source: 'override' };
+    } catch (e) {}
+    // 2) Provider entries (live OpenRouter discovery merged over the seed table)
+    try {
+      var entries = tmGetProviderEntries(m) || [];
+      var anyMax = false;
+      for (var ei = 0; ei < entries.length; ei++) { if (entries[ei] && entries[ei].maxContext != null) { anyMax = true; break; } }
+      // Kick off the lazy Endpoints-API fetch when nothing usable is cached -- the NEXT turn's
+      // snapshot (or a later render) picks up the fresh windows. Carries the tm_passthrough
+      // sentinel and is fully guarded/in-flight-deduped by tmMaybeFetchProviderEndpoints itself.
+      if (!anyMax) { try { tmMaybeFetchProviderEndpoints(m); } catch (eF) {} }
+      if (provSlug) {
+        for (var i = 0; i < entries.length; i++) {
+          var e = entries[i];
+          if (!e || e.maxContext == null || !e.slug) continue;
+          if (e.slug === provSlug || e.slug.indexOf(provSlug + '/') === 0 || provSlug.indexOf(e.slug + '/') === 0) {
+            return { max: e.maxContext, source: 'provider' };
+          }
+        }
+      }
+      var best = null;
+      for (var bi = 0; bi < entries.length; bi++) { var be = entries[bi]; if (be && be.maxContext != null && (best == null || be.maxContext > best)) best = be.maxContext; }
+      if (best != null) return { max: best, source: 'provider-max' };
+    } catch (e2) {}
+    // 3) Built-in seed (direct routes with well-known windows)
+    for (var si = 0; si < TM_MODEL_CTX_SEED.length; si++) {
+      if (TM_MODEL_CTX_SEED[si][0].test(m)) return { max: TM_MODEL_CTX_SEED[si][1], source: 'seed' };
+    }
+    return { max: null, source: null };
+  }
+
+  // 2s memo so a 500-row modal render pass does not re-parse the localStorage discovery store
+  // per row. Busted explicitly by tmCtxDialPromptSet after an override change.
+  var tmCtxResolveMemo = { ts: 0, map: {} };
+  function tmResolveModelMaxCtxCached(model, capRec) {
+    var now = Date.now();
+    if (now - tmCtxResolveMemo.ts > 2000) { tmCtxResolveMemo = { ts: now, map: {} }; }
+    var m = String(model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+    var provSlug = '';
+    try {
+      var pl = (capRec && (capRec._provider_label || capRec.response_provider)) || null;
+      if (pl) provSlug = tmProviderNameToSlug(pl) || '';
+    } catch (e) {}
+    var ck = m + '::' + provSlug;
+    if (!Object.prototype.hasOwnProperty.call(tmCtxResolveMemo.map, ck)) {
+      tmCtxResolveMemo.map[ck] = tmResolveModelMaxCtx(m, provSlug || null);
+    }
+    return tmCtxResolveMemo.map[ck];
+  }
+
+  // Build the per-turn context snapshot from normalized usage evidence. Numerator priority:
+  // total_tokens (OpenAI/OpenRouter/Gemini totalTokenCount) > Anthropic native sum (uncached
+  // input + cache read + cache creation + output -- Anthropic reports these SPLIT, and the true
+  // context size includes the cached prefix) > prompt + completion fallback.
+  function tmComputeCtxSnapshot(usage, au, model, capRec) {
+    usage = usage || null; au = au || null;
+    function pick() { for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; if (v != null && isFinite(Number(v))) return Number(v); } return null; }
+    var prompt = pick(usage && usage.prompt_tokens, usage && usage.input_tokens, au && au.input_tokens);
+    var completion = pick(usage && usage.completion_tokens, au && au.output_tokens);
+    var cached = pick(usage && usage.cache_read_input_tokens, usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens, au && au.cache_read_input_tokens);
+    var cacheWrite = pick(usage && usage.cache_creation_input_tokens, usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cache_write_tokens, au && au.cache_creation_input_tokens);
+    var total = pick(usage && usage.total_tokens, au && au.total_tokens);
+    if (total == null && au && !usage) {
+      var aSum = (pick(au.input_tokens) || 0) + (pick(au.cache_read_input_tokens) || 0) + (pick(au.cache_creation_input_tokens) || 0) + (pick(au.output_tokens) || 0);
+      if (aSum > 0) total = aSum;
+    }
+    if (total == null && prompt != null) total = prompt + (completion || 0);
+    if (total == null || total <= 0) return null;
+    var reasoning = pick(usage && usage.reasoning_tokens,
+      usage && usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens,
+      usage && usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens);
+    var snap = { total: total, prompt: prompt, completion: completion, reasoning: reasoning, cached: cached, cache_write: cacheWrite, model: model || null, ts: Date.now() };
+    // Provenance/fallback only: the denominator RE-RESOLVES live at render time.
+    try {
+      var mr = tmResolveModelMaxCtxCached(model, capRec);
+      if (mr && mr.max != null) { snap.max_ctx = mr.max; snap.max_ctx_source = mr.source; }
+    } catch (e) {}
+    return snap;
+  }
+
+  // Newest ring entry carrying a _ctx_snapshot FOR THIS identity. Strict match when idKey is
+  // known: the dial must never show a DIFFERENT conversation's context beside this session's
+  // name (parallel-conversation safe, same rule as the v4.211 widget guards).
+  function tmLatestCtxSnapshotEntryForIdentity(idKey) {
+    try {
+      var ring = tmReadCaptureRing();
+      var i, cap;
+      if (idKey) {
+        for (i = ring.length - 1; i >= 0; i--) {
+          cap = ring[i];
+          if (cap && cap._ctx_snapshot && cap._identity && cap._identity.key === idKey) return cap;
+        }
+        return null;
+      }
+      for (i = ring.length - 1; i >= 0; i--) { cap = ring[i]; if (cap && cap._ctx_snapshot) return cap; }
+    } catch (e) {}
+    return null;
+  }
+
+  // The ramp: solid green <=40%, mostly green at 50%, yellowing past 50%, orange ~65%, red >=75%.
+  function tmCtxDialColor(pct) {
+    if (pct == null) return '#9aa4b2';
+    var p = Math.max(0, Math.min(100, pct));
+    var hue;
+    if (p <= 40) hue = 120;
+    else if (p >= 75) hue = 0;
+    else hue = 120 * (1 - (p - 40) / 35);
+    return 'hsl(' + Math.round(hue) + ',85%,55%)';
+  }
+
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRenderCtxDial-v297,
+  //   role=__lambdao_1.tmRenderCtxDial,
+  //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
+  //   kind=ast,
+  //   comment=THE shared context-window gauge (v4.297): one SVG dial rendered into BOTH the ring-modal row ribbon and the persistent widget session-name row. Arc = provider-reported total_tokens / model max-ctx over 360deg (green <=40%, yellow past 50%, orange ~65%, red >=75%); dashed 'tok N' when the denominator is unknown. Click sets/clears a per-model override (tm_model_ctx_overrides_v1). Children are pointer-events:none so clicks land on the wrapper's own data-action.,
+  // ]
+  function tmRenderCtxDial(snap, opts) {
+    opts = opts || {};
+    if (!snap || snap.total == null) return '';
+    var size = opts.size || 16;
+    var model = snap.model || (opts.cap && opts.cap._identity && opts.cap._identity.model) || '';
+    var mr = tmResolveModelMaxCtxCached(model, opts.cap || null);
+    var maxCtx = mr.max, maxSrc = mr.source;
+    if (maxCtx == null && snap.max_ctx != null) { maxCtx = snap.max_ctx; maxSrc = snap.max_ctx_source || 'stamped'; }
+    var pct = (maxCtx != null && maxCtx > 0) ? (snap.total / maxCtx) * 100 : null;
+    var color = tmCtxDialColor(pct);
+    var r = (size / 2) - 2;
+    var cx = size / 2;
+    var circ = 2 * Math.PI * r;
+    var sw = size >= 18 ? 2.6 : 2.2;
+    var arc;
+    if (pct != null) {
+      var frac = Math.max(0.004, Math.min(1, pct / 100));
+      arc = '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" stroke-linecap="round" stroke-dasharray="' + (frac * circ).toFixed(1) + ' ' + circ.toFixed(1) + '"/>';
+    } else {
+      // No denominator: dashed neutral ring -- a gauge without a scale.
+      arc = '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="' + color + '" stroke-width="' + sw + '" stroke-dasharray="2 3" opacity="0.7"/>';
+    }
+    var svg = '<svg width="' + size + '" height="' + size + '" viewBox="0 0 ' + size + ' ' + size + '" style="display:inline-block;vertical-align:middle;transform:rotate(-90deg);pointer-events:none;">' +
+      '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="#3a3f4a" stroke-width="' + sw + '"/>' + arc + '</svg>';
+    var over = (pct != null && pct > 100);
+    var label = pct != null ? String(Math.round(pct)) + '%' : ('tok ' + tmFmtTok(snap.total));
+    var NL = String.fromCharCode(10);
+    var tip = [];
+    tip.push('ctx ' + tmFmtTok(snap.total) + (maxCtx ? (' / ' + tmFmtTok(maxCtx) + (pct != null ? ' (' + (Math.round(pct * 10) / 10) + '%)' : '')) : ' / max unknown'));
+    var bd = [];
+    if (snap.prompt != null) bd.push('prompt ' + Math.round(snap.prompt).toLocaleString());
+    if (snap.completion != null) bd.push('completion ' + Math.round(snap.completion).toLocaleString());
+    if (snap.reasoning != null) bd.push('reasoning ' + Math.round(snap.reasoning).toLocaleString());
+    if (snap.cached != null) bd.push('cached ' + tmFmtTok(snap.cached));
+    if (bd.length) tip.push(bd.join(' · '));
+    tip.push('total ' + Math.round(snap.total).toLocaleString() + ' tokens this turn (provider-reported, incl. reasoning)');
+    tip.push('max: ' + (maxSrc || 'unknown') + (model ? ' -- click to ' + (maxSrc === 'override' ? 'change/clear override' : 'set override') : ''));
+    if (over) tip.push('⚠ OVER the model context window');
+    var sep = opts.leadingSep ? ' <span style="opacity:0.4;">·</span> ' : '';
+    var clickable = !!model;
+    return sep + '<span ' + (clickable ? 'data-action="ctx-dial-set" data-model="' + escapeHtml(model) + '" ' : '') +
+      'title="' + escapeHtml(tip.join(NL)) + '" style="display:inline-flex;align-items:center;gap:3px;margin-left:4px;cursor:' + (clickable ? 'pointer' : 'help') + ';vertical-align:middle;white-space:nowrap;">' +
+      svg +
+      '<span style="font-size:10px;font-weight:600;color:' + color + ';pointer-events:none;line-height:1;">' + (over ? '⚠' : '') + label + '</span>' +
+      '</span>';
+  }
+
+  // Click handler for every dial: set or clear the per-model max-context override, then
+  // re-render both surfaces (renderPayloadCaptureModal no-ops when the modal is closed).
+  function tmCtxDialPromptSet(model) {
+    model = String(model || '').trim();
+    if (!model) return;
+    var key = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+    var seg = key.split('/').pop();
+    var ov = tmReadModelCtxOverrides();
+    var cur = (ov[key] != null) ? ov[key] : (ov[seg] != null ? ov[seg] : '');
+    var NL2 = String.fromCharCode(10);
+    tmPromptActive = true;
+    var v = prompt('Max context window (tokens) for ' + model + ':' + NL2 + 'Leave empty to clear the manual override (auto-detection resumes).' + NL2 + NL2 + 'Common: 262144 = Kimi K3 (256K) · 1048576 = 1M (Claude / Gemini) · 400000 = GPT-5.x', (cur === '' ? '' : String(cur)));
+    try { tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; } catch (eSup) {}
+    setTimeout(function() { tmPromptActive = false; }, 100);
+    if (v === null) return;
+    v = String(v).replace(/[,\s]/g, '');
+    if (v === '') { delete ov[key]; if (seg) delete ov[seg]; }
+    else {
+      var n = Number(v);
+      if (!isFinite(n) || n <= 0) { alert('Not a valid token count: ' + v); return; }
+      ov[key] = Math.round(n);
+    }
+    tmSaveModelCtxOverrides(ov);
+    tmCtxResolveMemo = { ts: 0, map: {} }; // bust the memo so the re-render re-scales immediately
+    try { renderGpt51UsageWidget(); } catch (e1) {}
+    try { renderPayloadCaptureModal(); } catch (e2) {}
   }
 
   // @carto-group id=client-group-5 label="Client group 5"
@@ -5465,6 +5743,14 @@
         displaySidTooltip = widgetIdentity.key || '';
       }
     } catch (e) {}
+    // (v4.297) Context dial for the widget's current identity: newest ring entry carrying a
+    // _ctx_snapshot for THIS identity (never another conversation's -- parallel-safe).
+    var widgetCtxDialHtml = '';
+    try {
+      var ctxCapForWidget = tmLatestCtxSnapshotEntryForIdentity(widgetIdentity && widgetIdentity.key);
+      if (ctxCapForWidget) widgetCtxDialHtml = tmRenderCtxDial(ctxCapForWidget._ctx_snapshot, { size: 16, cap: ctxCapForWidget });
+    } catch (eCtxW) { widgetCtxDialHtml = ''; }
+
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
       sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:13px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
@@ -5488,9 +5774,9 @@
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
       var nameSid = displaySessionId || displayPastedId || '';
       if (displaySessionName) {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + tmAgentManagementBadge(nameSid) + '</div>');
       } else {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + tmAgentManagementBadge(nameSid) + '</div>');
       }
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
@@ -6680,6 +6966,13 @@
       if (t.dataset && t.dataset.action === 'copy-plain-text') {
         const txt = t.dataset.copyText || t.textContent || '';
         if (txt) copyTextToClipboard(txt, 'console command');
+        return;
+      }
+
+      // (v4.297) Context dial: set/clear the per-model max-context override.
+      if (t.dataset && t.dataset.action === 'ctx-dial-set') {
+        tmCtxDialPromptSet(t.dataset.model || '');
+        ev.stopPropagation();
         return;
       }
 
@@ -10253,6 +10546,10 @@
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
       // (v4.94) Cost pinned to the very left of the row, before repair blocks.
+      // (v4.297) Per-row context dial: this turn's provider-reported total vs model max ctx
+      // (computed before the ribbon line; appended after the provider badge).
+      var ctxDialHtml = '';
+      try { ctxDialHtml = tmRenderCtxDial(cap._ctx_snapshot, { size: 16, cap: cap, leadingSep: true }); } catch (eCtxRow) { ctxDialHtml = ''; }
       var costVal = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
       var costHtml = '';
       if (cap._cost_no_usage) {
@@ -10277,7 +10574,7 @@
       var providerHtml = capProvider
         ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
         : '';
-      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + '</div>';
+      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + ctxDialHtml + '</div>';
 
 
 
