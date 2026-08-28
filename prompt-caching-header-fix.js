@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.312
+// Version: 4.313
 // Issues Fixed:
+//   - v4.313: ROUND-TRIP WALL-CLOCK TIMER (per-turn + per-session cumulative). Every capture
+//     now measures request -> response-end duration at response receipt and stamps it on the
+//     ring entry as _rt_ms, with the session's cumulative total (_rt_total_ms) snapshotted
+//     beside it (mirrors session_cost_total; the ledger lives on the SAME tm_session_costs_v2
+//     identity record as cost/cache -- one row, one anti-leak lifecycle). Displays: each
+//     ring-modal row shows a per-payload 'time Ns' (distinct blue) + 'sum total' (session
+//     cumulative at that moment, gray) right of the context dial; the persistent widget
+//     shows the cumulative total for its current identity right of the dial. Ungated like
+//     cost (v4.218): an errored round trip still consumed real time. Auto-resumed Continues
+//     simply become their own round trips and sum in -- the total is honest active waiting
+//     time per session.
 //   - v4.312: AUTO-RESUME TEXT IS NOW MACHINE-SIGNPOSTED (the Kimi confusion incident). The
 //     typed auto-resume used to be the bare word 'Continue' -- and a reasoning model REASONS
 //     about words: Kimi received the auto-fired message, concluded Dan must mean 'show me the
@@ -1203,7 +1214,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.312';
+  const EXT_VERSION = '4.313';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2475,6 +2486,38 @@
       if (typeof entry === 'object') return entry._total || 0;
       return Number(entry) || 0;
     } catch (e) { return 0; }
+  }
+
+  // (v4.313) Compact duration formatter for the round-trip timer: 8s / 3m 14s / 2h 5m.
+  function tmFmtDuration(ms) {
+    ms = Math.max(0, Math.round(Number(ms) || 0));
+    var s = Math.floor(ms / 1000);
+    if (s < 60) return s + 's';
+    var m = Math.floor(s / 60); s = s % 60;
+    if (m < 60) return m + 'm ' + s + 's';
+    var h = Math.floor(m / 60); m = m % 60;
+    return h + 'h ' + m + 'm';
+  }
+
+  // (v4.313) Event-sourced per-session round-trip ledger: accumulates request->response-end
+  // durations onto the SAME tm_session_costs_v2 record as cost/cache (one identity, one row,
+  // one anti-leak lifecycle). Mirrors tmRecordSessionCost's preserve-fields pattern.
+  function tmRecordRoundTrip(sessionId, model, endpointHost, isProxy, ms) {
+    if (!sessionId || !model || !(ms > 0)) return 0;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
+      var entry = costs[key];
+      if (typeof entry !== 'object' || entry === null) entry = {};
+      entry._rt_total_ms = Number(entry._rt_total_ms || 0) + ms;
+      entry._rt_count = Number(entry._rt_count || 0) + 1;
+      entry._session_id = String(sessionId);
+      entry._ts = Date.now();
+      costs[key] = entry;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return entry._rt_total_ms;
+    } catch (e) {}
+    return 0;
   }
 
   // v4.169: Record cache hit/miss for the identity ledger (tm_session_costs_v2).
@@ -4746,6 +4789,19 @@
                 });
               }
             } catch (e) {}
+            // (v4.313) ROUND-TRIP TIMER: this turn's request -> response-end duration, plus the
+            // session's cumulative total snapshotted onto the entry (mirrors session_cost_total).
+            // Ungated (same rationale as v4.218 cost): an errored round trip still consumed time.
+            try {
+              var rtReqTs = Number(capRec && capRec.ts) || 0;
+              var rtMs = rtReqTs > 0 ? (Date.now() - rtReqTs) : 0;
+              if (rtMs > 0 && idSid) {
+                var rtStamp = { _rt_ms: rtMs };
+                var rtTotal = tmRecordRoundTrip(idSid, idModel, idHost, idIsProxy, rtMs);
+                if (rtTotal > 0) rtStamp._rt_total_ms = rtTotal;
+                tmUpdateCaptureRecord(captureId, rtStamp);
+              }
+            } catch (eRt) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
           } catch (e) {}
         },
@@ -6224,6 +6280,17 @@
       if (ctxCapForWidget) widgetCtxDialHtml = tmRenderCtxDial(ctxCapForWidget._ctx_snapshot, { size: 16, cap: ctxCapForWidget });
     } catch (eCtxW) { widgetCtxDialHtml = ''; }
 
+    // (v4.313) Cumulative round-trip total for the widget's current identity, right of the dial.
+    var widgetRtHtml = '';
+    try {
+      if (widgetIdentity && widgetIdentity.sid) {
+        var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
+        var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
+        var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
+        if (rtMsW > 0) widgetRtHtml = ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:9px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+      }
+    } catch (eRtWd) { widgetRtHtml = ''; }
+
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
       sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:15px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
@@ -6247,9 +6314,9 @@
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
       var nameSid = displaySessionId || displayPastedId || '';
       if (displaySessionName) {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + '</div>');
       } else {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + '</div>');
       }
     } else {
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
@@ -11212,6 +11279,19 @@
       // (computed before the ribbon line; appended after the provider badge).
       var ctxDialHtml = '';
       try { ctxDialHtml = tmRenderCtxDial(cap._ctx_snapshot, { size: 16, cap: cap, leadingSep: true }); } catch (eCtxRow) { ctxDialHtml = ''; }
+      // (v4.313) Per-row round-trip timer: this payload's duration (distinct color) + the
+      // session's cumulative round-trip total snapshotted at this turn, right of the dial.
+      var rtRowHtml = '';
+      try {
+        var rtRowParts = [];
+        if (cap._rt_ms != null && isFinite(Number(cap._rt_ms)) && Number(cap._rt_ms) > 0) {
+          rtRowParts.push('<span title="round-trip time for THIS payload (request to response end)" style="color:#7ec8e3;font-size:10px;font-weight:600;">⏱ ' + tmFmtDuration(cap._rt_ms) + '</span>');
+        }
+        if (cap._rt_total_ms != null && Number(cap._rt_total_ms) > 0) {
+          rtRowParts.push('<span title="cumulative round-trip time for this session, snapshotted at this turn" style="color:#9aa4b2;font-size:10px;">Σ⏱ ' + tmFmtDuration(cap._rt_total_ms) + '</span>');
+        }
+        if (rtRowParts.length) rtRowHtml = ' <span style="opacity:0.4;">·</span> ' + rtRowParts.join(' ');
+      } catch (eRtRow) { rtRowHtml = ''; }
       var costVal = tmExtractCostVal(cap.response_anthropic_usage, cap.response_usage);
       var costHtml = '';
       if (cap._cost_no_usage) {
@@ -11236,7 +11316,7 @@
       var providerHtml = capProvider
         ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
         : '';
-      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + ctxDialHtml + '</div>';
+      html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + ctxDialHtml + rtRowHtml + '</div>';
 
 
 
