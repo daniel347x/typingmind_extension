@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.314
+// Version: 4.315
 // Issues Fixed:
+//   - v4.315: TWO-PHASE ROUND-TRIP DISPLAY (live in-flight ticker) + unconditional _rt_ms
+//     stamp. Dan's two-phase insight: a turn has an OUTBOUND phase (payload sent, fields not
+//     yet filled) and a RETURNED phase (stamp lands). The widget's blue per-turn value now
+//     TICKS LIVE every second while a payload is in flight -- set at capture time
+//     (tmCaptureFetchCall) and cleared when the v4.313 stamp lands at response end. The
+//     ticker writes ONLY the timer span's text (id tm-rt-live-value): it NEVER triggers a
+//     render and NEVER repaints the identity/session rows -- per Dan, the in-flight session
+//     must not paint itself onto the widget; any newer payload (any session) simply takes
+//     over the ticker, matching the widget's transitory-snapshot semantics. A 30-minute
+//     ceiling auto-clears a marker whose response never arrives (fetch dropped). ALSO the
+//     bug fix for 'v4.314 shows nothing anywhere': the v4.313 stamp required a non-null
+//     idSid, so a row whose session id failed to derive lost the ENTIRE stamp, per-turn
+//     value included. _rt_ms now stamps on EVERY completed round trip (only the CUMULATIVE
+//     ledger still requires the session id, legitimately).
 //   - v4.314: WIDGET PER-TURN ROUND-TRIP TIME. The persistent widget now shows the single
 //     most-recent turn's round-trip duration (blue, from the newest ring entry stamped with
 //     _rt_ms for the current identity) immediately BEFORE the v4.313 cumulative session
@@ -1223,7 +1237,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.314';
+  const EXT_VERSION = '4.315';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2529,6 +2543,32 @@
     return 0;
   }
 
+  // (v4.315) Live in-flight round-trip ticker. tmInFlightTurn is set at capture time and
+  // cleared when the v4.313 stamp lands at response end. The interval writes ONLY the timer
+  // span's text -- it NEVER triggers a render and NEVER repaints identity/session rows (the
+  // in-flight session must not paint itself onto the widget). Any newer payload simply takes
+  // over the marker; a 30-minute ceiling clears a marker whose response never arrives.
+  var tmInFlightTurn = null; // { captureId, ts }
+  var tmRtLiveTickerId = null;
+  function tmEnsureRtLiveTicker() {
+    if (tmRtLiveTickerId != null) return;
+    tmRtLiveTickerId = setInterval(function() {
+      try {
+        if (!tmInFlightTurn) return;
+        if (Date.now() - Number(tmInFlightTurn.ts || 0) > 30 * 60 * 1000) { tmInFlightTurn = null; return; }
+        var el = document.getElementById('tm-rt-live-value');
+        if (!el) return;
+        el.textContent = '⏱ ' + tmFmtDuration(Date.now() - Number(tmInFlightTurn.ts || 0));
+      } catch (e) {}
+    }, 1000);
+  }
+  function tmNoteInFlightCapture(captureId, ts) {
+    try {
+      tmInFlightTurn = { captureId: captureId, ts: Number(ts) || Date.now() };
+      tmEnsureRtLiveTicker();
+    } catch (e) {}
+  }
+
   // v4.169: Record cache hit/miss for the identity ledger (tm_session_costs_v2).
   // Called once per response at stamp time, never during render.
   // @beacon[
@@ -3751,6 +3791,9 @@
       }
     }
 
+    // (v4.315) Mark the newest outbound payload as in-flight for the live widget ticker.
+    try { tmNoteInFlightCapture(record.id, record.ts); } catch (eIF) {}
+
     return id;
   }
 
@@ -4804,12 +4847,18 @@
             try {
               var rtReqTs = Number(capRec && capRec.ts) || 0;
               var rtMs = rtReqTs > 0 ? (Date.now() - rtReqTs) : 0;
-              if (rtMs > 0 && idSid) {
+              // (v4.315) The per-turn stamp no longer requires a session id -- _rt_ms stamps on
+              // EVERY completed round trip (a null idSid used to skip the whole stamp). Only the
+              // cumulative ledger needs the session id. Also clears the live in-flight ticker.
+              if (rtMs > 0) {
                 var rtStamp = { _rt_ms: rtMs };
-                var rtTotal = tmRecordRoundTrip(idSid, idModel, idHost, idIsProxy, rtMs);
-                if (rtTotal > 0) rtStamp._rt_total_ms = rtTotal;
+                if (idSid) {
+                  var rtTotal = tmRecordRoundTrip(idSid, idModel, idHost, idIsProxy, rtMs);
+                  if (rtTotal > 0) rtStamp._rt_total_ms = rtTotal;
+                }
                 tmUpdateCaptureRecord(captureId, rtStamp);
               }
+              try { if (tmInFlightTurn && tmInFlightTurn.captureId === captureId) tmInFlightTurn = null; } catch (eIF) {}
             } catch (eRt) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
           } catch (e) {}
@@ -6315,8 +6364,14 @@
     var widgetRtHtml = '';
     try {
       var rtCapForWidget = tmLatestRoundTripEntryForIdentity(widgetIdentity && widgetIdentity.key);
-      if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
-        widgetRtHtml += ' <span title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
+      // (v4.315) TWO-PHASE: while a payload is in flight the blue value shows the LIVE elapsed
+      // time (ticking every second via the tm-rt-live-value span, no render required); the
+      // moment the v4.313 stamp lands it reverts to the latest completed turn's value.
+      var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
+      if (rtLiveMs > 0) {
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
+      } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
       }
       if (widgetIdentity && widgetIdentity.sid) {
         var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
