@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.302
+// Version: 4.303
 // Issues Fixed:
+//   - v4.303: CTX-DIAL ANTHROPIC NUMERATOR FIX (the 969-of-551K '0%' bug, caught live on
+//     claude-fable-5). Anthropic-native usage is SPLIT -- input_tokens (UNCACHED remainder
+//     only) + cache_read_input_tokens + cache_creation_input_tokens + output_tokens, with no
+//     total_tokens anywhere -- and the v4.86 generic extractor normalizes those SAME fields
+//     into response_usage, so v4.297's `au && !usage` guard on the Anthropic-aware sum never
+//     fired and the numerator collapsed to input+output (969). New rule: a reported
+//     total_tokens wins; else prompt_tokens (OpenAI-style, INCLUDES the cached prefix) +
+//     completion; else Anthropic-style input + cache-read + cache-write + completion
+//     (=> 551,593 = 55.2% of the 1M override on Dan's row). snap.prompt now stores the FULL
+//     prompt-side total (input+cached+written for Anthropic) so the tooltip is honest too.
+//     Also: thinking_tokens inside output_tokens_details (Anthropic's reasoning spelling) is
+//     now extracted as reasoning_tokens in BOTH the generic normalizer and the snapshot
+//     fallback chain.
 //   - v4.302: SWEEP PRE-FLIGHT KILLS NEEDLESS SESSION FLIPS. With the heartbeat ON, any session
 //     whose tool call ran longer than the 75s grace got an inspection NAVIGATION -- the sweep
 //     flipped to a visibly ACTIVE session (sidebar spinner spinning), parked through the ~9s
@@ -1064,7 +1077,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.302';
+  const EXT_VERSION = '4.303';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3614,7 +3627,7 @@
       // everywhere we know of, so this is display/audit only -- NEVER added into any total here.
       var compDetails = obj.completion_tokens_details || obj.completionTokensDetails || obj.output_tokens_details || obj.outputTokensDetails || null;
       var reasoningTok = firstNum(obj, ['reasoning_tokens', 'reasoningTokens', 'thinking_tokens', 'thinkingTokens', 'thoughtsTokenCount']);
-      if (reasoningTok == null && compDetails) reasoningTok = firstNum(compDetails, ['reasoning_tokens', 'reasoningTokens']);
+      if (reasoningTok == null && compDetails) reasoningTok = firstNum(compDetails, ['reasoning_tokens', 'reasoningTokens', 'thinking_tokens', 'thinkingTokens']);
       setIfAbsent('reasoning_tokens', reasoningTok);
       if (read != null || write != null) {
         out.prompt_tokens_details = out.prompt_tokens_details || {};
@@ -5463,28 +5476,38 @@
     return tmCtxResolveMemo.map[ck];
   }
 
-  // Build the per-turn context snapshot from normalized usage evidence. Numerator priority:
-  // total_tokens (OpenAI/OpenRouter/Gemini totalTokenCount) > Anthropic native sum (uncached
-  // input + cache read + cache creation + output -- Anthropic reports these SPLIT, and the true
-  // context size includes the cached prefix) > prompt + completion fallback.
+  // Build the per-turn context snapshot from normalized usage evidence. Numerator rule
+  // (rewritten v4.303): a reported total_tokens wins (OpenAI/OpenRouter/Gemini totalTokenCount);
+  // else prompt_tokens (OpenAI-style, INCLUDES the cached prefix) + completion; else
+  // Anthropic-style input + cache-read + cache-write + completion -- Anthropic reports these
+  // SPLIT and the true context size includes the cached prefix.
   function tmComputeCtxSnapshot(usage, au, model, capRec) {
     usage = usage || null; au = au || null;
     function pick() { for (var i = 0; i < arguments.length; i++) { var v = arguments[i]; if (v != null && isFinite(Number(v))) return Number(v); } return null; }
-    var prompt = pick(usage && usage.prompt_tokens, usage && usage.input_tokens, au && au.input_tokens);
+    // (v4.303) The v4.297 version gated the Anthropic sum on `au && !usage`, but the generic
+    // extractor normalizes Anthropic fields into `usage` too, so the guard never fired and the
+    // numerator collapsed to input+output (969 of a 551K conversation). promptTok is kept
+    // SEPARATE from inputTok because their cache semantics differ: OpenAI prompt_tokens
+    // INCLUDES cached tokens; Anthropic input_tokens EXCLUDES them.
+    var promptTok = pick(usage && usage.prompt_tokens);
+    var inputTok = pick(usage && usage.input_tokens, au && au.input_tokens);
     var completion = pick(usage && usage.completion_tokens, au && au.output_tokens);
     var cached = pick(usage && usage.cache_read_input_tokens, usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens, au && au.cache_read_input_tokens);
     var cacheWrite = pick(usage && usage.cache_creation_input_tokens, usage && usage.prompt_tokens_details && usage.prompt_tokens_details.cache_write_tokens, au && au.cache_creation_input_tokens);
     var total = pick(usage && usage.total_tokens, au && au.total_tokens);
-    if (total == null && au && !usage) {
-      var aSum = (pick(au.input_tokens) || 0) + (pick(au.cache_read_input_tokens) || 0) + (pick(au.cache_creation_input_tokens) || 0) + (pick(au.output_tokens) || 0);
-      if (aSum > 0) total = aSum;
-    }
-    if (total == null && prompt != null) total = prompt + (completion || 0);
+    var fullPrompt = null;
+    if (promptTok != null) fullPrompt = promptTok;
+    else if (inputTok != null) fullPrompt = inputTok + (cached || 0) + (cacheWrite || 0);
+    if (total == null && promptTok != null) total = promptTok + (completion || 0);
+    if (total == null && inputTok != null) total = inputTok + (cached || 0) + (cacheWrite || 0) + (completion || 0);
     if (total == null || total <= 0) return null;
     var reasoning = pick(usage && usage.reasoning_tokens,
       usage && usage.completion_tokens_details && usage.completion_tokens_details.reasoning_tokens,
-      usage && usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens);
-    var snap = { total: total, prompt: prompt, completion: completion, reasoning: reasoning, cached: cached, cache_write: cacheWrite, model: model || null, ts: Date.now() };
+      usage && usage.output_tokens_details && usage.output_tokens_details.reasoning_tokens,
+      usage && usage.output_tokens_details && usage.output_tokens_details.thinking_tokens,
+      au && au.output_tokens_details && au.output_tokens_details.thinking_tokens,
+      au && au.output_tokens_details && au.output_tokens_details.reasoning_tokens);
+    var snap = { total: total, prompt: fullPrompt, completion: completion, reasoning: reasoning, cached: cached, cache_write: cacheWrite, model: model || null, ts: Date.now() };
     // Provenance/fallback only: the denominator RE-RESOLVES live at render time.
     try {
       var mr = tmResolveModelMaxCtxCached(model, capRec);
