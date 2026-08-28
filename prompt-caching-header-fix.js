@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.305
+// Version: 4.306
 // Issues Fixed:
+//   - v4.306: MISMATCH GUARD MEDIA ESTIMATOR -- REAL DIMENSIONS, NOT FLAT GUESSES. v4.305's
+//     flat per-part estimates (1500/img, 3000/doc) killed the image false positive but were
+//     magnitude-blind (a tiny icon vs a 4K screenshot estimated identically). The estimator
+//     now SNIFFS ACTUAL IMAGE DIMENSIONS from the base64 header (PNG IHDR / JPEG SOF marker
+//     scan / GIF / BMP / WebP RIFF, decoding only the first ~9KB of the payload) and applies
+//     the providers' own rule: downscale to ~1.15MP, tokens ~= pixels/750 (Anthropic's
+//     published formula; OpenAI's 170-per-512px-tile high-detail rule agrees within ~2x on
+//     real screenshots -- ample for a 50% tripwire). Undecodable formats fall back to the
+//     flat 1500. Documents go byte-proportional: rawBytes (=base64len*3/4) / 16, floored at
+//     500, capped at 60000 -- the text-PDF magnitude; scanned-image PDFs can still
+//     over-estimate (documented limitation). NOT a hack layer: one pure sniff+estimate
+//     module, zero side effects; the v4.305 plumbing (capture-time scan, _nontext_* stamps,
+//     detector formula) is unchanged -- only the estimator's brain got smarter.
 //   - v4.305: MISMATCH GUARD IMAGE FALSE-POSITIVE FIX (all 4 protocols). The v4.270 prompt-
 //     ingestion-mismatch heuristic estimated expected prompt tokens as (outbound bytes)/4 over
 //     the RAW body -- but a vision part (one high-detail screenshot) is hundreds of KB of
@@ -1106,7 +1119,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.305';
+  const EXT_VERSION = '4.306';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3942,8 +3955,108 @@
   // so the raw bytes/4 heuristic in tmDetectPromptIngestionMismatch false-positives on every
   // turn of any session containing an image. Computed at CAPTURE time (full body guaranteed
   // present); stamped as _nontext_* so skeletonized records stay correct.
-  const TM_MISMATCH_IMAGE_TOKEN_EST = 1500;  // high-detail image, tile tokenization (~85 low / ~170xN high)
-  const TM_MISMATCH_DOC_TOKEN_EST = 3000;    // document/file part (PDF etc.)
+  const TM_MISMATCH_IMAGE_TOKEN_EST = 1500;  // fallback when dimensions cannot be sniffed
+  const TM_MISMATCH_DOC_BYTES_PER_TOKEN = 16;   // text-PDF magnitude (scanned-image PDFs may over-estimate)
+  const TM_MISMATCH_DOC_TOKEN_CAP = 60000;
+
+  // (v4.306) Sniff actual image dimensions from a base64 payload's header. Decodes ONLY the
+  // first ~9KB (never the whole multi-MB payload). Supports PNG (IHDR), JPEG (SOF marker
+  // scan), GIF, BMP, and WebP (RIFF VP8X/VP8/VP8L). Returns {w, h} or null (undecodable).
+  function tmSniffImageDimensions(b64) {
+    try {
+      if (typeof atob !== 'function') return null;
+      var s = String(b64 || '');
+      var comma = s.indexOf(',');
+      if (s.slice(0, 30).indexOf('data:') === 0 && comma > 0) s = s.slice(comma + 1);
+      s = s.replace(/\s+/g, '');
+      if (s.length < 32) return null;
+      var sliceLen = Math.min(s.length, 12000);
+      sliceLen -= (sliceLen % 4);
+      var bin = atob(s.slice(0, sliceLen));
+      var n = bin.length;
+      function cc(o) { return bin.charCodeAt(o); }
+      function u16be(o) { return (cc(o) << 8) | cc(o + 1); }
+      function u16le(o) { return cc(o) | (cc(o + 1) << 8); }
+      function u32be(o) { return (cc(o) * 16777216) + (cc(o + 1) << 16) + (cc(o + 2) << 8) + cc(o + 3); }
+      function u32le(o) { return cc(o) | (cc(o + 1) << 8) | (cc(o + 2) << 16) + (cc(o + 3) * 16777216); }
+      // PNG: 8-byte signature 89 50 4E 47 0D 0A 1A 0A, then IHDR width/height (big-endian)
+      if (cc(0) === 0x89 && cc(1) === 0x50 && cc(2) === 0x4E && cc(3) === 0x47 && n > 24) {
+        var pw = u32be(16), ph = u32be(20);
+        if (pw > 0 && ph > 0 && pw < 100000 && ph < 100000) return { w: pw, h: ph };
+      }
+      // GIF: 'GIF8', width/height little-endian uint16 at 6/8
+      if (bin.slice(0, 4) === 'GIF8' && n > 10) {
+        var gw = u16le(6), gh = u16le(8);
+        if (gw > 0 && gh > 0) return { w: gw, h: gh };
+      }
+      // BMP: 'BM', width/height int32 little-endian at 18/22 (height may be negative = top-down)
+      if (bin.slice(0, 2) === 'BM' && n > 26) {
+        var bw = u32le(18), bhRaw = u32le(22);
+        if (bhRaw > 0x7FFFFFFF) bhRaw -= 4294967296;
+        var bh = Math.abs(bhRaw);
+        if (bw > 0 && bh > 0 && bw < 100000 && bh < 100000) return { w: bw, h: bh };
+      }
+      // WebP: 'RIFF'....'WEBP' + VP8X / VP8 / VP8L chunk
+      if (bin.slice(0, 4) === 'RIFF' && bin.slice(8, 12) === 'WEBP' && n > 30) {
+        var fourcc = bin.slice(12, 16);
+        if (fourcc === 'VP8X') {
+          var xw = 1 + cc(24) + (cc(25) << 8) + (cc(26) << 16);
+          var xh = 1 + cc(27) + (cc(28) << 8) + (cc(29) << 16);
+          if (xw > 1 && xh > 1) return { w: xw, h: xh };
+        }
+        if (fourcc === 'VP8 ') {
+          var vw = u16le(26) & 0x3fff, vh = u16le(28) & 0x3fff;
+          if (vw > 0 && vh > 0) return { w: vw, h: vh };
+        }
+        if (fourcc === 'VP8L' && n > 25 && cc(20) === 0x2F) {
+          var b0 = cc(21), b1 = cc(22), b2 = cc(23), b3 = cc(24);
+          var lw = 1 + (((b1 & 0x3F) << 8) | b0);
+          var lh = 1 + (((b3 & 0xF) << 10) | (b2 << 2) | ((b1 & 0xC0) >> 6));
+          if (lw > 1 && lh > 1) return { w: lw, h: lh };
+        }
+      }
+      // JPEG: FFD8 then walk segments to the first SOF (C0-C2/C5-C7/C9-CB/CD-CF)
+      if (cc(0) === 0xFF && cc(1) === 0xD8) {
+        var off = 2, guard = 0;
+        while (off + 9 < n && guard < 40) {
+          guard++;
+          if (cc(off) !== 0xFF) { off++; continue; }
+          var marker = cc(off + 1);
+          if (marker === 0xD8 || marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) { off += 2; continue; }
+          var segLen = u16be(off + 2);
+          if (segLen < 2) break;
+          if ((marker >= 0xC0 && marker <= 0xC2) || (marker >= 0xC5 && marker <= 0xC7) || (marker >= 0xC9 && marker <= 0xCB) || (marker >= 0xCD && marker <= 0xCF)) {
+            var jh = u16be(off + 5), jw = u16be(off + 7);
+            if (jw > 0 && jh > 0) return { w: jw, h: jh };
+            return null;
+          }
+          off += 2 + segLen;
+        }
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+
+  // (v4.306) Provider-style vision token estimate from REAL dimensions: downscale to ~1.15MP,
+  // tokens ~= pixels/750 (Anthropic's published rule; OpenAI high-detail 170/512px-tile + 85
+  // agrees within ~2x on real screenshots -- ample for a 50% tripwire).
+  function tmEstimateImageTokens(b64) {
+    var dims = tmSniffImageDimensions(b64);
+    if (!dims) return TM_MISMATCH_IMAGE_TOKEN_EST;
+    var px = dims.w * dims.h;
+    if (px > 1150000) px = 1150000;
+    var est = Math.ceil(px / 750);
+    return Math.max(85, Math.min(est, 4000));
+  }
+
+  // (v4.306) Byte-proportional document estimate: base64 inflates x4/3, text PDFs extract at
+  // roughly 16 raw bytes per token. Floored/capped; scanned-image PDFs can over-estimate.
+  function tmEstimateDocTokens(dataLen) {
+    var rawBytes = Math.ceil(Number(dataLen || 0) * 3 / 4);
+    var est = Math.ceil(rawBytes / TM_MISMATCH_DOC_BYTES_PER_TOKEN);
+    return Math.max(500, Math.min(est, TM_MISMATCH_DOC_TOKEN_CAP));
+  }
+
   function tmScanNonTextParts(bodyObj) {
     var out = { bytes: 0, tokens: 0, images: 0, docs: 0 };
     if (!bodyObj || typeof bodyObj !== 'object') return out;
@@ -3952,8 +4065,8 @@
       try { len = String(str || '').length; } catch (e) {}
       if (len <= 0) return;
       out.bytes += len;
-      if (isImage) { out.images++; out.tokens += TM_MISMATCH_IMAGE_TOKEN_EST; }
-      else { out.docs++; out.tokens += TM_MISMATCH_DOC_TOKEN_EST; }
+      if (isImage) { out.images++; out.tokens += tmEstimateImageTokens(str); }
+      else { out.docs++; out.tokens += tmEstimateDocTokens(len); }
     }
     function scanParts(parts) {
       if (!Array.isArray(parts)) return;
