@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.300
+// Version: 4.301
 // Issues Fixed:
+//   - v4.301: FILTER LISTBOX USABILITY POLISH. (1) The ring-modal session Filter trigger had no
+//     minimum width, so with 'All' selected it collapsed to a tiny pill that was hard to spot --
+//     now min-width:150px, left-aligned, so it always reads as a real dropdown. (2) Rollover
+//     feedback for the custom listbox rows: div-based rows cannot use inline :hover, so a
+//     guarded one-time injected stylesheet adds .tm-flt-row:hover (the hover shade wins via
+//     !important; selected rows return to their purple when unhovered).
 //   - v4.300: MANAGEMENT OFF-SWITCH IS NOW REAL (auto-resume choke gate + in-flight cancel).
 //     Dan caught the walk-away engine firing with the heartbeat toggle OFF (orange): the v4.292
 //     toggle only gated the newer cross-session sweep, while the OLDER v4.281 sensors (15m
@@ -1045,7 +1051,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.300';
+  const EXT_VERSION = '4.301';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -10265,6 +10271,16 @@
       // v4.164: color the label with the identity's hue.
       entry.color = tmModelEndpointColor(entry.model || '', entry.host, entry.isProxy, entry.sid || '');
     }
+    // (v4.301) Rollover feedback for the custom filter listbox rows (div-based, so :hover
+    // needs a stylesheet rather than inline styles). Injected once, guarded by element id.
+    try {
+      if (typeof document !== 'undefined' && !document.getElementById('tm-filter-listbox-style')) {
+        var fltStyle = document.createElement('style');
+        fltStyle.id = 'tm-filter-listbox-style';
+        fltStyle.textContent = '.tm-flt-row:hover{background:rgba(90,120,200,0.35)!important;}';
+        document.head.appendChild(fltStyle);
+      }
+    } catch (eFltStyle) {}
     // -- Closed trigger: show the current selection (All, or the selected identity + hue). --
     var filterSelected = null;
     for (var es = 0; es < idEntries.length; es++) { if (tmModalFilterIdentity === idEntries[es].key) { filterSelected = idEntries[es]; break; } }
@@ -10275,7 +10291,7 @@
       trigLabel = filterSelected.showLabel + ' ' + filterSelected.costLabel +
         (filterSelected.hasRatio ? (' (' + filterSelected.misses + ' / ' + filterSelected.hits + ')') : '');
     }
-    filterHtml += '<button type="button" data-action="toggle-modal-filter-listbox" title="Filter ring buffer to a single session" style="font-size:10px;background:#222;color:' + trigColor + ';border:1px solid #555;border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis;vertical-align:top;">' +
+    filterHtml += '<button type="button" data-action="toggle-modal-filter-listbox" title="Filter ring buffer to a single session" style="font-size:10px;background:#222;color:' + trigColor + ';border:1px solid #555;border-radius:3px;padding:1px 6px;cursor:pointer;white-space:nowrap;min-width:150px;text-align:left;max-width:240px;overflow:hidden;text-overflow:ellipsis;vertical-align:top;">' +
       '<span style="font-weight:bold;">' + escapeHtml(trigLabel) + '</span> <span style="opacity:0.7;">&#9660;</span>' +
       '</button>';
     // -- Listbox panel (rendered only while open). Absolutely positioned under the trigger; own
@@ -10285,12 +10301,12 @@
       filterHtml += '<div data-role="modal-filter-listbox" style="position:absolute;top:calc(100% + 2px);left:0;z-index:100;min-width:280px;max-width:520px;max-height:300px;overflow-y:auto;background:rgba(20,20,26,0.98);border:1px solid #555;border-radius:4px;box-shadow:0 4px 14px rgba(0,0,0,0.6);padding:2px;">';
       // All row
       var allSelected = !tmModalFilterIdentity;
-      filterHtml += '<div data-action="set-modal-filter-listbox" data-identity-key="" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;' + (allSelected ? 'background:rgba(90,58,142,0.5);' : '') + '"><span style="color:#fff;font-weight:bold;">All</span></div>';
+      filterHtml += '<div class="tm-flt-row" data-action="set-modal-filter-listbox" data-identity-key="" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;' + (allSelected ? 'background:rgba(90,58,142,0.5);' : '') + '"><span style="color:#fff;font-weight:bold;">All</span></div>';
       // Identity rows -- the miss number in #ff6b6b; everything else inherits the session hue.
       for (var eo = 0; eo < idEntries.length; eo++) {
         var e2 = idEntries[eo];
         var sel = (tmModalFilterIdentity === e2.key);
-        filterHtml += '<div data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
+        filterHtml += '<div class="tm-flt-row" data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
           '<span style="font-weight:bold;">' + escapeHtml(e2.showLabel) + '</span> ' +
           '<span>' + escapeHtml(e2.costLabel) + '</span>' +
           (e2.hasRatio
