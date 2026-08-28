@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.298
+// Version: 4.299
 // Issues Fixed:
+//   - v4.299: CTX-DIAL PROVIDER-GRANULAR OVERRIDES + GUARANTEED BACK-OUT. The dial now carries
+//     the row's provider slug (data-provider), and overrides land on the PRECISE key clicked:
+//     'model::providerSlug' when the row names a provider (parity with Set Costs / Rate Providers
+//     granularity), bare 'model' otherwise (direct routes). Resolution gains a top rung:
+//     override[model::provider] > override[model] > endpoint discovery > provider-max > seed.
+//     Back-out is always one click: empty input clears exactly the clicked key (auto-detection
+//     resumes); typing 'clearall' removes EVERY override for the model. The prompt shows the
+//     current effective value+source and warns when a model-wide override sits above a
+//     provider-level key.
 //   - v4.298: CTX-DIAL SEED ROUTE-FIX. The v4.297 kimi-k3 seed (262144) described THIRD-PARTY
 //     serving windows, but the seed only ever fires for DIRECT routes (vendor-prefixed models
 //     resolve per-endpoint via OpenRouter discovery first) -- and direct Moonshot serves K3 at
@@ -1022,7 +1031,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.298';
+  const EXT_VERSION = '4.299';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5161,7 +5170,7 @@
           }
           // (v4.297) Context dial: set/clear the per-model max-context override.
           if (target.dataset.action === 'ctx-dial-set') {
-            tmCtxDialPromptSet(target.dataset.model || '');
+            tmCtxDialPromptSet(target.dataset.model || '', target.dataset.provider || '');
             ev.stopPropagation();
             ev.preventDefault();
             return;
@@ -5357,6 +5366,14 @@
   function tmResolveModelMaxCtx(modelKey, provSlug) {
     var m = String(modelKey || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
     if (!m) return { max: null, source: null };
+    // 0) Provider-SPECIFIC manual override (v4.299: most precise rung; key = 'model::providerSlug')
+    if (provSlug) {
+      try {
+        var ovP = tmReadModelCtxOverrides();
+        var hnP = Number(ovP[m + '::' + provSlug]);
+        if (isFinite(hnP) && hnP > 0) return { max: hnP, source: 'override-provider' };
+      } catch (eP0) {}
+    }
     // 1) Manual per-model override (exact full key, then final slash segment)
     try {
       var ov = tmReadModelCtxOverrides();
@@ -5486,6 +5503,13 @@
     var size = opts.size || 16;
     var model = snap.model || (opts.cap && opts.cap._identity && opts.cap._identity.model) || '';
     var mr = tmResolveModelMaxCtxCached(model, opts.cap || null);
+    // (v4.299) Resolve the row's provider slug up front: it rides the dial's data-provider attr
+    // so the click handler targets a 'model::providerSlug' override key (not just 'model').
+    var provSlugForAttr = '';
+    try {
+      var plA = (opts.cap && (opts.cap._provider_label || opts.cap.response_provider)) || null;
+      if (plA) provSlugForAttr = tmProviderNameToSlug(plA) || '';
+    } catch (ePA) {}
     var maxCtx = mr.max, maxSrc = mr.source;
     if (maxCtx == null && snap.max_ctx != null) { maxCtx = snap.max_ctx; maxSrc = snap.max_ctx_source || 'stamped'; }
     var pct = (maxCtx != null && maxCtx > 0) ? (snap.total / maxCtx) * 100 : null;
@@ -5516,38 +5540,68 @@
     if (snap.cached != null) bd.push('cached ' + tmFmtTok(snap.cached));
     if (bd.length) tip.push(bd.join(' · '));
     tip.push('total ' + Math.round(snap.total).toLocaleString() + ' tokens this turn (provider-reported, incl. reasoning)');
-    tip.push('max: ' + (maxSrc || 'unknown') + (model ? ' -- click to ' + (maxSrc === 'override' ? 'change/clear override' : 'set override') : ''));
+    tip.push('max: ' + (maxSrc || 'unknown') + (model ? ' -- click to override ' + (provSlugForAttr ? ('model::' + provSlugForAttr) : 'model') : ''));
     if (over) tip.push('⚠ OVER the model context window');
     var sep = opts.leadingSep ? ' <span style="opacity:0.4;">·</span> ' : '';
     var clickable = !!model;
-    return sep + '<span ' + (clickable ? 'data-action="ctx-dial-set" data-model="' + escapeHtml(model) + '" ' : '') +
+    return sep + '<span ' + (clickable ? 'data-action="ctx-dial-set" data-model="' + escapeHtml(model) + '" data-provider="' + escapeHtml(provSlugForAttr) + '" ' : '') +
       'title="' + escapeHtml(tip.join(NL)) + '" style="display:inline-flex;align-items:center;gap:3px;margin-left:4px;cursor:' + (clickable ? 'pointer' : 'help') + ';vertical-align:middle;white-space:nowrap;">' +
       svg +
       '<span style="font-size:10px;font-weight:600;color:' + color + ';pointer-events:none;line-height:1;">' + (over ? '⚠' : '') + label + '</span>' +
       '</span>';
   }
 
-  // Click handler for every dial: set or clear the per-model max-context override, then
-  // re-render both surfaces (renderPayloadCaptureModal no-ops when the modal is closed).
-  function tmCtxDialPromptSet(model) {
+  // Click handler for every dial (v4.299: provider-granular). The dial carries the row's
+  // provider slug, so an override lands on the PRECISE key it was clicked from:
+  // 'model::providerSlug' when the row names a provider, bare 'model' otherwise (direct routes).
+  // Empty input clears exactly that key (auto-detection resumes); 'clearall' removes EVERY
+  // override for the model -- the always-available back-out for a mistaken click. Re-renders
+  // both surfaces afterward (renderPayloadCaptureModal no-ops when the modal is closed).
+  function tmCtxDialPromptSet(model, provSlug) {
     model = String(model || '').trim();
     if (!model) return;
+    provSlug = String(provSlug || '').trim();
     var key = model.toLowerCase().replace(/:(nitro|floor|free)$/i, '');
     var seg = key.split('/').pop();
+    var targetKey = provSlug ? (key + '::' + provSlug) : key;
     var ov = tmReadModelCtxOverrides();
-    var cur = (ov[key] != null) ? ov[key] : (ov[seg] != null ? ov[seg] : '');
+    var curKeyVal = (ov[targetKey] != null) ? ov[targetKey] : '';
+    var eff = tmResolveModelMaxCtx(key, provSlug || null);
     var NL2 = String.fromCharCode(10);
+    var lines = [];
+    lines.push('Max context window (tokens) for ' + model + (provSlug ? (' :: ' + provSlug) : '') + ':');
+    lines.push('Current: ' + (eff && eff.max != null ? (eff.max + ' (' + eff.source + ')') : 'unknown'));
+    lines.push('');
+    lines.push('Enter a number to override THIS key only (' + targetKey + ').');
+    lines.push("Empty input = clear this key (auto-detection resumes). 'clearall' = remove EVERY override for this model.");
+    if (provSlug && eff && eff.source === 'override') {
+      lines.push('NOTE: a MODEL-WIDE override is currently in force; clearing this key will NOT remove it -- use clearall.');
+    }
     tmPromptActive = true;
-    var v = prompt('Max context window (tokens) for ' + model + ':' + NL2 + 'Leave empty to clear the manual override (auto-detection resumes).' + NL2 + NL2 + 'Common: 262144 = Kimi K3 (256K) · 1048576 = 1M (Claude / Gemini) · 400000 = GPT-5.x', (cur === '' ? '' : String(cur)));
+    var v = prompt(lines.join(NL2), (curKeyVal === '' ? '' : String(curKeyVal)));
     try { tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; } catch (eSup) {}
     setTimeout(function() { tmPromptActive = false; }, 100);
     if (v === null) return;
-    v = String(v).replace(/[,\s]/g, '');
-    if (v === '') { delete ov[key]; if (seg) delete ov[seg]; }
+    var vTrim = String(v).replace(/^\s+|\s+$/g, '');
+    if (vTrim.toLowerCase() === 'clearall') {
+      var delCount = 0;
+      for (var ok in ov) {
+        if (!Object.prototype.hasOwnProperty.call(ov, ok)) continue;
+        if (ok === key || ok === seg || ok.indexOf(key + '::') === 0 || (seg && ok.indexOf(seg + '::') === 0)) { delete ov[ok]; delCount++; }
+      }
+      tmSaveModelCtxOverrides(ov);
+      tmCtxResolveMemo = { ts: 0, map: {} };
+      try { renderGpt51UsageWidget(); } catch (e1) {}
+      try { renderPayloadCaptureModal(); } catch (e2) {}
+      alert('Cleared ' + delCount + ' override(s) for ' + model + '. Auto-detection resumed.');
+      return;
+    }
+    var vNum = vTrim.replace(/[,\s]/g, '');
+    if (vNum === '') { delete ov[targetKey]; }
     else {
-      var n = Number(v);
+      var n = Number(vNum);
       if (!isFinite(n) || n <= 0) { alert('Not a valid token count: ' + v); return; }
-      ov[key] = Math.round(n);
+      ov[targetKey] = Math.round(n);
     }
     tmSaveModelCtxOverrides(ov);
     tmCtxResolveMemo = { ts: 0, map: {} }; // bust the memo so the re-render re-scales immediately
@@ -6979,7 +7033,7 @@
 
       // (v4.297) Context dial: set/clear the per-model max-context override.
       if (t.dataset && t.dataset.action === 'ctx-dial-set') {
-        tmCtxDialPromptSet(t.dataset.model || '');
+        tmCtxDialPromptSet(t.dataset.model || '', t.dataset.provider || '');
         ev.stopPropagation();
         return;
       }
