@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.309
+// Version: 4.310
 // Issues Fixed:
+//   - v4.310: AUTO-RESUME COUNTDOWN GOES WALL-CLOCK (background-throttle resilience). Dan
+//     observed the 10s auto-resume modal sitting UNFINISHED while TypingMind was fully
+//     occluded / on another virtual desktop, then flash-completing the instant he
+//     foregrounded the window: Chrome/Electron intensive background timer throttling
+//     (~1-minute aligned wakeups) stretches a 10-TICK countdown into ~10 minutes. (The
+//     screensaver never triggers this -- the window stays compositor-visible underneath,
+//     which is why overnight runs work through it.) The countdown now counts down against a
+//     wall-clock DEADLINE instead of tick count: finish fires on the FIRST tick after 10s
+//     real time. Foreground behavior identical (10 ticks ~= 10s); background worst case
+//     drops from ~10 minutes to ~1 aligned wakeup (~60s). The sweep scheduler + gap-guard
+//     timeouts already degrade gracefully (they merely run late, and longer idle windows
+//     are conservative). NOT attempted: Electron's backgroundThrottling flag lives in
+//     TypingMind's main process (unreachable from the renderer), and silent-audio /
+//     wake-lock keepalive hacks are exactly the brittle species Dan said to skip.
+//     Foregrounding TypingMind when walking away remains the gold standard, but the
+//     observed failure mode is now a minor delay instead of an indefinite stall.
 //   - v4.309: AUTO-RESUME DRAFT PRESERVE-AND-PROCEED (replaces draft refusal). The actuator
 //     used to ABORT a queued Continue when the target conversation's composer held an unsent
 //     draft ('chat input contains an unsent draft; refusing to overwrite it') -- correct
@@ -1155,7 +1171,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.309';
+  const EXT_VERSION = '4.310';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8753,11 +8769,19 @@
     tmAutoContinueCountdownCancel = function() { finish(false, 'management disabled'); };
     box.querySelector('#tm-auto-continue-cancel').onclick = function() { finish(false); };
     box.querySelector('#tm-auto-continue-now').onclick = function() { finish(true); };
+    // (v4.310) WALL-CLOCK DEADLINE countdown. Chrome/Electron intensively throttles
+    // background timers (~1/min aligned wakeups) when the window is fully occluded or on
+    // another virtual desktop; a 10-TICK countdown could take ~10 minutes in the background
+    // (Dan watched the modal sit unfinished until he foregrounded the window, then
+    // flash-complete). Counting down against a wall-clock deadline means the finish fires
+    // on the FIRST tick after 10s real time -- identical when foregrounded, at most ~60s
+    // late under throttle instead of ~10 minutes. The displayed number stays honest.
+    var deadline = Date.now() + (remaining * 1000);
     var timer = setInterval(function() {
-      remaining--;
+      var left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
       var span = box.querySelector('#tm-auto-continue-seconds');
-      if (span) span.textContent = String(Math.max(remaining, 0));
-      if (remaining <= 0) finish(true);
+      if (span) span.textContent = String(left);
+      if (Date.now() >= deadline) finish(true);
     }, 1000);
   }
 
