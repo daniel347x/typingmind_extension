@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.297
+// Version: 4.298
 // Issues Fixed:
+//   - v4.298: CTX-DIAL SEED ROUTE-FIX. The v4.297 kimi-k3 seed (262144) described THIRD-PARTY
+//     serving windows, but the seed only ever fires for DIRECT routes (vendor-prefixed models
+//     resolve per-endpoint via OpenRouter discovery first) -- and direct Moonshot serves K3 at
+//     its full ~1M window. Seed corrected to 1048576 and anchored to BARE model names
+//     (^kimi-k3...) so it can never leak into the discovery-owned prefixed case.
 //   - v4.297: CONTEXT-WINDOW DIAL (provider-reported ground truth, one shared gauge component).
 //     Every ring-buffer entry now stamps a _ctx_snapshot at response receipt: the provider-REPORTED
 //     token totals for that exact turn (numerator = total_tokens -- everything the model consumed:
@@ -1017,7 +1022,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.297';
+  const EXT_VERSION = '4.298';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5332,7 +5337,10 @@
   // everything else is one click away via the dial's override prompt. (OpenRouter-routed models
   // get their true per-endpoint window from live discovery automatically.)
   const TM_MODEL_CTX_SEED = [
-    [/kimi[-_]?k3/i, 262144],   // Moonshot Kimi K3: 256K published window
+    [/^kimi[-_]?k3/i, 1048576],  // Moonshot Kimi K3 DIRECT: full ~1M window. Bare-name anchored:
+                                 // vendor-prefixed 'moonshotai/kimi-k3' never reaches the seed --
+                                 // it resolves PER-ENDPOINT via OpenRouter discovery (third-party
+                                 // providers serve K3 at ~256K, Moonshot's own endpoint at ~1M).
     [/gemini/i, 1048576]        // Google Gemini native: 1M window
   ];
 
