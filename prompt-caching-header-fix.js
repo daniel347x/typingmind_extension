@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.315
+// Version: 4.316
 // Issues Fixed:
+//   - v4.316: ROUND-TRIP STAMP ROOT-CAUSE FIX -- record.ts is an ISO STRING, not epoch ms.
+//     The v4.313 stamp computed Number(capRec.ts) -> NaN -> || 0 -> rtMs = 0 -> silent
+//     no-stamp on EVERY row (Dan: 'the ticker counts up, but nothing persists anywhere').
+//     The v4.315 live ticker survived the same field only because its own fallback used
+//     Date.now(). Fix: parse with Date.parse (ISO-aware) keeping Number as the fast path;
+//     same hardening in tmNoteInFlightCapture. Also: tmRecordRoundTrip now preserves a
+//     legacy numeric cost total when upgrading an entry instead of silently zeroing it.
+//     (The corroborating evidence was in Dan's own Summary paste days ago:
+//     'ts': '2026-08-28T09:29:45.568Z'.)
 //   - v4.315: TWO-PHASE ROUND-TRIP DISPLAY (live in-flight ticker) + unconditional _rt_ms
 //     stamp. Dan's two-phase insight: a turn has an OUTBOUND phase (payload sent, fields not
 //     yet filled) and a RETURNED phase (stamp lands). The widget's blue per-turn value now
@@ -1237,7 +1246,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.315';
+  const EXT_VERSION = '4.316';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2531,7 +2540,7 @@
       var costs = tmGetSessionCosts();
       var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
       var entry = costs[key];
-      if (typeof entry !== 'object' || entry === null) entry = {};
+      if (typeof entry !== 'object' || entry === null) entry = { _total: Number(entry) || 0 }; // (v4.316) preserve a legacy numeric cost total
       entry._rt_total_ms = Number(entry._rt_total_ms || 0) + ms;
       entry._rt_count = Number(entry._rt_count || 0) + 1;
       entry._session_id = String(sessionId);
@@ -2564,7 +2573,7 @@
   }
   function tmNoteInFlightCapture(captureId, ts) {
     try {
-      tmInFlightTurn = { captureId: captureId, ts: Number(ts) || Date.now() };
+      tmInFlightTurn = { captureId: captureId, ts: Number(ts) || Date.parse(ts) || Date.now() };
       tmEnsureRtLiveTicker();
     } catch (e) {}
   }
@@ -4845,7 +4854,10 @@
             // session's cumulative total snapshotted onto the entry (mirrors session_cost_total).
             // Ungated (same rationale as v4.218 cost): an errored round trip still consumed time.
             try {
-              var rtReqTs = Number(capRec && capRec.ts) || 0;
+              // (v4.316) record.ts is an ISO STRING ('2026-08-28T09:29:45.568Z'), not epoch
+              // ms: Number() yields NaN and silently killed every stamp (v4.313/4.315 showed
+              // nothing anywhere). Date.parse handles ISO; Number stays the fast path.
+              var rtReqTs = Number(capRec && capRec.ts) || Date.parse(capRec && capRec.ts) || 0;
               var rtMs = rtReqTs > 0 ? (Date.now() - rtReqTs) : 0;
               // (v4.315) The per-turn stamp no longer requires a session id -- _rt_ms stamps on
               // EVERY completed round trip (a null idSid used to skip the whole stamp). Only the
