@@ -1,6 +1,23 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.310
+// Version: 4.311
 // Issues Fixed:
+//   - v4.311: SERVICE-TIER COST VARIANTS (OpenAI fast='priority' vs default). Dan's Set Costs
+//     find: GPT-5.6 Sol fast bills 2x on the SAME model+endpoint, but both tiers pooled into
+//     one Set Costs row (gpt-5.6-sol::api.openai.com) keyed with whichever price he entered
+//     first (the fast 2x prices -- meaning non-fast turns were double-billed on paper; the
+//     good news was real spend was HALF of what the widget showed). The RESPONSE stream
+//     already carries the discriminator authoritatively: service_tier ('auto' on
+//     response.created resolving to 'default' on response.completed; 'priority' on every
+//     fast event). The extension now stamps _service_tier on every ring entry (SSE scan
+//     last-wins + non-streaming JSON path) and makes the provider key tier-aware via ONE
+//     helper (tmAppendServiceTierToProviderKey): a non-default tier suffixes the key
+//     ('api.openai.com Priority'), so discovery auto-creates a separate Set Costs row
+//     (same shape as the existing 'Fireworks Fast' variant labels) -- 2x prices live there,
+//     half prices in base. Per-turn cost, cost discovery, route catalog, the ring-row
+//     provider badge (_provider_label), and the widget provider display all inherit the
+//     variant through the shared resolver with a double-suffix guard. Session identity
+//     keys are unchanged: a conversation may legitimately mix tiers turn to turn --
+//     per-turn pricing differs, session totals just sum.
 //   - v4.310: AUTO-RESUME COUNTDOWN GOES WALL-CLOCK (background-throttle resilience). Dan
 //     observed the 10s auto-resume modal sitting UNFINISHED while TypingMind was fully
 //     occluded / on another virtual desktop, then flash-completing the instant he
@@ -1171,7 +1188,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.310';
+  const EXT_VERSION = '4.311';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1509,12 +1526,31 @@
   // target host is the durable fallback key (e.g. api.deepinfra.com).
   function tmObservedProviderKey(cap) {
     if (!cap) return '';
-    if (typeof cap._provider_label === 'string' && cap._provider_label) return cap._provider_label;
-    if (typeof cap.response_provider === 'string' && cap.response_provider) return cap.response_provider;
+    var base = '';
+    if (typeof cap._provider_label === 'string' && cap._provider_label) base = cap._provider_label;
+    else if (typeof cap.response_provider === 'string' && cap.response_provider) base = cap.response_provider;
+    else {
+      try {
+        var host = tmExtractEndpointHost(cap) || '';
+        base = (host && host !== 'unknown') ? host : '';
+      } catch (e) { base = ''; }
+    }
+    return tmAppendServiceTierToProviderKey(base, cap);
+  }
+
+  // (v4.311) OpenAI-style service_tier variants (fast='priority' vs default) bill at
+  // DIFFERENT rates on the SAME model+endpoint, so they must not pool into one Set Costs
+  // row. When a capture's response carried a non-default tier (_service_tier stamped at
+  // capture time), suffix the provider key so discovery auto-creates a separate row --
+  // the same shape as existing variant labels ('Fireworks Fast'). Double-suffix guarded.
+  function tmAppendServiceTierToProviderKey(base, cap) {
+    if (!base) return base;
     try {
-      var host = tmExtractEndpointHost(cap) || '';
-      return (host && host !== 'unknown') ? host : '';
-    } catch (e) { return ''; }
+      var tier = String((cap && cap._service_tier) || '').toLowerCase().trim();
+      if (!tier || tier === 'default' || tier === 'auto') return base;
+      if (base.toLowerCase().indexOf(tier) !== -1) return base;
+      return base + ' ' + tier.charAt(0).toUpperCase() + tier.slice(1);
+    } catch (e) { return base; }
   }
 
   // (v4.272) Build route-path presentation metadata from the ring. The key matches the existing
@@ -4259,6 +4295,11 @@
             if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
               patch.response_provider = parsed.provider;
             }
+            // (v4.311) Non-streaming: capture service_tier for per-tier cost keying
+            // (Responses API: top level; chat-completions: top level).
+            var jsonTier = (parsed && typeof parsed.service_tier === 'string' && parsed.service_tier)
+              || (parsed && parsed.response && typeof parsed.response.service_tier === 'string' && parsed.response.service_tier) || null;
+            if (jsonTier) patch._service_tier = jsonTier;
             // (v4.275) Persist the provider's actual error separately from response_body. For an
             // HTTP failure without a conventional nested `error`, preserve the whole JSON body.
             var jsonErrorPayload = tmFindProviderErrorPayload(parsed);
@@ -4281,6 +4322,7 @@
               var anthropicUsage = null;
               var usageSegments = [];
               var sseProvider = null; // (v4.197) top-level provider string carried by each SSE chunk
+              var respServiceTier = null; // (v4.311) service_tier from Responses/chat chunks (fast='priority' vs default)
               for (var li = 0; li < lines.length; li++) {
                 var line = lines[li].trim();
                 if (!line.startsWith('data: ')) continue;
@@ -4321,6 +4363,15 @@
                   // so the modal row can show it inline without opening the raw segment.
                   if (!sseProvider && parsed2 && typeof parsed2.provider === 'string' && parsed2.provider) {
                     sseProvider = parsed2.provider;
+                  }
+                  // (v4.311) Capture service_tier so cost keys can split fast (priority) vs
+                  // default tiers. Responses API carries it inside `response`; chat chunks
+                  // may carry it top-level. Last-wins: response.completed (which resolves
+                  // 'auto' -> 'default'/'priority') arrives last, so it is authoritative.
+                  if (parsed2 && parsed2.response && typeof parsed2.response.service_tier === 'string' && parsed2.response.service_tier) {
+                    respServiceTier = parsed2.response.service_tier;
+                  } else if (parsed2 && typeof parsed2.service_tier === 'string' && parsed2.service_tier) {
+                    respServiceTier = parsed2.service_tier;
                   }
                   // (v4.198) ALSO preserve ERROR-bearing segments (provider 400s / schema rejections),
                   // which carry NO usage. Previously these were dropped, so a crashed turn showed a
@@ -4404,6 +4455,7 @@
               if (lastUsage) { patch.response_usage = lastUsage; }
               if (anthropicUsage) { patch.response_anthropic_usage = anthropicUsage; }
               if (sseProvider) { patch.response_provider = sseProvider; }
+              if (respServiceTier) { patch._service_tier = respServiceTier; }
               // HTTP errors sometimes return plain text or nonstandard SSE with no JSON `error`.
               // Preserve that exact bounded body rather than recording only status:false.
               if (capHadError && !patch.error) {
@@ -4470,7 +4522,7 @@
                 // (v4.198) Carry the serving provider onto the most-recent status so the persistent
                 // widget can show it next to the model name. Prefer the captured provider string;
                 // fall back to the endpoint host so something useful shows for older/edge captures.
-                if (capWidgetFeed) tmMostRecentPayloadStatus.provider = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
+                if (capWidgetFeed) tmMostRecentPayloadStatus.provider = tmAppendServiceTierToProviderKey(patch.response_provider || (capRec && capRec.response_provider) || idHost || null, capRec);
                 tmUpdateCaptureRecord(captureId, { _identity: identity });
                 // (Fix 16, v4.200) AUTO-STAMP provider lock. If this is a multi-provider model, the
                 // response had a real provider (not an error-only chunk), and no lock exists yet for
@@ -4521,7 +4573,7 @@
                   if (!_histProvLabel) {
                     _histProvLabel = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
                   }
-                  if (_histProvLabel) tmUpdateCaptureRecord(captureId, { _provider_label: _histProvLabel });
+                  if (_histProvLabel) tmUpdateCaptureRecord(captureId, { _provider_label: tmAppendServiceTierToProviderKey(_histProvLabel, capRec) });
                 } catch (e) {}
                 // (v4.297) CONTEXT-WINDOW SNAPSHOT. Stamp this turn's provider-REPORTED token
                 // totals onto the ring entry (snapshot-in-time; underscore field survives
