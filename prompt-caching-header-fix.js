@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.313
+// Version: 4.314
 // Issues Fixed:
+//   - v4.314: WIDGET PER-TURN ROUND-TRIP TIME. The persistent widget now shows the single
+//     most-recent turn's round-trip duration (blue, from the newest ring entry stamped with
+//     _rt_ms for the current identity) immediately BEFORE the v4.313 cumulative session
+//     total (gray) -- same visual language as the ring rows ('time Ns' then 'sum total'),
+//     so Dan can glance at the last turn's latency plus the running total in one row. The
+//     finder (tmLatestRoundTripEntryForIdentity) is deliberately separate from the
+//     ctx-snapshot finder: an errored turn can carry _rt_ms without a _ctx_snapshot, so the
+//     freshest duration is not always on the dial's entry. In-flight turns show nothing new
+//     until response receipt (snapshot system), then the value lands on the next render.
 //   - v4.313: ROUND-TRIP WALL-CLOCK TIMER (per-turn + per-session cumulative). Every capture
 //     now measures request -> response-end duration at response receipt and stamps it on the
 //     ring entry as _rt_ms, with the session's cumulative total (_rt_total_ms) snapshotted
@@ -1214,7 +1223,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.313';
+  const EXT_VERSION = '4.314';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5946,6 +5955,26 @@
     return null;
   }
 
+  // (v4.314) Newest ring entry carrying a stamped round-trip duration (_rt_ms) FOR THIS
+  // identity. Separate from the ctx-snapshot finder: a turn can carry _rt_ms without a
+  // _ctx_snapshot (e.g. an errored round trip with no usage evidence), so the freshest
+  // per-turn duration is not necessarily on the dial's entry.
+  function tmLatestRoundTripEntryForIdentity(idKey) {
+    try {
+      var ring = tmReadCaptureRing();
+      var i, cap;
+      if (idKey) {
+        for (i = ring.length - 1; i >= 0; i--) {
+          cap = ring[i];
+          if (cap && cap._rt_ms != null && cap._identity && cap._identity.key === idKey) return cap;
+        }
+        return null;
+      }
+      for (i = ring.length - 1; i >= 0; i--) { cap = ring[i]; if (cap && cap._rt_ms != null) return cap; }
+    } catch (e) {}
+    return null;
+  }
+
   // The ramp: solid green <=40%, mostly green at 50%, yellowing past 50%, orange ~65%, red >=75%.
   function tmCtxDialColor(pct) {
     if (pct == null) return '#9aa4b2';
@@ -6280,14 +6309,20 @@
       if (ctxCapForWidget) widgetCtxDialHtml = tmRenderCtxDial(ctxCapForWidget._ctx_snapshot, { size: 16, cap: ctxCapForWidget });
     } catch (eCtxW) { widgetCtxDialHtml = ''; }
 
-    // (v4.313) Cumulative round-trip total for the widget's current identity, right of the dial.
+    // (v4.313/v4.314) Round-trip times for the widget's current identity, right of the dial:
+    // v4.314 adds the single most-recent turn's duration (blue) BEFORE the v4.313 cumulative
+    // total (gray), mirroring the ring-row layout.
     var widgetRtHtml = '';
     try {
+      var rtCapForWidget = tmLatestRoundTripEntryForIdentity(widgetIdentity && widgetIdentity.key);
+      if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
+        widgetRtHtml += ' <span title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
+      }
       if (widgetIdentity && widgetIdentity.sid) {
         var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
         var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
         var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
-        if (rtMsW > 0) widgetRtHtml = ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:9px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:9px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
       }
     } catch (eRtWd) { widgetRtHtml = ''; }
 
