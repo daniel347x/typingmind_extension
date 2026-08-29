@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.316
+// Version: 4.317
 // Issues Fixed:
+//   - v4.317: USER-CANCEL LATCH -- Cancel on the auto-resume modal is now PERSISTENT, not a
+//     one-cycle pause. Dan's failure mode, lived: he manually Stopped a session to back out
+//     (needed to refresh a Cartographer mapping first), pressed Cancel on the auto-resume
+//     modal, and the still-stalled trigger state (pendingToolCall / turn-limit / error)
+//     re-queued the resume a minute later; an hour away from the desk, it fired and ran ~15
+//     minutes of agent work on the stale mapping. Root cause: Cancel only dismissed the
+//     modal; nothing suppressed re-queueing. Fix: a durable per-session latch
+//     (tm_autoresume_cancelled_v1, tm- alias tolerant, 24h backstop expiry) set when the
+//     user presses Cancel. While latched: (1) tmQueueAutoContinue refuses every autonomous
+//     reason for that session (manual_debug exempt); (2) the management sweep's candidate
+//     filter skips it entirely; (3) the actuator re-checks before navigation; (4) the
+//     session's already-queued items are purged at cancel time. The latch clears ONLY when
+//     an outbound payload is captured for that session (pasted or derived id) -- i.e., when
+//     Dan is driving again. The abort toast now says so explicitly.
 //   - v4.316: ROUND-TRIP STAMP ROOT-CAUSE FIX -- record.ts is an ISO STRING, not epoch ms.
 //     The v4.313 stamp computed Number(capRec.ts) -> NaN -> || 0 -> rtMs = 0 -> silent
 //     no-stamp on EVERY row (Dan: 'the ticker counts up, but nothing persists anywhere').
@@ -1246,7 +1260,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.316';
+  const EXT_VERSION = '4.317';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3731,6 +3745,13 @@
           record.session_id = null;
           record.pasted_session_id = null;
         }
+
+        // (v4.317) USER-CANCEL LATCH clear: any outbound payload for a session means Dan is
+        // driving again -- re-arm auto-resume for it (both id forms, tm- alias tolerant).
+        try {
+          if (record.session_id) tmClearAutoResumeCancelled(record.session_id);
+          if (record.pasted_session_id) tmClearAutoResumeCancelled(record.pasted_session_id);
+        } catch (eC317) {}
 
         // v4.87: a 100-entry history needs a strict record budget. Prefer a small truncated
         // payload only when it fits; otherwise retain a diagnostic skeleton, then a tiny fallback.
@@ -8492,6 +8513,8 @@
       // (the chain would only park ~9s and abort on this same signal). Absent (incl. row not
       // rendered) => fall through to the unchanged proven chain; safe-direction only.
       if (tmSidebarHasToolActivity(s.sessionId)) return false;
+      // (v4.317) USER-CANCEL LATCH: a user-cancelled session is skipped entirely.
+      if (tmIsAutoResumeCancelled(s.sessionId)) return false;
       return true;
     }).sort(function(a, b) { return a.responseFinishedAt - b.responseFinishedAt; });
     if (!candidates.length) { tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_SWEEP_MS); return; }
@@ -8951,6 +8974,8 @@
     if (!item || !item.sessionId) { tmFinishAutoContinue(false, 'missing Session ID'); return; }
     // (v4.300) Final gate before navigation: the toggle may have flipped OFF during the countdown.
     if (!tmAgentManagementEnabled() && item.reason !== 'manual_debug') { tmFinishAutoContinue(false, 'management disabled'); return; }
+    // (v4.317) Final gate: this session may have been user-cancelled during the countdown.
+    if (item.reason !== 'manual_debug' && tmIsAutoResumeCancelled(item.sessionId)) { tmFinishAutoContinue(false, 'auto-resume suppressed by user cancel'); return; }
     // A currently-visible matching conversation needs no sidebar row at all (its folder may be
     // collapsed or virtualized). Verify it directly and avoid needless navigation.
     if (tmConversationVerified(item.sessionId)) {
@@ -9018,7 +9043,16 @@
       if (run) tmExecuteAutoContinue(item); else tmFinishAutoContinue(false, why || 'cancelled by user');
     }
     tmAutoContinueCountdownCancel = function() { finish(false, 'management disabled'); };
-    box.querySelector('#tm-auto-continue-cancel').onclick = function() { finish(false); };
+    box.querySelector('#tm-auto-continue-cancel').onclick = function() {
+      // (v4.317) USER-CANCEL LATCH: persistent cancel -- suppress ALL future auto-resume for
+      // this session until Dan sends an outbound payload in it himself. Also purge any of
+      // the session's items already waiting in the queue.
+      try { tmSetAutoResumeCancelled(item.sessionId); } catch (eC317) {}
+      try {
+        tmAutoContinueQueue = tmAutoContinueQueue.filter(function(q) { return !q || String(q.sessionId) !== String(item.sessionId); });
+      } catch (eQ317) {}
+      finish(false, 'cancelled by user — auto-resume suppressed for this session until your next message');
+    };
     box.querySelector('#tm-auto-continue-now').onclick = function() { finish(true); };
     // (v4.310) WALL-CLOCK DEADLINE countdown. Chrome/Electron intensively throttles
     // background timers (~1/min aligned wakeups) when the window is fully occluded or on
@@ -9041,6 +9075,52 @@
   function tmCancelAutoContinueCountdown() {
     try { if (tmAutoContinueCountdownCancel) tmAutoContinueCountdownCancel(); } catch (e) {}
     try { var ov = document.getElementById('tm-auto-continue-overlay'); if (ov && ov.parentNode) ov.parentNode.removeChild(ov); } catch (e2) {}
+  }
+
+  // (v4.317) USER-CANCEL LATCH. Pressing Cancel on the auto-resume modal suppresses ALL future
+  // auto-resume activity for that session until Dan sends an outbound payload in it himself
+  // (the lived failure: cancel -> sweep re-queued a minute later -> resume fired while away).
+  // Durable localStorage store { sessionId: ts }; tm- alias tolerant (the v4.296 raw/derived
+  // id duality); 24h backstop expiry for abandoned sessions.
+  const TM_AUTORESUME_CANCELLED_KEY = 'tm_autoresume_cancelled_v1';
+  function tmReadAutoResumeCancelled() {
+    try { var r = localStorage.getItem(TM_AUTORESUME_CANCELLED_KEY); return r ? JSON.parse(r) : {}; } catch (e) { return {}; }
+  }
+  function tmIsAutoResumeCancelled(sessionId) {
+    try {
+      var sid = String(sessionId || '');
+      if (!sid) return false;
+      var store = tmReadAutoResumeCancelled();
+      var ts = store[sid] || (sid.indexOf('tm-') === 0 ? store[sid.slice(3)] : store['tm-' + sid]);
+      if (!ts) return false;
+      if (Date.now() - Number(ts) > 24 * 3600 * 1000) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+  function tmSetAutoResumeCancelled(sessionId) {
+    try {
+      var sid = String(sessionId || '');
+      if (!sid) return;
+      var store = tmReadAutoResumeCancelled();
+      store[sid] = Date.now();
+      localStorage.setItem(TM_AUTORESUME_CANCELLED_KEY, JSON.stringify(store));
+      console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] Auto-resume CANCELLED by user for session ' + sid + ' -- suppressed until your next outbound payload in that session.');
+    } catch (e) {}
+  }
+  function tmClearAutoResumeCancelled(sessionId) {
+    try {
+      var sid = String(sessionId || '');
+      if (!sid) return;
+      var store = tmReadAutoResumeCancelled();
+      var changed = false;
+      if (store[sid]) { delete store[sid]; changed = true; }
+      if (sid.indexOf('tm-') === 0 && store[sid.slice(3)]) { delete store[sid.slice(3)]; changed = true; }
+      if (store['tm-' + sid]) { delete store['tm-' + sid]; changed = true; }
+      if (changed) {
+        localStorage.setItem(TM_AUTORESUME_CANCELLED_KEY, JSON.stringify(store));
+        console.log('\u25B6\uFE0F [v' + EXT_VERSION + '] Auto-resume re-armed for session ' + sid + ' (your outbound payload).');
+      }
+    } catch (e) {}
   }
 
   function tmProcessAutoContinueQueue() {
@@ -9095,6 +9175,9 @@
     // actuator (10s modal + session switch + Continue) with the toggle OFF. The only exempt
     // reason is 'manual_debug' (an explicit human action, never autonomous monitoring).
     if (!tmAgentManagementEnabled() && reason !== 'manual_debug') return false;
+    // (v4.317) USER-CANCEL LATCH: a user-cancelled session stays cancelled until Dan's next
+    // outbound payload in it.
+    if (reason !== 'manual_debug' && tmIsAutoResumeCancelled(sessionId)) return false;
     if (!sessionId) {
       console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume skipped: no explicit Session ID in request.');
       return false;
