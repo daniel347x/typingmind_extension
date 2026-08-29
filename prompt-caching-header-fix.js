@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.322
+// Version: 4.323
 // Issues Fixed:
+//   - v4.323: TOOL-EXECUTION TIMER (live on widget + per-row stamp). The red TOOL badge state
+//     (client-side tool call in flight, no payload en route) now carries a LIVE ticking
+//     duration on the persistent widget: a 'tool Ns' counter beside the badge, updated by
+//     the shared 1s ticker (no renders, no identity repaints -- same discipline as the
+//     round-trip ticker). The tool window is measured from the tool-call response end
+//     (tmAgentManagementNoteResponse) to the next outbound payload
+//     (tmAgentManagementNoteOutbound) -- and that duration is ALSO stamped on the NEW
+//     capture as _tool_exec_ms (capped at 30min), so ring rows show a tool chip per turn:
+//     'the client-side tool execution feeding THIS payload took Ns'. The widget timer
+//     renders only in management mode (same gate as the badge itself).
 //   - v4.322: WIDGET WIDTH IS NOW FIXED (no more size jumping). v4.321 raised maxWidth, but
 //     the widget still sized to its content, so its width jumped as session rows changed
 //     (Dan: 'I don't like the jumping in size... I never see the full 40%'). The widget is
@@ -1300,7 +1310,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.322';
+  const EXT_VERSION = '4.323';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2613,15 +2623,27 @@
   // over the marker; a 30-minute ceiling clears a marker whose response never arrives.
   var tmInFlightTurn = null; // { captureId, ts }
   var tmRtLiveTickerId = null;
+  var tmWidgetCurrentSid = ''; // (v4.323) widget's displayed session id, for the tool timer
   function tmEnsureRtLiveTicker() {
     if (tmRtLiveTickerId != null) return;
     tmRtLiveTickerId = setInterval(function() {
       try {
-        if (!tmInFlightTurn) return;
-        if (Date.now() - Number(tmInFlightTurn.ts || 0) > 30 * 60 * 1000) { tmInFlightTurn = null; return; }
-        var el = document.getElementById('tm-rt-live-value');
-        if (!el) return;
-        el.textContent = '⏱ ' + tmFmtDuration(Date.now() - Number(tmInFlightTurn.ts || 0));
+        if (tmInFlightTurn) {
+          if (Date.now() - Number(tmInFlightTurn.ts || 0) > 30 * 60 * 1000) { tmInFlightTurn = null; }
+          else {
+            var el = document.getElementById('tm-rt-live-value');
+            if (el) el.textContent = '⏱ ' + tmFmtDuration(Date.now() - Number(tmInFlightTurn.ts || 0));
+          }
+        }
+        // (v4.323) Tool-execution live timer: runs whether or not a payload is in flight
+        // (tool mode = NO payload en route, exactly when the round-trip ticker is idle).
+        var tel = document.getElementById('tm-tool-live-value');
+        if (tel) {
+          var tstate = tmAgentManagementDisplayState(tmWidgetCurrentSid);
+          if (tstate && tstate.pendingToolCall && tstate.responseFinishedAt) {
+            tel.textContent = '🧰 ' + tmFmtDuration(Date.now() - Number(tstate.responseFinishedAt));
+          }
+        }
       } catch (e) {}
     }, 1000);
   }
@@ -6498,12 +6520,24 @@
       // (v4.148) Session name gets its own full-width row so the session/status row does not wrap.
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
       var nameSid = displaySessionId || displayPastedId || '';
+      tmWidgetCurrentSid = nameSid; // (v4.323) feed the shared ticker's tool-timer target
+      // (v4.323) Live tool-execution timer: while a client-side tool call is in flight for
+      // the widget's session (the red TOOL badge state), show its elapsed time ticking.
+      var widgetToolHtml = '';
+      try {
+        var toolStateW = tmAgentManagementDisplayState(nameSid);
+        if (tmAgentManagementEnabled() && toolStateW && toolStateW.pendingToolCall && toolStateW.responseFinishedAt) {
+          try { tmEnsureRtLiveTicker(); } catch (eTk) {}
+          widgetToolHtml = ' <span id="tm-tool-live-value" title="client-side tool execution time, LIVE (tool call in flight)" style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">🧰 ' + tmFmtDuration(Date.now() - Number(toolStateW.responseFinishedAt)) + '</span>';
+        }
+      } catch (eToolW) { widgetToolHtml = ''; }
       if (displaySessionName) {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + widgetToolHtml + '</div>');
       } else {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + '</div>');
+        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + widgetToolHtml + '</div>');
       }
     } else {
+      tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
       lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
 
@@ -8381,6 +8415,15 @@
     var key = String(sessionId);
     var s = tmAgentManagementSessions[key] || { sessionId: key };
     var flipped = !!s.pendingToolCall; // (v4.295) true→false flip drives the live badge update
+    // (v4.323) Stamp the client-side tool-execution duration onto the NEW capture: the window
+    // from the tool-call response end to this outbound payload IS the tool run (plus
+    // overhead). Capped at 30min so a stalled/abandoned window never produces a silly value.
+    if (flipped && s.responseFinishedAt && captureId) {
+      try {
+        var execMs = Date.now() - Number(s.responseFinishedAt);
+        if (execMs > 0 && execMs < 30 * 60 * 1000) tmUpdateCaptureRecord(captureId, { _tool_exec_ms: execMs });
+      } catch (eToolMs) {}
+    }
     s.pendingToolCall = false;
     s.lastOutboundAt = Date.now();
     s.captureId = captureId || s.captureId || null;
@@ -11546,6 +11589,9 @@
         var rtRowParts = [];
         if (cap._rt_ms != null && isFinite(Number(cap._rt_ms)) && Number(cap._rt_ms) > 0) {
           rtRowParts.push('<span title="round-trip time for THIS payload (request to response end)" style="color:#7ec8e3;font-size:10px;font-weight:600;">⏱ ' + tmFmtDuration(cap._rt_ms) + '</span>');
+        }
+        if (cap._tool_exec_ms != null && Number(cap._tool_exec_ms) > 0) {
+          rtRowParts.push('<span title="client-side tool execution time feeding this payload" style="color:#d08b8b;font-size:10px;font-weight:600;">🧰 ' + tmFmtDuration(cap._tool_exec_ms) + '</span>');
         }
         if (cap._rt_total_ms != null && Number(cap._rt_total_ms) > 0) {
           rtRowParts.push('<span title="cumulative round-trip time for this session, snapshotted at this turn" style="color:#9aa4b2;font-size:10px;">Σ⏱ ' + tmFmtDuration(cap._rt_total_ms) + '</span>');
