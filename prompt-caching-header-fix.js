@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.320
+// Version: 4.321
 // Issues Fixed:
+//   - v4.321: WIDGET 40% WIDER + READABILITY BUMPS (Dan's field-by-field list). The
+//     persistent widget's maxWidth grows 385px -> 539px (exactly 1.4x) with the right edge
+//     fixed at 262px, so it pushes out LEFT into the always-empty space -- longer structured
+//     session titles stop cropping, and there's room for the newer readouts. Font bumps, one
+//     step each, ONLY where Dan pointed: (1) round-trip time counters in the widget 9px ->
+//     10px (per-turn blue AND cumulative gray; ring-row counters untouched); (2) the top
+//     row's cache report ('cache' static text + read tokens + write tokens) wrapped in an
+//     11px span (tmRenderCacheReport itself untouched, so ring rows are unaffected); (3)
+//     the session-cost field at the left of the second row 11px -> 12px. Everything else
+//     stays exactly as it was.
 //   - v4.320: OFFSHOOT TAB OVERLAP FIX. The v4.319 copy tab (28x28, bottom-left) overlapped
 //     the pulsating heartbeat gear above it and painted in front of it (Dan: the heartbeat
 //     was 'hiding behind the copy button'). The copy tab is now smaller (20x20, tucked into
@@ -1283,7 +1293,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.320';
+  const EXT_VERSION = '4.321';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5568,7 +5578,7 @@
       el.style.fontSize = '12px';
       el.style.padding = '2px 8px'; // v4.195: shave ~20px height (was 6px vertical)
       el.style.borderRadius = '4px';
-      el.style.maxWidth = '385px';
+      el.style.maxWidth = '539px'; // (v4.321) 385px * 1.4 = 539px: 40% wider, right edge fixed
       el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.35)';
       el.style.pointerEvents = 'auto';
       el.style.cursor = 'default';
@@ -6339,7 +6349,10 @@
       : '';
     // Build the cache report WITHOUT the cost badge (cost is rendered separately above).
     var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
-    parts.push(cacheReportNoCost + turnCostStr);
+    // (v4.321) One-step font bump for JUST the cache report portion (static 'cache' +
+    // read tokens + write tokens), per Dan; the shared tmRenderCacheReport is untouched so
+    // ring rows are unaffected.
+    parts.push('<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr);
 
     // (v4.73) Running total cost — deeper purple (#8b6db5) for Σ$/reset; numeric value in even darker purple (#5d3f8e).
     var totalCost = tmGetTotalCost();
@@ -6440,15 +6453,15 @@
       // moment the v4.313 stamp lands it reverts to the latest completed turn's value.
       var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
       if (rtLiveMs > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
       } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:9px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
       }
       if (widgetIdentity && widgetIdentity.sid) {
         var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
         var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
         var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
-        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:9px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
       }
     } catch (eRtWd) { widgetRtHtml = ''; }
 
@@ -6467,7 +6480,7 @@
         }
       } catch (e) {}
       if (widgetSessionCost > 0) {
-        sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
+        sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
       lines.push('<div data-action="open-payload-capture-modal" title="' + (displaySidTooltip ? escapeHtml('identity: ' + displaySidTooltip) : 'Open payload capture history') + '" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
 
