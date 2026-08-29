@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.318
+// Version: 4.319
 // Issues Fixed:
+//   - v4.319: MANUAL AUTO-RESUME TEXT BUTTON. A second offshoot tab at the BOTTOM-LEFT of the
+//     persistent widget (white tinged yellow, clipboard glyph; the heartbeat gear stays
+//     top-left) copies the v4.312 machine-signposted continuation text to the clipboard on
+//     click -- NOTHING is submitted. Dan pastes it into the composer and sends it himself
+//     when HE wants the session continued (the sweep then naturally stands down because the
+//     conversation moved on). Tooltip spells out exactly that flow. tmBuildAutoResumeText
+//     now omits the reason parenthetical when no reason is passed (the manual case), so the
+//     copied text reads 'The previous turn was interrupted.' -- Dan himself is the
+//     interruption in this path.
 //   - v4.318: CONTEXT GAUGE IN THE SESSION-FILTER DROPDOWN. Each identity row in the ring
 //     modal's session Filter listbox now shows the newest _ctx_snapshot gauge for that
 //     identity at the far right (arc + percentage only -- no timers), so Dan can survey
@@ -1269,7 +1278,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.318';
+  const EXT_VERSION = '4.319';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5595,6 +5604,15 @@
             return;
           }
 
+          // (v4.319) Manually copy the machine-signposted auto-resume text to the clipboard
+          // (Dan pastes it in and sends it himself; NOTHING is submitted by the extension).
+          if (target.dataset.action === 'copy-auto-resume-text') {
+            try { copyTextToClipboard(tmBuildAutoResumeText(''), 'auto-resume text'); } catch (eCopy) {}
+            ev.stopPropagation();
+            ev.preventDefault();
+            return;
+          }
+
           // Open payload tool filter modal
           if (target.dataset.action === 'open-payload-modal') {
             openPayloadModal();
@@ -6349,6 +6367,12 @@
     lines.push(
       '<button type="button" data-action="toggle-agent-management" title="Agent management mode — monitor tool-call sessions and auto-continue confirmed stalls" ' +
       'style="position:absolute;right:100%;top:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;cursor:pointer;pointer-events:auto;font-size:14px;font-weight:bold;line-height:26px;text-align:center;color:' + (managing ? '#fff' : '#e6a35c') + ';background:' + (managing ? '#b51515' : '#4b2b10') + ';border:1px solid ' + (managing ? '#ff6666' : '#9a5a22') + ';animation:' + (managing ? 'tmAgentManagePulse 1.4s ease-in-out infinite' : 'none') + ';">&#9881;</button>'
+    );
+    // (v4.319) Manual auto-resume text button: bottom-left offshoot tab, white tinged yellow.
+    // Copies the machine-signposted continuation text to the clipboard -- NOTHING is submitted.
+    lines.push(
+      '<button type="button" data-action="copy-auto-resume-text" title="Click here to manually generate the automatic continuation text (copies it to your clipboard; paste it in and send it yourself — nothing is submitted)" ' +
+      'style="position:absolute;right:100%;bottom:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;cursor:pointer;pointer-events:auto;font-size:13px;line-height:26px;text-align:center;color:#6a6a4a;background:#fdfdf0;border:1px solid #d8d8a8;">&#128203;</button>'
     );
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
@@ -8793,8 +8817,10 @@
   // extension-attributed form is unmistakably not a human instruction, tells the model to
   // disregard it, and says exactly what to do instead.
   function tmBuildAutoResumeText(reason) {
-    var r = String(reason || 'stall').replace(/_/g, ' ');
-    return '[AUTO-RESUME — TypingMind payload extension, not a user instruction. The previous turn was interrupted (' + r + '). Disregard this message and continue your previous task exactly where you left off.]';
+    // (v4.319) Reason parenthetical is optional: the manual copy-to-clipboard path passes no
+    // reason (Dan himself is the interruption), reading '...was interrupted.' cleanly.
+    var r = String(reason || '').replace(/_/g, ' ');
+    return '[AUTO-RESUME — TypingMind payload extension, not a user instruction. The previous turn was interrupted' + (r ? (' (' + r + ')') : '') + '. Disregard this message and continue your previous task exactly where you left off.]';
   }
   var tmAutoResumeLastTypedText = ''; // the exact text last typed (draft-restore comparison)
 
