@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.319
+// Version: 4.320
 // Issues Fixed:
+//   - v4.320: OFFSHOOT TAB OVERLAP FIX. The v4.319 copy tab (28x28, bottom-left) overlapped
+//     the pulsating heartbeat gear above it and painted in front of it (Dan: the heartbeat
+//     was 'hiding behind the copy button'). The copy tab is now smaller (20x20, tucked into
+//     the bottom third -- sticks out/up less) and the gear carries an explicit z-index so
+//     the heartbeat pulse always stays visible on top, overlap or not.
 //   - v4.319: MANUAL AUTO-RESUME TEXT BUTTON. A second offshoot tab at the BOTTOM-LEFT of the
 //     persistent widget (white tinged yellow, clipboard glyph; the heartbeat gear stays
 //     top-left) copies the v4.312 machine-signposted continuation text to the clipboard on
@@ -1278,7 +1283,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.319';
+  const EXT_VERSION = '4.320';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6366,13 +6371,13 @@
     const managing = tmAgentManagementEnabled();
     lines.push(
       '<button type="button" data-action="toggle-agent-management" title="Agent management mode — monitor tool-call sessions and auto-continue confirmed stalls" ' +
-      'style="position:absolute;right:100%;top:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;cursor:pointer;pointer-events:auto;font-size:14px;font-weight:bold;line-height:26px;text-align:center;color:' + (managing ? '#fff' : '#e6a35c') + ';background:' + (managing ? '#b51515' : '#4b2b10') + ';border:1px solid ' + (managing ? '#ff6666' : '#9a5a22') + ';animation:' + (managing ? 'tmAgentManagePulse 1.4s ease-in-out infinite' : 'none') + ';">&#9881;</button>'
+      'style="position:absolute;right:100%;top:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;z-index:3;cursor:pointer;pointer-events:auto;font-size:14px;font-weight:bold;line-height:26px;text-align:center;color:' + (managing ? '#fff' : '#e6a35c') + ';background:' + (managing ? '#b51515' : '#4b2b10') + ';border:1px solid ' + (managing ? '#ff6666' : '#9a5a22') + ';animation:' + (managing ? 'tmAgentManagePulse 1.4s ease-in-out infinite' : 'none') + ';">&#9881;</button>'
     );
     // (v4.319) Manual auto-resume text button: bottom-left offshoot tab, white tinged yellow.
     // Copies the machine-signposted continuation text to the clipboard -- NOTHING is submitted.
     lines.push(
       '<button type="button" data-action="copy-auto-resume-text" title="Click here to manually generate the automatic continuation text (copies it to your clipboard; paste it in and send it yourself — nothing is submitted)" ' +
-      'style="position:absolute;right:100%;bottom:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;cursor:pointer;pointer-events:auto;font-size:13px;line-height:26px;text-align:center;color:#6a6a4a;background:#fdfdf0;border:1px solid #d8d8a8;">&#128203;</button>'
+      'style="position:absolute;right:100%;bottom:0;margin-right:4px;width:20px;height:20px;padding:0;border-radius:6px 0 0 6px;cursor:pointer;pointer-events:auto;font-size:11px;line-height:18px;text-align:center;color:#6a6a4a;background:#fdfdf0;border:1px solid #d8d8a8;z-index:1;">&#128203;</button>'
     );
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
