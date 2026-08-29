@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.317
+// Version: 4.318
 // Issues Fixed:
+//   - v4.318: CONTEXT GAUGE IN THE SESSION-FILTER DROPDOWN. Each identity row in the ring
+//     modal's session Filter listbox now shows the newest _ctx_snapshot gauge for that
+//     identity at the far right (arc + percentage only -- no timers), so Dan can survey
+//     every session's context fullness at a glance alongside the cost and hit/miss
+//     aggregates already there. Rows are now flex containers (label/cost/ratio in an
+//     ellipsis span at left, gauge flex-shrink:0 pinned right). The gauge is rendered
+//     NON-clickable in this surface (tmRenderCtxDial gains a noClick opt): the row click
+//     selects the filter as before; the gauge is display-only with its full breakdown
+//     tooltip intact. Identities without a snapshot simply render no gauge.
 //   - v4.317: USER-CANCEL LATCH -- Cancel on the auto-resume modal is now PERSISTENT, not a
 //     one-cycle pause. Dan's failure mode, lived: he manually Stopped a session to back out
 //     (needed to refresh a Cartographer mapping first), pressed Cancel on the auto-resume
@@ -1260,7 +1269,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.317';
+  const EXT_VERSION = '4.318';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6121,7 +6130,7 @@
     tip.push('max: ' + (maxSrc || 'unknown') + (model ? ' -- click to override ' + (provSlugForAttr ? ('model::' + provSlugForAttr) : 'model') : ''));
     if (over) tip.push('⚠ OVER the model context window');
     var sep = opts.leadingSep ? ' <span style="opacity:0.4;">·</span> ' : '';
-    var clickable = !!model;
+    var clickable = !!model && !opts.noClick;
     return sep + '<span ' + (clickable ? 'data-action="ctx-dial-set" data-model="' + escapeHtml(model) + '" data-provider="' + escapeHtml(provSlugForAttr) + '" ' : '') +
       'title="' + escapeHtml(tip.join(NL)) + '" style="display:inline-flex;align-items:center;gap:3px;margin-left:4px;cursor:' + (clickable ? 'pointer' : 'help') + ';vertical-align:middle;white-space:nowrap;">' +
       svg +
@@ -11096,12 +11105,23 @@
       for (var eo = 0; eo < idEntries.length; eo++) {
         var e2 = idEntries[eo];
         var sel = (tmModalFilterIdentity === e2.key);
-        filterHtml += '<div class="tm-flt-row" data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
+        // (v4.318) Session-filter rows now carry the context gauge at the far right: the
+        // newest _ctx_snapshot for this identity, rendered non-clickable (the row click
+        // selects the filter; the gauge is display-only here).
+        var fltDialHtml = '';
+        try {
+          var fltCtxCap = tmLatestCtxSnapshotEntryForIdentity(e2.key);
+          if (fltCtxCap) fltDialHtml = tmRenderCtxDial(fltCtxCap._ctx_snapshot, { size: 14, cap: fltCtxCap, noClick: true });
+        } catch (eFltDial) { fltDialHtml = ''; }
+        filterHtml += '<div class="tm-flt-row" data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';display:flex;align-items:center;gap:4px;' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
+          '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;">' +
           '<span style="font-weight:bold;">' + escapeHtml(e2.showLabel) + '</span> ' +
           '<span>' + escapeHtml(e2.costLabel) + '</span>' +
           (e2.hasRatio
             ? ' (<span style="color:#ff6b6b;font-weight:bold;">' + e2.misses + '</span> / ' + e2.hits + ')'
             : '') +
+          '</span>' +
+          (fltDialHtml ? ('<span style="flex-shrink:0;margin-left:auto;display:inline-flex;align-items:center;">' + fltDialHtml + '</span>') : '') +
           '</div>';
       }
       filterHtml += '</div>';
