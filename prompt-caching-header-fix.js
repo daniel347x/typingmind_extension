@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.321
+// Version: 4.322
 // Issues Fixed:
+//   - v4.322: WIDGET WIDTH IS NOW FIXED (no more size jumping). v4.321 raised maxWidth, but
+//     the widget still sized to its content, so its width jumped as session rows changed
+//     (Dan: 'I don't like the jumping in size... I never see the full 40%'). The widget is
+//     now a FIXED 539px wide with the right edge still anchored at 262px; rows that don't
+//     fill the width simply leave dark space at the right end, and titles still ellipsis
+//     at the boundary. A maxWidth: calc(100vw - 280px) guard keeps the left edge on-screen
+//     on narrow windows (inert on Dan's 43-inch layout).
 //   - v4.321: WIDGET 40% WIDER + READABILITY BUMPS (Dan's field-by-field list). The
 //     persistent widget's maxWidth grows 385px -> 539px (exactly 1.4x) with the right edge
 //     fixed at 262px, so it pushes out LEFT into the always-empty space -- longer structured
@@ -1293,7 +1300,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.321';
+  const EXT_VERSION = '4.322';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5578,7 +5585,11 @@
       el.style.fontSize = '12px';
       el.style.padding = '2px 8px'; // v4.195: shave ~20px height (was 6px vertical)
       el.style.borderRadius = '4px';
-      el.style.maxWidth = '539px'; // (v4.321) 385px * 1.4 = 539px: 40% wider, right edge fixed
+      // (v4.322) FIXED width, not a content-sized max: the v4.321 maxWidth let the widget
+      // jump size as rows changed. Always 539px wide, right edge fixed at 262px; short rows
+      // just leave dark space at the right end. maxWidth guard keeps it on-screen when narrow.
+      el.style.width = '539px';
+      el.style.maxWidth = 'calc(100vw - 280px)';
       el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.35)';
       el.style.pointerEvents = 'auto';
       el.style.cursor = 'default';
