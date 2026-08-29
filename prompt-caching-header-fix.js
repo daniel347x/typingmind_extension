@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.323
+// Version: 4.324
 // Issues Fixed:
+//   - v4.324: WIDGET TIME COUNTERS +2pt (10px -> 12px). Dan stares at these all day: the
+//     round-trip per-turn blue (live AND settled), the cumulative gray, and the v4.323
+//     tool-execution red all bump two points in the persistent widget. Ring-row counters
+//     untouched.
 //   - v4.323: TOOL-EXECUTION TIMER (live on widget + per-row stamp). The red TOOL badge state
 //     (client-side tool call in flight, no payload en route) now carries a LIVE ticking
 //     duration on the persistent widget: a 'tool Ns' counter beside the badge, updated by
@@ -1310,7 +1314,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.323';
+  const EXT_VERSION = '4.324';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6486,15 +6490,15 @@
       // moment the v4.313 stamp lands it reverts to the latest completed turn's value.
       var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
       if (rtLiveMs > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
       } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
       }
       if (widgetIdentity && widgetIdentity.sid) {
         var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
         var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
         var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
-        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:12px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
       }
     } catch (eRtWd) { widgetRtHtml = ''; }
 
@@ -6528,7 +6532,7 @@
         var toolStateW = tmAgentManagementDisplayState(nameSid);
         if (tmAgentManagementEnabled() && toolStateW && toolStateW.pendingToolCall && toolStateW.responseFinishedAt) {
           try { tmEnsureRtLiveTicker(); } catch (eTk) {}
-          widgetToolHtml = ' <span id="tm-tool-live-value" title="client-side tool execution time, LIVE (tool call in flight)" style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">🧰 ' + tmFmtDuration(Date.now() - Number(toolStateW.responseFinishedAt)) + '</span>';
+          widgetToolHtml = ' <span id="tm-tool-live-value" title="client-side tool execution time, LIVE (tool call in flight)" style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">🧰 ' + tmFmtDuration(Date.now() - Number(toolStateW.responseFinishedAt)) + '</span>';
         }
       } catch (eToolW) { widgetToolHtml = ''; }
       if (displaySessionName) {
