@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.324
+// Version: 4.325
 // Issues Fixed:
+//   - v4.325: WIDGET COUNTER ORDER SWAP. The persistent widget now shows the CUMULATIVE
+//     session round-trip total (gray) BEFORE the current payload's per-turn time (blue) --
+//     per Dan: aggregate first, current second. Ring rows keep their original
+//     per-turn -> tool -> cumulative order (Dan's own v4.313 spec).
 //   - v4.324: WIDGET TIME COUNTERS +2pt (10px -> 12px). Dan stares at these all day: the
 //     round-trip per-turn blue (live AND settled), the cumulative gray, and the v4.323
 //     tool-execution red all bump two points in the persistent widget. Ring-row counters
@@ -1314,7 +1318,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.324';
+  const EXT_VERSION = '4.325';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6485,20 +6489,22 @@
     var widgetRtHtml = '';
     try {
       var rtCapForWidget = tmLatestRoundTripEntryForIdentity(widgetIdentity && widgetIdentity.key);
-      // (v4.315) TWO-PHASE: while a payload is in flight the blue value shows the LIVE elapsed
-      // time (ticking every second via the tm-rt-live-value span, no render required); the
-      // moment the v4.313 stamp lands it reverts to the latest completed turn's value.
-      var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
-      if (rtLiveMs > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
-      } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
-      }
+      // (v4.325) ORDER SWAP: cumulative session total (gray) FIRST, then the current
+      // payload's per-turn time (blue) -- per Dan. (v4.315 TWO-PHASE note unchanged: while a
+      // payload is in flight the blue value shows the LIVE elapsed time, ticking every
+      // second via the tm-rt-live-value span; the moment the v4.313 stamp lands it reverts
+      // to the latest completed turn's value.)
       if (widgetIdentity && widgetIdentity.sid) {
         var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
         var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
         var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
         if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:12px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+      }
+      var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
+      if (rtLiveMs > 0) {
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
+      } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
+        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
       }
     } catch (eRtWd) { widgetRtHtml = ''; }
 
