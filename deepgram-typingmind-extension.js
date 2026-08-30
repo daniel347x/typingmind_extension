@@ -11,6 +11,32 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.297 Changes:
+ * - Default transcript textarea height 765 → 740 px (~25px shorter, clears the Payload widget).
+ *   Includes the one-time transcript_height_reset_v3297 stanza so the new default lands even
+ *   where a height was previously saved. (Height persistence itself was never broken — the
+ *   v3203/v3232/v3247/v3250 one-time resets are what kept wiping it.)
+ * - Status row: the bold-green session name now ellipsis-crops in place (flex min-width:0), so
+ *   the gray (NN.N KB) size readout to its right is ALWAYS visible — no more being pushed off
+ *   the right edge by long session names.
+ * - Freeze button gets a FIXED 30×26 box while frozen: the 11px↔22px emoji breath now happens
+ *   INSIDE the box instead of growing it — no more row-height wobble and no more −/+ buttons
+ *   wrapping to the next row mid-cycle.
+ * - Frost-breath keyframes no longer animate border-WIDTH (row 2↔4px, button 1↔2px): the row
+ *   sits at peak 4px geometry the whole time it is frozen and only color/glow breathe. Removes
+ *   the vertical wobble of everything below (incl. the flex-height transcript textarea).
+ * - Append behind-pulse: dropped the button-level font-size channel (dead since v3.284's
+ *   explicit inner sizes + v3.292's inner transform:scale) — zero visual change, one less
+ *   source of layout wobble.
+ * - Context modal: new '🗑 Delete most recent block' button — deletes everything after the last
+ *   non-fenced '---' break (the 9-hyphen append delimiters; fence-aware via refineLineFenceMask)
+ *   from the slot being edited. Saves immediately; click repeatedly to delete older blocks.
+ * - Context modal: fine-print yellow first-line/…/last-line preview of the most recent block,
+ *   right above the text area — mirrors the main widget's tail preview for the slot being
+ *   edited, live as you type / switch / delete.
+ * - Clear-API-key buttons (Refine provider row + Read Aloud row) now CONFIRM before deleting
+ *   the stored key — a stray click no longer costs a re-paste.
+ *
  * v3.296 Changes:
  * - FIX (session-match root cause, caught in the act by __debugDiff): the chat-side
  *   ordered-list/heading marker strip missed markers at the START of a fresh text node. Syntax
@@ -1117,7 +1143,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.296',
+  VERSION: '3.297',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1224,9 +1250,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 765,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 765,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 305,
+    DEFAULT_TRANSCRIPT_HEIGHT: 740,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 740,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 280,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
     TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 490
@@ -2445,6 +2471,8 @@
    * Clear the stored ElevenLabs API key (so a new one can be entered on next play).
    */
   function elevenClearApiKey() {
+    // (v3.297) Confirm before clearing — a stray click used to instantly destroy the stored key.
+    if (!confirm('Clear the stored ElevenLabs API key?\n\nYou will be prompted to re-enter it the next time you play Read Aloud.')) return;
     localStorage.removeItem(CONFIG.ELEVENLABS_API_KEY_STORAGE);
     alert('ElevenLabs API key cleared. Click \u25b6 Read Aloud to enter a new one.');
   }
@@ -2761,9 +2789,25 @@
       if (refineFrozenAutoSelect) {
         btn.style.animation = 'dgFrostBreathBtn 2s ease-in-out infinite';
         btn.style.borderRadius = '6px';
+        // (v3.297) Fixed geometry while frozen: the ❄️ glyph breathes 11px ↔ 22px INSIDE a
+        // peak-sized box, so the row never changes height and the −/+ buttons never wrap.
+        btn.style.width = '30px';
+        btn.style.height = '26px';
+        btn.style.display = 'inline-flex';
+        btn.style.alignItems = 'center';
+        btn.style.justifyContent = 'center';
+        btn.style.padding = '0';
+        btn.style.overflow = 'hidden';
       } else {
         btn.style.animation = '';
         btn.style.borderRadius = '4px';
+        btn.style.width = '';
+        btn.style.height = '';
+        btn.style.display = '';
+        btn.style.alignItems = '';
+        btn.style.justifyContent = '';
+        btn.style.padding = '';
+        btn.style.overflow = '';
       }
     }
     // Frost breath on the entire pills row (v3.277)
@@ -2772,7 +2816,9 @@
         row.style.animation = 'dgFrostBreath 2s ease-in-out infinite';
         row.style.borderRadius = '10px';
         row.style.padding = '6px 8px';
-        row.style.border = '2px solid rgba(120,200,230,0.3)';
+        // (v3.297) Peak 4px geometry for the ENTIRE frozen duration — the keyframes no longer
+        // animate border-width, so the row never changes height mid-breath (color/glow only).
+        row.style.border = '4px solid rgba(120,200,230,0.3)';
       } else {
         row.style.animation = '';
         row.style.borderRadius = '';
@@ -4181,6 +4227,9 @@
   function refineClearApiKey() {
     const provider = refineGetProvider();
     const meta = refineProviderMeta(provider);
+    // (v3.297) Confirm before clearing — the 🔑 sits next to frequently-clicked buttons and a
+    // stray click used to instantly destroy the stored key.
+    if (!confirm('Clear the stored ' + meta.label + ' API key?\n\nYou will be prompted to re-enter it the next time you Refine.')) return;
     localStorage.removeItem(meta.keyStorage);
     alert(meta.label + ' API key cleared. You\'ll be prompted for it next time you Refine.');
   }
@@ -4290,6 +4339,33 @@
     document.body.appendChild(overlay);
     ta.focus();
   }
+  /** Delete the MOST RECENT block from a context slot text (v3.297): everything after the last
+   *  non-fenced '---' break line, plus that break line and any blank lines above it. Fence-aware
+   *  via refineLineFenceMask (a '---' inside a code block is source text, not a break). With no
+   *  break at all the WHOLE text is the most recent block — deleting it empties the slot.
+   *  Returns { text, changed, removed }. */
+  function refineDeleteLastBlock(text) {
+    const orig = (typeof text === 'string') ? text : '';
+    if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
+    const lines = orig.split('\n');
+    const fenceMask = refineLineFenceMask(lines);
+    // Find the LAST non-fenced break line.
+    let cut = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (/^\s*-{3,}\s*$/.test(lines[i]) && !fenceMask[i]) { cut = i; break; }
+    }
+    if (cut === -1) {
+      // No break: the whole text is one block — deleting it empties the slot.
+      return { text: '', changed: true, removed: orig.length };
+    }
+    // Remove the break line AND everything after it; also swallow blank lines immediately ABOVE
+    // the break (append writes one blank line above and below the break).
+    let keepEnd = cut;
+    while (keepEnd > 0 && lines[keepEnd - 1].trim() === '') keepEnd--;
+    const kept = lines.slice(0, keepEnd).join('\n').replace(/\s+$/, '');
+    return { text: kept, changed: true, removed: orig.length - kept.length };
+  }
+
   /**
    * Edit the CONTEXT block (prior chat-turn / topic material) in a modal textarea.
    */
@@ -4460,9 +4536,46 @@
       // Live count reflects what's in the textarea right now (unsaved edits included).
       const n = (ta.value || '').length;
       charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's');
+      paintTailPreview();   // (v3.297) refresh the fine-print block preview on every repaint
     }
-    // Keep the count live as the user types.
-    ta.addEventListener('input', function(){ const n = (ta.value || '').length; charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's'); });
+    // Keep the count live as the user types (and the fine-print block preview, v3.297).
+    ta.addEventListener('input', function(){ const n = (ta.value || '').length; charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's'); paintTailPreview(); });
+
+    // ----- Fine-print first/last-line preview of the most recent block (v3.297) -----
+    // Mirrors the main widget's yellow tail preview, but for the slot being EDITED here (live
+    // as you type / switch / delete). Same fence-aware '---' block logic as the matcher.
+    const tailRow = document.createElement('div');
+    tailRow.style.cssText = 'font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; margin:0 0 4px;';
+    function paintTailPreview() {
+      tailRow.textContent = '';
+      var text = ta.value || '';
+      if (!text.trim()) return;
+      var s = text.replace(/\s+$/, '');
+      var lines = s.split('\n');
+      var mask = refineLineFenceMask(lines);
+      while (lines.length) {
+        var lt = lines[lines.length - 1].trim();
+        if (lt === '' || (/^-{3,}$/.test(lt) && !mask[lines.length - 1])) lines.pop();
+        else break;
+      }
+      if (!lines.length) return;
+      var lastLine = lines[lines.length - 1];
+      var firstLine = null;
+      for (var bi = lines.length - 2; bi >= 0; bi--) {
+        if (/^-{3,}$/.test(lines[bi].trim()) && !mask[bi]) {
+          for (var bj = bi + 1; bj < lines.length; bj++) { if (lines[bj].trim() !== '') { firstLine = lines[bj]; break; } }
+          break;
+        }
+      }
+      if (firstLine === null) { for (var bk = 0; bk < lines.length; bk++) { if (lines[bk].trim() !== '') { firstLine = lines[bk]; break; } } }
+      var pn = CONFIG.REFINE_TAIL_PREVIEW_CHARS || 60;
+      var fp = (firstLine || '').slice(0, pn) + ((firstLine || '').length > pn ? '\u2026' : '');
+      var lp = lastLine.slice(0, pn) + (lastLine.length > pn ? '\u2026' : '');
+      var mkDots = function() { var d = document.createElement('div'); d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;'; d.textContent = '\u2026'; return d; };
+      var mkLine = function(txt) { var sp = document.createElement('span'); sp.style.whiteSpace = 'nowrap'; sp.textContent = txt; return sp; };
+      if (fp === lp) { tailRow.appendChild(mkDots()); tailRow.appendChild(mkLine(lp)); }
+      else { tailRow.appendChild(mkLine(fp)); tailRow.appendChild(mkDots()); tailRow.appendChild(mkLine(lp)); }
+    }
 
     // Initialize on the active slot.
     ta.value = slots[editingIndex].text || '';
@@ -4482,10 +4595,29 @@
     // Eviction into the primary pills (refineSyncToggleSlots) is reserved for actual TEXT updates;
     // mere selection pins the session in the temp slot instead (see refineManualSelectSlot, v3.254).
     save.onclick = () => { const changed = stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); if (changed) refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
+    // 🗑 Delete the MOST RECENT block of the slot being edited (v3.297) — everything after the
+    // last non-fenced '---' break, saved immediately. Click repeatedly to delete older blocks.
+    const delBlock = mkBtn('🗑 Delete most recent block', '#8a3a3a');
+    delBlock.title = "Delete the most recently appended block (everything after the last '---------' break) from the slot being edited. Click again to delete older blocks.";
+    delBlock.onclick = () => {
+      const res = refineDeleteLastBlock(ta.value);
+      if (!res.changed) { updateStatus('🗑 “' + slots[editingIndex].name + '” is already empty', 'error'); return; }
+      ta.value = res.text;
+      slots[editingIndex].text = res.text;
+      refineTouchSlot(slots, editingIndex);
+      refineSaveContexts(slots);
+      refineSyncToggleSlots(editingIndex);
+      refineRenderToggleRow();
+      refineUpdateContextButtonLabel();
+      paintFullName();
+      paintRibbon();
+      updateStatus('🗑 Deleted most recent block from “' + slots[editingIndex].name + '” (removed ' + res.removed.toLocaleString() + ' chars, now ' + res.text.length.toLocaleString() + ')', 'success');
+    };
+    btnRow.appendChild(delBlock);
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(ta); box.appendChild(btnRow);
+    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(tailRow); box.appendChild(ta); box.appendChild(btnRow);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
     // ESC closes WITHOUT saving. Use CAPTURE phase + stopPropagation so the page/TypingMind can't
@@ -6061,11 +6193,12 @@
 
       /* 📎 Append "behind" pulse (v3.263, retuned v3.272): gentle 2s three-channel oscillation
          applied ONLY in the 'match' (behind-by-N) verdict. Phase 0/100 (rest): bg only-HALFWAY-up
-         teal, muddy-yellow 14px text, 80%-faded border. Phase 50 (peak): bg deepest, white 16px
-         text, bright yellow border. Font size pulses ±2px for an extra dimension of contrast. */
+         teal, muddy-yellow text, 80%-faded border. Phase 50 (peak): bg deepest, bright yellow
+         border. (v3.297: button-level font-size channel REMOVED — dead since v3.284's explicit
+         inner sizes + v3.292's inner transform:scale; it only risked layout wobble.) */
       @keyframes dgAppendBehindPulse {
-        0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; font-size:14px; outline:2px solid rgba(255,212,0,0.15); outline-offset:4px; }
-        50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; font-size:16px; outline:3px solid rgba(255,212,0,0.75); outline-offset:5px; }
+        0%, 100% { background-color:#0e6673; color:#e5be00; border-color:#776e44; outline:2px solid rgba(255,212,0,0.15); outline-offset:4px; }
+        50%      { background-color:#0b515c; color:#8b7a3a; border-color:#ffd400; outline:3px solid rgba(255,212,0,0.75); outline-offset:5px; }
       }
       /* Inner-content scale breathing (v3.286): the two-row content scales gently in/out, restoring
          the font-size breathing lost when the inner divs got explicit font-sizes in v3.284. */
@@ -6074,17 +6207,19 @@
         50%      { transform: scale(1.06); }
       }
 
-      /* Frost-breathing border for the frozen pills row + freeze button (v3.282: row border
-         thickness doubles at peak; v3.283: ❄️ emoji also pulses 11px ↔ 22px, synced to peak
-         brightness so the button is as visually loud as the row). */
+      /* Frost-breathing border for the frozen pills row + freeze button (v3.283: ❄️ emoji pulses
+         11px ↔ 22px, synced to peak brightness. v3.297: border-WIDTH channels removed — the row
+         holds peak 4px geometry for the whole frozen duration so nothing below it wobbles;
+         only color/glow/font-size breathe now.) */
       @keyframes dgFrostBreath {
-        0%, 100% { border-color: rgba(120,200,230,0.3); border-width:2px; box-shadow: 0 0 4px rgba(120,200,230,0.15); }
-        50%      { border-color: rgba(180,230,250,0.95); border-width:4px; box-shadow: 0 0 14px rgba(120,200,230,0.5); }
+        0%, 100% { border-color: rgba(120,200,230,0.3); box-shadow: 0 0 4px rgba(120,200,230,0.15); }
+        50%      { border-color: rgba(180,230,250,0.95); box-shadow: 0 0 14px rgba(120,200,230,0.5); }
       }
-      /* The ❄️ button: same border breath PLUS the emoji font-size pulses 11px ↔ 22px (v3.283). */
+      /* The ❄️ button: same border-color breath PLUS the emoji font-size pulses 11px ↔ 22px
+         (v3.283) — contained inside a fixed 30×26 box while frozen (v3.297). */
       @keyframes dgFrostBreathBtn {
-        0%, 100% { border-color: rgba(120,200,230,0.3); border-width:1px; box-shadow: 0 0 4px rgba(120,200,230,0.15); font-size:11px; }
-        50%      { border-color: rgba(180,230,250,0.95); border-width:2px; box-shadow: 0 0 14px rgba(120,200,230,0.5); font-size:22px; }
+        0%, 100% { border-color: rgba(120,200,230,0.3); box-shadow: 0 0 4px rgba(120,200,230,0.15); font-size:11px; }
+        50%      { border-color: rgba(180,230,250,0.95); box-shadow: 0 0 14px rgba(120,200,230,0.5); font-size:22px; }
       }
 
       /* Most-recent-cost blaze (v3.265): three acts over 3.25s — 0.25s blaze-up from the normal
@@ -7310,10 +7445,10 @@
         <div style="margin-top:6px; line-height:1.3; opacity:0.9;">
           <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
             <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
-            <span style="flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="color:#8ab4f8; cursor:pointer; position:relative; top:-1px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
-              <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="font-weight:700; font-size:19px; color:#4cd964;"></span>
-              <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
+            <span style="flex:1 1 auto; min-width:0; display:flex; align-items:baseline; overflow:hidden; white-space:nowrap;">
+              <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="flex:0 0 auto; color:#8ab4f8; cursor:pointer; position:relative; top:-1px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
+              <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; font-size:19px; color:#4cd964;"></span>
+              <span id="deepgram-refine-active-context-kb" title="Character count of the active slot's saved text" style="flex:0 0 auto; opacity:0.65; color:#ccc; margin-left:3px; font-size:12px;"></span>
             </span>
             <span id="deepgram-refine-total-cost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
             <span id="deepgram-refine-time-lost-label" style="flex:0 0 auto; padding-left:14px; opacity:0.75; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
@@ -7651,6 +7786,11 @@
     if (localStorage.getItem('transcript_height_reset_v3250') !== '1') {
       localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
       localStorage.setItem('transcript_height_reset_v3250', '1');
+    }
+    // v3.297: reduce default transcript height by another 25px (765 → 740, clears the Payload widget)
+    if (localStorage.getItem('transcript_height_reset_v3297') !== '1') {
+      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
+      localStorage.setItem('transcript_height_reset_v3297', '1');
     }
 
     // Load saved widget dimensions
