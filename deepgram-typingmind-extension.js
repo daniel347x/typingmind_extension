@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.299 Changes:
+ * - The ❄️/−/+ buttons on the session pill row are now wrapped in a single no-wrap flex unit, so
+ *   they always roll over TOGETHER (or not at all) when the pills crowd the row — no more lone
+ *   '+' dropping to the next line by itself. Pure markup nesting; the buttons are still
+ *   referenced by ID everywhere, so behavior is otherwise unchanged.
+ *
  * v3.298 Changes:
  * - Context Sessions modal: the "Editing + ACTIVE: [session] (slot N)" header above the yellow
  *   first/last-block preview is now the same bright green (#4cd964) as the active session name
@@ -1148,7 +1154,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.298',
+  VERSION: '3.299',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7475,9 +7481,11 @@
         <!-- ✨ Refine: toggle-squares row — most-recent session squares (+/− to add/remove) -->
         <div id="deepgram-refine-toggle-row" style="display:flex; align-items:center; gap:8px; margin-top:6px; flex-wrap:wrap;">
           <span id="deepgram-refine-toggle-squares" style="display:flex; align-items:center; gap:8px; flex:1 1 auto; flex-wrap:wrap;"></span>
-          <button id="deepgram-refine-freeze-btn" title="Auto-select active — click to freeze" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 5px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit; opacity:0.3;">❄️</button>
-          <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
-          <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
+          <span id="deepgram-refine-toggle-controls" style="display:flex; align-items:center; gap:8px; flex:0 0 auto; flex-wrap:nowrap;">
+            <button id="deepgram-refine-freeze-btn" title="Auto-select active — click to freeze" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 5px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit; opacity:0.3;">❄️</button>
+            <button id="deepgram-refine-toggle-minus" title="Remove the oldest session square" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">−</button>
+            <button id="deepgram-refine-toggle-plus" title="Add a session square (most recently updated of those not showing)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:2px 7px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">+</button>
+          </span>
         </div>
 
         <!-- ✨ Refine: most-recent cost + last: (standalone row, right-justified) -->
