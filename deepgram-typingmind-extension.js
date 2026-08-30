@@ -11,6 +11,22 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.300 Changes:
+ * - FIX (block boundaries, round 3): a '---' line typed as CONTENT inside an appended block (a
+ *   plain markdown hr, e.g. between a feedback section and a draft) was still being treated as
+ *   a block delimiter, so the yellow first-line preview (and the matcher's last block) started
+ *   mid-append. New shared refineBlockBreakMask(): if the text contains ANY non-fenced 9+-hyphen
+ *   line, only 9+-hyphen lines count as delimiters (the v3.290 append delimiter); it falls back
+ *   to 3+ ONLY for legacy sessions with no 9+-hyphen line at all. Swapped into every block-
+ *   boundary consumer: getLastBlockNormForText (matcher), refineUpdateTailPreview (main yellow
+ *   preview), the Context modal's fine-print preview, refineDeleteLastBlock, refinePruneSlotToHalf.
+ * - Append-side guard tightened to match: refineAppendFromClipboard only suppresses adding a new
+ *   9-hyphen delimiter when the base already ends in a 9+-hyphen line — a trailing content hr no
+ *   longer swallows the delimiter and merges two appends.
+ * - ACTIVE session pill: new small 📝 edit icon in the thick red border's padding (upper right)
+ *   that opens the Context Sessions modal — which auto-loads the ACTIVE slot, so it's an
+ *   instinctive 'edit THIS session's text' entry point. (The existing ✎ pencil still renames.)
+ *
  * v3.299 Changes:
  * - The ❄️/−/+ buttons on the session pill row are now wrapped in a single no-wrap flex unit, so
  *   they always roll over TOGETHER (or not at all) when the pills crowd the row — no more lone
@@ -1154,7 +1170,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.299',
+  VERSION: '3.300',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -2896,7 +2912,7 @@
     var rings = refineSlotRingColors(ctx.lastUpdated, allTs);
     var wrapper = document.createElement('span');
     wrapper.className = 'refine-toggle-square-wrapper';
-    wrapper.style.cssText = 'display:inline-block; '
+    wrapper.style.cssText = 'display:inline-block; position:relative; '
       + (isActive ? 'border:6px solid #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
       + 'cursor:pointer;';
     wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
@@ -2928,6 +2944,20 @@
     };
     inner.appendChild(pen);
     wrapper.appendChild(inner);
+    // (v3.300) ACTIVE pill only: a small 📝 edit icon in the thick red border's padding (upper
+    // right) — an instinctive 'edit THIS session's text' entry point that opens the Context
+    // Sessions modal (which auto-loads the ACTIVE slot — i.e. this one).
+    if (isActive) {
+      var editBtn = document.createElement('span');
+      editBtn.textContent = '📝';
+      editBtn.title = 'Edit this session\'s context text (opens the Context Sessions modal on this slot)';
+      editBtn.style.cssText = 'position:absolute; top:0px; right:2px; font-size:11px; line-height:1; opacity:0.75; cursor:pointer; z-index:2;';
+      editBtn.onclick = function(e) {
+        e.stopPropagation();
+        refineEditContext();
+      };
+      wrapper.appendChild(editBtn);
+    }
     container.appendChild(wrapper);
   }
 
@@ -3288,12 +3318,31 @@
     return mask;
   }
 
+  /** Block-break mask for a text split into lines (v3.300): which lines are BLOCK delimiters.
+   *  The append delimiter is NINE hyphens (v3.290); legacy appends used three. A line of 3–8
+   *  hyphens inside appended CONTENT (a markdown hr, e.g. the '---' between a feedback section
+   *  and a draft) must NOT split blocks. So: if the text contains ANY non-fenced 9+-hyphen line,
+   *  only 9+-hyphen lines count as delimiters; otherwise fall back to 3+ (legacy sessions never
+   *  appended since v3.290). Fence-aware via refineLineFenceMask throughout. */
+  function refineBlockBreakMask(lines) {
+    var fenceMask = refineLineFenceMask(lines);
+    var hasNine = false;
+    var i;
+    for (i = 0; i < lines.length; i++) {
+      if (!fenceMask[i] && /^-{9,}$/.test(lines[i].trim())) { hasNine = true; break; }
+    }
+    var re = hasNine ? /^-{9,}$/ : /^-{3,}$/;
+    var mask = new Array(lines.length);
+    for (i = 0; i < lines.length; i++) mask[i] = !fenceMask[i] && re.test(lines[i].trim());
+    return mask;
+  }
+
   function refinePruneSlotToHalf(text) {
     const orig = (typeof text === 'string') ? text : '';
     if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
     const lines = orig.split('\n');
-    const fenceMask = refineLineFenceMask(lines);   // (v3.296) a fenced '---' is source text, not a break
-    const isBreak = (line, idx) => /^\s*-{3,}\s*$/.test(line) && !fenceMask[idx];
+    const breakMask = refineBlockBreakMask(lines);   // (v3.300) 9+-hyphen delimiters preferred; 3–8 hyphen content lines are not breaks
+    const isBreak = (line, idx) => breakMask[idx];
     if (lines.length < 2) return { text: orig, changed: false, removed: 0 };
 
     // Cumulative char offset at the START of each line (offset of line i in the original string).
@@ -3330,10 +3379,10 @@
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
     // Drop trailing section-break (---) and blank lines.
-    var fenceMask = refineLineFenceMask(lines);   // (v3.296) fenced '---' is source text, not a break
+    var breakMask = refineBlockBreakMask(lines);   // (v3.300) 9+-hyphen delimiters preferred; 3–8 hyphen content lines are not breaks
     while (lines.length) {
       var t = lines[lines.length - 1].trim();
-      if (t === '' || (/^-{3,}$/.test(t) && !fenceMask[lines.length - 1])) lines.pop();
+      if (t === '' || breakMask[lines.length - 1]) lines.pop();
       else break;
     }
     if (!lines.length) return;
@@ -3344,7 +3393,7 @@
     // March upward to find the most recent '---' break, then walk forward past blank lines.
     var firstLineOfLastEntry = null;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (/^-{3,}$/.test(lines[i].trim()) && !fenceMask[i]) {
+      if (breakMask[i]) {
         for (var j = i + 1; j < lines.length; j++) {
           if (lines[j].trim() !== '') { firstLineOfLastEntry = lines[j]; break; }
         }
@@ -3434,17 +3483,17 @@
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
-    var fenceMask = refineLineFenceMask(lines);   // (v3.296) a '---' INSIDE a fenced code block is
-    // source text, not a block delimiter — pasted replies routinely quote markdown containing '---'.
+    var breakMask = refineBlockBreakMask(lines);   // (v3.300) fence-aware AND delimiter-length-aware:
+    // 9+-hyphen append delimiters win; 3–8 hyphen content lines (markdown hrs) are not breaks.
     while (lines.length) {
       var t = lines[lines.length - 1].trim();
-      if (t === '' || (/^-{3,}$/.test(t) && !fenceMask[lines.length - 1])) lines.pop();
+      if (t === '' || breakMask[lines.length - 1]) lines.pop();
       else break;
     }
     if (!lines.length) return '';
     var blockStart = 0;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (/^-{3,}$/.test(lines[i].trim()) && !fenceMask[i]) { blockStart = i + 1; break; }
+      if (breakMask[i]) { blockStart = i + 1; break; }
     }
     // Strip leading ordered-list markers ('1. ', '16. ') from each line before normalizing. A copied
     // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
@@ -4359,11 +4408,11 @@
     const orig = (typeof text === 'string') ? text : '';
     if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
     const lines = orig.split('\n');
-    const fenceMask = refineLineFenceMask(lines);
-    // Find the LAST non-fenced break line.
+    const breakMask = refineBlockBreakMask(lines);
+    // Find the LAST block-break line (9+-hyphen delimiters preferred; 3–8 hyphen content lines are not breaks).
     let cut = -1;
     for (let i = lines.length - 1; i >= 0; i--) {
-      if (/^\s*-{3,}\s*$/.test(lines[i]) && !fenceMask[i]) { cut = i; break; }
+      if (breakMask[i]) { cut = i; break; }
     }
     if (cut === -1) {
       // No break: the whole text is one block — deleting it empties the slot.
@@ -4563,17 +4612,17 @@
       if (!text.trim()) return;
       var s = text.replace(/\s+$/, '');
       var lines = s.split('\n');
-      var mask = refineLineFenceMask(lines);
+      var mask = refineBlockBreakMask(lines);
       while (lines.length) {
         var lt = lines[lines.length - 1].trim();
-        if (lt === '' || (/^-{3,}$/.test(lt) && !mask[lines.length - 1])) lines.pop();
+        if (lt === '' || mask[lines.length - 1]) lines.pop();
         else break;
       }
       if (!lines.length) return;
       var lastLine = lines[lines.length - 1];
       var firstLine = null;
       for (var bi = lines.length - 2; bi >= 0; bi--) {
-        if (/^-{3,}$/.test(lines[bi].trim()) && !mask[bi]) {
+        if (mask[bi]) {
           for (var bj = bi + 1; bj < lines.length; bj++) { if (lines[bj].trim() !== '') { firstLine = lines[bj]; break; } }
           break;
         }
@@ -5469,8 +5518,9 @@
     let combined;
     if (!base) {
       combined = clip.replace(/\s+$/, '');
-    } else if (/\n-{3,}\s*$/.test(base) || /^-{3,}\s*$/.test(base)) {
-      // Already ends in a break (3+ hyphens) — don't add a second one; just space + append.
+    } else if (/\n-{9,}\s*$/.test(base) || /^-{9,}\s*$/.test(base)) {
+      // Already ends in a real (9+-hyphen) break — don't add a second one; just space + append.
+      // (v3.300: a trailing 3–8 hyphen CONTENT hr must not suppress the delimiter and merge two appends.)
       combined = base + '\n\n' + clip.replace(/\s+$/, '');
     } else {
       combined = base + '\n\n---------\n\n' + clip.replace(/\s+$/, '');
