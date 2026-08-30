@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.298 Changes:
+ * - Context Sessions modal: the "Editing + ACTIVE: [session] (slot N)" header above the yellow
+ *   first/last-block preview is now the same bright green (#4cd964) as the active session name
+ *   in the primary Transcription Control widget, at 18px (50% larger than the prior 12px).
+ *
  * v3.297 Changes:
  * - Default transcript textarea height 765 → 740 px (~25px shorter, clears the Payload widget).
  *   Includes the one-time transcript_height_reset_v3297 stanza so the new default lands even
@@ -1143,7 +1148,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.297',
+  VERSION: '3.298',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4409,7 +4414,7 @@
     ta.style.cssText = 'flex:1 1 auto; min-height:300px; width:100%; box-sizing:border-box; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
 
     const editingHdr = document.createElement('div');
-    editingHdr.style.cssText = 'font-size:12px; opacity:0.85; margin:2px 0 6px;';
+    editingHdr.style.cssText = 'font-size:18px; line-height:1.25; font-weight:600; color:#4cd964; opacity:1; margin:2px 0 6px;';
 
     // Commit the textarea's current text into the working copy for the slot being edited.
     // Stamp lastUpdated ONLY when the text actually changed, so merely viewing/switching a slot
