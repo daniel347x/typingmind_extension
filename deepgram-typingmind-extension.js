@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.296 Changes:
+ * - FIX (session-match root cause, caught in the act by __debugDiff): the chat-side
+ *   ordered-list/heading marker strip missed markers at the START of a fresh text node. Syntax
+ *   highlighters split <pre> code into per-line text nodes, so '### 2. ' began a node with no
+ *   embedded '\n' for the v3.280 strip to key on, and atLineStart=false (previous node held
+ *   non-whitespace) — the marker survived as a stray digit ('2' before 'anonymity') and killed
+ *   the session match (chatLen 2143 = 274 prefix + 1866 block + 3 stray digits, to the char).
+ *   extractChatTurnNorm now ALSO treats 'accumulated text ends with a newline' as a line start.
+ * - FIX (latent, exposed by the same probe): a '---' line INSIDE a fenced code block in the
+ *   session text was treated as a block delimiter, truncating the last block to the tail of the
+ *   last append (block started mid-append at '### 1. Current status...'). New shared
+ *   refineLineFenceMask() makes every '---' delimiter scan fence-aware: getLastBlockNormForText
+ *   (matcher), refineUpdateTailPreview (yellow preview), refinePruneSlotToHalf (prune button).
+ *
  * v3.295 Changes:
  * - NEW console debug probe __debugDiff(si, ti): POSITIONAL diff between a session's last-block
  *   norm and a collected turn norm. __debugMatch's 'diverge@N' only measures prefix divergence
@@ -1103,7 +1117,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.295',
+  VERSION: '3.296',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3199,11 +3213,30 @@
    *   4. If there is NO section break anywhere, leave the text unchanged (nothing sensible to cut).
    * Returns { text, changed, removed } — removed = chars deleted.
    */
+
+  /** Fence mask for a text split into lines (v3.296): array parallel to `lines`; true = the line
+   *  is a fence marker (``` or ~~~) or sits INSIDE a fenced code block. Session texts are pasted
+   *  agent replies that routinely QUOTE markdown source containing '---' lines inside code fences
+   *  — those are source text, not block delimiters. Every '---' delimiter scan (last-block
+   *  extraction, tail preview, prune-to-half) consults this mask so a fenced '---' never
+   *  truncates a block. */
+  function refineLineFenceMask(lines) {
+    var inFence = false;
+    var mask = new Array(lines.length);
+    for (var f = 0; f < lines.length; f++) {
+      var ft = lines[f].trim();
+      if (/^(`{3,}|~{3,})/.test(ft)) { mask[f] = true; inFence = !inFence; }
+      else mask[f] = inFence;
+    }
+    return mask;
+  }
+
   function refinePruneSlotToHalf(text) {
     const orig = (typeof text === 'string') ? text : '';
     if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
-    const isBreak = (line) => /^\s*-{3,}\s*$/.test(line);
     const lines = orig.split('\n');
+    const fenceMask = refineLineFenceMask(lines);   // (v3.296) a fenced '---' is source text, not a break
+    const isBreak = (line, idx) => /^\s*-{3,}\s*$/.test(line) && !fenceMask[idx];
     if (lines.length < 2) return { text: orig, changed: false, removed: 0 };
 
     // Cumulative char offset at the START of each line (offset of line i in the original string).
@@ -3217,9 +3250,9 @@
 
     // 1) Walk FORWARD from midLine for the first section-break line.
     let cutLine = -1;
-    for (let i = midLine; i < lines.length; i++) { if (isBreak(lines[i])) { cutLine = i; break; } }
+    for (let i = midLine; i < lines.length; i++) { if (isBreak(lines[i], i)) { cutLine = i; break; } }
     // 2) Fallback: walk BACKWARD from midLine for the nearest break above.
-    if (cutLine === -1) { for (let i = midLine - 1; i >= 0; i--) { if (isBreak(lines[i])) { cutLine = i; break; } } }
+    if (cutLine === -1) { for (let i = midLine - 1; i >= 0; i--) { if (isBreak(lines[i], i)) { cutLine = i; break; } } }
     // 3) No break anywhere -> leave unchanged.
     if (cutLine === -1) return { text: orig, changed: false, removed: 0 };
 
@@ -3240,9 +3273,10 @@
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
     // Drop trailing section-break (---) and blank lines.
+    var fenceMask = refineLineFenceMask(lines);   // (v3.296) fenced '---' is source text, not a break
     while (lines.length) {
       var t = lines[lines.length - 1].trim();
-      if (t === '' || /^-{3,}$/.test(t)) lines.pop();
+      if (t === '' || (/^-{3,}$/.test(t) && !fenceMask[lines.length - 1])) lines.pop();
       else break;
     }
     if (!lines.length) return;
@@ -3253,7 +3287,7 @@
     // March upward to find the most recent '---' break, then walk forward past blank lines.
     var firstLineOfLastEntry = null;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (/^-{3,}$/.test(lines[i].trim())) {
+      if (/^-{3,}$/.test(lines[i].trim()) && !fenceMask[i]) {
         for (var j = i + 1; j < lines.length; j++) {
           if (lines[j].trim() !== '') { firstLineOfLastEntry = lines[j]; break; }
         }
@@ -3343,15 +3377,17 @@
     if (!text || !text.trim()) return '';
     var s = text.replace(/\s+$/, '');
     var lines = s.split('\n');
+    var fenceMask = refineLineFenceMask(lines);   // (v3.296) a '---' INSIDE a fenced code block is
+    // source text, not a block delimiter — pasted replies routinely quote markdown containing '---'.
     while (lines.length) {
       var t = lines[lines.length - 1].trim();
-      if (t === '' || /^-{3,}$/.test(t)) lines.pop();
+      if (t === '' || (/^-{3,}$/.test(t) && !fenceMask[lines.length - 1])) lines.pop();
       else break;
     }
     if (!lines.length) return '';
     var blockStart = 0;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (/^-{3,}$/.test(lines[i].trim())) { blockStart = i + 1; break; }
+      if (/^-{3,}$/.test(lines[i].trim()) && !fenceMask[i]) { blockStart = i + 1; break; }
     }
     // Strip leading ordered-list markers ('1. ', '16. ') from each line before normalizing. A copied
     // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
@@ -3413,7 +3449,13 @@
         // An embedded '\n' IS a line boundary in both representations (user blobs, <pre> code),
         // so strip there unconditionally — same regex as the session side (emphasis-tolerant).
         t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/g, '$1');
-        if (atLineStart) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+        // (v3.296) Line start ALSO when the ACCUMULATED text ends with a newline: syntax
+        // highlighters split <pre> code into per-line text nodes, so a heading/list marker
+        // ('### 2. ') can begin a fresh text node with NO embedded '\n' for the v3.280 strip to
+        // key on, while atLineStart=false (the previous node held non-whitespace) — the marker
+        // survived as a stray digit and killed the session match (the v3.295 __debugDiff case:
+        // '2' before 'anonymity'; chatLen = prefix + block + 3 stray digits, to the char).
+        if (atLineStart || /\n\s*$/.test(text)) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
         text += t;
         if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
         return;
