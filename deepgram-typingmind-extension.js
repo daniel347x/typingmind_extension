@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.295 Changes:
+ * - NEW console debug probe __debugDiff(si, ti): POSITIONAL diff between a session's last-block
+ *   norm and a collected turn norm. __debugMatch's 'diverge@N' only measures prefix divergence
+ *   from index 0 — blind when the session block starts MID-TURN (the current miss: a '---' line
+ *   inside a pasted code fence truncated the session's last block to the append's tail, so prefix
+ *   divergence was always 0 despite the turn containing the block region). __debugDiff anchors
+ *   the block head/tail inside the turn norm and prints the FIRST aligned divergence with
+ *   ±60 chars of context on both sides.
+ *
  * v3.294 Changes:
  * - Duplicate-session warning now SUPPRESSED when one match dominates: if the strongest match's
  *   strength is >= 5x the runner-up's, the match is treated as unambiguous and the orange warning
@@ -1094,7 +1103,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.294',
+  VERSION: '3.295',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3726,6 +3735,50 @@
     turnNorms.forEach(function(c, t) {
       console.log('[debugTurns] turn', t, 'len:', c.length, '| head:', c.slice(0, 100), '| tail:', c.slice(-80));
     });
+    return 'done';
+  };
+
+  /** Console debug: POSITIONAL DIFF between one session's last-block norm and one collected turn
+   *  norm (v3.295). __debugMatch's 'diverge@N' only measures PREFIX divergence from index 0 —
+   *  useless when the session block starts MID-TURN (e.g. a '---' line inside a pasted code
+   *  fence truncated the block to the append's tail). This probe anchors the block's head inside
+   *  the turn norm, then reports the FIRST aligned divergence with ±60 chars of context on both
+   *  sides — pinpointing the exact character(s) where the two normalization paths diverge.
+   *  Run __debugDiff(2, 0) in DevTools (session index, turn index). */
+  window.__debugDiff = function(si, ti) {
+    si = si || 0; ti = ti || 0;
+    var contexts = refineGetContexts();
+    var block = getLastBlockNormForText((contexts[si] && contexts[si].text) || '');
+    var turnNorms = getRecentChatTurnNorms(10, 4);
+    var c = turnNorms[ti];
+    console.log('[debugDiff] session', si, '(' + (contexts[si] && contexts[si].name) + ') vs turn', ti,
+      '| blockLen:', block.length, '| chatLen:', c ? c.length : '(no turn)');
+    if (!block || !c) return 'done';
+    console.log('[debugDiff] isSessionTurnMatch:', isSessionTurnMatch(block, c));
+    // Head anchor: longest block-prefix found in the turn norm.
+    var pos = -1, anchorLen = 0;
+    for (var L = Math.min(80, block.length); L >= 8; L -= 4) {
+      pos = c.indexOf(block.slice(0, L));
+      if (pos !== -1) { anchorLen = L; break; }
+    }
+    console.log('[debugDiff] head-anchor len:', anchorLen, 'chat pos:', pos);
+    if (pos !== -1) {
+      var i = 0, n = Math.min(block.length, c.length - pos);
+      while (i < n && block[i] === c[pos + i]) i++;
+      console.log('[debugDiff] forward divergence @ block[' + i + '] / chat[' + (pos + i) + ']'
+        + (i >= n ? ' (NONE — identical to end of shorter side)' : ''));
+      console.log('  block: "...' + block.slice(Math.max(0, i - 60), i + 60) + '..."');
+      console.log('  chat : "...' + c.slice(Math.max(0, pos + i - 60), pos + i + 60) + '..."');
+    } else {
+      console.log('[debugDiff] block head NOT FOUND in turn norm. block head:', block.slice(0, 120));
+    }
+    // Tail anchor: longest block-suffix found in the turn norm.
+    var tPos = -1, tailLen = 0;
+    for (var L2 = Math.min(80, block.length); L2 >= 8; L2 -= 4) {
+      tPos = c.indexOf(block.slice(-L2));
+      if (tPos !== -1) { tailLen = L2; break; }
+    }
+    console.log('[debugDiff] tail-anchor len:', tailLen, 'chat pos:', tPos, '(chatLen-tailLen =', (c.length - tailLen) + ')');
     return 'done';
   };
 
