@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.309 Changes:
+ * - Blocks drop-up: removed the alternating-row brightness filter on the TEXT (the first=orange /
+ *   last=yellow line coloring now reads identically on EVERY row, matching the main widget; the
+ *   subtle background zebra + per-item borders stay for row separation).
+ * - Blocks drop-up: ordering flipped to OLDEST-FIRST — index 0 is now the FIRST block of the
+ *   session text (the top of the editor), incrementing downward to the most recent block,
+ *   matching the editor's visual order 1:1 (was newest-first / 'blocks back').
+ * - Context modal editor now ACTUALLY opens scrolled to the newest block: the scrollToBottom was
+ *   racing the auto-height pass (widget heights are assigned in setTimeout(0), after the
+ *   synchronous scroll had already been computed) and landed the view halfway down. The scroll
+ *   now fires after the auto-height timeouts (twice, belt-and-suspenders).
+ *
  * v3.308 Changes:
  * - CONTEXT MODAL REWORK — physical block widgets: the single textarea is replaced by a
  *   scrollable list of per-block widgets (one auto-height textarea per '---------'-delimited
@@ -1278,7 +1290,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.308',
+  VERSION: '3.309',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4979,16 +4991,18 @@
       var allLines = allText.split('\n');
       for (var b = 0; b < total; b++) {
         (function(b) {
-          var blk = refineGetBlockFromEnd(allText, b);
+          // (v3.309) Oldest-first: index 0 = the FIRST block of the session text (matches the
+          // editor's top-to-bottom order); the last index is the most recent block.
+          var blk = refineGetBlockFromEnd(allText, total - 1 - b);
           if (!blk) return;
           var edge = refineSmartEdgeLines(allLines.slice(blk.startIdx, blk.endIdx));
           var item = document.createElement('div');
-          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px; border:1px solid rgba(240,240,235,0.28); box-sizing:border-box;' + (b % 2 ? ' filter:brightness(0.85);' : '');
+          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px; border:1px solid rgba(240,240,235,0.28); box-sizing:border-box;';
           item.onmouseenter = function() { item.style.background = '#33404f'; };
           item.onmouseleave = function() { item.style.background = (b % 2 ? '#2a2b2c' : '#232425'); };
           var badge = document.createElement('span');
           badge.textContent = String(b);
-          badge.title = 'Blocks back from the most recent (0 = newest)';
+          badge.title = 'Block index (0 = first block of the session; last = most recent)';
           badge.style.cssText = 'flex:0 0 auto; min-width:18px; text-align:right; font-size:11px; line-height:1.6; color:#8ab4f8; opacity:0.85; font-variant-numeric:tabular-nums;';
           var prev = document.createElement('span');
           prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#e6c200;';
@@ -5005,10 +5019,9 @@
           item.appendChild(badge);
           item.appendChild(prev);
           item.onclick = function() {
-            copyTextSmart(blk.text, '📋 Copied block ' + b + ' back (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
-            // (v3.308) Physical block widgets: jump straight to the widget — no geometry math.
-            var wi = widgets.length - 1 - b;
-            var w = widgets[wi];
+            copyTextSmart(blk.text, '📋 Copied block index ' + b + ' (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
+            // (v3.308/309) Physical block widgets: jump straight to the widget — no geometry math.
+            var w = widgets[b];
             if (w) {
               w.wrap.scrollIntoView({ block: 'start' });
               w.ta.focus();
@@ -5090,7 +5103,12 @@
         widgets.push(w);
         blocksContainer.appendChild(w.wrap);
       });
-      blocksContainer.scrollTop = blocksContainer.scrollHeight;   // newest block at the bottom
+      // (v3.309) Scroll to the newest (bottom) AFTER the auto-height pass completes — widget
+      // heights are assigned in setTimeout(0) inside mkBlockWidget, so a synchronous scrollTop
+      // lands the view halfway down the list.
+      var toBottom = function() { blocksContainer.scrollTop = blocksContainer.scrollHeight; };
+      setTimeout(toBottom, 0);
+      setTimeout(toBottom, 60);
     }
 
     // Initialize on the active slot: build the physical block widgets (v3.308).
