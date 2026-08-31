@@ -11,6 +11,23 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.302 Changes:
+ * - Default transcript height 740 → 725 px (another 15, per request); expanded 280 → 265.
+ *   One-time transcript_height_reset_v3302 stanza included.
+ * - Smart edge lines for the block previews: a 'thin' true first/last line (<8 alnum chars —
+ *   'Thanks', 'Best, Dan', a closing ``` fence) now pulls in its nearest non-thin, non-fence
+ *   neighbor as CONTEXT, shown dimmer with an outward ellipsis ('…ctx line' for the last line,
+ *   'line ctx…' for the first); the TRUE edge line renders brighter (#ffd400, 600) so you can
+ *   tell at a glance which part is the real edge. Shared refineSmartEdgeLines + refineEdgeRowEl
+ *   drive BOTH the main widget tail preview and the Context modal's fine-print preview.
+ * - Context modal: new '📋 Copy last block' button (left of Delete) — copies the most recent
+ *   block to the clipboard.
+ * - Context modal: new '🗂 Blocks ▲' drop-up — a scrollable, zebra-striped list of EVERY block
+ *   in the slot being edited, newest-first with a 0-based 'blocks back' badge and the same smart
+ *   first/last-line preview per item. Clicking an item copies that block AND selects + best-
+ *   effort scrolls to it in the editor — 'locate the block' solved; deleting from there down is
+ *   then easy by hand.
+ *
  * v3.301 Changes:
  * - FIX (left-edge clipping): the widget's content column (.deepgram-content) had overflow-y:auto
  *   with NO overflow-x guard, making it a scroll container in BOTH axes. Focus auto-scroll on
@@ -1183,7 +1200,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.301',
+  VERSION: '3.302',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1290,9 +1307,9 @@
     WIDGET_WIDTH_STORAGE: 'widget_panel_width',
     DEFAULT_WIDGET_WIDTH: 1155,
     TRANSCRIPT_HEIGHT_STORAGE: 'transcript_textarea_height',
-    DEFAULT_TRANSCRIPT_HEIGHT: 740,
-    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 740,
-    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 280,
+    DEFAULT_TRANSCRIPT_HEIGHT: 725,
+    DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT: 725,
+    DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT: 265,
     // Fixed offset: the EXPANDED box (top controls showing) is always this many px SHORTER than the
     // collapsed/full box. Editing the one height field moves BOTH modes together by preserving this delta.
     TRANSCRIPT_EXPAND_COLLAPSE_DELTA: 490
@@ -3343,6 +3360,92 @@
     return mask;
   }
 
+  /** (v3.302) Smart edge lines for a block preview. Given a block's lines, pick a MEANINGFUL
+   *  first and last line: if the TRUE edge line is 'thin' (fewer than 8 alnum chars — 'Thanks',
+   *  'Best, Dan' fragments, a closing ``` fence), pull in the nearest non-thin, non-fence
+   *  neighbor line as CONTEXT. Consecutive thin lines at the edge join the edge first.
+   *  Returns { first: {main, ctx}, last: {main, ctx} } — main = the TRUE edge line (caller
+   *  renders it bright), ctx = the dimmer concatenated neighbor (null when the edge stands
+   *  alone). null for an empty block. */
+  function refineSmartEdgeLines(lines) {
+    var alnum = function(s) { return (s || '').replace(/[^a-zA-Z0-9]/g, ''); };
+    var isFence = function(s) { return /^\s*(`{3,}|~{3,})/.test(s || ''); };
+    var thin = function(s) { return alnum(s).length < 8; };
+    var nonEmpty = [];
+    for (var i = 0; i < lines.length; i++) { if (lines[i].trim() !== '') nonEmpty.push(i); }
+    if (!nonEmpty.length) return null;
+    var firstIdx = nonEmpty[0], lastIdx = nonEmpty[nonEmpty.length - 1];
+    var res = { first: { main: lines[firstIdx].trim(), ctx: null }, last: { main: lines[lastIdx].trim(), ctx: null } };
+    // FIRST: consecutive thin lines join the head; the nearest following non-thin line is context.
+    if (thin(lines[firstIdx])) {
+      for (var f = firstIdx + 1; f <= lastIdx; f++) {
+        var lf = lines[f].trim();
+        if (lf === '' || isFence(lf)) continue;
+        if (!thin(lf)) { res.first.ctx = lf; break; }
+        res.first.main += ' ' + lf;
+      }
+    }
+    // LAST: consecutive thin lines join the tail; the nearest preceding non-thin line is context.
+    if (thin(lines[lastIdx])) {
+      for (var b = lastIdx - 1; b >= firstIdx; b--) {
+        var lb = lines[b].trim();
+        if (lb === '' || isFence(lb)) continue;
+        if (!thin(lb)) { res.last.ctx = lb; break; }
+        res.last.main = lb + ' ' + res.last.main;
+      }
+    }
+    return res;
+  }
+
+  /** (v3.302) Render one smart edge-line row as a span: the TRUE edge line bright (#ffd400, 600),
+   *  the concatenated context dim (0.75) with an ellipsis on the OUTWARD side (prefix for
+   *  last-line rows, suffix for first-line rows). Context is budgeted so the row stays near
+   *  REFINE_TAIL_PREVIEW_CHARS total. */
+  function refineEdgeRowEl(main, ctx, ctxFirst) {
+    var n = (CONFIG.REFINE_TAIL_PREVIEW_CHARS || 60);
+    var row = document.createElement('span');
+    row.style.whiteSpace = 'nowrap';
+    var mainT = (main || '').length > n ? main.slice(0, n) + '\u2026' : (main || '');
+    var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:#ffd400; font-weight:600;'; sp.textContent = txt; return sp; };
+    var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; opacity:0.75;'; sp.textContent = txt; return sp; };
+    if (!ctx) { row.appendChild(mkMain(mainT)); return row; }
+    var budget = Math.max(10, n - mainT.length - 3);
+    var ctxT = ctx.length > budget ? ctx.slice(0, budget) : ctx;
+    if (ctxFirst) { row.appendChild(mkCtx('\u2026' + ctxT + ' ')); row.appendChild(mkMain(mainT)); }
+    else { row.appendChild(mkMain(mainT)); row.appendChild(mkCtx(' ' + ctxT + '\u2026')); }
+    return row;
+  }
+
+  /** (v3.302) Extract the Nth-from-last block of a context slot text (0 = most recent), using
+   *  the shared break mask. Trailing blank/break lines are popped first (a trailing break does
+   *  not read as an empty last block). Returns { text, startIdx, endIdx, total } — text = the
+   *  block's lines joined with edge blanks trimmed; startIdx/endIdx = line indices into the
+   *  popped split; total = block count. null when N is out of range or the text is empty. */
+  function refineGetBlockFromEnd(text, n) {
+    var orig = (typeof text === 'string') ? text : '';
+    var lines = orig.split('\n');
+    var breakMask = refineBlockBreakMask(lines);
+    while (lines.length) {
+      var t = lines[lines.length - 1].trim();
+      if (t === '' || breakMask[lines.length - 1]) lines.pop();
+      else break;
+    }
+    if (!lines.length) return null;
+    var bounds = [];
+    var start = 0;
+    for (var i = 0; i < lines.length; i++) {
+      if (breakMask[i]) { bounds.push([start, i]); start = i + 1; }
+    }
+    bounds.push([start, lines.length]);
+    var total = bounds.length;
+    if (n < 0 || n >= total) return null;
+    var b = bounds[total - 1 - n];
+    var s = b[0], e = b[1];
+    while (s < e && lines[s].trim() === '') s++;
+    while (e > s && lines[e - 1].trim() === '') e--;
+    return { text: lines.slice(s, e).join('\n'), startIdx: s, endIdx: e, total: total };
+  }
+
   function refinePruneSlotToHalf(text) {
     const orig = (typeof text === 'string') ? text : '';
     if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
@@ -3392,47 +3495,27 @@
       else break;
     }
     if (!lines.length) return;
-    var lastLine = lines[lines.length - 1];
-    var n = CONFIG.REFINE_TAIL_PREVIEW_CHARS;
-    var trailing = lastLine.length > n ? '\u2026' : '';
-    var lastPreview = lastLine.slice(0, n) + trailing;
-    // March upward to find the most recent '---' break, then walk forward past blank lines.
-    var firstLineOfLastEntry = null;
+    // March upward to find the most recent break; the block is the line slice after it
+    // (v3.302: smart edge lines — thin true-edge lines pull in neighbor context).
+    var blockStartIdx = 0;
     for (var i = lines.length - 2; i >= 0; i--) {
-      if (breakMask[i]) {
-        for (var j = i + 1; j < lines.length; j++) {
-          if (lines[j].trim() !== '') { firstLineOfLastEntry = lines[j]; break; }
-        }
-        break;
-      }
+      if (breakMask[i]) { blockStartIdx = i + 1; break; }
     }
-    // No break found: the whole text is one entry; use the first non-empty line.
-    if (firstLineOfLastEntry === null) {
-      for (var k = 0; k < lines.length; k++) {
-        if (lines[k].trim() !== '') { firstLineOfLastEntry = lines[k]; break; }
-      }
-    }
-    var firstTrailing = (firstLineOfLastEntry || '').length > n ? '\u2026' : '';
-    var firstPreview = (firstLineOfLastEntry || '').slice(0, n) + firstTrailing;
+    var edge = refineSmartEdgeLines(lines.slice(blockStartIdx));
+    if (!edge) return;
     var mkDots = function() {
       var d = document.createElement('div');
       d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;';
       d.textContent = '\u2026';
       return d;
     };
-    var mkLine = function(txt) {
-      var sp = document.createElement('span');
-      sp.style.whiteSpace = 'nowrap';
-      sp.textContent = txt;
-      return sp;
-    };
-    if (firstPreview === lastPreview) {
+    if (edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx) {
       el.appendChild(mkDots());
-      el.appendChild(mkLine(lastPreview));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
     } else {
-      el.appendChild(mkLine(firstPreview));
+      el.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
       el.appendChild(mkDots());
-      el.appendChild(mkLine(lastPreview));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
     }
   }
 
@@ -4447,7 +4530,7 @@
     overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:2147483646; display:flex; align-items:center; justify-content:center;';
 
     const box = document.createElement('div');
-    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(860px,94vw); max-height:88vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box;';
+    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(860px,94vw); max-height:88vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box; position:relative;';
 
     const h = document.createElement('div');
     h.textContent = '📝 Refine — parallel-session context slots';
@@ -4493,6 +4576,7 @@
     const activeIdx = () => refineGetActiveContextIndex();
 
     function paintRibbon() {
+      closeBlocksPopup();   // (v3.302) any repaint (slot switch / prune / delete) invalidates the drop-up
       ribbon.innerHTML = '';
       // Timestamps of all slots, computed ONCE so every square's rings share one gradient scale.
       const allTs = slots.map(s => (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0);
@@ -4625,23 +4709,92 @@
         else break;
       }
       if (!lines.length) return;
-      var lastLine = lines[lines.length - 1];
-      var firstLine = null;
+      var blockStartIdx = 0;
       for (var bi = lines.length - 2; bi >= 0; bi--) {
-        if (mask[bi]) {
-          for (var bj = bi + 1; bj < lines.length; bj++) { if (lines[bj].trim() !== '') { firstLine = lines[bj]; break; } }
-          break;
-        }
+        if (mask[bi]) { blockStartIdx = bi + 1; break; }
       }
-      if (firstLine === null) { for (var bk = 0; bk < lines.length; bk++) { if (lines[bk].trim() !== '') { firstLine = lines[bk]; break; } } }
-      var pn = CONFIG.REFINE_TAIL_PREVIEW_CHARS || 60;
-      var fp = (firstLine || '').slice(0, pn) + ((firstLine || '').length > pn ? '\u2026' : '');
-      var lp = lastLine.slice(0, pn) + (lastLine.length > pn ? '\u2026' : '');
+      var edge = refineSmartEdgeLines(lines.slice(blockStartIdx));
+      if (!edge) return;
       var mkDots = function() { var d = document.createElement('div'); d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;'; d.textContent = '\u2026'; return d; };
-      var mkLine = function(txt) { var sp = document.createElement('span'); sp.style.whiteSpace = 'nowrap'; sp.textContent = txt; return sp; };
-      if (fp === lp) { tailRow.appendChild(mkDots()); tailRow.appendChild(mkLine(lp)); }
-      else { tailRow.appendChild(mkLine(fp)); tailRow.appendChild(mkDots()); tailRow.appendChild(mkLine(lp)); }
+      if (edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx) {
+        tailRow.appendChild(mkDots());
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+      } else {
+        tailRow.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
+        tailRow.appendChild(mkDots());
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+      }
     }
+
+    // ----- 📋 copy helper + 🗂 Blocks drop-up (v3.302) -----
+    function copyTextSmart(txt, okMsg) {
+      var done = function(ok) { updateStatus(ok ? okMsg : '📋 Copy failed — clipboard unavailable', ok ? 'success' : 'error'); };
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(txt).then(function() { done(true); }, function() { try { refineFallbackCopy(txt); done(true); } catch (e2) { done(false); } });
+        } else { refineFallbackCopy(txt); done(true); }
+      } catch (e) { try { refineFallbackCopy(txt); done(true); } catch (e2) { done(false); } }
+    }
+    const blocksPopup = document.createElement('div');
+    blocksPopup.style.cssText = 'display:none; position:absolute; left:16px; bottom:58px; width:min(620px,92%); max-height:46vh; overflow-y:auto; background:#242526; border:1px solid #565656; border-radius:8px; box-shadow:0 8px 28px rgba(0,0,0,0.55); z-index:5; padding:4px;';
+    function closeBlocksPopup() { blocksPopup.style.display = 'none'; }
+    function buildBlocksPopup() {
+      blocksPopup.innerHTML = '';
+      var allText = ta.value || '';
+      var probe = refineGetBlockFromEnd(allText, 0);
+      var total = probe ? probe.total : 0;
+      if (!total || !allText.trim()) {
+        var empty = document.createElement('div');
+        empty.textContent = '(no blocks yet)';
+        empty.style.cssText = 'padding:8px 10px; font-size:12px; opacity:0.7;';
+        blocksPopup.appendChild(empty);
+        return;
+      }
+      var allLines = allText.split('\n');
+      for (var b = 0; b < total; b++) {
+        (function(b) {
+          var blk = refineGetBlockFromEnd(allText, b);
+          if (!blk) return;
+          var edge = refineSmartEdgeLines(allLines.slice(blk.startIdx, blk.endIdx));
+          var item = document.createElement('div');
+          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px;';
+          item.onmouseenter = function() { item.style.background = '#33404f'; };
+          item.onmouseleave = function() { item.style.background = (b % 2 ? '#2a2b2c' : '#232425'); };
+          var badge = document.createElement('span');
+          badge.textContent = String(b);
+          badge.title = 'Blocks back from the most recent (0 = newest)';
+          badge.style.cssText = 'flex:0 0 auto; min-width:18px; text-align:right; font-size:11px; line-height:1.6; color:#8ab4f8; opacity:0.85; font-variant-numeric:tabular-nums;';
+          var prev = document.createElement('span');
+          prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#e6c200;';
+          if (edge) {
+            prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
+            if (!(edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx)) {
+              var dots = document.createElement('div');
+              dots.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;';
+              dots.textContent = '\u2026';
+              prev.appendChild(dots);
+              prev.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+            }
+          } else { prev.textContent = '(empty block)'; prev.style.opacity = '0.6'; }
+          item.appendChild(badge);
+          item.appendChild(prev);
+          item.onclick = function() {
+            copyTextSmart(blk.text, '📋 Copied block ' + b + ' back (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
+            var startOff = 0;
+            for (var li = 0; li < blk.startIdx; li++) startOff += allLines[li].length + 1;
+            var endOff = startOff + blk.text.length;
+            ta.focus();
+            try { ta.setSelectionRange(startOff, endOff, 'backward'); } catch (e) { ta.setSelectionRange(startOff, endOff); }
+            closeBlocksPopup();
+          };
+          blocksPopup.appendChild(item);
+        })(b);
+      }
+    }
+    // Close the drop-up on any click inside the modal that isn't on the popup or its toggle.
+    box.addEventListener('mousedown', function(e) {
+      if (blocksPopup.style.display !== 'none' && !blocksPopup.contains(e.target) && e.target !== blocksBtn) closeBlocksPopup();
+    });
 
     // Initialize on the active slot.
     ta.value = slots[editingIndex].text || '';
@@ -4661,6 +4814,20 @@
     // Eviction into the primary pills (refineSyncToggleSlots) is reserved for actual TEXT updates;
     // mere selection pins the session in the temp slot instead (see refineManualSelectSlot, v3.254).
     save.onclick = () => { const changed = stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); if (changed) refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
+    // 🗂 Blocks drop-up + 📋 Copy last block (v3.302).
+    const blocksBtn = mkBtn('🗂 Blocks ▲', '#3a5a8a');
+    blocksBtn.title = 'Show every block in this slot (newest first, 0 = most recent) with its smart first/last-line preview. Click one to copy it and select + scroll to it in the text.';
+    blocksBtn.onclick = () => {
+      if (blocksPopup.style.display === 'none') { buildBlocksPopup(); blocksPopup.style.display = 'block'; }
+      else closeBlocksPopup();
+    };
+    const copyBlock = mkBtn('📋 Copy last block', '#3a6a3a');
+    copyBlock.title = "Copy the most recent block (everything after the last '---------' break) to the clipboard.";
+    copyBlock.onclick = () => {
+      const blk = refineGetBlockFromEnd(ta.value, 0);
+      if (!blk || !blk.text.trim()) { updateStatus('📋 No block to copy in “' + slots[editingIndex].name + '”', 'error'); return; }
+      copyTextSmart(blk.text, '📋 Copied most recent block (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
+    };
     // 🗑 Delete the MOST RECENT block of the slot being edited (v3.297) — everything after the
     // last non-fenced '---' break, saved immediately. Click repeatedly to delete older blocks.
     const delBlock = mkBtn('🗑 Delete most recent block', '#8a3a3a');
@@ -4679,11 +4846,13 @@
       paintRibbon();
       updateStatus('🗑 Deleted most recent block from “' + slots[editingIndex].name + '” (removed ' + res.removed.toLocaleString() + ' chars, now ' + res.text.length.toLocaleString() + ')', 'success');
     };
+    btnRow.appendChild(blocksBtn);
+    btnRow.appendChild(copyBlock);
     btnRow.appendChild(delBlock);
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(tailRow); box.appendChild(ta); box.appendChild(btnRow);
+    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(tailRow); box.appendChild(ta); box.appendChild(btnRow); box.appendChild(blocksPopup);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
     // ESC closes WITHOUT saving. Use CAPTURE phase + stopPropagation so the page/TypingMind can't
@@ -7862,6 +8031,11 @@
     if (localStorage.getItem('transcript_height_reset_v3297') !== '1') {
       localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
       localStorage.setItem('transcript_height_reset_v3297', '1');
+    }
+    // v3.302: reduce default transcript height by another 15px (740 → 725)
+    if (localStorage.getItem('transcript_height_reset_v3302') !== '1') {
+      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
+      localStorage.setItem('transcript_height_reset_v3302', '1');
     }
 
     // Load saved widget dimensions
