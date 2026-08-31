@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.305 Changes:
+ * - Block previews now FILL the row: instead of a hard ~60-char cutoff, each edge row gathers up
+ *   to 4 neighboring lines as context (240-char sanity cap; the line crops with a CSS ellipsis
+ *   at whatever width the widget actually is). Long context chains are cropped on the OUTER
+ *   side — last-line rows keep the end nearest the true last line ('…ctx tail LAST'), first-line
+ *   rows keep the start ('FIRST ctx head…'). A very long true edge line is itself cropped (140
+ *   cap). The TRUE first/last line stays lit bright regardless. Duplication between the two rows
+ *   is accepted by design (more information beats clever dedupe).
+ * - Color language unified: the FIRST line is now slightly orange-leaning (main #ffbf00 /
+ *   context #e8ae00), the LAST line stays yellow (main #ffd400 / context #e6c200) — on BOTH the
+ *   main widget preview and every row of the Blocks drop-up. Drop-up zebra striping is now a
+ *   brightness(0.85) filter on alternating items, so the first/last colors are identical
+ *   everywhere while rows still alternate.
+ *
  * v3.304 Changes:
  * - Blocks drop-up: alternating rows now render in a slightly dimmer yellow (#c9ac00 vs #e6c200)
  *   for extra separation, and each item gets a subtle 1px off-white border.
@@ -1225,7 +1239,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.304',
+  VERSION: '3.305',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3385,13 +3399,13 @@
     return mask;
   }
 
-  /** (v3.302) Smart edge lines for a block preview. Given a block's lines, pick a MEANINGFUL
-   *  first and last line: if the TRUE edge line is 'thin' (fewer than 8 alnum chars — 'Thanks',
-   *  'Best, Dan' fragments, a closing ``` fence), pull in the nearest non-thin, non-fence
-   *  neighbor line as CONTEXT. Consecutive thin lines at the edge join the edge first.
-   *  Returns { first: {main, ctx}, last: {main, ctx} } — main = the TRUE edge line (caller
-   *  renders it bright), ctx = the dimmer concatenated neighbor (null when the edge stands
-   *  alone). null for an empty block. */
+  /** (v3.305) Smart edge lines for a block preview. Given a block's lines, pick a MEANINGFUL
+   *  first and last line: a 'thin' TRUE edge line (fewer than 8 alnum chars — 'Thanks', 'Best,
+   *  Dan' fragments, a closing ``` fence) first absorbs its consecutive thin neighbors, then
+   *  gathers up to 4 MORE non-empty, non-fence lines as CONTEXT (any thickness — the row render
+   *  crops them to fit). Returns { first: {main, ctxs}, last: {main, ctxs} } — main = the TRUE
+   *  edge line (caller renders it bright), ctxs = document-ordered context lines ([] when the
+   *  edge stands alone). null for an empty block. */
   function refineSmartEdgeLines(lines) {
     var alnum = function(s) { return (s || '').replace(/[^a-zA-Z0-9]/g, ''); };
     var isFence = function(s) { return /^\s*(`{3,}|~{3,})/.test(s || ''); };
@@ -3400,44 +3414,74 @@
     for (var i = 0; i < lines.length; i++) { if (lines[i].trim() !== '') nonEmpty.push(i); }
     if (!nonEmpty.length) return null;
     var firstIdx = nonEmpty[0], lastIdx = nonEmpty[nonEmpty.length - 1];
-    var res = { first: { main: lines[firstIdx].trim(), ctx: null }, last: { main: lines[lastIdx].trim(), ctx: null } };
-    // FIRST: consecutive thin lines join the head; the nearest following non-thin line is context.
+    var res = { first: { main: lines[firstIdx].trim(), ctxs: [] }, last: { main: lines[lastIdx].trim(), ctxs: [] } };
+    // FIRST: thin true edge lines join the head group (stop at the first non-thin line).
+    var headEnd = firstIdx;
     if (thin(lines[firstIdx])) {
       for (var f = firstIdx + 1; f <= lastIdx; f++) {
         var lf = lines[f].trim();
         if (lf === '' || isFence(lf)) continue;
-        if (!thin(lf)) { res.first.ctx = lf; break; }
-        res.first.main += ' ' + lf;
+        if (!thin(lf)) break;
+        res.first.main += ' ' + lf; headEnd = f;
       }
     }
-    // LAST: consecutive thin lines join the tail; the nearest preceding non-thin line is context.
+    // FIRST context: up to 4 following non-empty, non-fence lines (document order).
+    for (var c = headEnd + 1; c <= lastIdx && res.first.ctxs.length < 4; c++) {
+      var lc = lines[c].trim();
+      if (lc === '' || isFence(lc)) continue;
+      res.first.ctxs.push(lc);
+    }
+    // LAST: thin true edge lines join the tail group (stop at the first non-thin line above).
+    var tailStart = lastIdx;
     if (thin(lines[lastIdx])) {
       for (var b = lastIdx - 1; b >= firstIdx; b--) {
         var lb = lines[b].trim();
         if (lb === '' || isFence(lb)) continue;
-        if (!thin(lb)) { res.last.ctx = lb; break; }
-        res.last.main = lb + ' ' + res.last.main;
+        if (!thin(lb)) break;
+        res.last.main = lb + ' ' + res.last.main; tailStart = b;
       }
+    }
+    // LAST context: up to 4 preceding non-empty, non-fence lines (document order).
+    for (var d = tailStart - 1; d >= firstIdx && res.last.ctxs.length < 4; d--) {
+      var ld = lines[d].trim();
+      if (ld === '' || isFence(ld)) continue;
+      res.last.ctxs.unshift(ld);
     }
     return res;
   }
 
-  /** (v3.302) Render one smart edge-line row as a span: the TRUE edge line bright (#ffd400, 600),
-   *  the concatenated context dim (0.75) with an ellipsis on the OUTWARD side (prefix for
-   *  last-line rows, suffix for first-line rows). Context is budgeted so the row stays near
-   *  REFINE_TAIL_PREVIEW_CHARS total. */
-  function refineEdgeRowEl(main, ctx, ctxFirst) {
-    var n = (CONFIG.REFINE_TAIL_PREVIEW_CHARS || 60);
+  /** (v3.305) Render one smart edge-line row as a span, FILLED with context: up to ~240 chars
+   *  total (the widget crops to its real width with a CSS ellipsis). The TRUE edge line renders
+   *  bright (#ffbf00 orange-yellow for FIRST rows, #ffd400 yellow for LAST rows); context lines
+   *  render dimmer (#e8ae00 / #e6c200, 0.75 opacity) with an ellipsis on the OUTWARD side. A
+   *  very long true edge line is itself cropped (140 cap); a long context chain keeps the end
+   *  NEAREST the true line on LAST rows (left-crop) and the start on FIRST rows (right-crop). */
+  function refineEdgeRowEl(main, ctxs, ctxFirst) {
+    var TOTAL = 240;     // sanity cap — the CSS ellipsis does the real width fitting
+    var MAIN_CAP = 140;
     var row = document.createElement('span');
     row.style.whiteSpace = 'nowrap';
-    var mainT = (main || '').length > n ? main.slice(0, n) + '\u2026' : (main || '');
-    var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:#ffd400; font-weight:600;'; sp.textContent = txt; return sp; };
-    var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; opacity:0.75;'; sp.textContent = txt; return sp; };
-    if (!ctx) { row.appendChild(mkMain(mainT)); return row; }
-    var budget = Math.max(10, n - mainT.length - 3);
-    var ctxT = ctx.length > budget ? ctx.slice(0, budget) : ctx;
-    if (ctxFirst) { row.appendChild(mkCtx('\u2026' + ctxT + ' ')); row.appendChild(mkMain(mainT)); }
-    else { row.appendChild(mkMain(mainT)); row.appendChild(mkCtx(' ' + ctxT + '\u2026')); }
+    var mainColor = ctxFirst ? '#ffd400' : '#ffbf00';
+    var ctxColor = ctxFirst ? '#e6c200' : '#e8ae00';
+    var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + mainColor + '; font-weight:600;'; sp.textContent = txt; return sp; };
+    var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + ctxColor + '; opacity:0.75;'; sp.textContent = txt; return sp; };
+    var ctxJoined = (ctxs && ctxs.length) ? ctxs.join(' ') : '';
+    if (!ctxJoined) {
+      var lone = (main || '').length > TOTAL ? main.slice(0, TOTAL) + '\u2026' : (main || '');
+      row.appendChild(mkMain(lone));
+      return row;
+    }
+    var mainT = (main || '').length > MAIN_CAP ? main.slice(0, MAIN_CAP) + '\u2026' : (main || '');
+    var budget = Math.max(24, TOTAL - mainT.length - 3);
+    if (ctxFirst) {
+      var cropped = ctxJoined.length > budget ? ctxJoined.slice(-budget) : ctxJoined;
+      row.appendChild(mkCtx('\u2026' + cropped + ' '));
+      row.appendChild(mkMain(mainT));
+    } else {
+      var cropped2 = ctxJoined.length > budget ? ctxJoined.slice(0, budget) : ctxJoined;
+      row.appendChild(mkMain(mainT));
+      row.appendChild(mkCtx(' ' + cropped2 + '\u2026'));
+    }
     return row;
   }
 
@@ -3534,13 +3578,14 @@
       d.textContent = '\u2026';
       return d;
     };
-    if (edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx) {
+    var sameRow = edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' ');
+    if (sameRow) {
       el.appendChild(mkDots());
-      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
     } else {
-      el.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
+      el.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
       el.appendChild(mkDots());
-      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
     }
   }
 
@@ -4789,13 +4834,14 @@
       var edge = refineSmartEdgeLines(lines.slice(blockStartIdx));
       if (!edge) return;
       var mkDots = function() { var d = document.createElement('div'); d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;'; d.textContent = '\u2026'; return d; };
-      if (edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx) {
+      var sameRow = edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' ');
+      if (sameRow) {
         tailRow.appendChild(mkDots());
-        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
       } else {
-        tailRow.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
+        tailRow.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
         tailRow.appendChild(mkDots());
-        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
       }
     }
 
@@ -4830,7 +4876,7 @@
           if (!blk) return;
           var edge = refineSmartEdgeLines(allLines.slice(blk.startIdx, blk.endIdx));
           var item = document.createElement('div');
-          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px; border:1px solid rgba(240,240,235,0.28); box-sizing:border-box;';
+          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px; border:1px solid rgba(240,240,235,0.28); box-sizing:border-box;' + (b % 2 ? ' filter:brightness(0.85);' : '');
           item.onmouseenter = function() { item.style.background = '#33404f'; };
           item.onmouseleave = function() { item.style.background = (b % 2 ? '#2a2b2c' : '#232425'); };
           var badge = document.createElement('span');
@@ -4838,15 +4884,15 @@
           badge.title = 'Blocks back from the most recent (0 = newest)';
           badge.style.cssText = 'flex:0 0 auto; min-width:18px; text-align:right; font-size:11px; line-height:1.6; color:#8ab4f8; opacity:0.85; font-variant-numeric:tabular-nums;';
           var prev = document.createElement('span');
-          prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:' + (b % 2 ? '#c9ac00' : '#e6c200') + ';';
+          prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#e6c200;';
           if (edge) {
-            prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
-            if (!(edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx)) {
+            prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
+            if (!(edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' '))) {
               var dots = document.createElement('div');
               dots.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;';
               dots.textContent = '\u2026';
               prev.appendChild(dots);
-              prev.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctx, true));
+              prev.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
             }
           } else { prev.textContent = '(empty block)'; prev.style.opacity = '0.6'; }
           item.appendChild(badge);
