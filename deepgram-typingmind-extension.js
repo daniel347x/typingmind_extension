@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.312 Changes:
+ * - FIX (run-on between prepended context and the true last line): the join space is now a
+ *   NON-BREAKING space (\u00A0) on both rows. A regular trailing space at a bidi-isolate
+ *   boundary (the rtl last row) gets trimmed by CSS/bidi whitespace processing — hence the
+ *   run-on; \u00A0 is immune to collapsing and bidi trimming. (First row hardened too, though
+ *   its ltr layout usually rendered the space anyway.)
+ *
  * v3.311 Changes:
  * - FIX (Send/Ellipsis staying disabled after paste): the buttons' enabled state only re-evaluated
  *   on real 'input' events, but PROGRAMMATIC transcript writes (📄 Paste MD, insertToChat,
@@ -1310,7 +1317,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.311',
+  VERSION: '3.312',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3553,7 +3560,7 @@
       var budget = Math.max(24, 240 - mainT.length - 3);
       var cropped2 = ctxJoined.length > budget ? ctxJoined.slice(0, budget) : ctxJoined;
       row.appendChild(mkMain(mainT));
-      row.appendChild(mkCtx(' ' + cropped2 + '\u2026'));
+      row.appendChild(mkCtx('\u00A0' + cropped2 + '\u2026'));   // \u00A0 join (v3.312)
       return row;
     }
     // LAST row (v3.307, Dan's definitive algorithm): estimate the row's character capacity from
@@ -3564,7 +3571,7 @@
       // fill the remaining width with preceding context to its left; the rtl flow pins the true
       // line to the right and CSS clips any context overflow at the LEFT only.
       row.appendChild(mkMain(main || ''));
-      if (ctxJoined) row.appendChild(mkCtx(ctxJoined.slice(-240) + ' '));
+      if (ctxJoined) row.appendChild(mkCtx(ctxJoined.slice(-240) + '\u00A0'));   // \u00A0: bidi/collapse-proof join (v3.312)
     } else {
       // CASE B: the true last line ALONE overflows (a whole paragraph on one line) — drop ALL
       // context and render ONLY the line, LEFT-justified from its first character (bright), ltr;
