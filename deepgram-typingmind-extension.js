@@ -11,6 +11,19 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.301 Changes:
+ * - FIX (left-edge clipping): the widget's content column (.deepgram-content) had overflow-y:auto
+ *   with NO overflow-x guard, making it a scroll container in BOTH axes. Focus auto-scroll on
+ *   pill/button clicks (and the wide layout-controls row / a crowded pill row providing the
+ *   horizontal scroll range) could drift the whole column a pixel or two rightward — shaving the
+ *   left edge of EVERY row: the Append button's breathing outline, the Refine provider and Read
+ *   Aloud row borders, the ✂½ button, the duplicate-session warning. overflow-x is now
+ *   hidden/clip on the content column and the layout-controls row wraps, so the column can
+ *   never drift.
+ * - 3-hyphen block-delimiter fallback REMOVED entirely (single user; all sessions current):
+ *   block delimiters are now exclusively non-fenced lines of 9+ hyphens. refineBlockBreakMask
+ *   simplified accordingly; prune tooltips now say '---------'.
+ *
  * v3.300 Changes:
  * - FIX (block boundaries, round 3): a '---' line typed as CONTENT inside an appended block (a
  *   plain markdown hr, e.g. between a feedback section and a draft) was still being treated as
@@ -1170,7 +1183,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.300',
+  VERSION: '3.301',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3231,7 +3244,7 @@
         // first '---' section break at/after this slot's midpoint. stopPropagation so it never selects.
         const prune = document.createElement('span');
         prune.textContent = '✂½';
-        prune.title = 'Prune this slot to ~half: delete everything above the first \'---\' section break at/after the midpoint';
+        prune.title = 'Prune this slot to ~half: delete everything above the first \'---------\' section break at/after the midpoint';
         prune.style.cssText = 'flex:0 0 auto; cursor:pointer; color:#ffb3b3; padding:0 2px;';
         prune.onclick = (e) => {
           e.stopPropagation();
@@ -3318,22 +3331,15 @@
     return mask;
   }
 
-  /** Block-break mask for a text split into lines (v3.300): which lines are BLOCK delimiters.
-   *  The append delimiter is NINE hyphens (v3.290); legacy appends used three. A line of 3–8
-   *  hyphens inside appended CONTENT (a markdown hr, e.g. the '---' between a feedback section
-   *  and a draft) must NOT split blocks. So: if the text contains ANY non-fenced 9+-hyphen line,
-   *  only 9+-hyphen lines count as delimiters; otherwise fall back to 3+ (legacy sessions never
-   *  appended since v3.290). Fence-aware via refineLineFenceMask throughout. */
+  /** Block-break mask for a text split into lines (v3.301): which lines are BLOCK delimiters.
+   *  ONLY a non-fenced line of NINE OR MORE hyphens counts — the append delimiter (v3.290).
+   *  Lines of 3–8 hyphens are CONTENT (markdown hrs), never delimiters; there is deliberately
+   *  NO legacy 3-hyphen fallback (single user, all sessions current — v3.301). Fence-aware via
+   *  refineLineFenceMask throughout. */
   function refineBlockBreakMask(lines) {
     var fenceMask = refineLineFenceMask(lines);
-    var hasNine = false;
-    var i;
-    for (i = 0; i < lines.length; i++) {
-      if (!fenceMask[i] && /^-{9,}$/.test(lines[i].trim())) { hasNine = true; break; }
-    }
-    var re = hasNine ? /^-{9,}$/ : /^-{3,}$/;
     var mask = new Array(lines.length);
-    for (i = 0; i < lines.length; i++) mask[i] = !fenceMask[i] && re.test(lines[i].trim());
+    for (var i = 0; i < lines.length; i++) mask[i] = !fenceMask[i] && /^-{9,}$/.test(lines[i].trim());
     return mask;
   }
 
@@ -4518,7 +4524,7 @@
         // textarea value when this is the slot being edited, else on the stored slot text.
         const prune = document.createElement('span');
         prune.textContent = '✂½';
-        prune.title = 'Prune this slot to ~half: delete everything above the first \'---\' section break at/after the midpoint';
+        prune.title = 'Prune this slot to ~half: delete everything above the first \'---------\' section break at/after the midpoint';
         prune.style.cssText = 'position:absolute; top:0px; left:2px; font-size:10px; line-height:1; color:#ffb3b3; text-shadow:0 0 2px rgba(0,0,0,0.8); cursor:pointer; z-index:2;';
         prune.onclick = (e) => {
           e.stopPropagation();
@@ -5863,6 +5869,8 @@
       .deepgram-content {
         padding: 20px;
         overflow-y: auto;
+        overflow-x: hidden; /* (v3.301) never x-scroll: a 1–2px rightward drift was shaving the left edge of every row */
+        overflow-x: clip;   /* modern engines: also forbid programmatic/focus x-scroll */
         flex: none;
         height: auto;
       }
@@ -7409,7 +7417,7 @@
         <!-- Layout and rarely-used controls (collapsible) -->
         <div class="deepgram-section" id="deepgram-layout-section">
           <label style="margin-top: 0;">
-            <div style="display: flex; gap: 8px; align-items: center;">
+            <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
               <button class="deepgram-collapse-btn" id="deepgram-darkmode-btn" onclick="window.toggleDarkMode()" title="Toggle dark mode">🌙 Dark</button>
               <label style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: #666;">
                 <span>Copy timer (s):</span>
@@ -7505,7 +7513,7 @@
         <!-- ✨ Refine: status row — scissors, context label, session name, KB, total cost, time lost, reset -->
         <div style="margin-top:6px; line-height:1.3; opacity:0.9;">
           <div style="display:flex; align-items:baseline; gap:8px; font-size:11px;">
-            <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
+            <button id="deepgram-refine-prune-btn" title="Prune the active context slot to ~half (cut at the first '---------' break at/after the midpoint)" style="flex:0 0 auto; font-size:11px; line-height:1; padding:1px 4px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.35); border-radius:3px; color:#ffb3b3;">✂½</button>
             <span style="flex:1 1 auto; min-width:0; display:flex; align-items:baseline; overflow:hidden; white-space:nowrap;">
               <span id="deepgram-refine-context-switch" title="Hover or click to switch the active session slot" style="flex:0 0 auto; color:#8ab4f8; cursor:pointer; position:relative; top:-1px;">✨ <span style="text-decoration:underline; text-underline-offset:2px;">context</span>: ▾</span>
               <span id="deepgram-refine-active-context-label" title="Active context slot (what ✨ Refine sends)" style="flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; font-size:19px; color:#4cd964;"></span>
