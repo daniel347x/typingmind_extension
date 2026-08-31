@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.306 Changes:
+ * - LAST-line preview row: the true last line is now PINNED to the right edge and can never be
+ *   right-cropped. The row is a self-cropping block with direction:rtl + text-align:left — short
+ *   content stays left-justified like the first row, but overflowing content clips on the LEFT
+ *   only (left-side CSS ellipsis), keeping the bright true last line fully visible at the right.
+ *   (The manual leading '…' still marks concatenation when it fits; it is the first thing the
+ *   CSS crop consumes when it doesn't, so there is never a double ellipsis.)
+ * - First-line color nudged slightly redder (main #ffab00 / context #e89d00).
+ *
  * v3.305 Changes:
  * - Block previews now FILL the row: instead of a hard ~60-char cutoff, each edge row gathers up
  *   to 4 neighboring lines as context (240-char sanity cap; the line crops with a CSS ellipsis
@@ -1239,7 +1248,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.305',
+  VERSION: '3.306',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3450,21 +3459,27 @@
     return res;
   }
 
-  /** (v3.305) Render one smart edge-line row as a span, FILLED with context: up to ~240 chars
-   *  total (the widget crops to its real width with a CSS ellipsis). The TRUE edge line renders
-   *  bright (#ffbf00 orange-yellow for FIRST rows, #ffd400 yellow for LAST rows); context lines
-   *  render dimmer (#e8ae00 / #e6c200, 0.75 opacity) with an ellipsis on the OUTWARD side. A
-   *  very long true edge line is itself cropped (140 cap); a long context chain keeps the end
-   *  NEAREST the true line on LAST rows (left-crop) and the start on FIRST rows (right-crop). */
+  /** (v3.306) Render one smart edge-line row as a self-cropping BLOCK: up to ~240 chars of
+   *  content, with the CSS ellipsis doing the real width fitting. The TRUE edge line renders
+   *  bright (FIRST rows: #ffab00 orange-red; LAST rows: #ffd400 yellow); context renders dimmer
+   *  (#e89d00 / #e6c200, 0.75 opacity) with an ellipsis on the OUTWARD side. A very long true
+   *  edge line is itself cropped (140 cap); a long context chain keeps the end NEAREST the true
+   *  line on LAST rows and the start on FIRST rows.
+   *  LAST rows use direction:rtl + text-align:left: SHORT content hugs the LEFT (like the first
+   *  row), but OVERFLOWING content pins the true last line to the RIGHT edge and clips on the
+   *  LEFT only — the true last line is never right-cropped. Children carry direction:ltr +
+   *  unicode-bidi:isolate so their text is not reversed; in rtl flow the first appended child
+   *  paints rightmost, so LAST rows append main BEFORE context. */
   function refineEdgeRowEl(main, ctxs, ctxFirst) {
     var TOTAL = 240;     // sanity cap — the CSS ellipsis does the real width fitting
     var MAIN_CAP = 140;
-    var row = document.createElement('span');
-    row.style.whiteSpace = 'nowrap';
-    var mainColor = ctxFirst ? '#ffd400' : '#ffbf00';
-    var ctxColor = ctxFirst ? '#e6c200' : '#e8ae00';
-    var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + mainColor + '; font-weight:600;'; sp.textContent = txt; return sp; };
-    var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + ctxColor + '; opacity:0.75;'; sp.textContent = txt; return sp; };
+    var row = document.createElement('div');
+    row.style.cssText = 'display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'
+      + (ctxFirst ? ' direction:rtl; text-align:left;' : '');
+    var mainColor = ctxFirst ? '#ffd400' : '#ffab00';
+    var ctxColor = ctxFirst ? '#e6c200' : '#e89d00';
+    var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + mainColor + '; font-weight:600; direction:ltr; unicode-bidi:isolate;'; sp.textContent = txt; return sp; };
+    var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + ctxColor + '; opacity:0.75; direction:ltr; unicode-bidi:isolate;'; sp.textContent = txt; return sp; };
     var ctxJoined = (ctxs && ctxs.length) ? ctxs.join(' ') : '';
     if (!ctxJoined) {
       var lone = (main || '').length > TOTAL ? main.slice(0, TOTAL) + '\u2026' : (main || '');
@@ -3475,8 +3490,8 @@
     var budget = Math.max(24, TOTAL - mainT.length - 3);
     if (ctxFirst) {
       var cropped = ctxJoined.length > budget ? ctxJoined.slice(-budget) : ctxJoined;
-      row.appendChild(mkCtx('\u2026' + cropped + ' '));
-      row.appendChild(mkMain(mainT));
+      row.appendChild(mkMain(mainT));                       // rtl flow: paints rightmost
+      row.appendChild(mkCtx('\u2026' + cropped + ' '));      // extends leftward, clips at the left
     } else {
       var cropped2 = ctxJoined.length > budget ? ctxJoined.slice(0, budget) : ctxJoined;
       row.appendChild(mkMain(mainT));
