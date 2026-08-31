@@ -11,6 +11,22 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.308 Changes:
+ * - CONTEXT MODAL REWORK — physical block widgets: the single textarea is replaced by a
+ *   scrollable list of per-block widgets (one auto-height textarea per '---------'-delimited
+ *   block, identical text, fully editable). Storage is UNCHANGED (one long text, joined/split
+ *   via the shared break mask — no migration, existing sessions intact). Each widget has 📋 copy
+ *   (whole block) and ✕ delete (confirmed, saved immediately). Clearing a widget's text deletes
+ *   that block on save (empty blocks drop on rejoin). The editor opens scrolled to the newest
+ *   block. Delete-most-recent / Copy-last / prune / 🗂 drop-up all work unchanged, now through
+ *   the widget list.
+ * - 🗂 drop-up click now jumps via element.scrollIntoView + select-all-in-widget + a brief blue
+ *   outline flash — the textarea scrollTop/caret geometry math (three generations of scroll
+ *   glitches) is gone for good.
+ * - ACTIVE pill shows a DASHED red border when the selected session does NOT match the current
+ *   conversation (solid red when it matches). Verdict tracked from updateMatchBorder; the pill
+ *   re-renders only on verdict changes. Frozen ❄️ unaffected (nothing is ever deselected).
+ *
  * v3.307 Changes:
  * - LAST-line preview row, definitive algorithm (Dan's spec): the row now measures the actual
  *   container width at render time (~6.3px/char). CASE A — the true last line FITS: shown in
@@ -1262,7 +1278,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.307',
+  VERSION: '3.308',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3005,9 +3021,9 @@
     var wrapper = document.createElement('span');
     wrapper.className = 'refine-toggle-square-wrapper';
     wrapper.style.cssText = 'display:inline-block; position:relative; '
-      + (isActive ? 'border:6px solid #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
+      + (isActive ? 'border:6px ' + (lastMatchVerdict === 'nomatch' ? 'dashed' : 'solid') + ' #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
       + 'cursor:pointer;';
-    wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
+    wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + (isActive && lastMatchVerdict === 'nomatch' ? ' — DASHED border: no match with the current conversation' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
     wrapper.onclick = function() {
       refineManualSelectSlot(slotIdx);
     };
@@ -3558,6 +3574,44 @@
     return { text: lines.slice(s, e).join('\n'), startIdx: s, endIdx: e, total: total };
   }
 
+  /** (v3.308) Split a context slot text into its block strings (oldest → newest), via the shared
+   *  break mask. Edge blanks trimmed per block; a trailing break does not yield an empty tail
+   *  block; an empty text yields one empty block (so the editor always has a widget). */
+  function refineSplitBlocks(text) {
+    var blocks = [];
+    var orig = (typeof text === 'string') ? text : '';
+    var lines = orig.split('\n');
+    var breakMask = refineBlockBreakMask(lines);
+    var start = 0;
+    for (var i = 0; i <= lines.length; i++) {
+      if (i === lines.length || breakMask[i]) {
+        var a = start, b = i;
+        while (a < b && lines[a].trim() === '') a++;
+        while (b > a && lines[b - 1].trim() === '') b--;
+        blocks.push(lines.slice(a, b).join('\n'));
+        start = i + 1;
+      }
+    }
+    while (blocks.length > 1 && !blocks[blocks.length - 1].trim()) blocks.pop();
+    while (blocks.length > 1 && !blocks[0].trim()) blocks.shift();
+    if (!blocks.length) blocks.push('');
+    return blocks;
+  }
+
+  /** (v3.308) Rejoin block strings with the canonical 9-hyphen delimiter. Blank-only blocks are
+   *  dropped (clearing a widget's text deletes that block on save); edge blank LINES are trimmed
+   *  (leading indentation of real content lines is preserved). */
+  function refineJoinBlocks(blocks) {
+    var kept = [];
+    for (var i = 0; i < blocks.length; i++) {
+      var ls = (blocks[i] || '').split('\n');
+      while (ls.length && ls[0].trim() === '') ls.shift();
+      while (ls.length && ls[ls.length - 1].trim() === '') ls.pop();
+      if (ls.length) kept.push(ls.join('\n'));
+    }
+    return kept.join('\n\n---------\n\n');
+  }
+
   function refinePruneSlotToHalf(text) {
     const orig = (typeof text === 'string') ? text : '';
     if (!orig.trim()) return { text: orig, changed: false, removed: 0 };
@@ -3908,6 +3962,7 @@
   }
 
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
+  var lastMatchVerdict = 'indeterminate';   // (v3.308) latest updateMatchBorder verdict — drives the active pill's solid-vs-dashed red border
 
   /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
    *  'match-current' → up-to-date match (last block == most recent turn): yellow border + a yellow
@@ -4007,6 +4062,7 @@
       label.style.color = '#e6c200';
       lastMatchTurnIdx = -1;
       refineUpdateAppendBtnState('indeterminate');
+      if (lastMatchVerdict !== 'indeterminate') { lastMatchVerdict = 'indeterminate'; try { refineRenderToggleRow(); } catch (e) {} }
       window.__chatMatchDebug = { session: sessionNorm, turns: 0, match: false, turnIdx: -1, ts: Date.now() };
       return;
     }
@@ -4028,11 +4084,13 @@
         ind.textContent = '';
         ind.style.cssText = RAIL + ' background:repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px);';
         refineUpdateAppendBtnState('match-current');
+        if (lastMatchVerdict !== 'match-current') { lastMatchVerdict = 'match-current'; try { refineRenderToggleRow(); } catch (e) {} }
       } else {
         // Older turn: dark rail with the turn number centered in it.
         ind.textContent = String(matchTurnIdx);
         ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
         refineUpdateAppendBtnState('match');
+        if (lastMatchVerdict !== 'match') { lastMatchVerdict = 'match'; try { refineRenderToggleRow(); } catch (e) {} }
       }
     } else {
       // No match: gray dashed rails + blue text.
@@ -4041,6 +4099,7 @@
       right.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
       label.style.color = '#4da3ff';
       refineUpdateAppendBtnState('nomatch');
+      if (lastMatchVerdict !== 'nomatch') { lastMatchVerdict = 'nomatch'; try { refineRenderToggleRow(); } catch (e) {} }
     }
   }
 
@@ -4716,8 +4775,10 @@
     const ribbon = document.createElement('div');
     ribbon.style.cssText = 'display:flex; flex-direction:column; gap:4px; margin-bottom:10px;';
 
-    const ta = document.createElement('textarea');
-    ta.style.cssText = 'flex:1 1 auto; min-height:300px; width:100%; box-sizing:border-box; resize:vertical; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:10px; border-radius:6px; border:1px solid #444; background:#111; color:#eee;';
+    // (v3.308) Physical block widgets: a scrollable container of per-block editors replaces the
+    // single textarea. Text is still STORED as one string with '---------' delimiters.
+    const blocksContainer = document.createElement('div');
+    blocksContainer.style.cssText = 'flex:1 1 auto; min-height:300px; overflow-y:auto; overflow-x:hidden; border:1px solid #444; border-radius:6px; background:#0d0d0d; padding:6px;';
 
     const editingHdr = document.createElement('div');
     editingHdr.style.cssText = 'font-size:18px; line-height:1.25; font-weight:600; color:#4cd964; opacity:1; margin:2px 0 6px;';
@@ -4728,8 +4789,9 @@
     // Returns true when the text actually changed (Save uses this to decide whether the toggle row
     // needs a recency sync — selection alone no longer evicts a primary pill).
     const stashCurrentText = () => {
-      if (slots[editingIndex] && slots[editingIndex].text !== ta.value) {
-        slots[editingIndex].text = ta.value;
+      const joined = getAllText();
+      if (slots[editingIndex] && slots[editingIndex].text !== joined) {
+        slots[editingIndex].text = joined;
         refineTouchSlot(slots, editingIndex);
         return true;
       }
@@ -4776,7 +4838,7 @@
           e.stopPropagation();
           // Source text: the live textarea if we're editing THIS slot; otherwise the stored slot text.
           const isEditingThis = (i === editingIndex);
-          const before = isEditingThis ? ta.value : (slots[i].text || '');
+          const before = isEditingThis ? getAllText() : (slots[i].text || '');
           const res = refinePruneSlotToHalf(before);
           if (!res.changed) {
             updateStatus('✂½ Slot “' + slot.name + '”: no section break to prune at', 'error');
@@ -4787,7 +4849,7 @@
             + ' chars). Saved immediately.')) return;
           slots[i].text = res.text;
           refineTouchSlot(slots, i);
-          if (isEditingThis) ta.value = res.text;   // reflect in the open editor
+          if (isEditingThis) rebuildBlocksEditor();   // reflect in the open editor
           refineSaveContexts(slots);
           refineSyncToggleSlots(i);
           refineRenderToggleRow();
@@ -4815,7 +4877,7 @@
             stashCurrentText();               // preserve unsaved edits of the slot we were on
             editingIndex = i;
             refineManualSelectSlot(i);        // makes it active + visible (shared manual-select path)
-            ta.value = slots[i].text || '';
+            rebuildBlocksEditor();
             editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
             refineSaveContexts(slots);
             paintFullName();
@@ -4831,7 +4893,7 @@
           stashCurrentText();
           editingIndex = i;
           refineManualSelectSlot(i);        // single-click activates (shared manual-select path)
-          ta.value = slots[i].text || '';
+          rebuildBlocksEditor();
           editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[i].name) + '</b> (slot ' + (i + 1) + ')';
           paintFullName();
           paintRibbon();
@@ -4845,13 +4907,12 @@
     // Update the thin full-name row to show the slot currently being edited.
     function paintFullName(){
       fullNameLeft.innerHTML = '<span style="opacity:0.6;">slot ' + (editingIndex + 1) + ':</span> <b>' + escapeAttr(slots[editingIndex].name) + '</b>';
-      // Live count reflects what's in the textarea right now (unsaved edits included).
-      const n = (ta.value || '').length;
+      // Live count reflects what's in the block widgets right now (unsaved edits included).
+      const n = getAllText().length;
       charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's');
       paintTailPreview();   // (v3.297) refresh the fine-print block preview on every repaint
     }
-    // Keep the count live as the user types (and the fine-print block preview, v3.297).
-    ta.addEventListener('input', function(){ const n = (ta.value || '').length; charCountRight.textContent = n.toLocaleString() + ' char' + (n === 1 ? '' : 's'); paintTailPreview(); });
+    // (v3.308) Live count + preview updates are driven by per-block-widget input listeners (mkBlockWidget).
 
     // ----- Fine-print first/last-line preview of the most recent block (v3.297) -----
     // Mirrors the main widget's yellow tail preview, but for the slot being EDITED here (live
@@ -4860,7 +4921,7 @@
     tailRow.style.cssText = 'font-size:12px; line-height:1.4; color:#e6c200; overflow:hidden; margin:0 0 4px;';
     function paintTailPreview() {
       tailRow.textContent = '';
-      var text = ta.value || '';
+      var text = getAllText();
       if (!text.trim()) return;
       var s = text.replace(/\s+$/, '');
       var lines = s.split('\n');
@@ -4905,7 +4966,7 @@
     function buildBlocksPopup() {
       blocksPopup.innerHTML = '';
       var pw = Math.max(120, blocksPopup.clientWidth - 64);   // (v3.307) measured row width (popup is shown BEFORE this runs)
-      var allText = ta.value || '';
+      var allText = getAllText();
       var probe = refineGetBlockFromEnd(allText, 0);
       var total = probe ? probe.total : 0;
       if (!total || !allText.trim()) {
@@ -4945,16 +5006,16 @@
           item.appendChild(prev);
           item.onclick = function() {
             copyTextSmart(blk.text, '📋 Copied block ' + b + ' back (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
-            var startOff = 0;
-            for (var li = 0; li < blk.startIdx; li++) startOff += allLines[li].length + 1;
-            var endOff = startOff + blk.text.length;
-            ta.focus();
-            try { ta.setSelectionRange(startOff, endOff, 'backward'); } catch (e) { ta.setSelectionRange(startOff, endOff); }
-            // (v3.304) Best-effort scroll: caret scroll-into-view is unreliable for textareas, so
-            // compute scrollTop directly from the block's line index.
-            var cs = window.getComputedStyle(ta);
-            var lineH = parseFloat(cs.lineHeight) || ((parseFloat(cs.fontSize) || 13) * 1.45);
-            ta.scrollTop = Math.max(0, Math.round(blk.startIdx * lineH) - 24);
+            // (v3.308) Physical block widgets: jump straight to the widget — no geometry math.
+            var wi = widgets.length - 1 - b;
+            var w = widgets[wi];
+            if (w) {
+              w.wrap.scrollIntoView({ block: 'start' });
+              w.ta.focus();
+              try { w.ta.setSelectionRange(0, w.ta.value.length); } catch (e) {}
+              w.wrap.style.outline = '2px solid #4da3ff';
+              setTimeout(function() { w.wrap.style.outline = ''; }, 900);
+            }
             closeBlocksPopup();
           };
           blocksPopup.appendChild(item);
@@ -4966,8 +5027,74 @@
       if (blocksPopup.style.display !== 'none' && !blocksPopup.contains(e.target) && e.target !== blocksBtn) closeBlocksPopup();
     });
 
-    // Initialize on the active slot.
-    ta.value = slots[editingIndex].text || '';
+    // ----- Physical block widgets (v3.308) -----
+    // The slot's text is still STORED as one long string with '---------' delimiters; the editor
+    // is a scrollable list of per-block widgets (each an auto-height textarea with ✕ delete and
+    // 📋 copy). Jump-to-block is element.scrollIntoView — no textarea geometry math at all.
+    var widgets = [];
+    function getAllText() { return refineJoinBlocks(widgets.map(function(w) { return w.ta.value; })); }
+    function mkBlockWidget(text, idx) {
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'position:relative; margin-bottom:6px; border:1px solid #454545; border-radius:6px; background:#111;';
+      var bta = document.createElement('textarea');
+      bta.value = text;
+      bta.spellcheck = false;
+      bta.style.cssText = 'display:block; width:100%; box-sizing:border-box; resize:none; overflow:hidden; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:13px; line-height:1.45; padding:8px 26px 8px 10px; border:none; border-radius:6px; background:transparent; color:#eee;';
+      var autoh = function() { bta.style.height = 'auto'; bta.style.height = Math.max(36, bta.scrollHeight + 2) + 'px'; };
+      bta.addEventListener('input', function() { autoh(); paintFullName(); paintTailPreview(); });
+      var delBtn = document.createElement('span');
+      delBtn.textContent = '✕';
+      delBtn.title = 'Delete this block (saved immediately)';
+      delBtn.style.cssText = 'position:absolute; top:3px; right:20px; font-size:11px; opacity:0.55; cursor:pointer; color:#ffb3b3; z-index:2;';
+      delBtn.onmouseenter = function() { delBtn.style.opacity = '1'; };
+      delBtn.onmouseleave = function() { delBtn.style.opacity = '0.55'; };
+      delBtn.onclick = function(e) {
+        e.stopPropagation();
+        if (!confirm('Delete this block (' + bta.value.length.toLocaleString() + ' chars) from slot “' + slots[editingIndex].name + '”? Saved immediately.')) return;
+        widgets.splice(idx, 1);
+        wrap.remove();
+        const joined = getAllText();
+        slots[editingIndex].text = joined;
+        refineTouchSlot(slots, editingIndex);
+        refineSaveContexts(slots);
+        refineSyncToggleSlots(editingIndex);
+        refineRenderToggleRow();
+        refineUpdateContextButtonLabel();
+        paintFullName();
+        paintRibbon();
+        updateStatus('✕ Deleted block ' + (idx + 1) + ' from “' + slots[editingIndex].name + '” (now ' + joined.length.toLocaleString() + ' chars)', 'success');
+        rebuildBlocksEditor();   // keep every widget's captured idx correct
+      };
+      var copyBtn = document.createElement('span');
+      copyBtn.textContent = '📋';
+      copyBtn.title = 'Copy this whole block';
+      copyBtn.style.cssText = 'position:absolute; top:3px; right:6px; font-size:11px; opacity:0.55; cursor:pointer; z-index:2;';
+      copyBtn.onmouseenter = function() { copyBtn.style.opacity = '1'; };
+      copyBtn.onmouseleave = function() { copyBtn.style.opacity = '0.55'; };
+      copyBtn.onclick = function(e) {
+        e.stopPropagation();
+        copyTextSmart(bta.value, '📋 Copied block ' + (idx + 1) + ' of ' + widgets.length + ' (' + bta.value.length.toLocaleString() + ' chars)');
+      };
+      wrap.appendChild(bta);
+      wrap.appendChild(delBtn);
+      wrap.appendChild(copyBtn);
+      setTimeout(autoh, 0);
+      return { wrap: wrap, ta: bta };
+    }
+    function rebuildBlocksEditor() {
+      widgets = [];
+      blocksContainer.innerHTML = '';
+      var parts = refineSplitBlocks((slots[editingIndex] && slots[editingIndex].text) || '');
+      parts.forEach(function(p, i) {
+        var w = mkBlockWidget(p, i);
+        widgets.push(w);
+        blocksContainer.appendChild(w.wrap);
+      });
+      blocksContainer.scrollTop = blocksContainer.scrollHeight;   // newest block at the bottom
+    }
+
+    // Initialize on the active slot: build the physical block widgets (v3.308).
+    rebuildBlocksEditor();
     editingHdr.innerHTML = 'Editing + ACTIVE: <b>' + escapeAttr(slots[editingIndex].name) + '</b> (slot ' + (editingIndex + 1) + ')';
     paintFullName();
     paintRibbon();
@@ -4995,7 +5122,7 @@
     const copyBlock = mkBtn('📋 Copy last block', '#3a6a3a');
     copyBlock.title = "Copy the most recent block (everything after the last '---------' break) to the clipboard.";
     copyBlock.onclick = () => {
-      const blk = refineGetBlockFromEnd(ta.value, 0);
+      const blk = refineGetBlockFromEnd(getAllText(), 0);
       if (!blk || !blk.text.trim()) { updateStatus('📋 No block to copy in “' + slots[editingIndex].name + '”', 'error'); return; }
       copyTextSmart(blk.text, '📋 Copied most recent block (' + blk.text.length.toLocaleString() + ' chars) from “' + slots[editingIndex].name + '”');
     };
@@ -5004,10 +5131,10 @@
     const delBlock = mkBtn('🗑 Delete most recent block', '#8a3a3a');
     delBlock.title = "Delete the most recently appended block (everything after the last '---------' break) from the slot being edited. Click again to delete older blocks.";
     delBlock.onclick = () => {
-      const res = refineDeleteLastBlock(ta.value);
+      const res = refineDeleteLastBlock(getAllText());
       if (!res.changed) { updateStatus('🗑 “' + slots[editingIndex].name + '” is already empty', 'error'); return; }
-      ta.value = res.text;
       slots[editingIndex].text = res.text;
+      rebuildBlocksEditor();
       refineTouchSlot(slots, editingIndex);
       refineSaveContexts(slots);
       refineSyncToggleSlots(editingIndex);
@@ -5023,7 +5150,7 @@
     btnRow.appendChild(cancel);
     btnRow.appendChild(save);
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(tailRow); box.appendChild(ta); box.appendChild(btnRow); box.appendChild(blocksPopup);
+    box.appendChild(h); box.appendChild(sub); box.appendChild(fullNameRow); box.appendChild(ribbon); box.appendChild(editingHdr); box.appendChild(tailRow); box.appendChild(blocksContainer); box.appendChild(btnRow); box.appendChild(blocksPopup);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
     // ESC closes WITHOUT saving. Use CAPTURE phase + stopPropagation so the page/TypingMind can't
@@ -5033,7 +5160,7 @@
     document.addEventListener('keydown', esc, true);
     overlay.addEventListener('keydown', function(e){ if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); closeModal(); document.removeEventListener('keydown', esc, true); } });
     document.body.appendChild(overlay);
-    ta.focus();
+    if (widgets.length) widgets[widgets.length - 1].ta.focus();
   }
 
   // @carto-group id=client-group-6 label="Client group 6"
