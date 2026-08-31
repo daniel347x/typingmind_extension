@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.313 Changes:
+ * - LOAD GLIMPSE session-ID override in session matching: when the current conversation's FIRST
+ *   visible turn is a 'Load GLIMPSE / Session ID: <8-char hash>' message (Dan's universal
+ *   conversation initializer) and some context session's FIRST block carries the same tight
+ *   signature with the SAME hash, that session ALWAYS wins — regardless of aggregate scores.
+ *   Rationale: a brand-new conversation has at most ~2 matchable turns and can never outscore an
+ *   established session's aggregate, yet it is UNIQUELY identified by the session ID hash
+ *   (normalized key 'loadglimpsessionid<hash>' — whitespace/case/colon independent by
+ *   construction; only the beginning of the turn/block is matched, anything after the hash is
+ *   ignored). If the true first turn is scrolled out of the DOM, the override simply doesn't
+ *   fire and the aggregate decides, exactly as intended.
+ *
  * v3.312 Changes:
  * - FIX (run-on between prepended context and the true last line): the join space is now a
  *   NON-BREAKING space (\u00A0) on both rows. A regular trailing space at a bidi-isolate
@@ -1317,7 +1329,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.312',
+  VERSION: '3.313',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4321,6 +4333,23 @@
     return { matchIdx: bestIdx, matchedSessions: matchedSessions, strengths: strengths, aggregates: aggregates };
   }
 
+  /** (v3.313) The 'Load GLIMPSE / Session ID: <8-char hash>' tight signature on a NORMALIZED
+   *  string: 'loadglimpsessionid' + 8 alnum chars at the very START. Whitespace/case/colon
+   *  independent by construction (normalization strips all three). Returns the hash or null. */
+  function refineGlimpseSessionPrefix(norm) {
+    var m = /^loadglimpsessionid([a-z0-9]{8})/.exec(norm || '');
+    return m ? m[1] : null;
+  }
+
+  /** (v3.313) Normalized comparison key for the FIRST block of a context text — the block the
+   *  Load GLIMPSE signature must live in for the override to fire (Dan: 'and this is critical —
+   *  the FIRST block in the history for the context session'). */
+  function getFirstBlockNormForText(text) {
+    var blocks = refineSplitBlocks(text);
+    if (!blocks.length || !blocks[0].trim()) return '';
+    return refineNormalizeBlockLines(blocks[0].split('\n'));
+  }
+
   /** (v3.310) Update the current conversation's match IDENTITY (the aggregate winner),
    *  re-rendering the pill row when it changes — the active pill's solid-vs-dashed red border
    *  tracks this (solid = active session IS the conversation's match). */
@@ -4339,6 +4368,21 @@
   function refineAutoSelectMatch() {
     var turnNorms = getRecentChatTurnNorms(20, 4);   // (v3.303) deeper march: more history for the aggregate match (DOM permitting)
     var m = refineComputeMatches(turnNorms);
+    // (v3.313) LOAD GLIMPSE session-ID override: if the conversation's FIRST visible turn is a
+    // 'Load GLIMPSE / Session ID: <hash>' message and some session's FIRST block carries the
+    // same tight signature + hash, that session ALWAYS wins — a brand-new conversation has at
+    // most ~2 matchable turns and can never outscore an established session's aggregate, even
+    // though it is unambiguously identified by the unique session ID.
+    var headHash = refineGlimpseSessionPrefix(getChatSignature());
+    if (headHash) {
+      var ctxs = refineGetContexts();
+      for (var gi = 0; gi < ctxs.length; gi++) {
+        if (refineGlimpseSessionPrefix(getFirstBlockNormForText((ctxs[gi] && ctxs[gi].text) || '')) === headHash) {
+          m = { matchIdx: gi, matchedSessions: [gi], strengths: m.strengths, aggregates: m.aggregates };
+          break;
+        }
+      }
+    }
     if (refineFrozenAutoSelect) {
       setLastAutoMatchIdx(m.matchIdx);   // (v3.310) keep the identity current even while frozen (never acted on)
       updateMatchBorder();
