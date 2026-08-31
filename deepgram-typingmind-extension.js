@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.307 Changes:
+ * - LAST-line preview row, definitive algorithm (Dan's spec): the row now measures the actual
+ *   container width at render time (~6.3px/char). CASE A — the true last line FITS: shown in
+ *   full, bright, never cropped; preceding context fills the remainder to its left and clips at
+ *   the left only (rtl + text-align:left). CASE B — the true last line ALONE overflows (a whole
+ *   paragraph on one line): context is dropped entirely and the line renders LEFT-justified
+ *   from its first character, bright, cropping at the RIGHT with an ellipsis — the BEGINNING of
+ *   the last paragraph is always what you see, matching how the eye locates it in the chat.
+ *   (v3.306's residual glitch: a paragraph-long last line was mid-sliced at 140 chars and
+ *   right-pinned, so you saw its middle, not its beginning.)
+ * - First-line color pushed ~2-3 bumps brighter/redder: main #ff7a00, context #e88000 — same
+ *   perceived brightness as the last line's yellow, clearly redder hue.
+ * - Blocks drop-up now builds AFTER the popup is shown so its row widths are measurable too.
+ *
  * v3.306 Changes:
  * - LAST-line preview row: the true last line is now PINNED to the right edge and can never be
  *   right-cropped. The row is a self-cropping block with direction:rtl + text-align:left — short
@@ -1248,7 +1262,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.306',
+  VERSION: '3.307',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3470,32 +3484,46 @@
    *  LEFT only — the true last line is never right-cropped. Children carry direction:ltr +
    *  unicode-bidi:isolate so their text is not reversed; in rtl flow the first appended child
    *  paints rightmost, so LAST rows append main BEFORE context. */
-  function refineEdgeRowEl(main, ctxs, ctxFirst) {
-    var TOTAL = 240;     // sanity cap — the CSS ellipsis does the real width fitting
-    var MAIN_CAP = 140;
+  function refineEdgeRowEl(main, ctxs, ctxFirst, widthHintPx) {
     var row = document.createElement('div');
     row.style.cssText = 'display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;'
       + (ctxFirst ? ' direction:rtl; text-align:left;' : '');
-    var mainColor = ctxFirst ? '#ffd400' : '#ffab00';
-    var ctxColor = ctxFirst ? '#e6c200' : '#e89d00';
+    var mainColor = ctxFirst ? '#ffd400' : '#ff7a00';
+    var ctxColor = ctxFirst ? '#e6c200' : '#e88000';
     var mkMain = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + mainColor + '; font-weight:600; direction:ltr; unicode-bidi:isolate;'; sp.textContent = txt; return sp; };
     var mkCtx = function(txt) { var sp = document.createElement('span'); sp.style.cssText = 'white-space:nowrap; color:' + ctxColor + '; opacity:0.75; direction:ltr; unicode-bidi:isolate;'; sp.textContent = txt; return sp; };
     var ctxJoined = (ctxs && ctxs.length) ? ctxs.join(' ') : '';
-    if (!ctxJoined) {
-      var lone = (main || '').length > TOTAL ? main.slice(0, TOTAL) + '\u2026' : (main || '');
-      row.appendChild(mkMain(lone));
-      return row;
-    }
-    var mainT = (main || '').length > MAIN_CAP ? main.slice(0, MAIN_CAP) + '\u2026' : (main || '');
-    var budget = Math.max(24, TOTAL - mainT.length - 3);
-    if (ctxFirst) {
-      var cropped = ctxJoined.length > budget ? ctxJoined.slice(-budget) : ctxJoined;
-      row.appendChild(mkMain(mainT));                       // rtl flow: paints rightmost
-      row.appendChild(mkCtx('\u2026' + cropped + ' '));      // extends leftward, clips at the left
-    } else {
+    if (!ctxFirst) {
+      // FIRST row (Dan: 'perfect' — unchanged): true first line bright, following context dim
+      // with a trailing ellipsis; CSS crops the right at the real width.
+      if (!ctxJoined) {
+        var lone = (main || '').length > 240 ? main.slice(0, 240) + '\u2026' : (main || '');
+        row.appendChild(mkMain(lone));
+        return row;
+      }
+      var mainT = (main || '').length > 140 ? main.slice(0, 140) + '\u2026' : (main || '');
+      var budget = Math.max(24, 240 - mainT.length - 3);
       var cropped2 = ctxJoined.length > budget ? ctxJoined.slice(0, budget) : ctxJoined;
       row.appendChild(mkMain(mainT));
       row.appendChild(mkCtx(' ' + cropped2 + '\u2026'));
+      return row;
+    }
+    // LAST row (v3.307, Dan's definitive algorithm): estimate the row's character capacity from
+    // the MEASURED container width, then split cases on whether the true last line itself fits.
+    var estChars = Math.max(20, Math.floor(((widthHintPx || 620) - 10) / 6.3));
+    if ((main || '').length <= estChars) {
+      // CASE A: the true last line FITS ENTIRELY — show it in full (bright, never cropped) and
+      // fill the remaining width with preceding context to its left; the rtl flow pins the true
+      // line to the right and CSS clips any context overflow at the LEFT only.
+      row.appendChild(mkMain(main || ''));
+      if (ctxJoined) row.appendChild(mkCtx(ctxJoined.slice(-240) + ' '));
+    } else {
+      // CASE B: the true last line ALONE overflows (a whole paragraph on one line) — drop ALL
+      // context and render ONLY the line, LEFT-justified from its first character (bright), ltr;
+      // CSS crops the RIGHT with an ellipsis. The BEGINNING of the last paragraph is always what
+      // you see — matching how the eye locates it in the chat (Dan's spec).
+      row.style.direction = 'ltr';
+      row.appendChild(mkMain((main || '').slice(0, 400)));
     }
     return row;
   }
@@ -3594,13 +3622,14 @@
       return d;
     };
     var sameRow = edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' ');
+    var rowW = el.clientWidth;   // (v3.307) measured width → char capacity for the last-row case split
     if (sameRow) {
       el.appendChild(mkDots());
-      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true, rowW));
     } else {
-      el.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
+      el.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false, rowW));
       el.appendChild(mkDots());
-      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
+      el.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true, rowW));
     }
   }
 
@@ -4850,13 +4879,14 @@
       if (!edge) return;
       var mkDots = function() { var d = document.createElement('div'); d.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;'; d.textContent = '\u2026'; return d; };
       var sameRow = edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' ');
+      var rowW = tailRow.clientWidth;   // (v3.307) measured width → char capacity for the last-row case split
       if (sameRow) {
         tailRow.appendChild(mkDots());
-        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true, rowW));
       } else {
-        tailRow.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
+        tailRow.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false, rowW));
         tailRow.appendChild(mkDots());
-        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
+        tailRow.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true, rowW));
       }
     }
 
@@ -4874,6 +4904,7 @@
     function closeBlocksPopup() { blocksPopup.style.display = 'none'; }
     function buildBlocksPopup() {
       blocksPopup.innerHTML = '';
+      var pw = Math.max(120, blocksPopup.clientWidth - 64);   // (v3.307) measured row width (popup is shown BEFORE this runs)
       var allText = ta.value || '';
       var probe = refineGetBlockFromEnd(allText, 0);
       var total = probe ? probe.total : 0;
@@ -4901,13 +4932,13 @@
           var prev = document.createElement('span');
           prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#e6c200;';
           if (edge) {
-            prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false));
+            prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctxs, false, pw));
             if (!(edge.first.main === edge.last.main && edge.first.ctxs.join(' ') === edge.last.ctxs.join(' '))) {
               var dots = document.createElement('div');
               dots.style.cssText = 'font-size:8px; line-height:0.8; opacity:0.45;';
               dots.textContent = '\u2026';
               prev.appendChild(dots);
-              prev.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true));
+              prev.appendChild(refineEdgeRowEl(edge.last.main, edge.last.ctxs, true, pw));
             }
           } else { prev.textContent = '(empty block)'; prev.style.opacity = '0.6'; }
           item.appendChild(badge);
@@ -4957,7 +4988,8 @@
     const blocksBtn = mkBtn('🗂 Blocks ▲', '#3a5a8a');
     blocksBtn.title = 'Show every block in this slot (newest first, 0 = most recent) with its smart first/last-line preview. Click one to copy it and select + scroll to it in the text.';
     blocksBtn.onclick = () => {
-      if (blocksPopup.style.display === 'none') { buildBlocksPopup(); blocksPopup.style.display = 'block'; }
+      // (v3.307) show FIRST, then build — the item rows measure the popup's actual width.
+      if (blocksPopup.style.display === 'none') { blocksPopup.style.display = 'block'; buildBlocksPopup(); }
       else closeBlocksPopup();
     };
     const copyBlock = mkBtn('📋 Copy last block', '#3a6a3a');
