@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.303 Changes:
+ * - MATCHING REWORK (history-aggregate algorithm): session⇄conversation matching no longer
+ *   judges on the last block alone. refineComputeMatches now walks EVERY block of each session
+ *   (same normalized extraction as the last-block path) against every collected chat turn,
+ *   summing each block's best match strength (min of the two lengths; blocks under 10 normalized
+ *   chars are skipped as too coincidental). Winner = highest aggregate; exact ties fall back to
+ *   the previous last-block strength comparison. Fixes the constant false duplicates when one
+ *   session's output is pasted into another session's input (agents talking across sessions):
+ *   the foreign session earns a stray point or two, the owning session scores on nearly every
+ *   block. The duplicate warning's 5x dominance suppression now uses aggregates too, and the
+ *   turn march deepened 10 → 20 turns for wider history coverage (DOM permitting). Vise rails /
+ *   turn indicator keep last-block semantics (they answer the different 'am I current' question).
+ * - __debugAllSessions now prints the per-session history aggregates + winner.
+ *
  * v3.302 Changes:
  * - Default transcript height 740 → 725 px (another 15, per request); expanded 280 → 265.
  *   One-time transcript_height_reset_v3302 stanza included.
@@ -1200,7 +1214,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.302',
+  VERSION: '3.303',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3584,24 +3598,41 @@
     for (var i = lines.length - 2; i >= 0; i--) {
       if (breakMask[i]) { blockStart = i + 1; break; }
     }
-    // Strip leading ordered-list markers ('1. ', '16. ') from each line before normalizing. A copied
-    // turn includes the rendered list numbers; the chat DOM carries no such text (we inject it on the
-    // chat side too). Stripping here keeps session<->chat normalization aligned in both directions.
-    // (v3.278) Tolerate leading emphasis ('**1. ', '__2. ') — a bold-numbered line renders in the chat
-    // DOM with the marker as literal text inside <strong>, which the v3.277 chat-side strip removes;
-    // the session side must strip it too or the keys diverge by exactly the marker digits.
-    var blockLines = lines.slice(blockStart).map(function(l) {
-      // (v3.279) Collapse markdown links/images to their VISIBLE text first: '[text](url)' -> 'text'.
-      // The chat DOM renders only the link text (the URL is in the href attribute, never walked), so
-      // the session side must drop the '(url)' part too — otherwise link-dense blocks (Sources
-      // sections) diverge by every URL. Bare URLs are left alone (the DOM keeps them as text too).
+    return refineNormalizeBlockLines(lines.slice(blockStart));
+  }
+
+  /** (v3.303) Normalize one block's lines to its comparison key: collapse markdown links/images
+   *  to their VISIBLE text ('[text](url)' -> 'text', v3.279), then strip leading ordered-list /
+   *  heading markers per line ('1. ', '**2. ', '## 1. ', v3.277/278/281) — the chat side strips
+   *  the same markers, so session<->chat keys stay aligned. */
+  function refineNormalizeBlockLines(blockLines) {
+    var mapped = blockLines.map(function(l) {
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
-      // (v3.281) Also tolerate leading HEADING markers ('## 1. Foo'): the chat DOM consumes '##'
-      // into the <h2> tag so its text starts with a bare '1. ' which the chat side strips — the
-      // session side must strip the same marker or numbered headings diverge by exactly the digit.
       return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
     });
-    return normalizeForChatMatch(blockLines.join(' '));
+    return normalizeForChatMatch(mapped.join(' '));
+  }
+
+  /** (v3.303) Normalized comparison keys for EVERY block in a context text, oldest → newest —
+   *  the same per-block extraction as the last-block path, via the shared break mask. Empty
+   *  blocks yield '' so indexing stays aligned with the break structure. */
+  function getAllBlockNormsForText(text) {
+    var norms = [];
+    if (!text || !text.trim()) return norms;
+    var s = text.replace(/\s+$/, '');
+    var lines = s.split('\n');
+    var breakMask = refineBlockBreakMask(lines);
+    var start = 0;
+    for (var i = 0; i <= lines.length; i++) {
+      if (i === lines.length || breakMask[i]) {
+        var a = start, b = i;
+        while (a < b && lines[a].trim() === '') a++;
+        while (b > a && lines[b - 1].trim() === '') b--;
+        norms.push(a < b ? refineNormalizeBlockLines(lines.slice(a, b)) : '');
+        start = i + 1;
+      }
+    }
+    return norms;
   }
 
   /** The last '---'-delimited block of the active context session, normalized for comparison. */
@@ -3740,7 +3771,9 @@
   /** Show/hide the duplicate-session warning bar. v3.291: includes match strength per session
    *  so a weak coincidental match (6 chars) is distinguishable from a genuine one (707 chars).
    *  v3.294: dominance-ratio suppression — when the strongest match outweighs the runner-up by
-   *  >= 5x, the match is treated as unambiguous and the warning is NOT shown. */
+   *  >= 5x, the match is treated as unambiguous and the warning is NOT shown.
+   *  v3.303: dominance + display now use HISTORY-AGGREGATE scores (matched blocks across the
+   *  whole session history), not just the last block. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.updateDuplicateWarning-3gr0,
   //   role=__lambdao_1.updateDuplicateWarning,
@@ -3748,24 +3781,27 @@
   //   kind=ast,
   //   comment=Session matching subsystem entry points (v3.294 curation),
   // ]
-  function updateDuplicateWarning(matchedSessions, strengths, matchIdx) {
+  function updateDuplicateWarning(matchedSessions, strengths, matchIdx, aggregates) {
     var el = document.getElementById('deepgram-refine-duplicate-warning');
     if (!el) return;
     if (!matchedSessions || matchedSessions.length <= 1) { el.style.display = 'none'; return; }
-    if (strengths) {
+    // (v3.303) Dominance is judged on HISTORY-AGGREGATE scores when available — a cross-pasted
+    // block gives the foreign session a stray point, the owning session a huge aggregate.
+    var scores = aggregates || strengths;
+    if (scores) {
       var DUP_DOMINANCE_RATIO = 5;  // strongest >= 5x runner-up => treat as a single unambiguous match
-      var ranked = matchedSessions.map(function(si) { return strengths[si] || 0; })
+      var ranked = matchedSessions.map(function(si) { return scores[si] || 0; })
         .sort(function(a, b) { return b - a; });
       var runnerUp = ranked.length > 1 ? ranked[1] : 0;
       if (ranked[0] >= DUP_DOMINANCE_RATIO * runnerUp) { el.style.display = 'none'; return; }
     }
     el.style.display = '';
-    if (strengths && matchIdx !== undefined && matchIdx !== -1) {
-      var curStr = (strengths[matchIdx] || 0).toLocaleString();
+    if (scores && matchIdx !== undefined && matchIdx !== -1) {
+      var curStr = (scores[matchIdx] || 0).toLocaleString();
       var otherStrs = matchedSessions.filter(function(si) { return si !== matchIdx; })
-        .map(function(si) { return (strengths[si] || 0).toLocaleString() + ' characters'; })
+        .map(function(si) { return (scores[si] || 0).toLocaleString(); })
         .join(', ');
-      el.textContent = '⚠ Duplicate sessions found with the same block (current matching block matches on ' + curStr + ' characters; other matching blocks: ' + otherStrs + ')';
+      el.textContent = '⚠ Duplicate sessions found with the same block (history-match score: current ' + curStr + '; others: ' + otherStrs + ')';
     } else {
       el.textContent = '⚠ Duplicate sessions found with the same block';
     }
@@ -3961,6 +3997,8 @@
       }
       if (!matched) console.log('[debugAllSessions] session', si, '(' + (ctx && ctx.name) + '): no match  blockLen:', block.length, '  blockHead:', block.slice(0, 80));
     });
+    var aggSummary = refineComputeMatches(turnNorms);
+    console.log('[debugAllSessions] history aggregates:', JSON.stringify(aggSummary.aggregates), '| winner (agg, then last-block):', aggSummary.matchIdx);
     return 'done';
   };
 
@@ -4036,9 +4074,13 @@
   }
 
   /** Pure scan: which sessions match any of the recent chat turns? No side effects.
-   *  v3.290: match-strength comparison — the STRONGEST match wins (not the first). Strength =
-   *  min(block.length, turnNorm.length): the length of the shorter side. A 6-char "deploy"
-   *  matching a 93-char block (strength 6) always loses to a genuine full-length match. */
+   *  v3.303: HISTORY-AGGREGATE matching — every session block is matched against every collected
+   *  turn; a block's contribution is its best match strength (min of the two lengths; blocks
+   *  under 10 normalized chars are skipped as too coincidental). Winner = highest aggregate;
+   *  exact ties fall back to the v3.290 last-block strength comparison. Fixes the constant false
+   *  duplicates when one session's blocks are pasted into another session's conversation: the
+   *  foreign session scores a stray point or two, the owning session scores on nearly every
+   *  block. (v3.290: strength = min(block.length, turnNorm.length) — the shorter side.) */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.refineComputeMatches-0h9z,
   //   role=__lambdao_1.refineComputeMatches,
@@ -4048,22 +4090,42 @@
   // ]
   function refineComputeMatches(turnNorms) {
     var contexts = refineGetContexts();
-    var bestIdx = -1, bestStrength = 0;
+    var bestIdx = -1, bestAgg = 0, bestStrength = 0;
     var matchedSessions = [];
-    var strengths = {};   // v3.291: session index → best (max) match strength across all turns
-    for (var t = 0; t < turnNorms.length; t++) {
-      var chatNorm = turnNorms[t];
-      for (var i = 0; i < contexts.length; i++) {
-        var block = getLastBlockNormForText((contexts[i] && contexts[i].text) || '');
-        if (isSessionTurnMatch(block, chatNorm)) {
-          if (matchedSessions.indexOf(i) === -1) matchedSessions.push(i);
-          var strength = Math.min(block.length, chatNorm.length);
-          if (!strengths[i] || strength > strengths[i]) strengths[i] = strength;
-          if (strength > bestStrength) { bestStrength = strength; bestIdx = i; }
+    var strengths = {};    // session index → best LAST-BLOCK match strength (tie-break + report)
+    var aggregates = {};   // (v3.303) session index → aggregate match score over ALL blocks
+    for (var i = 0; i < contexts.length; i++) {
+      var ctxText = (contexts[i] && contexts[i].text) || '';
+      var lastBlock = getLastBlockNormForText(ctxText);
+      var bestLast = 0;
+      var agg = 0;
+      var norms = getAllBlockNormsForText(ctxText);
+      for (var b = 0; b < norms.length; b++) {
+        var bn = norms[b];
+        if (!bn || bn.length < 10) continue;   // (v3.303) tiny blocks are too coincidental to count
+        var blockBest = 0;
+        for (var t = 0; t < turnNorms.length; t++) {
+          var tn = turnNorms[t];
+          if (isSessionTurnMatch(bn, tn)) {
+            var st = Math.min(bn.length, tn.length);
+            if (st > blockBest) blockBest = st;
+          }
         }
+        agg += blockBest;
+        if (bn === lastBlock && blockBest > bestLast) bestLast = blockBest;
+      }
+      // A cross-pasted block earns a FOREIGN session at most a point or two; the session that
+      // OWNS the conversation scores on nearly every block (v3.303).
+      aggregates[i] = agg;
+      strengths[i] = bestLast;
+      if (agg > 0) matchedSessions.push(i);
+      // Winner: highest aggregate; exact aggregate ties fall back to last-block strength (the
+      // pre-v3.303 primary criterion), then lowest index (deterministic).
+      if (agg > bestAgg || (agg === bestAgg && agg > 0 && bestLast > bestStrength)) {
+        bestAgg = agg; bestStrength = bestLast; bestIdx = i;
       }
     }
-    return { matchIdx: bestIdx, matchedSessions: matchedSessions, strengths: strengths };
+    return { matchIdx: bestIdx, matchedSessions: matchedSessions, strengths: strengths, aggregates: aggregates };
   }
 
   /** Auto-select the session matching the current conversation (if any), and update the border. */
@@ -4075,11 +4137,11 @@
   //   comment=Session matching subsystem entry points (v3.294 curation),
   // ]
   function refineAutoSelectMatch() {
-    var turnNorms = getRecentChatTurnNorms(10, 4);
+    var turnNorms = getRecentChatTurnNorms(20, 4);   // (v3.303) deeper march: more history for the aggregate match (DOM permitting)
     var m = refineComputeMatches(turnNorms);
     if (refineFrozenAutoSelect) {
       updateMatchBorder();
-      updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx);
+      updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx, m.aggregates);
       return;
     }
     if (!turnNorms.length) {
@@ -4108,7 +4170,7 @@
       if (refineGetActiveConvoSlot() !== matchIdx) { refineSaveActiveConvoSlot(matchIdx); refineRenderToggleRow(); }
     }
     updateMatchBorder();
-    updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx);
+    updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx, m.aggregates);
   }
 
   /** Dim/restore the toggle pills and tail text while a match check is in progress. */
