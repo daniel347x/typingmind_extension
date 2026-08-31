@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.311 Changes:
+ * - FIX (Send/Ellipsis staying disabled after paste): the buttons' enabled state only re-evaluated
+ *   on real 'input' events, but PROGRAMMATIC transcript writes (📄 Paste MD, insertToChat,
+ *   clearTranscript, appendTranscript, Teams/doc annotations) never fire 'input' — so pasting
+ *   into a freshly-reloaded widget left Send + Ellipsis dead until a key was pressed, and clears
+ *   after Send left them stale-enabled on an empty box. The transcript textarea's 'value' setter
+ *   is now property-hooked (one choke point for every programmatic write, present and future),
+ *   plus a 'paste' listener for good measure.
+ *
  * v3.310 Changes:
  * - Context modal: new '🧹 Clear all blocks' button (leftmost in the button row) — wipes the slot
  *   being edited to a single empty block after a confirm. The brand-new-session initializer
@@ -1301,7 +1310,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.310',
+  VERSION: '3.311',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -8530,6 +8539,23 @@
     
     // Enable/disable buttons based on transcript content
     document.getElementById('deepgram-transcript').addEventListener('input', updateInsertButtonState);
+
+    // (v3.311) Also re-evaluate on EVERY PROGRAMMATIC write to the transcript — 📄 Paste MD,
+    // insertToChat, clearTranscript, appendTranscript, annotations, etc. never fire 'input', so
+    // pasting into a fresh widget left Send/Ellipsis dead until a keypress. One property hook on
+    // THIS textarea's value setter is the single choke point (no need to touch ~15 write sites).
+    (function() {
+      var el = document.getElementById('deepgram-transcript');
+      if (!el || el.__valueStateHooked) return;
+      var desc = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value');
+      Object.defineProperty(el, 'value', {
+        configurable: true,
+        get: desc.get,
+        set: function(v) { desc.set.call(this, v); try { updateInsertButtonState(); } catch (e) {} }
+      });
+      el.__valueStateHooked = true;
+      el.addEventListener('paste', function() { setTimeout(updateInsertButtonState, 0); });
+    })();
   
   // Reset auto-clipboard timer on any edit (bounce effect)
   document.getElementById('deepgram-transcript').addEventListener('input', resetAutoClipboardTimer);
