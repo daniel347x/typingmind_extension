@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.310 Changes:
+ * - Context modal: new '🧹 Clear all blocks' button (leftmost in the button row) — wipes the slot
+ *   being edited to a single empty block after a confirm. The brand-new-session initializer
+ *   (replaces select-all + delete from the single-textarea era).
+ * - FIX (dashed-vs-solid active pill divergence): the pill border now tracks match IDENTITY —
+ *   solid when the active session IS the aggregate-match winner for the current conversation,
+ *   dashed when it isn't (e.g. manually frozen onto a foreign session). Previously it tracked
+ *   the last-block 'am I current' verdict, so a CORRECTLY auto-selected session showed dashed
+ *   whenever its last append had scrolled out of the visible turn window. The frozen branch now
+ *   also keeps the identity current (never acted on, so manual-select freeze logic is intact).
+ *
  * v3.309 Changes:
  * - Blocks drop-up: removed the alternating-row brightness filter on the TEXT (the first=orange /
  *   last=yellow line coloring now reads identically on EVERY row, matching the main widget; the
@@ -1290,7 +1301,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.309',
+  VERSION: '3.310',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3033,9 +3044,9 @@
     var wrapper = document.createElement('span');
     wrapper.className = 'refine-toggle-square-wrapper';
     wrapper.style.cssText = 'display:inline-block; position:relative; '
-      + (isActive ? 'border:6px ' + (lastMatchVerdict === 'nomatch' ? 'dashed' : 'solid') + ' #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
+      + (isActive ? 'border:6px ' + (lastAutoMatchIdx !== slotIdx ? 'dashed' : 'solid') + ' #8b2020; border-radius:0; padding:12px; background:rgba(255,214,0,0.08); ' : 'border:3px solid #444; border-radius:0; padding:6px; ')
       + 'cursor:pointer;';
-    wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + (isActive && lastMatchVerdict === 'nomatch' ? ' — DASHED border: no match with the current conversation' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
+    wrapper.title = ctx.name + '\nSlot ' + (slotIdx + 1) + (isActive ? ' (ACTIVE)' : '') + (isSpecial ? ' (auto-matched)' : '') + (isActive && lastAutoMatchIdx !== slotIdx ? ' — DASHED border: this session does not match the current conversation' : '') + '\n– last updated ' + refineFmtLastUpdated(ctx.lastUpdated);
     wrapper.onclick = function() {
       refineManualSelectSlot(slotIdx);
     };
@@ -3974,7 +3985,6 @@
   }
 
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
-  var lastMatchVerdict = 'indeterminate';   // (v3.308) latest updateMatchBorder verdict — drives the active pill's solid-vs-dashed red border
 
   /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
    *  'match-current' → up-to-date match (last block == most recent turn): yellow border + a yellow
@@ -4074,7 +4084,6 @@
       label.style.color = '#e6c200';
       lastMatchTurnIdx = -1;
       refineUpdateAppendBtnState('indeterminate');
-      if (lastMatchVerdict !== 'indeterminate') { lastMatchVerdict = 'indeterminate'; try { refineRenderToggleRow(); } catch (e) {} }
       window.__chatMatchDebug = { session: sessionNorm, turns: 0, match: false, turnIdx: -1, ts: Date.now() };
       return;
     }
@@ -4096,13 +4105,11 @@
         ind.textContent = '';
         ind.style.cssText = RAIL + ' background:repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px);';
         refineUpdateAppendBtnState('match-current');
-        if (lastMatchVerdict !== 'match-current') { lastMatchVerdict = 'match-current'; try { refineRenderToggleRow(); } catch (e) {} }
       } else {
         // Older turn: dark rail with the turn number centered in it.
         ind.textContent = String(matchTurnIdx);
         ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
         refineUpdateAppendBtnState('match');
-        if (lastMatchVerdict !== 'match') { lastMatchVerdict = 'match'; try { refineRenderToggleRow(); } catch (e) {} }
       }
     } else {
       // No match: gray dashed rails + blue text.
@@ -4111,7 +4118,6 @@
       right.style.cssText = RAIL + ' background:repeating-linear-gradient(to bottom, #555 0px, #555 4px, transparent 4px, transparent 8px);';
       label.style.color = '#4da3ff';
       refineUpdateAppendBtnState('nomatch');
-      if (lastMatchVerdict !== 'nomatch') { lastMatchVerdict = 'nomatch'; try { refineRenderToggleRow(); } catch (e) {} }
     }
   }
 
@@ -4299,6 +4305,13 @@
     return { matchIdx: bestIdx, matchedSessions: matchedSessions, strengths: strengths, aggregates: aggregates };
   }
 
+  /** (v3.310) Update the current conversation's match IDENTITY (the aggregate winner),
+   *  re-rendering the pill row when it changes — the active pill's solid-vs-dashed red border
+   *  tracks this (solid = active session IS the conversation's match). */
+  function setLastAutoMatchIdx(idx) {
+    if (lastAutoMatchIdx !== idx) { lastAutoMatchIdx = idx; try { refineRenderToggleRow(); } catch (e) {} }
+  }
+
   /** Auto-select the session matching the current conversation (if any), and update the border. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.refineAutoSelectMatch-7uy7,
@@ -4311,19 +4324,20 @@
     var turnNorms = getRecentChatTurnNorms(20, 4);   // (v3.303) deeper march: more history for the aggregate match (DOM permitting)
     var m = refineComputeMatches(turnNorms);
     if (refineFrozenAutoSelect) {
+      setLastAutoMatchIdx(m.matchIdx);   // (v3.310) keep the identity current even while frozen (never acted on)
       updateMatchBorder();
       updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx, m.aggregates);
       return;
     }
     if (!turnNorms.length) {
-      lastAutoMatchIdx = -1;
+      setLastAutoMatchIdx(-1);
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
       updateDuplicateWarning([]);
       return;
     }
     var matchIdx = m.matchIdx;
-    lastAutoMatchIdx = matchIdx;
+    setLastAutoMatchIdx(matchIdx);
     if (matchIdx === -1) {
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
@@ -5129,9 +5143,27 @@
     // Eviction into the primary pills (refineSyncToggleSlots) is reserved for actual TEXT updates;
     // mere selection pins the session in the temp slot instead (see refineManualSelectSlot, v3.254).
     save.onclick = () => { const changed = stashCurrentText(); refineSaveContexts(slots); refineUpdateContextButtonLabel(); if (changed) refineSyncToggleSlots(editingIndex); refineRenderToggleRow(); closeModal(); };
+    // 🧹 Clear ALL blocks (brand-new-session initializer, v3.310).
+    const clearAll = mkBtn('🧹 Clear all blocks', '#5a2a2a');
+    clearAll.title = 'Delete ALL blocks in this slot — initialize a brand-new session. Saved immediately.';
+    clearAll.onclick = () => {
+      const cur = getAllText();
+      if (!cur.trim()) { updateStatus('🧹 “' + slots[editingIndex].name + '” is already empty', 'error'); return; }
+      if (!confirm('CLEAR ALL blocks in slot “' + slots[editingIndex].name + '”?\n\nThis deletes ' + cur.length.toLocaleString() + ' chars across ' + widgets.length + ' block(s). Saved immediately.')) return;
+      slots[editingIndex].text = '';
+      refineTouchSlot(slots, editingIndex);
+      refineSaveContexts(slots);
+      refineSyncToggleSlots(editingIndex);
+      refineRenderToggleRow();
+      refineUpdateContextButtonLabel();
+      rebuildBlocksEditor();
+      paintFullName();
+      paintRibbon();
+      updateStatus('🧹 Cleared all blocks from “' + slots[editingIndex].name + '” — fresh session', 'success');
+    };
     // 🗂 Blocks drop-up + 📋 Copy last block (v3.302).
     const blocksBtn = mkBtn('🗂 Blocks ▲', '#3a5a8a');
-    blocksBtn.title = 'Show every block in this slot (newest first, 0 = most recent) with its smart first/last-line preview. Click one to copy it and select + scroll to it in the text.';
+    blocksBtn.title = 'Show every block in this slot (oldest first: index 0 = first block, last = most recent) with its smart first/last-line preview. Click one to copy it and jump to it in the editor.';
     blocksBtn.onclick = () => {
       // (v3.307) show FIRST, then build — the item rows measure the popup's actual width.
       if (blocksPopup.style.display === 'none') { blocksPopup.style.display = 'block'; buildBlocksPopup(); }
@@ -5162,6 +5194,7 @@
       paintRibbon();
       updateStatus('🗑 Deleted most recent block from “' + slots[editingIndex].name + '” (removed ' + res.removed.toLocaleString() + ' chars, now ' + res.text.length.toLocaleString() + ')', 'success');
     };
+    btnRow.appendChild(clearAll);
     btnRow.appendChild(blocksBtn);
     btnRow.appendChild(copyBlock);
     btnRow.appendChild(delBlock);
