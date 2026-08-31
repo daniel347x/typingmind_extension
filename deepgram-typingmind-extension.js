@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.304 Changes:
+ * - Blocks drop-up: alternating rows now render in a slightly dimmer yellow (#c9ac00 vs #e6c200)
+ *   for extra separation, and each item gets a subtle 1px off-white border.
+ * - Blocks drop-up: clicking an item now scrolls the editor for real — explicit line-based
+ *   scrollTop (textarea caret scroll-into-view is unreliable; the selection alone wasn't moving).
+ * - Left-edge clipping, round 2: the x-scroll drift was on the ANCESTOR containers, not
+ *   .deepgram-content — overflow-x:hidden still permits programmatic/focus scrolling, so pill/
+ *   button clicks re-drifted #deepgram-content-container (and potentially the panel), bringing
+ *   the 1–2px left-edge shave back after the first refresh. overflow-x:clip on the container
+ *   and overflow:clip on the panel now seal EVERY ancestor x-scroll path.
+ *
  * v3.303 Changes:
  * - MATCHING REWORK (history-aggregate algorithm): session⇄conversation matching no longer
  *   judges on the last block alone. refineComputeMatches now walks EVERY block of each session
@@ -1214,7 +1225,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.303',
+  VERSION: '3.304',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4819,7 +4830,7 @@
           if (!blk) return;
           var edge = refineSmartEdgeLines(allLines.slice(blk.startIdx, blk.endIdx));
           var item = document.createElement('div');
-          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px;';
+          item.style.cssText = 'display:flex; gap:8px; align-items:flex-start; padding:5px 8px; border-radius:6px; cursor:pointer; background:' + (b % 2 ? '#2a2b2c' : '#232425') + '; margin-bottom:2px; border:1px solid rgba(240,240,235,0.28); box-sizing:border-box;';
           item.onmouseenter = function() { item.style.background = '#33404f'; };
           item.onmouseleave = function() { item.style.background = (b % 2 ? '#2a2b2c' : '#232425'); };
           var badge = document.createElement('span');
@@ -4827,7 +4838,7 @@
           badge.title = 'Blocks back from the most recent (0 = newest)';
           badge.style.cssText = 'flex:0 0 auto; min-width:18px; text-align:right; font-size:11px; line-height:1.6; color:#8ab4f8; opacity:0.85; font-variant-numeric:tabular-nums;';
           var prev = document.createElement('span');
-          prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:#e6c200;';
+          prev.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; line-height:1.4; color:' + (b % 2 ? '#c9ac00' : '#e6c200') + ';';
           if (edge) {
             prev.appendChild(refineEdgeRowEl(edge.first.main, edge.first.ctx, false));
             if (!(edge.first.main === edge.last.main && edge.first.ctx === edge.last.ctx)) {
@@ -4847,6 +4858,11 @@
             var endOff = startOff + blk.text.length;
             ta.focus();
             try { ta.setSelectionRange(startOff, endOff, 'backward'); } catch (e) { ta.setSelectionRange(startOff, endOff); }
+            // (v3.304) Best-effort scroll: caret scroll-into-view is unreliable for textareas, so
+            // compute scrollTop directly from the block's line index.
+            var cs = window.getComputedStyle(ta);
+            var lineH = parseFloat(cs.lineHeight) || ((parseFloat(cs.fontSize) || 13) * 1.45);
+            ta.scrollTop = Math.max(0, Math.round(blk.startIdx * lineH) - 24);
             closeBlocksPopup();
           };
           blocksPopup.appendChild(item);
@@ -5999,6 +6015,7 @@
         display: none;
         flex-direction: row; /* Changed from column to row for side-by-side layout */
         overflow: hidden;
+        overflow: clip; /* (v3.304) modern engines: forbid even programmatic/focus x-scroll */
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         resize: both; /* Allow manual resize via drag handle */
       }
@@ -6016,6 +6033,7 @@
         flex-direction: column;
         overflow-y: scroll; /* Always show scrollbar */
         overflow-x: hidden; /* Prevent horizontal scroll */
+        overflow-x: clip; /* (v3.304) modern: also forbid programmatic/focus x-scroll — ancestor drift was shaving row left edges */
         flex-shrink: 0;
         height: 100%;
         max-height: 100%; /* Constrain to panel height */
