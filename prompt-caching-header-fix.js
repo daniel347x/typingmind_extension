@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.328
+// Version: 4.329
 // Issues Fixed:
+//   - v4.329: HOVERCARD LIVE GAUGES FOR EVERY SESSION. The session-ctx hovercard (v4.328)
+//     now carries, per ring identity, the SAME gauges the persistent widget shows for the
+//     most-recent session only: the agent-management tool/clear badge, the client-side
+//     tool-execution count-up (the 'how long has the test suite been running?' timer),
+//     the round-trip timer (LIVE when that identity owns the in-flight turn, else its
+//     latest completed turn), and the cumulative session round-trip total. A dedicated 1s
+//     ticker rewrites only the per-row live zones while the card is visible (card scroll
+//     and dial hovers undisturbed; ticker stops on hide). Solves: a second session firing
+//     a payload used to overwrite the widget and hide the tool timer Dan was watching.
 //   - v4.328: SESSION-CTX HOVERCARD on the persistent widget's 'Session ID:' label. Hovering
 //     the label now opens a compact card listing every session identity in the capture ring
 //     (same newest-first enumeration as the ring-modal Filter listbox), each with its shared
@@ -1347,7 +1356,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.328';
+  const EXT_VERSION = '4.329';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5642,6 +5651,8 @@
   // glance, without opening the modal and waiting on its Filter dropdown.
   var tmSessionCtxHoverEl = null;
   var tmSessionCtxHoverHideTimer = 0;
+  var tmSessionCtxHoverTickerId = null;
+  var tmSessionCtxHoverIdentities = {}; // identityKey -> { sid, model, host, isProxy } (rebuilt per card build)
 
   // Numeric readout beside the dial: '123.4k / 1.0M' ('?' when no denominator exists).
   // Reuses the dial's own denominator chain (override -> discovery -> provider-max -> seed,
@@ -5655,7 +5666,77 @@
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
 
+  // (v4.329) Per-identity LIVE zone: the same gauges the persistent widget shows for the
+  // most-recent session only -- rendered here for EVERY ring session at once, and ticked
+  // once a second while the card is visible. Contents: agent-management badge
+  // (tool / clear), the client-side TOOL-EXECUTION timer (count-up while a local tool call
+  // runs -- Dan's 'how long has the test suite been going?' gauge), the round-trip timer
+  // (LIVE when THIS identity owns the in-flight turn, else the latest completed turn), and
+  // the cumulative session round-trip total. Solves: another session firing a payload no
+  // longer hides the timer Dan was watching.
+  function tmSessionCtxLiveHtml(key, info) {
+    var parts = [];
+    info = info || {};
+    // 1) Agent-management badge + live tool-execution timer (per-session ledger state).
+    try {
+      if (tmAgentManagementEnabled()) {
+        parts.push(tmAgentManagementBadge(info.sid));
+        var st = tmAgentManagementDisplayState(info.sid);
+        if (st && st.pendingToolCall && st.responseFinishedAt) {
+          parts.push('<span style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+        }
+      }
+    } catch (eTool) {}
+    // 2) Round-trip: LIVE count-up when THIS identity owns the in-flight turn (the global
+    //    marker resolves back to its capture's identity); otherwise the latest completed
+    //    turn's duration for this identity.
+    try {
+      var liveMs = 0;
+      if (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
+        var ifCap = getCaptureById(tmInFlightTurn.captureId);
+        if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = Date.now() - Number(tmInFlightTurn.ts);
+      }
+      if (liveMs > 0) {
+        parts.push('<span style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">\u23F1 ' + tmFmtDuration(liveMs) + '</span>');
+      } else {
+        var rtCap = tmLatestRoundTripEntryForIdentity(key);
+        if (rtCap && rtCap._rt_ms != null && Number(rtCap._rt_ms) > 0) {
+          parts.push('<span style="color:#7ec8e3;font-size:10px;white-space:nowrap;">\u23F1 ' + tmFmtDuration(Number(rtCap._rt_ms)) + '</span>');
+        }
+      }
+    } catch (eRt) {}
+    // 3) Cumulative session round-trip total (static gray, from the session-cost ledger).
+    try {
+      var rtKey = tmBuildSessionCostKey(info.sid || '', info.model || '', info.host || '', !!info.isProxy);
+      var rtRec = tmGetSessionCosts()[rtKey] || null;
+      var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
+      if (rtTot > 0) {
+        parts.push('<span style="color:#9aa4b2;font-size:10px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
+      }
+    } catch (eSum) {}
+    return parts.join(' ');
+  }
+
+  // 1s ticker, alive only while the card is visible: rewrites ONLY the per-row live zones
+  // (never rebuilds the card, so scroll position and dial hovers are undisturbed).
+  function tmEnsureSessionCtxHoverTicker() {
+    if (tmSessionCtxHoverTickerId != null) return;
+    tmSessionCtxHoverTickerId = setInterval(function() {
+      try {
+        if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+        var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
+        for (var i = 0; i < zones.length; i++) {
+          var key = zones[i].getAttribute('data-live-key');
+          var info = tmSessionCtxHoverIdentities[key];
+          if (!info) continue;
+          zones[i].innerHTML = tmSessionCtxLiveHtml(key, info);
+        }
+      } catch (e) {}
+    }, 1000);
+  }
+
   function tmBuildSessionCtxHoverHtml() {
+    tmSessionCtxHoverIdentities = {};
     var rows = [];
     rows.push('<div style="font-size:10px;font-weight:700;color:#c8d0dc;margin-bottom:4px;">Sessions in memory \u2014 context used</div>');
     var ring = [];
@@ -5672,6 +5753,7 @@
       count++;
       var info = { label: key, model: '', host: '', isProxy: false, sid: '' };
       try { info = tmCapIdentityLabel(cap); } catch (eL) {}
+      tmSessionCtxHoverIdentities[key] = { sid: info.sid || '', model: info.model || '', host: info.host || '', isProxy: !!info.isProxy };
       var hue = '#c8d0dc';
       try { hue = tmModelEndpointColor(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eH) {}
       var right;
@@ -5685,7 +5767,10 @@
       }
       rows.push(
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
-          '<span style="font-size:10px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
+          '<span style="display:flex;flex-direction:column;min-width:0;max-width:215px;">' +
+            '<span style="font-size:10px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
+            '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;min-height:12px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+          '</span>' +
           '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' + right + '</span>' +
         '</div>'
       );
@@ -5728,6 +5813,7 @@
       tmSessionCtxHoverEl.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
       tmSessionCtxHoverEl.style.left = 'auto';
       tmSessionCtxHoverEl.style.display = 'block';
+      tmEnsureSessionCtxHoverTicker(); // (v4.329) live badges/timers while visible
     } catch (e) {}
   }
 
@@ -5741,6 +5827,7 @@
   function tmHideSessionCtxHover() {
     try {
       if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
+      if (tmSessionCtxHoverTickerId != null) { clearInterval(tmSessionCtxHoverTickerId); tmSessionCtxHoverTickerId = null; }
       if (tmSessionCtxHoverEl) tmSessionCtxHoverEl.style.display = 'none';
     } catch (e) {}
   }
