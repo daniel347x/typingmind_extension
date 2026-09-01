@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.327 Changes:
+ * - FIX (slot-picker keyboard): bare digit keys were being eaten by TypingMind's window-level
+ *   handlers in some app states and never reached the modal (1/2/3/0 all dead, even after
+ *   clicking the modal). Added a FOCUSED entry box at the top of the picker — "Selection (1–9,
+ *   0 = slot 10)" — that traps the keystroke at the element (TypingMind + this widget both
+ *   ignore shortcuts while an input is focused): digits only, the last typed digit picks
+ *   immediately. Rows stay clickable; clicking the modal background refocuses the entry;
+ *   finish/cancel are idempotent (a digit arriving via both paths can only fire once). Esc
+ *   unchanged (proven capture pattern).
+ * - FIX (new conversation not selected after 🆕 Session): the v3.322 select clicked the
+ *   PRE-RENAME sidebar node, which React's post-rename re-render routinely detaches (click =
+ *   silent no-op). Now the flow RE-FINDS the row by its NEW name (tmWaitFor poll, 2s) after a
+ *   150ms settle beat and clicks that; the captured node is only a fallback.
+ *
  * v3.326 Changes:
  * - ROOT-CAUSE FIX (transcript height "jumps up / never saves" — reported 5+ times): THREE
  *   cooperating defects. (1) applyTranscriptHeight read the height from the INPUT element, whose
@@ -1448,7 +1462,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.326',
+  VERSION: '3.327',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10037,7 +10051,10 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
   /** (v3.324) Slot-picker modal for the 🆕 Session flow — lists all 10 context slots with name +
    *  text size (and an ● active marker) so YOU choose the recycle victim; replaces the silent
    *  oldest-updated heuristic. Keyboard-centric: 1–9 pick slots 1–9, 0 picks slot 10; click works;
-   *  Esc / overlay click aborts via onCancel. opts: { slots, onPick(idx), onCancel() }. */
+   *  Esc / overlay click aborts via onCancel. (v3.327) Keyboard reliability: a FOCUSED entry box
+   *  traps the digit at the element (TypingMind's window-level handlers could eat bare document
+   *  keydowns; both it and this widget ignore shortcuts while an input is focused); finish/cancel
+   *  are idempotent. opts: { slots, onPick(idx), onCancel() }. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.refinePickRecycleSlot-pk7r,
   //   role=__lambdao_1.refinePickRecycleSlot,
@@ -10051,6 +10068,8 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     const slots = (opts && opts.slots) || [];
     let activeIdx = -1;
     try { activeIdx = refineGetActiveContextIndex(); } catch (e) {}
+    let done = false;   // (v3.327) idempotent finish/cancel — a digit can arrive via BOTH the
+                        // document-capture handler and the focused entry input; first one wins.
 
     const overlay = document.createElement('div');
     overlay.id = 'deepgram-slot-picker-overlay';
@@ -10063,8 +10082,25 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     h.textContent = '🆕 Pick a context slot to recycle';
     h.style.cssText = 'font-size:15px; font-weight:600; margin-bottom:4px;';
     const sub = document.createElement('div');
-    sub.textContent = 'The chosen slot will be WIPED and re-seeded for the new session. Press 1–9 or 0 (slot 10) to pick — Esc cancels.';
+    sub.textContent = 'The chosen slot will be WIPED and re-seeded for the new session. Esc cancels.';
     sub.style.cssText = 'font-size:12px; opacity:0.7; margin-bottom:10px;';
+
+    // (v3.327) FOCUSED ENTRY BOX — the reliable keyboard path. Bare document-level digit keys were
+    // eaten by TypingMind's window-level handlers in some app states; a focused input traps the
+    // keystroke at the element (TypingMind + this widget both ignore shortcuts while an input is
+    // focused). Digits only; the last typed digit picks immediately. Auto-focused on open.
+    const entryRow = document.createElement('div');
+    entryRow.style.cssText = 'display:flex; align-items:center; gap:8px; margin-bottom:10px;';
+    const entryLabel = document.createElement('span');
+    entryLabel.textContent = 'Selection (1–9, 0 = slot 10):';
+    entryLabel.style.cssText = 'font-size:13px; font-weight:600;';
+    const entry = document.createElement('input');
+    entry.type = 'text';
+    entry.setAttribute('autocomplete', 'off');
+    entry.setAttribute('inputmode', 'numeric');
+    entry.style.cssText = 'width:44px; padding:5px 8px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:14px; text-align:center; background:#111; color:#9cf; border:1px solid #4a6a9a; border-radius:6px; outline:none;';
+    entryRow.appendChild(entryLabel);
+    entryRow.appendChild(entry);;
 
     const list = document.createElement('div');
     list.style.cssText = 'display:flex; flex-direction:column; gap:4px; overflow-y:auto;';
@@ -10078,14 +10114,18 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     };
 
     function cleanup() {
+      if (done) return;
+      done = true;
       document.removeEventListener('keydown', onKey, true);
       overlay.remove();
     }
     function finish(idx) {
+      if (done) return;
       cleanup();
       if (opts && typeof opts.onPick === 'function') opts.onPick(idx);
     }
     function cancel() {
+      if (done) return;
       cleanup();
       if (opts && typeof opts.onCancel === 'function') opts.onCancel();
     }
@@ -10094,6 +10134,18 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       const ki = keys.indexOf(e.key);
       if (ki !== -1 && ki < slots.length) { e.preventDefault(); e.stopPropagation(); finish(ki); }
     }
+
+    // The entry box traps digits itself (the LAST typed digit decides; non-digits stripped).
+    entry.addEventListener('input', function() {
+      const v = entry.value.replace(/[^0-9]/g, '');
+      entry.value = v;
+      if (!v) return;
+      const ki = keys.indexOf(v[v.length - 1]);
+      if (ki !== -1 && ki < slots.length) finish(ki);
+    });
+    entry.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
+    });
 
     for (let i = 0; i < slots.length; i++) {
       (function(idx) {
@@ -10128,11 +10180,15 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       })(i);
     }
 
-    box.appendChild(h); box.appendChild(sub); box.appendChild(list);
+    box.appendChild(h); box.appendChild(sub); box.appendChild(entryRow); box.appendChild(list);
     overlay.appendChild(box);
     overlay.addEventListener('mousedown', function(e) { if (e.target === overlay) cancel(); });
+    // Clicking anywhere in the modal that isn't a row refocuses the entry (keeps the keyboard path live).
+    box.addEventListener('click', function() { try { entry.focus(); } catch (err) {} });
     document.addEventListener('keydown', onKey, true);
     document.body.appendChild(overlay);
+    try { entry.focus(); } catch (e) {}
+    setTimeout(function() { try { entry.focus(); } catch (e) {} }, 50);
   }
 
   /** The 🆕 Session button flow: empty-check → prompt for name → mint ID → PICK the context slot
@@ -10190,10 +10246,26 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         const renamed = renameFirstNewChatSidebarRow(fullName);
         renameFirstNewChatSidebarRowViaUI(sidebarHit, fullName).then(function(r) {
           try { updateStatus('🆕 Sidebar rename: ' + r, r.indexOf('renamed') === 0 ? 'success' : 'error'); } catch (e) {}
-          // (v3.322) Select the new conversation so everything is set up — click the TITLE element
-          // (tmClickSidebarMatch pattern: title clicks bubble to React's navigation handler). Done
-          // only after the chain resolves, so navigation can't unmount the row mid-rename.
-          try { if (sidebarHit && sidebarHit.titleEl) sidebarHit.titleEl.click(); } catch (e) {}
+          // (v3.327) Select the new conversation — but RE-FIND the row by its NEW name first (poll
+          // up to 2s via tmWaitFor): the pre-rename node captured in sidebarHit is routinely
+          // DETACHED by React's post-rename re-render, so clicking it silently no-opped and the new
+          // conversation never got selected. Title clicks bubble to React's navigation handler
+          // (v3.322 pattern). The captured node remains as the fallback.
+          setTimeout(function() {
+            tmWaitFor(function() {
+              var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+              for (var i = 0; i < rows.length; i++) {
+                var tEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+                if (tEl && String(tEl.textContent || '').trim() === fullName) return tEl;
+              }
+              return null;
+            }, 2000).then(function(tEl) {
+              try {
+                if (tEl) tEl.click();
+                else if (sidebarHit && sidebarHit.titleEl) sidebarHit.titleEl.click();
+              } catch (e) {}
+            });
+          }, 150);
         });
 
         updateStatus('🆕 ' + fullName + ' ready — transcript primed, slot “' + oldName + '” recycled'
