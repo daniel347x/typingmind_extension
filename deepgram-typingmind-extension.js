@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.331 Changes:
+ * - 🎨 Session-name hue tinting extended to the REFINE session surfaces: the toggle-pill row
+ *   (renderToggleSquare), the Context-modal ribbon rows (paintRibbon), and the quick-switcher
+ *   popup rows. Any name carrying a leading 8-hex hash ('<hash> - [<name>]') now renders in the
+ *   Payload extension's session hue via the shared tintSessionNameEl helper (same most-recent
+ *   wins lookup + cached stores as the v3.330 sidebar tint). The quick-switcher's ACTIVE row
+ *   keeps its green text (active state dominates there); on the pills and modal ribbon the
+ *   active state lives in borders/backgrounds, so the name text tints freely. Names without a
+ *   hash are untouched.
+ *
  * v3.330 Changes:
  * - 🎨 Sidebar session TINTING: visible sidebar rows titled with Dan's '<hash> - [<name>]'
  *   convention now render their title text in the Payload extension's session hue
@@ -1493,7 +1503,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.330',
+  VERSION: '3.331',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3418,6 +3428,7 @@
     var nameSpan = document.createElement('span');
     nameSpan.textContent = ctx.name;
     nameSpan.style.cssText = 'padding-right:20px;';
+    tintSessionNameEl(nameSpan, ctx.name);   // (v3.331) Payload session hue
     inner.appendChild(nameSpan);
     var pen = document.createElement('span');
     pen.textContent = ' \u270E';
@@ -3741,6 +3752,7 @@
         nm.textContent = slot.name + (hasText ? '' : ' ·');
         nm.style.cssText = 'flex:1 1 auto; overflow:hidden; text-overflow:ellipsis; '
           + (isActive ? 'font-weight:700; color:#2e9b2e;' : (hasText ? '' : 'opacity:0.55;'));
+        if (!isActive) tintSessionNameEl(nm, slot.name);   // (v3.331) Payload hue; ACTIVE row keeps its green
         row.appendChild(num); row.appendChild(nm);
         // Clicking the number or name SELECTS the slot (the row is no longer a single click target,
         // so the ✂½ button and char count to the right are independently clickable/readable).
@@ -5502,6 +5514,7 @@
         const nameSpan = document.createElement('span');
         nameSpan.textContent = slot.name + (hasText ? '' : ' ·');
         nameSpan.style.cssText = 'flex:1 1 auto; padding:0 4px 0 22px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        tintSessionNameEl(nameSpan, slot.name);   // (v3.331) Payload session hue;
         const pen = document.createElement('span');
         pen.textContent = ' ✎';
         pen.style.cssText = 'opacity:0.6; margin-left:2px;';
@@ -10077,6 +10090,19 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         }
       }
     } catch (e) {}
+  }
+
+  /** Tint a session-name element to the Payload session hue of its leading 8-hex hash (when the
+   *  name carries one). Shared by the toggle pills, the Context-modal ribbon rows, and the
+   *  quick-switcher rows (v3.331). Returns true when a tint was applied. */
+  function tintSessionNameEl(el, name, stores) {
+    try {
+      var m = String(name || '').match(/^\s*([0-9a-f]{8})\s*-\s*\[/i);
+      if (!m) return false;
+      var hue = tmHueForSessionHash(m[1].toLowerCase(), stores || tmLoadHueStores());
+      if (typeof hue === 'number') { el.style.color = 'hsl(' + hue + ', 55%, 72%)'; return true; }
+    } catch (e) {}
+    return false;
   }
 
   /** Poll helper for the UI-rename chain (menus/inputs mount asynchronously). */
