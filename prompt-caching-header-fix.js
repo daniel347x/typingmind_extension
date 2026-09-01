@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.330
+// Version: 4.331
 // Issues Fixed:
+//   - v4.331: AUTO-RESUME RETURN TRIP. When the walk-away engine (agent-management sweep's
+//     inspection switch OR any continuity sensor's resume) navigates away from the
+//     conversation Dan is viewing to wake a stalled session, it now bookmarks where he was
+//     (leading 8-hex sidebar hash per his '<hash> - [<name>]' convention; visible-message
+//     Session-ID line as fallback; FIRST bookmark wins, 15-minute expiry) and, ~2.5s after
+//     the wake-up Continue is successfully submitted, switches the UI BACK to him via the
+//     same verified sidebar-switch machinery. Guards: skipped when Dan navigated himself in
+//     the meantime, when another resume is queued (it will navigate anyway), when
+//     management is off, or when the bookmark expired. Courtesy navigation only --
+//     console-logged, never a failure toast.
 //   - v4.330: HOVERCARD POLISH (five tweaks). (1) BLANK-STATE HOVER: the widget's
 //     post-refresh 'Session ID: (none yet)' row now also carries the hover trigger, so the
 //     session-ctx card works BEFORE any payload warms the widget (the ring buffer persists
@@ -1368,7 +1378,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.330';
+  const EXT_VERSION = '4.331';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8934,6 +8944,9 @@
     if (!candidates.length) { tmScheduleAgentManagementSweep(TM_AGENT_MANAGEMENT_SWEEP_MS); return; }
     tmAgentManagementBusy = true;
     var state = candidates[0];
+    // (v4.331) RETURN-TRIP BOOKMARK: this inspection switch is the moment the UI leaves
+    // Dan's conversation -- remember where he was so a successful wake-up can hand it back.
+    try { tmNoteAutoResumeReturnBookmark(state.sessionId); } catch (eBk1) {}
     tmAgentManagementOpenSession(state.sessionId, function(err) {
       if (err) {
         console.warn('⚠️ [v' + EXT_VERSION + '] Agent management could not inspect ' + state.sessionId + ': ' + err.message);
@@ -9392,6 +9405,10 @@
     if (!tmAgentManagementEnabled() && item.reason !== 'manual_debug') { tmFinishAutoContinue(false, 'management disabled'); return; }
     // (v4.317) Final gate: this session may have been user-cancelled during the countdown.
     if (item.reason !== 'manual_debug' && tmIsAutoResumeCancelled(item.sessionId)) { tmFinishAutoContinue(false, 'auto-resume suppressed by user cancel'); return; }
+    // (v4.331) RETURN-TRIP BOOKMARK: sensor-triggered resumes may navigate here (no prior
+    // sweep inspection). First bookmark wins -- the sweep already recorded Dan's conversation
+    // when it switched away for inspection.
+    try { tmNoteAutoResumeReturnBookmark(item.sessionId); } catch (eBk2) {}
     // A currently-visible matching conversation needs no sidebar row at all (its folder may be
     // collapsed or virtualized). Verify it directly and avoid needless navigation.
     if (tmConversationVerified(item.sessionId)) {
@@ -9419,9 +9436,87 @@
       try { tmShowAutoContinueAbort(item, error); } catch (eT) {}
     }
     tmAutoContinueActive = null;
+    // (v4.331) RETURN TRIP: a successful wake-up that navigated away from Dan's conversation
+    // hands the UI back to him once TypingMind has registered the submitted resume.
+    try { if (ok && item) tmScheduleAutoResumeReturn(item.sessionId); } catch (eRet) {}
     // Give TypingMind time to register the just-submitted request before a second queued session
     // switches the visible UI again. Parallel fetches may continue normally after that handoff.
     setTimeout(tmProcessAutoContinueQueue, 1500);
+  }
+
+  // (v4.331) AUTO-RESUME RETURN TRIP. Dan's workflow: a background session stalls, the
+  // walk-away engine yanks the UI to it, submits the wake-up Continue -- and Dan is left
+  // staring at a conversation he wasn't working in. The bookmark below remembers the
+  // conversation he WAS viewing (leading 8-hex sidebar hash per his naming convention
+  // '<hash> - [<name>]'), and a successful resume hands the UI back. Courtesy navigation
+  // ONLY: console-logged, never a failure toast, never a yank when Dan moved himself.
+  var tmAutoResumeReturnBookmark = null; // { sid: <8-hex lowercase>, ts }
+
+  // Extract the active (selected) sidebar conversation's leading 8-hex session hash.
+  // Primary: the selected row's title. Fallback: the visible conversation's own
+  // 'Session ID: <hash>' line in an early user turn (covers an unmounted selected row).
+  function tmActiveSidebarSessionHash() {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="selected-chat-item"]');
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim() : '';
+        var m = title.match(/^\s*([0-9a-f]{8})\b/i);
+        if (m) return m[1].toLowerCase();
+      }
+    } catch (e) {}
+    try {
+      var container = tmFindVisibleChatContainer();
+      if (container) {
+        var users = container.querySelectorAll('[data-element-id="user-message"]');
+        var max = Math.min(users.length, 10);
+        for (var u = 0; u < max; u++) {
+          var text = String(users[u].innerText || users[u].textContent || '');
+          var m2 = text.match(/^\s*Session\s+ID\s*:\s*([0-9a-f]{8})\b/im);
+          if (m2) return m2[1].toLowerCase();
+        }
+      }
+    } catch (e2) {}
+    return null;
+  }
+
+  // Record the pre-navigation conversation. FIRST bookmark wins (the sweep's inspection
+  // switch is the true moment Dan loses his view; later captures during the same episode
+  // would see the stalled session itself). 15-minute rolling expiry.
+  function tmNoteAutoResumeReturnBookmark(targetSid) {
+    try {
+      if (tmAutoResumeReturnBookmark && (Date.now() - Number(tmAutoResumeReturnBookmark.ts || 0)) < 15 * 60 * 1000) return;
+      var cur = tmActiveSidebarSessionHash();
+      if (cur && cur !== String(targetSid || '').toLowerCase()) {
+        tmAutoResumeReturnBookmark = { sid: cur, ts: Date.now() };
+      }
+    } catch (e) {}
+  }
+
+  // After a SUCCESSFUL wake-up submission, switch the UI back to the bookmarked
+  // conversation. Guards: management on, no queued resume pending (IT will navigate),
+  // bookmark fresh, and Dan has not navigated himself (current view must be the just-
+  // resumed session or already home -- anything else is his choice and is respected).
+  function tmScheduleAutoResumeReturn(resumedSid) {
+    var bm = tmAutoResumeReturnBookmark;
+    if (!bm || !bm.sid) return;
+    if (Date.now() - Number(bm.ts || 0) > 15 * 60 * 1000) { tmAutoResumeReturnBookmark = null; return; }
+    var resumed = String(resumedSid || '').toLowerCase();
+    setTimeout(function() {
+      try {
+        if (!tmAgentManagementEnabled()) return;
+        if (tmAutoContinueQueue.length) return;
+        var bmNow = tmAutoResumeReturnBookmark;
+        if (!bmNow || !bmNow.sid) return;
+        var cur = tmActiveSidebarSessionHash();
+        if (!cur || cur === bmNow.sid) return; // already home (or Dan navigated back himself)
+        if (resumed && cur !== resumed) return;  // Dan went somewhere ELSE -- respect it
+        tmAgentManagementOpenSession(bmNow.sid, function(err) {
+          if (err) console.warn('\u21A9\uFE0F [v' + EXT_VERSION + '] Auto-resume return trip skipped: ' + err.message);
+          else console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Returned UI to session ' + bmNow.sid + ' after auto-resume of ' + resumed + '.');
+        });
+      } catch (e) {}
+    }, 2500);
   }
 
   // (v4.300) Module-level handle so toggling management OFF aborts an in-flight countdown.
