@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.327
+// Version: 4.328
 // Issues Fixed:
+//   - v4.328: SESSION-CTX HOVERCARD on the persistent widget's 'Session ID:' label. Hovering
+//     the label now opens a compact card listing every session identity in the capture ring
+//     (same newest-first enumeration as the ring-modal Filter listbox), each with its shared
+//     context-window dial plus a numeric 'total / max' readout (denominator resolved through
+//     the dial's own override -> discovery -> provider-max -> seed chain; 'no ctx snapshot
+//     yet' when a session has none). Answers 'do I need a fresh session?' without opening
+//     the ring modal or waiting on its Filter dropdown. The row's old native
+//     'identity: ...' tooltip (redundant) is removed; click still opens the ring-buffer
+//     modal. Also: the label's underline now hugs 'Session ID' only and no longer extends
+//     beneath the colon.
 //   - v4.327: SHARED SESSION-NAME STORE CONSUMPTION FIX (tm- alias tolerance). The
 //     Transcription Control extension's Session-initializer button writes tm_session_names
 //     keyed by the RAW 8-hex session id (the ap:4MZB5I / ap:23HPS1 shared-store contract),
@@ -1337,7 +1347,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.327';
+  const EXT_VERSION = '4.328';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5622,6 +5632,119 @@
     }
   }
 
+  // ==================== SESSION CTX HOVERCARD (v4.328) ====================
+  // Rich hover surface for the persistent widget's 'Session ID:' label: a compact card
+  // listing every session identity currently in the capture ring (the SAME newest-first,
+  // dedupe-by-identity-key enumeration as the ring-modal Filter listbox), each with its
+  // shared context-window dial plus a numeric 'total / max' readout. Replaces the row's old
+  // native 'identity: sid::model::host::proxy' tooltip (redundant per Dan); CLICK on the
+  // label still opens the ring-buffer modal. Purpose: 'do I need a fresh session?' at a
+  // glance, without opening the modal and waiting on its Filter dropdown.
+  var tmSessionCtxHoverEl = null;
+  var tmSessionCtxHoverHideTimer = 0;
+
+  // Numeric readout beside the dial: '123.4k / 1.0M' ('?' when no denominator exists).
+  // Reuses the dial's own denominator chain (override -> discovery -> provider-max -> seed,
+  // then the snapshot's stamped fallback) so the hovercard NEVER disagrees with the dials.
+  function tmCtxHoverTotalMaxLabel(snap, cap) {
+    try {
+      var model = snap.model || (cap && cap._identity && cap._identity.model) || '';
+      var mr = tmResolveModelMaxCtxCached(model, cap || null);
+      var maxCtx = (mr && mr.max != null) ? mr.max : ((snap.max_ctx != null) ? snap.max_ctx : null);
+      return tmFmtTok(snap.total) + ' / ' + (maxCtx != null ? tmFmtTok(maxCtx) : '?');
+    } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
+  }
+
+  function tmBuildSessionCtxHoverHtml() {
+    var rows = [];
+    rows.push('<div style="font-size:10px;font-weight:700;color:#c8d0dc;margin-bottom:4px;">Sessions in memory \u2014 context used</div>');
+    var ring = [];
+    try { ring = tmReadCaptureRing() || []; } catch (eRing) {}
+    var seen = {};
+    var count = 0;
+    for (var i = ring.length - 1; i >= 0 && count < 12; i--) {
+      var cap = ring[i];
+      if (!cap) continue;
+      var key = '';
+      try { key = tmCapIdentityKey(cap); } catch (eK) { continue; }
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+      count++;
+      var info = { label: key, model: '', host: '', isProxy: false, sid: '' };
+      try { info = tmCapIdentityLabel(cap); } catch (eL) {}
+      var hue = '#c8d0dc';
+      try { hue = tmModelEndpointColor(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eH) {}
+      var right;
+      var ctxCap = null;
+      try { ctxCap = tmLatestCtxSnapshotEntryForIdentity(key); } catch (eC) {}
+      if (ctxCap && ctxCap._ctx_snapshot) {
+        right = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 14, noClick: true, cap: ctxCap }) +
+          '<span style="font-size:10px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
+      } else {
+        right = '<span style="font-size:10px;color:#6a7280;white-space:nowrap;">no ctx snapshot yet</span>';
+      }
+      rows.push(
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
+          '<span style="font-size:10px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:200px;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' + right + '</span>' +
+        '</div>'
+      );
+    }
+    if (count === 0) {
+      rows.push('<div style="font-size:10px;color:#6a7280;">(ring buffer empty)</div>');
+    }
+    return rows.join('');
+  }
+
+  function tmShowSessionCtxHover(anchorEl) {
+    try {
+      if (!anchorEl) return;
+      if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
+      if (!tmSessionCtxHoverEl) {
+        tmSessionCtxHoverEl = document.createElement('div');
+        tmSessionCtxHoverEl.id = 'tm-session-ctx-hovercard';
+        tmSessionCtxHoverEl.style.position = 'fixed';
+        tmSessionCtxHoverEl.style.zIndex = '100001';
+        tmSessionCtxHoverEl.style.background = 'rgba(12,12,16,0.97)';
+        tmSessionCtxHoverEl.style.color = '#fff';
+        tmSessionCtxHoverEl.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
+        tmSessionCtxHoverEl.style.padding = '6px 9px';
+        tmSessionCtxHoverEl.style.borderRadius = '6px';
+        tmSessionCtxHoverEl.style.border = '1px solid #3a3f4a';
+        tmSessionCtxHoverEl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
+        tmSessionCtxHoverEl.style.width = '360px';
+        tmSessionCtxHoverEl.style.maxHeight = '50vh';
+        tmSessionCtxHoverEl.style.overflowY = 'auto';
+        // Moving from the label INTO the card must not dismiss it.
+        tmSessionCtxHoverEl.addEventListener('mouseenter', function() {
+          if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
+        });
+        tmSessionCtxHoverEl.addEventListener('mouseleave', function() { tmHideSessionCtxHover(); });
+        document.body.appendChild(tmSessionCtxHoverEl);
+      }
+      tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
+      var r = anchorEl.getBoundingClientRect();
+      tmSessionCtxHoverEl.style.top = Math.min(window.innerHeight - 60, r.bottom + 6) + 'px';
+      tmSessionCtxHoverEl.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+      tmSessionCtxHoverEl.style.left = 'auto';
+      tmSessionCtxHoverEl.style.display = 'block';
+    } catch (e) {}
+  }
+
+  function tmScheduleHideSessionCtxHover() {
+    try {
+      if (tmSessionCtxHoverHideTimer) clearTimeout(tmSessionCtxHoverHideTimer);
+      tmSessionCtxHoverHideTimer = setTimeout(tmHideSessionCtxHover, 180);
+    } catch (e) {}
+  }
+
+  function tmHideSessionCtxHover() {
+    try {
+      if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
+      if (tmSessionCtxHoverEl) tmSessionCtxHoverEl.style.display = 'none';
+    } catch (e) {}
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.ensureGpt51UsageWidget-0ti9,
   //   role=__lambdao_1.ensureGpt51UsageWidget,
@@ -5672,7 +5795,25 @@
       }
       document.body.appendChild(el);
 
+      // (v4.328) Delegated hover wiring for the 'Session ID:' label's session-ctx hovercard.
+      // The label span is re-created on every render, so delegation on the persistent root
+      // is the only stable attachment point.
+      el.addEventListener('mouseover', function(ev) {
+        try {
+          var hovT = ev.target && ev.target.closest ? ev.target.closest('[data-hover="session-ctx-list"]') : null;
+          if (hovT && el.contains(hovT)) tmShowSessionCtxHover(hovT);
+        } catch (eHov) {}
+      });
+      el.addEventListener('mouseout', function(ev) {
+        try {
+          var hovO = ev.target && ev.target.closest ? ev.target.closest('[data-hover="session-ctx-list"]') : null;
+          if (hovO && el.contains(hovO)) tmScheduleHideSessionCtxHover();
+        } catch (eHovOut) {}
+      });
+
       el.addEventListener('click', function(ev) {
+        // (v4.328) Any widget click (the label opens the ring modal) dismisses the hovercard.
+        try { tmHideSessionCtxHover(); } catch (eHideHov) {}
         const target = ev.target;
         if (target && target.dataset) {
           // Toggle entire widget collapsed/expanded
@@ -6454,6 +6595,9 @@
   function renderGpt51UsageWidget() {
     if (typeof document === 'undefined') return;
     const el = ensureGpt51UsageWidget();
+    // (v4.328) A re-render destroys the hovered 'Session ID:' span, so its mouseout may
+    // never fire; drop the hovercard rather than leave a stale one stuck on screen.
+    try { tmHideSessionCtxHover(); } catch (eHovR) {}
     const store = getGpt51UsageStore();
     const convIds = Object.keys(store).filter(id => !store[id].hidden);
     const hasGpt51Convs = convIds.length > 0;
@@ -6551,7 +6695,10 @@
 
     if (displaySessionId || displayPastedId) {
       var sidParts = [];
-      sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:15px;text-decoration:underline;">Session ID:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
+      // (v4.328) Underline hugs 'Session ID' only (NOT the colon), and hovering the label
+      // opens the session-ctx hovercard (data-hover) in place of the row's old native
+      // 'identity: ...' tooltip. Click still opens the ring-buffer modal.
+      sidParts.push('<span data-action="open-payload-capture-modal" data-hover="session-ctx-list" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:15px;"><span style="text-decoration:underline;">Session ID</span>:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
       if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;pointer-events:auto;">' + displayPastedId + '</span>');
       // (v4.146) Current session total at the left, before the labels.
       // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
@@ -6566,7 +6713,9 @@
       if (widgetSessionCost > 0) {
         sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
       }
-      lines.push('<div data-action="open-payload-capture-modal" title="' + (displaySidTooltip ? escapeHtml('identity: ' + displaySidTooltip) : 'Open payload capture history') + '" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
+      // (v4.328) Native row tooltip REMOVED (redundant per Dan) -- the session-ctx
+      // hovercard on the 'Session ID:' label is now the row's hover surface.
+      lines.push('<div data-action="open-payload-capture-modal" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
 
       // (v4.148) Session name gets its own full-width row so the session/status row does not wrap.
       // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
