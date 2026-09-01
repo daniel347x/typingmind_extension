@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.318 Changes:
+ * - Sidebar rename v4: ~120ms delay between the React-safe value set and the Confirm-changes
+ *   click — a same-tick input+click could make React's commit read the STALE title and silently
+ *   no-op (the likely cause of the v3.317 partial-persistence report: sidebar showing the new
+ *   name in italics while the store-backed top dropdown still reads 'New Chat').
+ *
  * v3.317 Changes:
  * - Sidebar rename v3: TypingMind's inline edit control is a TEXTAREA (not an input) — v3.316's
  *   input-only search missed it, so the edit box opened and just sat there. Now: search
@@ -1368,7 +1374,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.317',
+  VERSION: '3.318',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9417,6 +9423,9 @@
       desc.set.call(input, newName);
       input.dispatchEvent(new Event('input', { bubbles: true }));
       // Commit: prefer the inline 'Confirm changes' button (deterministic); Enter+blur fallback.
+      // (v3.318) ~120ms beat BEFORE committing — a same-tick input+click could make React's
+      // commit read the STALE title and silently no-op.
+      await new Promise(function(r) { setTimeout(r, 120); });
       var scope = input.closest('div[data-tm-icon-abs]') || row;
       var confirmBtn = scope.querySelector('button[aria-label="Confirm changes"], button[aria-label="Confirm"], button[aria-label="Save"]');
       if (confirmBtn) {
