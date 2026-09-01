@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.331
+// Version: 4.332
 // Issues Fixed:
+//   - v4.332: HOVERCARD AGGREGATE SESSION COST. Each session-ctx hovercard row now ends with
+//     the session's AGGREGATE cost (all turns for that identity), read from the
+//     tm_session_costs_v2 ledger via the same tmGetSessionCost the widget '$' total and the
+//     ring-modal Filter dropdown's ($total) labels use -- rendered in the session's hue at
+//     the right end, after the context dial and total/max numbers. 'How much is this
+//     session whamming me?' beside 'how full is its context?'.
 //   - v4.331: AUTO-RESUME RETURN TRIP. When the walk-away engine (agent-management sweep's
 //     inspection switch OR any continuity sensor's resume) navigates away from the
 //     conversation Dan is viewing to wake a stalled session, it now bookmarks where he was
@@ -1378,7 +1384,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.331';
+  const EXT_VERSION = '4.332';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5788,6 +5794,15 @@
       } else {
         right = '<span style="font-size:10px;color:#6a7280;white-space:nowrap;">no ctx snapshot yet</span>';
       }
+      // (v4.332) Aggregate session cost at the right end (tm_session_costs_v2 ledger, the
+      // SAME tmGetSessionCost the widget '$' total and the Filter dropdown's ($total) read):
+      // 'how much is this session whamming me?' next to 'how full is its context?'.
+      try {
+        var hoverSessCost = tmGetSessionCost(info.sid || '', info.model || '', info.host, info.isProxy);
+        if (hoverSessCost > 0) {
+          right += '<span style="font-size:10px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
+        }
+      } catch (eCost) {}
       rows.push(
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
           '<span style="display:flex;flex-direction:column;min-width:0;max-width:320px;">' + // (v4.330) 50% wider name column (was 215px)
