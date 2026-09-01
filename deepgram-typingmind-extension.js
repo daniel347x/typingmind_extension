@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.317 Changes:
+ * - Sidebar rename v3: TypingMind's inline edit control is a TEXTAREA (not an input) — v3.316's
+ *   input-only search missed it, so the edit box opened and just sat there. Now: search
+ *   'input, textarea', set via the matching prototype's native setter, and COMMIT by clicking
+ *   the inline 'Confirm changes' button (aria-label, captured from the live editor — Enter+blur
+ *   remains the fallback). Timeouts halved (1500 → 750 ms) and poll interval 80 → 50 ms.
+ *
  * v3.316 Changes:
  * - 🆕 Session sidebar rename v2: after the (possibly-reverted) instant DOM edit, the flow now
  *   drives TypingMind's OWN rename UI on the first 'New Chat' row — hover-mounts the row's ⋯
@@ -1361,7 +1368,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.316',
+  VERSION: '3.317',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9370,7 +9377,7 @@
         try { v = fn(); } catch (e) {}
         if (v) return resolve(v);
         if (Date.now() - t0 > timeoutMs) return resolve(null);
-        setTimeout(tick, 80);
+        setTimeout(tick, 50);
       })();
     });
   }
@@ -9388,28 +9395,37 @@
     var menuBtn = await tmWaitFor(function() {
       return row.querySelector('[data-element-id="more-actions-menu-button"]')
         || row.querySelector('button[id^="headlessui-menu-button"]');
-    }, 1500);
+    }, 750);
     if (!menuBtn) return 'no menu button on row';
     menuBtn.click();
     var editBtn = await tmWaitFor(function() {
       var btns = document.querySelectorAll('[data-element-id="edit-title-button"]');
       return btns.length ? btns[btns.length - 1] : null;   // the most recently opened menu
-    }, 1500);
+    }, 750);
     if (!editBtn) return 'menu opened but no Edit Title item';
     editBtn.click();
     var input = await tmWaitFor(function() {
-      var inp = row.querySelector('input');
+      var inp = row.querySelector('input, textarea');
       if (inp) return inp;
-      return document.querySelector('[role="dialog"] input[type="text"], [role="dialog"] input:not([type])');
-    }, 1500);
+      return document.querySelector('[role="dialog"] input[type="text"], [role="dialog"] input:not([type]), [role="dialog"] textarea');
+    }, 750);
     if (!input) return 'Edit Title clicked but no title input found';
     try {
-      var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      // React-safe set on whichever control mounted (TypingMind's inline edit is a TEXTAREA).
+      var proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      var desc = Object.getOwnPropertyDescriptor(proto, 'value');
       desc.set.call(input, newName);
       input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
-      input.blur();
+      // Commit: prefer the inline 'Confirm changes' button (deterministic); Enter+blur fallback.
+      var scope = input.closest('div[data-tm-icon-abs]') || row;
+      var confirmBtn = scope.querySelector('button[aria-label="Confirm changes"], button[aria-label="Confirm"], button[aria-label="Save"]');
+      if (confirmBtn) {
+        confirmBtn.click();
+      } else {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+        input.blur();
+      }
       return 'renamed via native UI';
     } catch (e) { return 'input found but set failed: ' + (e && e.message); }
   }
