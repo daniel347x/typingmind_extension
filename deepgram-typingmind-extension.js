@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.328 Changes:
+ * - Status ATTENTION effects: updateStatus(message, className, level) — level = 'normal' |
+ *   'warn' | 'error' (omitted ⇒ 'error' when className is 'error', else 'normal'). Every
+ *   non-blank status now: (a) flashes a 1s GLOW PULSE on the status line in the level color
+ *   (reflow-restarted — fires even when the text is IDENTICAL, e.g. two 🆕 Session rejections
+ *   in a row), (b) recolors the status TEXT (white / yellow #ffd54a / red #ff5a5a), and
+ *   (c) pops a 5s TOAST just above the widget's top edge — rises ~0.4s, holds, glides back
+ *   down; level-colored; pointer-events:none; a newer message REPLACES it and restarts the
+ *   cycle (no toast stacking). Blank resets ('') stay silent. First 'warn' use: the 🆕
+ *   Session "transcript must be EMPTY" rejection.
+ *
  * v3.327 Changes:
  * - FIX (slot-picker keyboard): bare digit keys were being eaten by TypingMind's window-level
  *   handlers in some app states and never reached the modal (1/2/3/0 all dead, even after
@@ -1462,7 +1473,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.327',
+  VERSION: '3.328',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7227,6 +7238,22 @@
         }
       }
       
+      /* (v3.328) Status attention effects — 1s glow pulse on the status line + rising toast */
+      @keyframes tm-status-glow-pulse {
+        0% { box-shadow: 0 0 0 rgba(255,255,255,0); }
+        25% { box-shadow: 0 0 18px var(--tm-glow-color, rgba(238,238,238,0.9)); }
+        100% { box-shadow: 0 0 0 rgba(255,255,255,0); }
+      }
+      .deepgram-status.tm-glow-normal { --tm-glow-color: rgba(238,238,238,0.9); animation: tm-status-glow-pulse 1s ease-out; }
+      .deepgram-status.tm-glow-warn { --tm-glow-color: rgba(255,213,74,0.95); animation: tm-status-glow-pulse 1s ease-out; }
+      .deepgram-status.tm-glow-error { --tm-glow-color: rgba(255,90,90,0.95); animation: tm-status-glow-pulse 1s ease-out; }
+      @keyframes tm-status-toast-rise {
+        0% { opacity: 0; transform: translateY(14px); }
+        8% { opacity: 1; transform: translateY(0); }
+        78% { opacity: 1; transform: translateY(0); }
+        100% { opacity: 0; transform: translateY(14px); }
+      }
+      
       .deepgram-status.connecting {
         background: #d1ecf1;
         color: #0c5460;
@@ -10204,7 +10231,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
   function startNewSession() {
     const ta = document.getElementById('deepgram-transcript');
     if (ta && ta.value.trim()) {
-      updateStatus('🆕 The transcript must be EMPTY to start a new session — clear it first', 'error');
+      updateStatus('🆕 The transcript must be EMPTY to start a new session — clear it first', 'error', 'warn');
       return;
     }
     const userName = prompt('Name for the new session\n(e.g. Audit Remediation Chain 002 - 003):');
@@ -11231,11 +11258,49 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     document.body.appendChild(overlay);
   }
 
-  function updateStatus(message, className) {
+  /** (v3.328) 1s glow pulse on the status line — reflow-restarted so it fires even when the new
+   *  text is IDENTICAL to the old (two of the same rejection in a row flash twice). */
+  function statusFlashGlow(statusEl, lvl) {
+    if (!statusEl) return;
+    statusEl.classList.remove('tm-glow-normal', 'tm-glow-warn', 'tm-glow-error');
+    void statusEl.offsetWidth;   // force reflow → the animation RESTARTS on an identical repeat
+    statusEl.classList.add('tm-glow-' + lvl);
+  }
+
+  /** (v3.328) The 5s rise-and-glide toast above the widget's top edge. One at a time — a newer
+   *  message REPLACES the current toast and restarts the cycle. pointer-events:none so it never
+   *  swallows a click. Level-colored (white/yellow/red). */
+  function statusShowToast(message, lvl) {
+    const existing = document.getElementById('tm-status-toast');
+    if (existing) existing.remove();
+    const color = (lvl === 'warn') ? '#ffd54a' : (lvl === 'error') ? '#ff5a5a' : '#eeeeee';
+    const panel = document.getElementById('deepgram-panel');
+    let posCss = 'right:24px; bottom:120px;';
+    if (panel) {
+      const r = panel.getBoundingClientRect();
+      posCss = 'left:' + Math.round(r.left) + 'px; width:' + Math.round(r.width) + 'px; bottom:' + Math.round(window.innerHeight - r.top + 6) + 'px;';
+    }
+    const toast = document.createElement('div');
+    toast.id = 'tm-status-toast';
+    toast.style.cssText = 'position:fixed; z-index:2147483645; box-sizing:border-box; padding:8px 12px; border-radius:8px; background:rgba(20,20,24,0.97); color:' + color + '; border:1px solid ' + color + '; box-shadow:0 4px 18px rgba(0,0,0,0.5); font-size:13px; line-height:1.35; text-align:center; pointer-events:none; animation:tm-status-toast-rise 5s ease-in-out forwards; ' + posCss;
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(function() { try { toast.remove(); } catch (e) {} }, 5100);
+  }
+
+  function updateStatus(message, className, level) {
     const statusEl = document.getElementById('deepgram-status');
     statusEl.textContent = message;
     statusEl.className = `deepgram-status ${className}`;
     statusHistoryPush(message);   // (v3.325) feed the 100-entry status history ring
+    // (v3.328) Attention effects on every NON-BLANK status (blank resets stay silent). Level
+    // colors both the status text and the toast: white normal / yellow warn / red error.
+    const msg = String(message == null ? '' : message);
+    if (!msg.trim()) return;
+    const lvl = level || (className === 'error' ? 'error' : 'normal');
+    statusEl.style.color = (lvl === 'warn') ? '#ffd54a' : (lvl === 'error') ? '#ff5a5a' : '';
+    statusFlashGlow(statusEl, lvl);
+    statusShowToast(msg, lvl);
   }
   
   // ==================== API KEY MANAGEMENT ====================
