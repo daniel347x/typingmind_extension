@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.325
+// Version: 4.326
 // Issues Fixed:
+//   - v4.326: KIMI/MOONSHOT CHAT-COMPLETIONS TOOL-PAIR RECOVERY. A TypingMind crash can
+//     leave an assistant tool_calls entry whose required role:'tool' response is missing,
+//     displaced, or punctuation-normalized differently (observed provider id
+//     `run_command:119` versus stored `run_command_119`). The Kimi/Moonshot outbound pass now
+//     canonicalizes both halves of every tool-call ID pair, moves a displaced matching tool
+//     response immediately behind its assistant call, and injects a minimal stub only when no
+//     response exists anywhere. The response-boundary guard also replaces provider IDs containing
+//     non-portable punctuation before TypingMind persists them, preventing recurrence.
 //   - v4.325: WIDGET COUNTER ORDER SWAP. The persistent widget now shows the CUMULATIVE
 //     session round-trip total (gray) BEFORE the current payload's per-turn time (blue) --
 //     per Dan: aggregate first, current second. Ring rows keep their original
@@ -1318,7 +1326,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.325';
+  const EXT_VERSION = '4.326';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -11923,6 +11931,139 @@
     return changed;
   }
 
+  // Kimi/Moonshot use the OpenAI chat-completions shape, whose structural rule is stricter
+  // than ordinary role alternation: every assistant tool_calls[] entry must be followed
+  // IMMEDIATELY by role:'tool' messages covering every tool_call_id. A TypingMind crash or
+  // cross-model normalization can leave a result missing, displaced, or paired under the
+  // punctuation-safe spelling of the same provider ID (for example run_command:119 ->
+  // run_command_119). Repair only the outbound copy; AssemblyDB remains untouched.
+  function repairChatCompletionsToolCallPairs(body, label) {
+    var report = { changed: 0, idRepairs: 0, movedResults: 0, stubbedResults: 0 };
+    if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return report;
+
+    var messages = body.messages;
+    var canonicalByRaw = new Map();
+
+    function canonicalToolId(raw) {
+      var original = (raw == null) ? '' : String(raw);
+      if (original && /^[a-zA-Z0-9_-]+$/.test(original)) return original;
+      if (canonicalByRaw.has(original)) return canonicalByRaw.get(original);
+
+      var canonical = original.replace(/[^a-zA-Z0-9_-]/g, '_');
+      if (!canonical) canonical = tmFreshKimiToolCallId(new Set());
+      canonicalByRaw.set(original, canonical);
+      return canonical;
+    }
+
+    // Canonicalize BOTH stored halves before sequence validation. This is deliberately
+    // pair-wide: changing only assistant.tool_calls[].id or only tool.tool_call_id would create
+    // the exact provider rejection this repair exists to prevent.
+    for (var mi = 0; mi < messages.length; mi++) {
+      var msg = messages[mi];
+      if (!msg) continue;
+
+      if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
+        for (var ti = 0; ti < msg.tool_calls.length; ti++) {
+          var tc = msg.tool_calls[ti];
+          if (!tc) continue;
+          var beforeCallId = (tc.id == null) ? '' : String(tc.id);
+          var afterCallId = canonicalToolId(beforeCallId);
+          if (beforeCallId !== afterCallId) {
+            tc.id = afterCallId;
+            report.idRepairs++;
+          }
+        }
+      }
+
+      if (msg.role === 'tool') {
+        var beforeResultId = (msg.tool_call_id == null) ? '' : String(msg.tool_call_id);
+        if (beforeResultId) {
+          var afterResultId = canonicalToolId(beforeResultId);
+          if (beforeResultId !== afterResultId) {
+            msg.tool_call_id = afterResultId;
+            report.idRepairs++;
+          }
+        }
+      }
+    }
+
+    for (var i = 0; i < messages.length; i++) {
+      var assistant = messages[i];
+      if (!assistant || assistant.role !== 'assistant' || !Array.isArray(assistant.tool_calls) || assistant.tool_calls.length === 0) continue;
+
+      var expected = [];
+      var expectedSeen = new Set();
+      for (var ai = 0; ai < assistant.tool_calls.length; ai++) {
+        var call = assistant.tool_calls[ai];
+        if (!call) continue;
+        var callId = canonicalToolId(call.id);
+        if (!callId) {
+          callId = tmFreshKimiToolCallId(expectedSeen);
+          call.id = callId;
+          report.idRepairs++;
+        }
+        if (!expectedSeen.has(callId)) {
+          expectedSeen.add(callId);
+          expected.push(callId);
+        }
+      }
+      if (expected.length === 0) continue;
+
+      var insertAt = i + 1;
+      var contiguousResults = new Set();
+      while (insertAt < messages.length && messages[insertAt] && messages[insertAt].role === 'tool') {
+        var contiguousId = messages[insertAt].tool_call_id;
+        if (contiguousId != null && String(contiguousId)) contiguousResults.add(String(contiguousId));
+        insertAt++;
+      }
+
+      for (var ei = 0; ei < expected.length; ei++) {
+        var wantedId = expected[ei];
+        if (contiguousResults.has(wantedId)) continue;
+
+        // Preserve a real result if TypingMind merely displaced it. Only synthesize when the
+        // matching result is genuinely absent from the remainder of the payload.
+        var laterIndex = -1;
+        for (var li = insertAt; li < messages.length; li++) {
+          var later = messages[li];
+          if (later && later.role === 'tool' && String(later.tool_call_id || '') === wantedId) {
+            laterIndex = li;
+            break;
+          }
+        }
+
+        if (laterIndex >= 0) {
+          var moved = messages.splice(laterIndex, 1)[0];
+          messages.splice(insertAt, 0, moved);
+          report.movedResults++;
+        } else {
+          messages.splice(insertAt, 0, {
+            role: 'tool',
+            tool_call_id: wantedId,
+            content: '[tm_repaired_missing_tool_result]'
+          });
+          report.stubbedResults++;
+        }
+        contiguousResults.add(wantedId);
+        insertAt++;
+      }
+
+      // Skip the now-valid contiguous result block; the next loop iteration resumes at the
+      // first non-tool message.
+      i = insertAt - 1;
+    }
+
+    report.changed = report.idRepairs + report.movedResults + report.stubbedResults;
+    if (report.changed) {
+      console.error(
+        '🚨 [v' + EXT_VERSION + '] ' + (label || 'chat-completions') +
+        ': repaired tool-call pairing before send (ids=' + report.idRepairs +
+        ', moved=' + report.movedResults + ', stubbed=' + report.stubbedResults + ')'
+      );
+    }
+    return report;
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.repairGeminiThoughtSignatures-c309,
   //   role=__lambdao_1.repairGeminiThoughtSignatures,
@@ -13505,7 +13646,8 @@
         }
 
         var providerId = (tc.id == null) ? '' : String(tc.id);
-        var duplicateOrMissing = !providerId || occupied.has(providerId);
+        var hasUnsafePunctuation = !!providerId && !/^[a-zA-Z0-9_-]+$/.test(providerId);
+        var duplicateOrMissing = !providerId || occupied.has(providerId) || hasUnsafePunctuation;
         var canonicalId = duplicateOrMissing ? tmFreshKimiToolCallId(occupied) : providerId;
         responseIdsByIndex.set(mapKey, canonicalId);
         occupied.add(canonicalId);
@@ -14040,6 +14182,17 @@
             modified = true;
           }
 
+          var openRouterToolPairReport = null;
+          if (tmIsKimiToolIdGuardModel(model)) {
+            openRouterToolPairReport = repairChatCompletionsToolCallPairs(body, 'OpenRouter Kimi/Moonshot');
+            if (openRouterToolPairReport.changed) {
+              repairTallyForThisCall.missingToolResults = openRouterToolPairReport.movedResults + openRouterToolPairReport.stubbedResults;
+              repairTallyForThisCall.orphanedToolCalls = openRouterToolPairReport.changed;
+              repairTallyForThisCall.toolIdSanitized = openRouterToolPairReport.idRepairs;
+              modified = true;
+            }
+          }
+
           if (isClaude) {
             // Normalize top-level cache_control to ttl:1h.
             // OpenRouter/Anthropic now rejects mixed TTLs between top-level and block-level
@@ -14340,6 +14493,13 @@
           // conservative string-placeholder repair already proven on OpenRouter Kimi traffic.
           tally.emptyMessageContent = repairChatCompletionsEmptyMessageContent(body, 'Moonshot chat-completions') || 0;
           if (tally.emptyMessageContent) modified = true;
+          var moonshotToolPairReport = repairChatCompletionsToolCallPairs(body, 'Direct Moonshot');
+          if (moonshotToolPairReport.changed) {
+            tally.missingToolResults = moonshotToolPairReport.movedResults + moonshotToolPairReport.stubbedResults;
+            tally.orphanedToolCalls = moonshotToolPairReport.changed;
+            tally.toolIdSanitized = moonshotToolPairReport.idRepairs;
+            modified = true;
+          }
           repairTallyForThisCall = tally;
 
           // (v4.232) Inject prompt_cache_key for cross-instance cache pinning.
