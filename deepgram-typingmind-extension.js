@@ -11,6 +11,21 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.315 Changes:
+ * - NEW 🆕 Session header button — one-click new-conversation initializer: (1) refuses unless
+ *   the transcript is empty; (2) prompts for the session name; (3) mints a random 8-hex Session
+ *   ID and types 'Load GLIMPSE\nSession ID: <hash> - [<name>]' into the transcript (Send stays
+ *   manual); (4) recycles the OLDEST-updated context slot — wipes its text, renames it to
+ *   '<hash> - [<name>]', and seeds its first block with the same Load GLIMPSE text, so the
+ *   v3.313/314 override has an identity to match from turn one (never force-activated — the
+ *   matcher claims it when the new conversation starts); (5) renames the first visible
+ *   'New Chat' sidebar row (DOM-level — persistence through a TypingMind reload is the open
+ *   test; v2 will drive the native rename UI if it doesn't stick); (6) writes the shared
+ *   tm_session_names localStorage entry ({_name,_session_id,_ts}) — the EXACT format the
+ *   Payload extension already reads via tmGetSessionName and prunes via
+ *   tmPruneSessionScopedStorage, so the two extensions now share hash→name with zero new
+ *   payload-side code.
+ *
  * v3.314 Changes:
  * - Load GLIMPSE override: added a SECOND independent signature — the leading 8-char hash of the
  *   context session NAME (Dan's universal '56da4b8e - Title' naming convention) now ALSO wins
@@ -1338,7 +1353,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.314',
+  VERSION: '3.315',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7954,6 +7969,7 @@
         <div class="deepgram-header">
           <h2 id="deepgram-header-title">🎙️ Transcription Control <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
+            <button id="deepgram-newsession-btn" onclick="window.startNewSession()" title="Start a brand-new session: mint a Session ID, type the Load GLIMPSE initializer, recycle the oldest context slot (wipe + rename + seed), and rename the first visible 'New Chat' sidebar row" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.4); border-radius:4px; color:inherit; font-weight:700;">🆕 Session</button>
             <button id="deepgram-status-toggle-btn" title="Show/hide the rarely-used (deprecated) Whisper model status block" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Whisper Model Status</button>
             <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
@@ -8697,6 +8713,7 @@
     window.saveWhisperSettings = saveWhisperSettings;
     window.clickBarAction = clickBarAction;
     window.clearAllState = clearAllState;
+    window.startNewSession = startNewSession;
     window.showParagraphWarning = showParagraphWarning;
     // Cancel functions (already exposed above for debugging, but also here for completeness)
     window.cancelWhisperRecording = cancelWhisperRecording;
@@ -9292,6 +9309,91 @@
     }
   }
   
+  // ==================== 🆕 NEW SESSION INITIALIZER (v3.315) ====================
+  /** Generate a random 8-hex-char Session ID (same scheme as the Payload extension's tmGenRandomSessionId). */
+  function genSessionIdHash() {
+    return ('00000000' + Math.floor(Math.random() * 0xFFFFFFFF).toString(16)).slice(-8);
+  }
+
+  /** Write the shared tm_session_names entry — the EXACT format the Payload extension already
+   *  reads via tmGetSessionName() and prunes via tmPruneSessionScopedStorage (week-old _ts), so
+   *  the two extensions share hash→name with zero new payload-side code. */
+  function tmSessionNamesWriteShared(sessionId, name) {
+    try {
+      var raw = localStorage.getItem('tm_session_names');
+      var map = raw ? JSON.parse(raw) : {};
+      map[sessionId] = { _name: String(name || '').trim(), _session_id: String(sessionId), _ts: Date.now() };
+      localStorage.setItem('tm_session_names', JSON.stringify(map));
+    } catch (e) {}
+  }
+
+  /** Rename the FIRST visible sidebar row titled exactly 'New Chat' (row structure shared with
+   *  the Payload extension's tmFindSidebarConversation). DOM-level: TypingMind owns the row, so
+   *  persistence through a reload is the open test — v2 will drive the native rename UI if the
+   *  raw edit does not stick. Returns true when a row was renamed. */
+  function renameFirstNewChatSidebarRow(newName) {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+      for (var i = 0; i < rows.length; i++) {
+        var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        var title = titleEl ? String(titleEl.textContent || '').trim() : '';
+        if (title === 'New Chat') {
+          titleEl.textContent = newName;
+          try { rows[i].title = newName; } catch (e) {}
+          return true;
+        }
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  /** The 🆕 Session button flow: empty-check → prompt for name → mint ID → type the Load GLIMPSE
+   *  initializer → recycle the OLDEST-updated context slot (wipe + rename + seed first block)
+   *  → shared-store write → sidebar rename. Send stays manual. */
+  function startNewSession() {
+    const ta = document.getElementById('deepgram-transcript');
+    if (ta && ta.value.trim()) {
+      updateStatus('🆕 The transcript must be EMPTY to start a new session — clear it first', 'error');
+      return;
+    }
+    const userName = prompt('Name for the new session\n(e.g. Audit Remediation Chain 002 - 003):');
+    if (!userName || !userName.trim()) return;
+    const hash = genSessionIdHash();
+    const fullName = hash + ' - [' + userName.trim() + ']';
+    const text = 'Load GLIMPSE\nSession ID: ' + fullName;
+
+    // 1) Type the initializer into the transcript (the v3.311 value-setter hook enables Send).
+    if (ta) ta.value = text;
+
+    // 2) Recycle the OLDEST-updated context slot: wipe + rename + seed the first block so the
+    //    Load GLIMPSE override has an identity to match from turn one. Never force-activate —
+    //    the matcher claims it the moment the new conversation starts.
+    const slots = refineGetContexts();
+    let oldestIdx = 0, oldestTs = Infinity;
+    for (let i = 0; i < slots.length; i++) {
+      const t = (slots[i] && typeof slots[i].lastUpdated === 'number') ? slots[i].lastUpdated : 0;
+      if (t < oldestTs) { oldestTs = t; oldestIdx = i; }
+    }
+    const oldName = (slots[oldestIdx] && slots[oldestIdx].name) || ('slot ' + (oldestIdx + 1));
+    slots[oldestIdx].name = fullName;
+    slots[oldestIdx].text = text;
+    refineTouchSlot(slots, oldestIdx);
+    refineSaveContexts(slots);
+    refineSyncToggleSlots(oldestIdx);
+    refineRenderToggleRow();
+    refineUpdateContextButtonLabel();
+
+    // 3) Shared tm_session_names entry (Payload-extension compatible).
+    tmSessionNamesWriteShared(hash, fullName);
+
+    // 4) Rename the first visible 'New Chat' sidebar row.
+    const renamed = renameFirstNewChatSidebarRow(fullName);
+
+    updateStatus('🆕 ' + fullName + ' ready — transcript primed, slot “' + oldName + '” recycled'
+      + (renamed ? ', sidebar row renamed (verify it sticks after a reload)' : ' (no visible “New Chat” sidebar row found — rename it manually)'),
+      'success');
+  }
+
   // ==================== UTILITY FUNCTIONS ====================
   // @beacon[
   //   id=tm@6,
