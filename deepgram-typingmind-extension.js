@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.334 Changes:
+ * - FIX (sidebar tint misses on hand-named rows): the title-hash extraction REQUIRED the
+ *   '🆕-button' form '<hash> - [name]' (opening bracket) — hand-typed names like
+ *   '78cd46db - Some Title' (no bracket) never tinted. The regex is now bracket-OPTIONAL and
+ *   accepts any dash character (ASCII hyphen, em/en dashes, non-breaking hyphen), matching the
+ *   matching subsystem's own refineSessionNameHash convention. Payload sid comparisons are now
+ *   case-insensitive ('TM-' prefix / mixed-case hashes). NEW console probe __debugTint([hash]):
+ *   no arg = every visible sidebar row's title, extracted hash, first-12 char codes (NBSP /
+ *   em-dash instantly visible), and hue outcome; with a hash = deep dive (ring sid matches,
+ *   _identity.key presence, every hue-store key containing the hash).
+ *
  * v3.333 Changes:
  * - 📊 Sidebar FULLNESS BULGE: sidebar session titles now carry a font-WEIGHT ramp (+ hue glow)
  *   driven by the Payload extension's context-fullness gauge (as-of-last-payload): <40% normal,
@@ -1525,7 +1536,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.333',
+  VERSION: '3.334',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10062,8 +10073,8 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         var cap = ring[i];
         if (!cap) continue;
         var sid = String(cap.session_id || cap.pasted_session_id || '');
-        var raw = sid.indexOf('tm-') === 0 ? sid.slice(3) : sid;
-        if (raw !== hash) continue;
+        var raw = (sid.slice(0, 3).toLowerCase() === 'tm-') ? sid.slice(3) : sid;
+        if (raw.toLowerCase() !== hash) continue;
         var key = cap._identity && cap._identity.key;
         if (!key) continue;
         var e = hues[key];
@@ -10074,7 +10085,8 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     try {
       var map = stores.hues, p0 = 'tm-' + hash + '::', p1 = hash + '::', best = null;
       for (var k in map) {
-        if (k.indexOf(p0) !== 0 && k.indexOf(p1) !== 0) continue;
+        var kl = k.toLowerCase();
+        if (kl.indexOf(p0) !== 0 && kl.indexOf(p1) !== 0) continue;
         var e2 = map[k];
         var hue2 = (e2 && typeof e2 === 'object') ? e2._hue : e2;
         var ts = (e2 && typeof e2 === 'object' && e2._ts) || 0;
@@ -10105,7 +10117,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       for (var i = 0; i < rows.length; i++) {
         var tEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
         if (!tEl) continue;
-        var m = String(tEl.textContent || '').match(/^\s*([0-9a-f]{8})\s*-\s*\[/i);
+        var m = String(tEl.textContent || '').match(/^\s*([0-9a-f]{8})\s*[-\u2010-\u2015]\s*/i);
         if (!m) continue;
         var hash = m[1].toLowerCase();
         var hue = tmHueForSessionHash(hash, stores);
@@ -10203,13 +10215,61 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
    *  quick-switcher rows (v3.331). Returns true when a tint was applied. */
   function tintSessionNameEl(el, name, stores) {
     try {
-      var m = String(name || '').match(/^\s*([0-9a-f]{8})\s*-\s*\[/i);
+      var m = String(name || '').match(/^\s*([0-9a-f]{8})\s*[-\u2010-\u2015]\s*/i);
       if (!m) return false;
       var hue = tmHueForSessionHash(m[1].toLowerCase(), stores || tmLoadHueStores());
       if (typeof hue === 'number') { el.style.color = 'hsl(' + hue + ', 55%, 72%)'; return true; }
     } catch (e) {}
     return false;
   }
+
+  /** (v3.334) Console probe for sidebar tint misses. __debugTint() lists every visible sidebar
+   *  row with its extracted hash + tint outcome; __debugTint('78cd46db') deep-dives one hash:
+   *  exact title char codes (catches NBSP / em-dash / non-ASCII), ring sid matches, _identity
+   *  presence, and every hue-store key containing the hash. */
+  window.__debugTint = function(hash) {
+    var HASH_RE = /^\s*([0-9a-f]{8})\s*[-\u2010-\u2015]\s*/i;
+    var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+    console.log('[debugTint] visible rows:', rows.length);
+    var stores = tmLoadHueStores();
+    rows.forEach(function(row, i) {
+      var tEl = row.querySelector('.truncate.w-full') || row.querySelector('.truncate');
+      var title = tEl ? String(tEl.textContent || '') : '(no title el)';
+      if (hash && title.indexOf(hash) === -1) return;
+      var m = title.match(HASH_RE);
+      console.log('[debugTint] row', i, '| title:', JSON.stringify(title.slice(0, 60)),
+        '| hash:', m ? m[1] : 'NO MATCH',
+        '| first-12 char codes:', Array.from(title.slice(0, 12)).map(function(c){ return c.charCodeAt(0).toString(16); }).join(' '));
+      if (m) {
+        var hue = tmHueForSessionHash(m[1].toLowerCase(), stores);
+        console.log('           hue:', hue === null ? 'NOT FOUND' : hue);
+      }
+    });
+    if (!hash) return 'done';
+    var h = hash.toLowerCase();
+    var ring = stores.ring, hues = stores.hues;
+    var ringHits = 0;
+    ring.forEach(function(cap, i) {
+      if (!cap) return;
+      var sid = String(cap.session_id || cap.pasted_session_id || '');
+      var raw = ((sid.slice(0, 3).toLowerCase() === 'tm-') ? sid.slice(3) : sid).toLowerCase();
+      if (raw !== h) return;
+      ringHits++;
+      var key = cap._identity && cap._identity.key;
+      var e = key ? hues[key] : undefined;
+      var hue = (e && typeof e === 'object') ? e._hue : e;
+      console.log('[debugTint] ring[' + i + '] sid:', JSON.stringify(sid), '| _identity.key:', key ? 'present' : 'MISSING', '| hue entry:', JSON.stringify(e), '| resolved hue:', hue);
+    });
+    console.log('[debugTint] ring hits for ' + h + ':', ringHits);
+    var keyHits = 0;
+    for (var k in hues) {
+      if (k.toLowerCase().indexOf(h) === -1) continue;
+      keyHits++;
+      console.log('[debugTint] hue key:', k, '→', JSON.stringify(hues[k]));
+    }
+    console.log('[debugTint] hue-store key hits (substring):', keyHits);
+    return 'done';
+  };
 
   /** Poll helper for the UI-rename chain (menus/inputs mount asynchronously). */
   function tmWaitFor(fn, timeoutMs) {
