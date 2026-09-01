@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.314 Changes:
+ * - Load GLIMPSE override: added a SECOND independent signature — the leading 8-char hash of the
+ *   context session NAME (Dan's universal '56da4b8e - Title' naming convention) now ALSO wins
+ *   the override when it matches the conversation's Load GLIMPSE session ID. The first-block
+ *   signature (v3.313) remains; either one firing is sufficient.
+ * - NEW console debug __debugOverride(): prints the head-turn norm actually seen, the extracted
+ *   head hash, EVERY session's first-block hash + name hash, the aggregate winner, and the
+ *   frozen/identity/active state — one paste pinpoints any override failure.
+ *
  * v3.313 Changes:
  * - LOAD GLIMPSE session-ID override in session matching: when the current conversation's FIRST
  *   visible turn is a 'Load GLIMPSE / Session ID: <8-char hash>' message (Dan's universal
@@ -1329,7 +1338,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.313',
+  VERSION: '3.314',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4262,6 +4271,29 @@
     return 'done';
   };
 
+  /** Console debug: expose EVERY input of the Load GLIMPSE session-ID override (v3.313/v3.314) —
+   *  the head-turn norm actually seen, the extracted head hash, each session's first-block hash
+   *  and NAME hash, the aggregate winner, and the freeze/identity/active state. Run
+   *  __debugOverride() in DevTools on the failing conversation. */
+  window.__debugOverride = function() {
+    var headNorm = getChatSignature();
+    var headHash = refineGlimpseSessionPrefix(headNorm);
+    console.log('[debugOverride] head turn norm (len ' + headNorm.length + '): "' + headNorm.slice(0, 160) + '"');
+    console.log('[debugOverride] headHash:', headHash);
+    var ctxs = refineGetContexts();
+    ctxs.forEach(function(ctx, i) {
+      var fbn = getFirstBlockNormForText((ctx && ctx.text) || '');
+      var fbh = refineGlimpseSessionPrefix(fbn);
+      var nh = refineSessionNameHash(ctx && ctx.name);
+      var hit = (headHash && (fbh === headHash || nh === headHash)) ? '  *** OVERRIDE MATCH ***' : '';
+      console.log('[debugOverride] session', i, '(' + (ctx && ctx.name) + '): firstBlockHash:', fbh, '| nameHash:', nh + hit, '| firstBlock head: "' + fbn.slice(0, 70) + '"');
+    });
+    var m = refineComputeMatches(getRecentChatTurnNorms(20, 4));
+    console.log('[debugOverride] aggregate winner:', m.matchIdx, '| aggregates:', JSON.stringify(m.aggregates));
+    console.log('[debugOverride] frozen:', refineFrozenAutoSelect, '| lastAutoMatchIdx:', lastAutoMatchIdx, '| activeIdx:', refineGetActiveContextIndex());
+    return 'done';
+  };
+
   /** The one shared session⇄turn match predicate (v3.289). Forward direction (turn contains the
    *  entire session block) always qualifies. Reverse direction (session block contains the turn
    *  norm) also qualifies — the v3.289 30% threshold was REVERTED in v3.290 in favor of
@@ -4350,6 +4382,14 @@
     return refineNormalizeBlockLines(blocks[0].split('\n'));
   }
 
+  /** (v3.314) Leading 8-char session-ID hash from a context session NAME ('56da4b8e - Title') —
+   *  Dan's universal naming convention; a second, independent override signal alongside the
+   *  first-block Load GLIMPSE signature. Lowercased (head hashes come from normalized keys). */
+  function refineSessionNameHash(name) {
+    var m = /^\s*([a-zA-Z0-9]{8})\s*-/.exec(name || '');
+    return m ? m[1].toLowerCase() : null;
+  }
+
   /** (v3.310) Update the current conversation's match IDENTITY (the aggregate winner),
    *  re-rendering the pill row when it changes — the active pill's solid-vs-dashed red border
    *  tracks this (solid = active session IS the conversation's match). */
@@ -4377,7 +4417,11 @@
     if (headHash) {
       var ctxs = refineGetContexts();
       for (var gi = 0; gi < ctxs.length; gi++) {
-        if (refineGlimpseSessionPrefix(getFirstBlockNormForText((ctxs[gi] && ctxs[gi].text) || '')) === headHash) {
+        var ctxI = ctxs[gi];
+        // (v3.314) EITHER signature wins: the first block's Load GLIMPSE line (v3.313) OR the
+        // session NAME's leading 8-char hash (Dan's universal 'hash - Title' naming convention).
+        if (refineGlimpseSessionPrefix(getFirstBlockNormForText((ctxI && ctxI.text) || '')) === headHash
+            || refineSessionNameHash(ctxI && ctxI.name) === headHash) {
           m = { matchIdx: gi, matchedSessions: [gi], strengths: m.strengths, aggregates: m.aggregates };
           break;
         }
