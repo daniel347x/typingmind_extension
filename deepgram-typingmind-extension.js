@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.316 Changes:
+ * - 🆕 Session sidebar rename v2: after the (possibly-reverted) instant DOM edit, the flow now
+ *   drives TypingMind's OWN rename UI on the first 'New Chat' row — hover-mounts the row's ⋯
+ *   menu button, opens it, clicks data-element-id="edit-title-button" (selector captured from
+ *   the live menu), sets the inline title input with a React-safe native setter + input event,
+ *   and commits with Enter + blur. The name now PERSISTS through reloads (v3.315's raw DOM edit
+ *   did not stick). Async + best-effort; every failure mode names itself on the status line.
+ *
  * v3.315 Changes:
  * - NEW 🆕 Session header button — one-click new-conversation initializer: (1) refuses unless
  *   the transcript is empty; (2) prompts for the session name; (3) mints a random 8-hex Session
@@ -1353,7 +1361,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.315',
+  VERSION: '3.316',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9327,24 +9335,83 @@
     } catch (e) {}
   }
 
-  /** Rename the FIRST visible sidebar row titled exactly 'New Chat' (row structure shared with
-   *  the Payload extension's tmFindSidebarConversation). DOM-level: TypingMind owns the row, so
-   *  persistence through a reload is the open test — v2 will drive the native rename UI if the
-   *  raw edit does not stick. Returns true when a row was renamed. */
-  function renameFirstNewChatSidebarRow(newName) {
+  /** Find the FIRST visible sidebar row titled exactly 'New Chat' (row structure shared with
+   *  the Payload extension's tmFindSidebarConversation). Returns { row, titleEl } or null. */
+  function findNewChatSidebarRow() {
     try {
       var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
       for (var i = 0; i < rows.length; i++) {
         var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
         var title = titleEl ? String(titleEl.textContent || '').trim() : '';
-        if (title === 'New Chat') {
-          titleEl.textContent = newName;
-          try { rows[i].title = newName; } catch (e) {}
-          return true;
-        }
+        if (title === 'New Chat') return { row: rows[i], titleEl: titleEl };
       }
     } catch (e) {}
-    return false;
+    return null;
+  }
+
+  /** Instant cosmetic rename of the first 'New Chat' row (DOM-level; TypingMind may revert it —
+   *  the UI-driven path below is the persisting one). Returns true when a row was renamed. */
+  function renameFirstNewChatSidebarRow(newName) {
+    var hit = findNewChatSidebarRow();
+    if (!hit) return false;
+    try {
+      hit.titleEl.textContent = newName;
+      try { hit.row.title = newName; } catch (e) {}
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** Poll helper for the UI-rename chain (menus/inputs mount asynchronously). */
+  function tmWaitFor(fn, timeoutMs) {
+    return new Promise(function(resolve) {
+      var t0 = Date.now();
+      (function tick() {
+        var v = null;
+        try { v = fn(); } catch (e) {}
+        if (v) return resolve(v);
+        if (Date.now() - t0 > timeoutMs) return resolve(null);
+        setTimeout(tick, 80);
+      })();
+    });
+  }
+
+  /** (v3.316) PERSISTING rename: drive TypingMind's OWN rename UI on the first 'New Chat' row —
+   *  hover the row (mounts the hover menu button), open the ⋯ menu, click 'Edit Title'
+   *  (data-element-id="edit-title-button", captured from the live menu), then set the inline
+   *  title input with a React-safe native setter + input event and commit with Enter + blur.
+   *  Async, best-effort; resolves to a short result string for the status line. */
+  async function renameFirstNewChatSidebarRowViaUI(newName) {
+    var hit = findNewChatSidebarRow();
+    if (!hit) return 'no visible “New Chat” row';
+    var row = hit.row;
+    try { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); } catch (e) {}
+    var menuBtn = await tmWaitFor(function() {
+      return row.querySelector('[data-element-id="more-actions-menu-button"]')
+        || row.querySelector('button[id^="headlessui-menu-button"]');
+    }, 1500);
+    if (!menuBtn) return 'no menu button on row';
+    menuBtn.click();
+    var editBtn = await tmWaitFor(function() {
+      var btns = document.querySelectorAll('[data-element-id="edit-title-button"]');
+      return btns.length ? btns[btns.length - 1] : null;   // the most recently opened menu
+    }, 1500);
+    if (!editBtn) return 'menu opened but no Edit Title item';
+    editBtn.click();
+    var input = await tmWaitFor(function() {
+      var inp = row.querySelector('input');
+      if (inp) return inp;
+      return document.querySelector('[role="dialog"] input[type="text"], [role="dialog"] input:not([type])');
+    }, 1500);
+    if (!input) return 'Edit Title clicked but no title input found';
+    try {
+      var desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      desc.set.call(input, newName);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
+      input.blur();
+      return 'renamed via native UI';
+    } catch (e) { return 'input found but set failed: ' + (e && e.message); }
   }
 
   /** The 🆕 Session button flow: empty-check → prompt for name → mint ID → type the Load GLIMPSE
@@ -9386,11 +9453,15 @@
     // 3) Shared tm_session_names entry (Payload-extension compatible).
     tmSessionNamesWriteShared(hash, fullName);
 
-    // 4) Rename the first visible 'New Chat' sidebar row.
+    // 4) Rename the first visible 'New Chat' sidebar row: instant cosmetic edit now (TypingMind
+    //    may revert it), PLUS drive TypingMind's OWN rename UI asynchronously so it PERSISTS (v3.316).
     const renamed = renameFirstNewChatSidebarRow(fullName);
+    renameFirstNewChatSidebarRowViaUI(fullName).then(function(r) {
+      try { updateStatus('🆕 Sidebar rename: ' + r, r.indexOf('renamed') === 0 ? 'success' : 'error'); } catch (e) {}
+    });
 
     updateStatus('🆕 ' + fullName + ' ready — transcript primed, slot “' + oldName + '” recycled'
-      + (renamed ? ', sidebar row renamed (verify it sticks after a reload)' : ' (no visible “New Chat” sidebar row found — rename it manually)'),
+      + (renamed ? ', native UI rename running…' : ' (no visible “New Chat” sidebar row found — rename it manually)'),
       'success');
   }
 
