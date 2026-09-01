@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.337 Changes:
+ * - 📎 Append button: FIXED WIDE width (240px, flex:0 0 auto) — no more width-snapping to the
+ *   session name. Long names ellipsis-crop (the row-1 span already had the ellipsis logic;
+ *   the fixed width finally engages it) and short names center with symmetric blank space.
+ *   Sibling buttons absorb the difference.
+ * - 📎 Append button: the session NAME now carries the Payload session hue (shared
+ *   tintSessionNameEl) instead of the verdict yellow/blue — the verdict signal already lives
+ *   in the border/background/pulse, so nothing is lost. Contrast solved with a dark text halo
+ *   (0 0 3px + wide soft shadow — same family as the ✓ glyph's shadow), so even a teal-ish
+ *   hue on the teal button reads crisply WITHOUT distorting the hue. Names without a hash
+ *   keep the old verdict colors as fallback. The yellow colon is untouched.
+ *
  * v3.336 Changes:
  * - 🔒 STEADY-STATE lock frame: the 📎 Append button gets the SAME big red rectangle as the
  *   active pill (6px #8b2020 + padding + faint yellow wash) with a 🔒 icon in the upper-right
@@ -1555,7 +1567,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.336',
+  VERSION: '3.337',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4594,9 +4606,19 @@
     // vise-bar row colors (#e6c200 match, #4da3ff nomatch). Falls back to inherited on indeterminate.
     var nameSpan = btn.querySelector('#deepgram-append-name');
     if (nameSpan) {
-      if (verdict === 'match' || verdict === 'match-current') nameSpan.style.color = '#e6c200';
-      else if (verdict === 'nomatch') nameSpan.style.color = '#4da3ff';
-      else nameSpan.style.color = '';
+      // (v3.337) The Payload session HUE wins when the session name carries a hash — the verdict
+      // signal already lives in the border/background/pulse, so nothing is lost. A dark text
+      // halo (same family as the ✓ glyph's shadow) keeps even a teal-ish hue crisp on the teal
+      // button WITHOUT distorting the hue. Hash-less names keep the old verdict colors.
+      var tinted = tintSessionNameEl(nameSpan, refineGetActiveContextName());
+      if (tinted) {
+        nameSpan.style.textShadow = '0 0 3px rgba(0,0,0,0.85), 0 0 7px rgba(0,0,0,0.45)';
+      } else {
+        nameSpan.style.textShadow = '';
+        if (verdict === 'match' || verdict === 'match-current') nameSpan.style.color = '#e6c200';
+        else if (verdict === 'nomatch') nameSpan.style.color = '#4da3ff';
+        else nameSpan.style.color = '';
+      }
     }
     // Inner-content scale breathing (v3.286): restored via transform:scale on the content wrapper.
     var content = btn.querySelector('#deepgram-append-content');
@@ -8862,7 +8884,7 @@
         </div>
         
         <div class="deepgram-buttons" style="margin-bottom:10px;">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:240px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
