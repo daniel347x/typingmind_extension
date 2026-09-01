@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.326
+// Version: 4.327
 // Issues Fixed:
+//   - v4.327: SHARED SESSION-NAME STORE CONSUMPTION FIX (tm- alias tolerance). The
+//     Transcription Control extension's Session-initializer button writes tm_session_names
+//     keyed by the RAW 8-hex session id (the ap:4MZB5I / ap:23HPS1 shared-store contract),
+//     but this extension's canonical session id is 'tm-'-prefixed (tmDeriveStableSessionId)
+//     and every name read path passes the prefixed form -- so sibling auto-labels always
+//     missed on the widget session row, ring-modal rows, and filter labels.
+//     tmGetSessionName now falls back to the alias form on an exact miss (exact-first, so
+//     manual renames keep precedence over the sibling auto-label).
+//     tmTouchSessionScopedStores now matches BOTH id forms and preserves an existing
+//     _session_id, so sibling-written entries get their _ts refreshed by active traffic
+//     instead of being garbage-collected by the week-old prune mid-conversation.
 //   - v4.326: KIMI/MOONSHOT CHAT-COMPLETIONS TOOL-PAIR RECOVERY. A TypingMind crash can
 //     leave an assistant tool_calls entry whose required role:'tool' response is missing,
 //     displaced, or punctuation-normalized differently (observed provider id
@@ -1326,7 +1337,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.326';
+  const EXT_VERSION = '4.327';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2729,12 +2740,22 @@
         if (!map || typeof map !== 'object') return;
         var changed = false;
         var keys = Object.keys(map);
+        // (v4.327) tm- alias tolerance: session-scoped entries may be keyed by the
+        // canonical 'tm-'-prefixed id OR the raw 8-hex id (the Transcription Control
+        // sibling writes tm_session_names under the raw id). Match either form so active
+        // traffic refreshes _ts on BOTH, keeping sibling-written auto-label entries out
+        // of the week-old prune while their conversation is alive.
+        var sidStr = String(sessionId);
+        var sidAlias = (sidStr.indexOf('tm-') === 0) ? sidStr.slice(3) : ('tm-' + sidStr);
         for (var i = 0; i < keys.length; i++) {
           var key = keys[i];
           var entry = map[key];
-          if (entrySessionId(key, entry) !== String(sessionId)) continue;
+          var eSid = entrySessionId(key, entry);
+          if (eSid !== sidStr && eSid !== sidAlias) continue;
           if (entry && typeof entry === 'object') {
-            entry._session_id = String(sessionId);
+            // Preserve an existing _session_id (e.g. the sibling's raw form); stamp only
+            // when absent so legacy scalar conversions still get the canonical id.
+            if (!entry._session_id) entry._session_id = sidStr;
             entry._ts = ts;
           } else if (convertLegacy === 'cost') {
             map[key] = { _total: Number(entry) || 0, _session_id: String(sessionId), _ts: ts };
@@ -2957,7 +2978,19 @@
     try {
       var raw = localStorage.getItem('tm_session_names');
       var map = raw ? JSON.parse(raw) : {};
-      var entry = map[sessionId];
+      var sid = String(sessionId);
+      var entry = map[sid];
+      // (v4.327) tm- alias tolerance: the canonical display id carries one leading 'tm-'
+      // routing prefix (tmDeriveStableSessionId), but the Transcription Control sibling
+      // extension writes this shared store keyed by the RAW 8-hex session id (the
+      // ap:4MZB5I / ap:23HPS1 contract). On an exact miss, try the alias form in either
+      // direction. Exact-first preserves precedence: a manual widget rename (tm- key)
+      // beats the sibling's auto-label (raw key). Same pattern as
+      // tmAgentManagementDisplayState (v4.296) and the auto-resume cancel store.
+      if (entry == null) {
+        var alias = (sid.indexOf('tm-') === 0) ? sid.slice(3) : ('tm-' + sid);
+        entry = map[alias];
+      }
       return (entry && typeof entry === 'object') ? (entry._name || '') : (entry || '');
     } catch (e) { return ''; }
   }
