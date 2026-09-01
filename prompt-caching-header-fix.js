@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.332
+// Version: 4.333
 // Issues Fixed:
+//   - v4.333: HOVERCARD FONT RAMP. Every text element in the session-ctx hovercard
+//     (header, session labels, live badge/timer spans, total/max numbers, aggregate cost,
+//     empty states) bumped 10px -> 12px for readability; live-zone min-height 12px -> 14px.
+//     The 14px SVG dial geometry is unchanged.
 //   - v4.332: HOVERCARD AGGREGATE SESSION COST. Each session-ctx hovercard row now ends with
 //     the session's AGGREGATE cost (all turns for that identity), read from the
 //     tm_session_costs_v2 ledger via the same tmGetSessionCost the widget '$' total and the
@@ -1384,7 +1388,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.332';
+  const EXT_VERSION = '4.333';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5712,7 +5716,7 @@
       var rtRec = tmGetSessionCosts()[rtKey] || null;
       var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
       if (rtTot > 0) {
-        parts.push('<span style="color:#9aa4b2;font-size:10px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
+        parts.push('<span style="color:#9aa4b2;font-size:12px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
       }
     } catch (eSum) {}
     // 2) Round-trip: LIVE count-up when THIS identity owns the in-flight turn (the global
@@ -5725,11 +5729,11 @@
         if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = Date.now() - Number(tmInFlightTurn.ts);
       }
       if (liveMs > 0) {
-        parts.push('<span style="color:#7ec8e3;font-size:10px;font-weight:600;white-space:nowrap;">\u23F1 ' + tmFmtDuration(liveMs) + '</span>');
+        parts.push('<span style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">\u23F1 ' + tmFmtDuration(liveMs) + '</span>');
       } else {
         var rtCap = tmLatestRoundTripEntryForIdentity(key);
         if (rtCap && rtCap._rt_ms != null && Number(rtCap._rt_ms) > 0) {
-          parts.push('<span style="color:#7ec8e3;font-size:10px;white-space:nowrap;">\u23F1 ' + tmFmtDuration(Number(rtCap._rt_ms)) + '</span>');
+          parts.push('<span style="color:#7ec8e3;font-size:12px;white-space:nowrap;">\u23F1 ' + tmFmtDuration(Number(rtCap._rt_ms)) + '</span>');
         }
       }
     } catch (eRt) {}
@@ -5739,7 +5743,7 @@
         parts.push(tmAgentManagementBadge(info.sid));
         var st = tmAgentManagementDisplayState(info.sid);
         if (st && st.pendingToolCall && st.responseFinishedAt) {
-          parts.push('<span style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
         }
       }
     } catch (eTool) {}
@@ -5767,7 +5771,7 @@
   function tmBuildSessionCtxHoverHtml() {
     tmSessionCtxHoverIdentities = {};
     var rows = [];
-    rows.push('<div style="font-size:10px;font-weight:700;color:#c8d0dc;margin-bottom:4px;">Sessions in memory \u2014 context used</div>');
+    rows.push('<div style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;">Sessions in memory \u2014 context used</div>');
     var ring = [];
     try { ring = tmReadCaptureRing() || []; } catch (eRing) {}
     var seen = {};
@@ -5790,9 +5794,9 @@
       try { ctxCap = tmLatestCtxSnapshotEntryForIdentity(key); } catch (eC) {}
       if (ctxCap && ctxCap._ctx_snapshot) {
         right = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 14, noClick: true, cap: ctxCap }) +
-          '<span style="font-size:10px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
+          '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
       } else {
-        right = '<span style="font-size:10px;color:#6a7280;white-space:nowrap;">no ctx snapshot yet</span>';
+        right = '<span style="font-size:12px;color:#6a7280;white-space:nowrap;">no ctx snapshot yet</span>';
       }
       // (v4.332) Aggregate session cost at the right end (tm_session_costs_v2 ledger, the
       // SAME tmGetSessionCost the widget '$' total and the Filter dropdown's ($total) read):
@@ -5800,21 +5804,21 @@
       try {
         var hoverSessCost = tmGetSessionCost(info.sid || '', info.model || '', info.host, info.isProxy);
         if (hoverSessCost > 0) {
-          right += '<span style="font-size:10px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
+          right += '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
         }
       } catch (eCost) {}
       rows.push(
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
           '<span style="display:flex;flex-direction:column;min-width:0;max-width:320px;">' + // (v4.330) 50% wider name column (was 215px)
-            '<span style="font-size:10px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
-            '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;min-height:12px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+            '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
+            '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;min-height:14px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
           '</span>' +
           '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' + right + '</span>' +
         '</div>'
       );
     }
     if (count === 0) {
-      rows.push('<div style="font-size:10px;color:#6a7280;">(ring buffer empty)</div>');
+      rows.push('<div style="font-size:12px;color:#6a7280;">(ring buffer empty)</div>');
     }
     return rows.join('');
   }
