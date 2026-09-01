@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.330 Changes:
+ * - 🎨 Sidebar session TINTING: visible sidebar rows titled with Dan's '<hash> - [<name>]'
+ *   convention now render their title text in the Payload extension's session hue
+ *   ('hsl(h, 55%, 72%)'; hue ∈ [30,329], red arc structurally absent). Read-only consumer of
+ *   the Payload contract: hue of the MOST RECENT payload entry for the hash — Recipe A walks
+ *   the tm_payload_captures_v1 ring newest-first; Recipe B falls back to scanning
+ *   tm_session_hues_v3 by key prefix + _ts (covers a hash whose ring entries aged out of the
+ *   500-entry buffer). Versioned keys fail safe to no-tint if the format ever changes.
+ *   Applied by the existing sidebar MutationObserver (debounced; hue stores cached by
+ *   raw-string identity so JSON only re-parses when the Payload data actually changes) + one
+ *   delayed kickoff; React re-renders simply get re-tinted. Non-conforming rows untouched.
+ *
  * v3.329 Changes:
  * - FIX (🆕 Session select collapsing the sidebar): after the rename, if the renamed row is
  *   ALREADY the selected conversation (data-element-id="selected-chat-item"), the flow now
@@ -1481,7 +1493,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.329',
+  VERSION: '3.330',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9294,6 +9306,9 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     
     // Watch for sidebar view changes and reapply layout widths
     initializeSidebarWatcher();
+    // (v3.330) Initial sidebar session tint (the watcher keeps it fresh afterwards); delayed so
+    // the sidebar has rendered and the Payload hue stores are loaded.
+    setTimeout(function() { try { tintSidebarSessionTitles(); } catch (e) {} }, 1500);
     // Watch for chat-turn changes and show the session-match green border on the tail label
     initChatMatchWatcher();
   }
@@ -9315,6 +9330,8 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       observer.debounceTimer = setTimeout(() => {
         // Reapply layout widths (will apply or remove sidebar CSS based on Chat view active)
         applyLayoutWidths();
+        // (v3.330) Re-tint visible sidebar session titles (React wipes inline styles on re-render)
+        try { tintSidebarSessionTitles(); } catch (e) {}
       }, 100);
     });
     
@@ -9974,6 +9991,92 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       try { hit.row.title = newName; } catch (e) {}
       return true;
     } catch (e) { return false; }
+  }
+
+  // ==================== 🎨 SIDEBAR SESSION TINTING (v3.330) ====================
+  /** Load the Payload extension's hue stores (READ-ONLY; the versioned keys fail safe to empty
+   *  if the format ever changes). tm_session_hues_v3: { '<sid>::<model>::<host>::<proxy|direct>':
+   *  { _hue, _session_id, _ts } } (legacy bare-number entries tolerated); tm_payload_captures_v1:
+   *  the 500-entry capture ring, newest at the END. Cached by raw-string identity so the JSON is
+   *  only re-parsed when the Payload data actually changes (the sidebar observer fires often). */
+  var tmHueStoresCache = { ringRaw: null, huesRaw: null, ring: [], hues: {} };
+  function tmLoadHueStores() {
+    var ringRaw = null, huesRaw = null;
+    try { ringRaw = localStorage.getItem('tm_payload_captures_v1'); } catch (e) {}
+    try { huesRaw = localStorage.getItem('tm_session_hues_v3'); } catch (e) {}
+    if (ringRaw !== tmHueStoresCache.ringRaw) {
+      tmHueStoresCache.ringRaw = ringRaw;
+      try { tmHueStoresCache.ring = ringRaw ? JSON.parse(ringRaw) : []; } catch (e) { tmHueStoresCache.ring = []; }
+    }
+    if (huesRaw !== tmHueStoresCache.huesRaw) {
+      tmHueStoresCache.huesRaw = huesRaw;
+      try { tmHueStoresCache.hues = huesRaw ? JSON.parse(huesRaw) : {}; } catch (e) { tmHueStoresCache.hues = {}; }
+    }
+    return tmHueStoresCache;
+  }
+
+  /** Hue (int in [30,329]) of the MOST RECENT payload entry for our simple 8-hex session hash.
+   *  The Payload extension's identity is granular (sid::model::host::proxy), so one hash can hold
+   *  several entries — most-recent wins. Recipe A: walk the capture ring newest-first (the literal
+   *  'most recent payload'). Recipe B fallback: scan the hue store by key prefix + _ts (covers a
+   *  hash whose ring entries aged out of the buffer). */
+  function tmHueForSessionHash(hash, stores) {
+    try {
+      var ring = stores.ring, hues = stores.hues;
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var cap = ring[i];
+        if (!cap) continue;
+        var sid = String(cap.session_id || cap.pasted_session_id || '');
+        var raw = sid.indexOf('tm-') === 0 ? sid.slice(3) : sid;
+        if (raw !== hash) continue;
+        var key = cap._identity && cap._identity.key;
+        if (!key) continue;
+        var e = hues[key];
+        var hue = (e && typeof e === 'object') ? e._hue : e;
+        if (typeof hue === 'number') return hue;
+      }
+    } catch (e) {}
+    try {
+      var map = stores.hues, p0 = 'tm-' + hash + '::', p1 = hash + '::', best = null;
+      for (var k in map) {
+        if (k.indexOf(p0) !== 0 && k.indexOf(p1) !== 0) continue;
+        var e2 = map[k];
+        var hue2 = (e2 && typeof e2 === 'object') ? e2._hue : e2;
+        var ts = (e2 && typeof e2 === 'object' && e2._ts) || 0;
+        if (typeof hue2 === 'number' && (!best || ts > best.ts)) best = { hue: hue2, ts: ts };
+      }
+      if (best) return best.hue;
+    } catch (e) {}
+    return null;
+  }
+
+  /** Tint every visible sidebar row's title to the Payload extension's session hue —
+   *  'hsl(hue, 55%, 72%)', red arc [330°,30°) structurally absent. Rows are matched by the
+   *  leading 8-hex hash of Dan's '<hash> - [<name>]' convention; non-conforming rows are
+   *  skipped untouched. Purely cosmetic (inline color only) — React wipes it on re-render and
+   *  the sidebar watcher re-applies. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tintSidebarSessionTitles-t1nt,
+  //   role=__lambdao_1.tintSidebarSessionTitles,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function tintSidebarSessionTitles() {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+      if (!rows.length) return;
+      var stores = tmLoadHueStores();
+      for (var i = 0; i < rows.length; i++) {
+        var tEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
+        if (!tEl) continue;
+        var m = String(tEl.textContent || '').match(/^\s*([0-9a-f]{8})\s*-\s*\[/i);
+        if (!m) continue;
+        var hue = tmHueForSessionHash(m[1].toLowerCase(), stores);
+        if (typeof hue === 'number') {
+          tEl.style.color = 'hsl(' + hue + ', 55%, 72%)';
+        }
+      }
+    } catch (e) {}
   }
 
   /** Poll helper for the UI-rename chain (menus/inputs mount asynchronously). */
