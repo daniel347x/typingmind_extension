@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.325 Changes:
+ * - 🕘 Status HISTORY: updateStatus now feeds a localStorage ring of the last 100 status
+ *   messages (newest first; consecutive exact duplicates collapsed so repeats can't flood it).
+ *   A small 🕘 clicker sits to the LEFT of the status line — the status text itself is 100%
+ *   untouched — and opens a wide modal: numbered rows newest-at-top (row 1 duplicates the
+ *   currently-visible status), wrapping messages so nothing is cut off, dim timestamps. ESC
+ *   handling duplicated 1:1 from refineOpenTextModal (capture phase + stopPropagation +
+ *   overlay-level twin) so a single Escape wham reliably closes it.
+ *
  * v3.324 Changes:
  * - 🆕 Session slot-picker modal: the flow no longer silently recycles the OLDEST-updated
  *   context slot — a heuristic that can't tell a days-long meta-conversation from an abandoned
@@ -1422,7 +1431,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.324',
+  VERSION: '3.325',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -8614,8 +8623,11 @@
 
         <!-- Transcription status block (Deepgram/Whisper) — toggled by the button in the title bar -->
         <div id="deepgram-status-block">
-          <!-- Status -->
-          <div id="deepgram-status" class="deepgram-status disconnected">Ready to Record</div>
+          <!-- Status (+ v3.325 history clicker to its left — the status line itself is untouched) -->
+          <div style="display:flex; align-items:center; gap:5px;">
+            <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:2px 6px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
+            <div id="deepgram-status" class="deepgram-status disconnected" style="flex:1 1 auto;">Ready to Record</div>
+          </div>
           
           <!-- Queue Status (Always Visible) -->
           <div id="deepgram-queue-status">Whisper Standing By</div>
@@ -9141,6 +9153,7 @@
     }
     // Status-block hide/show toggle (Whisper is a rarely-used backup now)
     document.getElementById('deepgram-status-toggle-btn').addEventListener('click', toggleStatusBlock);
+document.getElementById('deepgram-status-history-btn').addEventListener('click', openStatusHistoryModal);
     // Apply saved status-block visibility on load
     applyStatusBlockVisibility();
     document.getElementById('deepgram-eleven-voice-select').addEventListener('change', function() {
@@ -11032,10 +11045,115 @@
     };
   }
   
+  // ==================== STATUS HISTORY (v3.325) ====================
+  /** localStorage ring of the last 100 status messages (newest first). Every updateStatus() call
+   *  flows through statusHistoryPush, so row 1 of the history modal always duplicates the
+   *  currently-visible status line. Consecutive exact duplicates are collapsed. */
+  function statusHistoryLoad() {
+    try {
+      const raw = localStorage.getItem('tm_status_history');
+      const arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function statusHistoryPush(message) {
+    try {
+      const msg = String(message == null ? '' : message);
+      if (!msg.trim()) return;
+      const arr = statusHistoryLoad();
+      if (arr.length && arr[0] && arr[0].m === msg) return;
+      arr.unshift({ m: msg, t: Date.now() });
+      if (arr.length > 100) arr.length = 100;
+      localStorage.setItem('tm_status_history', JSON.stringify(arr));
+    } catch (e) {}
+  }
+
+  /** The 🕘 status-history modal: the last 100 statuses, newest at top, wide + wrapping so nothing
+   *  is cut off. ESC handling duplicated 1:1 from refineOpenTextModal (capture-phase keydown +
+   *  stopPropagation + overlay-level twin) so one wham of Escape reliably closes it. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.openStatusHistoryModal-sh9m,
+  //   role=__lambdao_1.openStatusHistoryModal,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function openStatusHistoryModal() {
+    const existing = document.getElementById('deepgram-status-history-overlay');
+    if (existing) existing.remove();
+
+    const items = statusHistoryLoad();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'deepgram-status-history-overlay';
+    overlay.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:2147483646; display:flex; align-items:center; justify-content:center;';
+
+    const box = document.createElement('div');
+    box.style.cssText = 'background:#1e1e1e; color:#eee; width:min(1100px,94vw); max-height:86vh; display:flex; flex-direction:column; border-radius:10px; box-shadow:0 10px 40px rgba(0,0,0,0.6); padding:16px; box-sizing:border-box;';
+
+    const h = document.createElement('div');
+    h.textContent = '🕘 Status history';
+    h.style.cssText = 'font-size:15px; font-weight:600; margin-bottom:4px;';
+    const sub = document.createElement('div');
+    sub.textContent = 'Most recent first — the last ' + items.length + ' status message' + (items.length === 1 ? '' : 's') + ' (row 1 = the currently-visible status). Esc closes.';
+    sub.style.cssText = 'font-size:12px; opacity:0.7; margin-bottom:10px;';
+
+    const list = document.createElement('div');
+    list.style.cssText = 'flex:1 1 auto; overflow-y:auto; display:flex; flex-direction:column; gap:2px; min-height:120px;';
+
+    const fmtTime = function(t) {
+      try {
+        const d = new Date(t);
+        const pad = function(n) { return String(n).padStart(2, '0'); };
+        const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+        if (d.toDateString() === new Date().toDateString()) return hm + ':' + pad(d.getSeconds());
+        return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+      } catch (e) { return ''; }
+    };
+
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.textContent = 'No status history yet — messages appear here as they happen.';
+      empty.style.cssText = 'font-size:13px; opacity:0.6; padding:12px 4px;';
+      list.appendChild(empty);
+    }
+
+    items.forEach(function(it, i) {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; align-items:baseline; gap:10px; padding:5px 8px; border-radius:5px; font-size:13px; background:' + (i === 0 ? '#26332a' : (i % 2 ? '#242425' : 'transparent')) + ';';
+
+      const num = document.createElement('span');
+      num.textContent = String(i + 1);
+      num.style.cssText = 'flex:0 0 auto; min-width:26px; text-align:right; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; opacity:0.5;';
+
+      const msg = document.createElement('span');
+      msg.textContent = (it && it.m) || '';
+      msg.style.cssText = 'flex:1 1 auto; min-width:0; white-space:normal; overflow-wrap:anywhere; line-height:1.4;' + (i === 0 ? ' color:#b9f5c9;' : '');
+
+      const time = document.createElement('span');
+      time.textContent = fmtTime(it && it.t);
+      time.style.cssText = 'flex:0 0 auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px; opacity:0.45;';
+
+      row.appendChild(num); row.appendChild(msg); row.appendChild(time);
+      list.appendChild(row);
+    });
+
+    box.appendChild(h); box.appendChild(sub); box.appendChild(list);
+    overlay.appendChild(box);
+    const closeModal = () => overlay.remove();
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeModal(); });
+    // ESC closes — the exact refineOpenTextModal pattern (capture phase + stopPropagation, plus an
+    // overlay-level twin so it fires reliably even while a child has focus).
+    function esc(e){ if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); closeModal(); document.removeEventListener('keydown', esc, true); } }
+    document.addEventListener('keydown', esc, true);
+    overlay.addEventListener('keydown', function(e){ if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); closeModal(); document.removeEventListener('keydown', esc, true); } });
+    document.body.appendChild(overlay);
+  }
+
   function updateStatus(message, className) {
     const statusEl = document.getElementById('deepgram-status');
     statusEl.textContent = message;
     statusEl.className = `deepgram-status ${className}`;
+    statusHistoryPush(message);   // (v3.325) feed the 100-entry status history ring
   }
   
   // ==================== API KEY MANAGEMENT ====================
