@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.321 Changes:
+ * - FIX (sidebar rename always failing with 'no visible New Chat row'): the flow ran the INSTANT
+ *   cosmetic edit (which renames the row title) BEFORE the UI chain re-searched for a row
+ *   titled 'New Chat' — by definition nothing titled 'New Chat' remained, so the persisting
+ *   chain died at step one every time. The row is now located ONCE and handed to the UI chain
+ *   directly (the cosmetic edit still runs first for instant feedback).
+ *
  * v3.320 Changes:
  * - Sidebar rename: hardwired the row's ⋯ menu selector to button[aria-label="Chat settings"]
  *   (from the __debugSidebarRow dump — the row carries Delete Chat / Favorite Chat / Chat
@@ -1389,7 +1396,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.320',
+  VERSION: '3.321',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9408,8 +9415,7 @@
    *  (data-element-id="edit-title-button", captured from the live menu), then set the inline
    *  title input with a React-safe native setter + input event and commit with Enter + blur.
    *  Async, best-effort; resolves to a short result string for the status line. */
-  async function renameFirstNewChatSidebarRowViaUI(newName) {
-    var hit = findNewChatSidebarRow();
+  async function renameFirstNewChatSidebarRowViaUI(hit, newName) {
     if (!hit) return 'no visible “New Chat” row';
     var row = hit.row;
     console.log('[renameUI] start — firing hover on the “New Chat” row');
@@ -9531,9 +9537,12 @@
     tmSessionNamesWriteShared(hash, fullName);
 
     // 4) Rename the first visible 'New Chat' sidebar row: instant cosmetic edit now (TypingMind
-    //    may revert it), PLUS drive TypingMind's OWN rename UI asynchronously so it PERSISTS (v3.316).
+    //    may revert it), PLUS drive TypingMind's OWN rename UI asynchronously so it PERSISTS.
+    //    (v3.321) Locate the row ONCE and hand it to the chain — previously the chain re-searched
+    //    by title AFTER the cosmetic edit had already renamed it, so it always failed at step one.
+    const sidebarHit = findNewChatSidebarRow();
     const renamed = renameFirstNewChatSidebarRow(fullName);
-    renameFirstNewChatSidebarRowViaUI(fullName).then(function(r) {
+    renameFirstNewChatSidebarRowViaUI(sidebarHit, fullName).then(function(r) {
       try { updateStatus('🆕 Sidebar rename: ' + r, r.indexOf('renamed') === 0 ? 'success' : 'error'); } catch (e) {}
     });
 
