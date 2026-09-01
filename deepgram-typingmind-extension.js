@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.320 Changes:
+ * - Sidebar rename: hardwired the row's ⋯ menu selector to button[aria-label="Chat settings"]
+ *   (from the __debugSidebarRow dump — the row carries Delete Chat / Favorite Chat / Chat
+ *   settings; ONLY Chat settings is ever touched) + mouseenter alongside mouseover, and
+ *   step-by-step console tracing ([renameUI] lines) so the next test shows exactly where the
+ *   chain lands or dies.
+ *
  * v3.319 Changes:
  * - NEW console debug __debugSidebarRow(idx): dumps a sidebar conversation row's class, EVERY
  *   button it contains (aria-label / data-element-id / id / text), and its outerHTML — the
@@ -1382,7 +1389,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.319',
+  VERSION: '3.320',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9405,26 +9412,34 @@
     var hit = findNewChatSidebarRow();
     if (!hit) return 'no visible “New Chat” row';
     var row = hit.row;
-    try { row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); } catch (e) {}
+    console.log('[renameUI] start — firing hover on the “New Chat” row');
+    try {
+      row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      row.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+    } catch (e) {}
     var menuBtn = await tmWaitFor(function() {
-      return row.querySelector('[data-element-id="more-actions-menu-button"]')
+      return row.querySelector('button[aria-label="Chat settings"]')
+        || row.querySelector('[data-element-id="more-actions-menu-button"]')
         || row.querySelector('button[id^="headlessui-menu-button"]');
     }, 750);
-    if (!menuBtn) return 'no menu button on row';
+    if (!menuBtn) { console.log('[renameUI] FAIL: no menu button on row'); return 'no menu button on row'; }
+    console.log('[renameUI] menu button found:', menuBtn.getAttribute('aria-label') || menuBtn.id, '— clicking');
     menuBtn.click();
     var editBtn = await tmWaitFor(function() {
       var btns = document.querySelectorAll('[data-element-id="edit-title-button"]');
       return btns.length ? btns[btns.length - 1] : null;   // the most recently opened menu
     }, 750);
-    if (!editBtn) return 'menu opened but no Edit Title item';
+    if (!editBtn) { console.log('[renameUI] FAIL: menu click produced no Edit Title item'); return 'menu opened but no Edit Title item'; }
+    console.log('[renameUI] Edit Title item found — clicking');
     editBtn.click();
     var input = await tmWaitFor(function() {
       var inp = row.querySelector('input, textarea');
       if (inp) return inp;
       return document.querySelector('[role="dialog"] input[type="text"], [role="dialog"] input:not([type]), [role="dialog"] textarea');
     }, 750);
-    if (!input) return 'Edit Title clicked but no title input found';
+    if (!input) { console.log('[renameUI] FAIL: Edit Title clicked but no title input mounted'); return 'Edit Title clicked but no title input found'; }
     try {
+      console.log('[renameUI] title control mounted (' + input.tagName + ') — setting value');
       // React-safe set on whichever control mounted (TypingMind's inline edit is a TEXTAREA).
       var proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
       var desc = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -9437,8 +9452,10 @@
       var scope = input.closest('div[data-tm-icon-abs]') || row;
       var confirmBtn = scope.querySelector('button[aria-label="Confirm changes"], button[aria-label="Confirm"], button[aria-label="Save"]');
       if (confirmBtn) {
+        console.log('[renameUI] Confirm button found — clicking');
         confirmBtn.click();
       } else {
+        console.log('[renameUI] no Confirm button — Enter+blur fallback');
         input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
         input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true }));
         input.blur();
