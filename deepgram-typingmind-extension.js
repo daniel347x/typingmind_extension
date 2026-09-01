@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.322 Changes:
+ * - 🆕 Session flow now SELECTS the new conversation after the rename completes (clicks the
+ *   sidebar row's title element — the tmClickSidebarMatch pattern: title clicks bubble to
+ *   React's navigation handler, never an inner button). Fires only after the chain resolves so
+ *   navigation can't unmount the row mid-rename.
+ *
  * v3.321 Changes:
  * - FIX (sidebar rename always failing with 'no visible New Chat row'): the flow ran the INSTANT
  *   cosmetic edit (which renames the row title) BEFORE the UI chain re-searched for a row
@@ -1396,7 +1402,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.321',
+  VERSION: '3.322',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9544,6 +9550,10 @@
     const renamed = renameFirstNewChatSidebarRow(fullName);
     renameFirstNewChatSidebarRowViaUI(sidebarHit, fullName).then(function(r) {
       try { updateStatus('🆕 Sidebar rename: ' + r, r.indexOf('renamed') === 0 ? 'success' : 'error'); } catch (e) {}
+      // (v3.322) Select the new conversation so everything is set up — click the TITLE element
+      // (tmClickSidebarMatch pattern: title clicks bubble to React's navigation handler). Done
+      // only after the chain resolves, so navigation can't unmount the row mid-rename.
+      try { if (sidebarHit && sidebarHit.titleEl) sidebarHit.titleEl.click(); } catch (e) {}
     });
 
     updateStatus('🆕 ' + fullName + ' ready — transcript primed, slot “' + oldName + '” recycled'
