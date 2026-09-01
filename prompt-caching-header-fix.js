@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.329
+// Version: 4.330
 // Issues Fixed:
+//   - v4.330: HOVERCARD POLISH (five tweaks). (1) BLANK-STATE HOVER: the widget's
+//     post-refresh 'Session ID: (none yet)' row now also carries the hover trigger, so the
+//     session-ctx card works BEFORE any payload warms the widget (the ring buffer persists
+//     in localStorage -- 'where are my sessions at?' on a fresh refresh). (2) Z-ORDER: card
+//     raised to 2147483647 (max int32) -- the Transcription Control sibling runs layers at
+//     2147483646 and was covering the lower rows. (3) GAUGE ORDER now matches the widget/
+//     ring-row canonical layout: aggregate (cumulative) -> round-trip -> tool/clear badge
+//     -> tool timer. (4) CARD 50% WIDER (360px -> 540px; name column 215px -> 320px) so
+//     session names stop cropping. (5) CLICK GLITCH fixed: the ring-modal open branch is
+//     now closest()-based -- the v4.328 inner underline span had no data-action, so clicks
+//     on the underlined text only dismissed the card. Also: model/provider bottom-row font
+//     9px -> 11px (+2).
 //   - v4.329: HOVERCARD LIVE GAUGES FOR EVERY SESSION. The session-ctx hovercard (v4.328)
 //     now carries, per ring identity, the SAME gauges the persistent widget shows for the
 //     most-recent session only: the agent-management tool/clear badge, the client-side
@@ -1356,7 +1368,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.329';
+  const EXT_VERSION = '4.330';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5677,16 +5689,16 @@
   function tmSessionCtxLiveHtml(key, info) {
     var parts = [];
     info = info || {};
-    // 1) Agent-management badge + live tool-execution timer (per-session ledger state).
+    // 1) Cumulative session round-trip total FIRST (gray aggregate, matching the widget/
+    //    ring-row canonical order: aggregate -> clear/timer -> badge -> tool timer).
     try {
-      if (tmAgentManagementEnabled()) {
-        parts.push(tmAgentManagementBadge(info.sid));
-        var st = tmAgentManagementDisplayState(info.sid);
-        if (st && st.pendingToolCall && st.responseFinishedAt) {
-          parts.push('<span style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
-        }
+      var rtKey = tmBuildSessionCostKey(info.sid || '', info.model || '', info.host || '', !!info.isProxy);
+      var rtRec = tmGetSessionCosts()[rtKey] || null;
+      var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
+      if (rtTot > 0) {
+        parts.push('<span style="color:#9aa4b2;font-size:10px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
       }
-    } catch (eTool) {}
+    } catch (eSum) {}
     // 2) Round-trip: LIVE count-up when THIS identity owns the in-flight turn (the global
     //    marker resolves back to its capture's identity); otherwise the latest completed
     //    turn's duration for this identity.
@@ -5705,15 +5717,16 @@
         }
       }
     } catch (eRt) {}
-    // 3) Cumulative session round-trip total (static gray, from the session-cost ledger).
+    // 3) Agent-management badge + live tool-execution timer LAST (per-session ledger state).
     try {
-      var rtKey = tmBuildSessionCostKey(info.sid || '', info.model || '', info.host || '', !!info.isProxy);
-      var rtRec = tmGetSessionCosts()[rtKey] || null;
-      var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
-      if (rtTot > 0) {
-        parts.push('<span style="color:#9aa4b2;font-size:10px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
+      if (tmAgentManagementEnabled()) {
+        parts.push(tmAgentManagementBadge(info.sid));
+        var st = tmAgentManagementDisplayState(info.sid);
+        if (st && st.pendingToolCall && st.responseFinishedAt) {
+          parts.push('<span style="color:#d08b8b;font-size:10px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+        }
       }
-    } catch (eSum) {}
+    } catch (eTool) {}
     return parts.join(' ');
   }
 
@@ -5767,7 +5780,7 @@
       }
       rows.push(
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
-          '<span style="display:flex;flex-direction:column;min-width:0;max-width:215px;">' +
+          '<span style="display:flex;flex-direction:column;min-width:0;max-width:320px;">' + // (v4.330) 50% wider name column (was 215px)
             '<span style="font-size:10px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
             '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;min-height:12px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
           '</span>' +
@@ -5789,7 +5802,10 @@
         tmSessionCtxHoverEl = document.createElement('div');
         tmSessionCtxHoverEl.id = 'tm-session-ctx-hovercard';
         tmSessionCtxHoverEl.style.position = 'fixed';
-        tmSessionCtxHoverEl.style.zIndex = '100001';
+        // (v4.330) TOP of the z-order: the Transcription Control sibling already runs its
+        // layers at z-index 2147483646 (max int32 - 1), which covered this card at 100001.
+        // The card is transient and hover-dismissed, so max int32 is safe and correct here.
+        tmSessionCtxHoverEl.style.zIndex = '2147483647';
         tmSessionCtxHoverEl.style.background = 'rgba(12,12,16,0.97)';
         tmSessionCtxHoverEl.style.color = '#fff';
         tmSessionCtxHoverEl.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, sans-serif';
@@ -5797,7 +5813,7 @@
         tmSessionCtxHoverEl.style.borderRadius = '6px';
         tmSessionCtxHoverEl.style.border = '1px solid #3a3f4a';
         tmSessionCtxHoverEl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
-        tmSessionCtxHoverEl.style.width = '360px';
+        tmSessionCtxHoverEl.style.width = '540px'; // (v4.330) 50% wider (was 360px) so session names stop cropping
         tmSessionCtxHoverEl.style.maxHeight = '50vh';
         tmSessionCtxHoverEl.style.overflowY = 'auto';
         // Moving from the label INTO the card must not dismiss it.
@@ -5946,7 +5962,9 @@
           }
 
           // Open payload capture modal (ring buffer summary + per-entry copy)
-          if (target.dataset.action === 'open-payload-capture-modal') {
+          // (v4.330) closest()-based: the 'Session ID' label's inner underline span has no
+          // data-action of its own, so a direct target.dataset check swallowed those clicks.
+          if (target.closest && target.closest('[data-action="open-payload-capture-modal"]')) {
             openPayloadCaptureModal();
             ev.stopPropagation();
             return;
@@ -6825,7 +6843,10 @@
       }
     } else {
       tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
-      lines.push('<div data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
+      // (v4.330) data-hover added: the hovercard must work in the blank post-refresh state
+      // too -- the ring buffer persists in localStorage, so 'where are my sessions at?'
+      // is answerable BEFORE any new payload warms the widget.
+      lines.push('<div data-action="open-payload-capture-modal" data-hover="session-ctx-list" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
     }
 
     // v4.192: model row — active session's model string in the session identity color
@@ -6882,7 +6903,8 @@
           routingDropdown = tmBuildProviderRoutingDropdown(_rIdKey, _rModel, providerForDisplay);
         }
       } catch (e) {}
-      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:9px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
+      // (v4.330) Model/provider row font 9px -> 11px (+2 per Dan).
+      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:11px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
     }
 
     // (Fix 17, v4.202) Error row: when the most-recent response carried an OpenRouter error,
