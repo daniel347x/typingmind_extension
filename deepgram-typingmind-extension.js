@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.341 Changes:
+ * - FIX (Append name top-crop): the v3.338 transform:translateY(-5px) on the name row painted
+ *   the text 5px ABOVE the content wrapper's box, where #deepgram-append-content's
+ *   overflow:hidden CLIPPED it (tops of capitals/brackets/digits sheared off). The lift is
+ *   now done in LAYOUT, not paint: transform removed; row 1 gets padding-bottom:5px (same 5px
+ *   separation from the label, zero clipping — glyphs never leave the wrapper's box).
+ * - 📎 Append button: session name font 12px → 13px (+1px); width 360 → 430px (~20% wider).
+ *
  * v3.340 Changes:
  * - 📎 Button strip ~33% taller: .deepgram-btn vertical padding 6px → 11px (all strip buttons,
  *   everything else identical) — this is the most important row in the widget, and the extra
@@ -1594,7 +1602,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.340',
+  VERSION: '3.341',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3751,7 +3759,7 @@
     // v3.286: row1 is now a flex row — [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
     // The ✓ is managed by refineUpdateAppendBtnState (appended to #deepgram-append-row1 after the colon).
     btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
-      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:12px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px; transform:translateY(-5px);">'
+      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:13px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px 5px 2px;">'
       + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
       + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
@@ -8914,7 +8922,7 @@
         </div>
         
         <div class="deepgram-buttons" style="margin-bottom:10px; align-items:center;">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:360px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:430px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
