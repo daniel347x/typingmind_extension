@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.329 Changes:
+ * - FIX (🆕 Session select collapsing the sidebar): after the rename, if the renamed row is
+ *   ALREADY the selected conversation (data-element-id="selected-chat-item"), the flow now
+ *   SKIPS the selection click entirely — TypingMind treats a click on the already-selected
+ *   sidebar row as a COLLAPSE-SIDEBAR toggle (which, with this widget's hacked CSS, also
+ *   exposes the unclickable-region glitch). Same guard applied to the pre-rename fallback
+ *   click.
+ *
  * v3.328 Changes:
  * - Status ATTENTION effects: updateStatus(message, className, level) — level = 'normal' |
  *   'warn' | 'error' (omitted ⇒ 'error' when className is 'error', else 'normal'). Every
@@ -1473,7 +1481,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.328',
+  VERSION: '3.329',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10283,13 +10291,22 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
               var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
               for (var i = 0; i < rows.length; i++) {
                 var tEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
-                if (tEl && String(tEl.textContent || '').trim() === fullName) return tEl;
+                if (tEl && String(tEl.textContent || '').trim() === fullName) return { tEl: tEl, row: rows[i] };
               }
               return null;
-            }, 2000).then(function(tEl) {
+            }, 2000).then(function(hit) {
               try {
-                if (tEl) tEl.click();
-                else if (sidebarHit && sidebarHit.titleEl) sidebarHit.titleEl.click();
+                // (v3.329) Skip the click when the renamed row is ALREADY the selected conversation
+                // (data-element-id="selected-chat-item") — TypingMind treats a click on the
+                // already-selected sidebar row as a COLLAPSE-SIDEBAR toggle. Same guard on the
+                // fallback click.
+                if (hit) {
+                  if (hit.row.getAttribute('data-element-id') === 'selected-chat-item') return;
+                  hit.tEl.click();
+                } else if (sidebarHit && sidebarHit.titleEl && sidebarHit.row
+                  && sidebarHit.row.getAttribute('data-element-id') !== 'selected-chat-item') {
+                  sidebarHit.titleEl.click();
+                }
               } catch (e) {}
             });
           }, 150);
