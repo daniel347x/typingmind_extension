@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.335 Changes:
+ * - 🆕 Session slot-picker rows now render the SAME shared visuals as every other session
+ *   surface: the dual staleness rings (refineSlotRingColors — outer green relative-recency
+ *   rank, inner orange absolute-age, ONE gradient scale computed across all 10 rows) AND the
+ *   Payload session-name hue on the name text (tintSessionNameEl), plus a last-updated
+ *   tooltip per row. Recycle decisions now show identity + age at a glance. Hover now only
+ *   tints the background (it no longer fights the green ring border).
+ *
  * v3.334 Changes:
  * - FIX (sidebar tint misses on hand-named rows): the title-hash extraction REQUIRED the
  *   '🆕-button' form '<hash> - [name]' (opening bracket) — hand-typed names like
@@ -1536,7 +1544,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.334',
+  VERSION: '3.335',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10477,13 +10485,20 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); cancel(); }
     });
 
+    // (v3.335) Timestamps of all slots, computed ONCE so every row's rings share one gradient
+    // scale IDENTICAL to the pills / Context-modal ribbon / quick-switcher (same helper).
+    const allTs = slots.map(function(s) { return (s && typeof s.lastUpdated === 'number') ? s.lastUpdated : 0; });
     for (let i = 0; i < slots.length; i++) {
       (function(idx) {
         const s = slots[idx] || {};
+        const rings = refineSlotRingColors(s.lastUpdated, allTs);
         const row = document.createElement('div');
-        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:7px 10px; border-radius:6px; background:#252526; border:1px solid #3a3a3a; cursor:pointer; font-size:13px;';
-        row.onmouseenter = function() { row.style.background = '#2f3a4a'; row.style.borderColor = '#4a6a9a'; };
-        row.onmouseleave = function() { row.style.background = '#252526'; row.style.borderColor = '#3a3a3a'; };
+        row.style.cssText = 'display:flex; align-items:center; gap:10px; padding:7px 12px; border-radius:14px; cursor:pointer; font-size:13px; '
+          + 'border:3px solid ' + rings.outer + '; '
+          + 'box-shadow: inset 0 0 0 5px #1e1e1e, inset 0 0 0 7px ' + rings.inner + ';';
+        row.title = (s.name || ('slot ' + (idx + 1))) + '\n– last updated ' + refineFmtLastUpdated(s.lastUpdated);
+        row.onmouseenter = function() { row.style.background = 'rgba(255,255,255,0.08)'; };
+        row.onmouseleave = function() { row.style.background = 'transparent'; };
         row.onclick = function() { finish(idx); };
 
         const key = document.createElement('span');
@@ -10493,6 +10508,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         const name = document.createElement('span');
         name.textContent = s.name || ('slot ' + (idx + 1));
         name.style.cssText = 'flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+        tintSessionNameEl(name, s.name);   // (v3.335) Payload session hue;
 
         row.appendChild(key);
         row.appendChild(name);
