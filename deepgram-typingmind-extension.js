@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.336 Changes:
+ * - 🔒 STEADY-STATE lock frame: the 📎 Append button gets the SAME big red rectangle as the
+ *   active pill (6px #8b2020 + padding + faint yellow wash) with a 🔒 icon in the upper-right
+ *   padding — but ONLY in the 100% steady state: verdict 'match-current' (active session
+ *   matches AND its last block IS the most recent chat turn) AND auto-select NOT frozen (no
+ *   ❄️) AND no Refine request in flight. Any deviation (behind-by-N incl. agent mid-response,
+ *   no-match, freeze, streaming suppression) removes it instantly — so red-frame-on-red-frame
+ *   (pill + Append) is the single glance-test for 'everything is lined up, nothing to append'.
+ *   Tracks verdict via lastAppendVerdict; re-evaluated in refineUpdateAppendBtnState +
+ *   refineUpdateFreezeButton; the wrapper is created lazily around the button.
+ *
  * v3.335 Changes:
  * - 🆕 Session slot-picker rows now render the SAME shared visuals as every other session
  *   surface: the dual staleness rings (refineSlotRingColors — outer green relative-recency
@@ -1544,7 +1555,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.335',
+  VERSION: '3.336',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3377,6 +3388,7 @@
         row.style.border = '';
       }
     }
+    try { refineUpdateAppendLock(); } catch (e) {}   // (v3.336) freeze changes the steady state
   }
 
   /** Called when a session's TEXT is updated: ensure that session is in the toggle row.
@@ -4505,6 +4517,57 @@
     }
   }
 
+  var lastAppendVerdict = 'indeterminate';   // (v3.336) latest Append verdict, for the steady-state lock frame
+
+  /** (v3.336) The 100% STEADY-STATE lock frame around the 📎 Append button: the SAME big red
+   *  rectangle as the active pill (6px #8b2020 + padding + faint yellow wash) with a 🔒 icon in
+   *  the upper-right padding — shown ONLY when ALL of: (1) verdict is 'match-current' (the
+   *  active session matches AND its last block IS the most recent chat turn — never while
+   *  streaming / behind-by-N), (2) auto-select is NOT frozen (no ❄️), (3) no Refine request in
+   *  flight. Any deviation removes it instantly. The wrapper is created lazily around
+   *  #deepgram-insert-btn (no markup change). */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.refineUpdateAppendLock-lok1,
+  //   role=__lambdao_1.refineUpdateAppendLock,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function refineUpdateAppendLock() {
+    var btn = document.getElementById('deepgram-insert-btn');
+    if (!btn) return;
+    var wrap = document.getElementById('deepgram-append-lockwrap');
+    if (!wrap && btn.parentNode) {
+      wrap = document.createElement('span');
+      wrap.id = 'deepgram-append-lockwrap';
+      wrap.style.cssText = 'display:inline-block; position:relative;';
+      btn.parentNode.insertBefore(wrap, btn);
+      wrap.appendChild(btn);
+    }
+    if (!wrap) return;
+    var steady = (lastAppendVerdict === 'match-current') && !refineFrozenAutoSelect && !refineAbortController;
+    var lock = document.getElementById('deepgram-append-lock-icon');
+    if (steady) {
+      wrap.style.border = '6px solid #8b2020';
+      wrap.style.borderRadius = '0';
+      wrap.style.padding = '12px';
+      wrap.style.background = 'rgba(255,214,0,0.08)';
+      if (!lock) {
+        lock = document.createElement('span');
+        lock.id = 'deepgram-append-lock-icon';
+        lock.textContent = '🔒';
+        lock.title = 'STEADY STATE — active session matches this conversation and is up to date';
+        lock.style.cssText = 'position:absolute; top:0px; right:2px; font-size:11px; line-height:1; opacity:0.85; pointer-events:none; z-index:2;';
+        wrap.appendChild(lock);
+      }
+    } else {
+      wrap.style.border = '';
+      wrap.style.borderRadius = '';
+      wrap.style.padding = '';
+      wrap.style.background = '';
+      if (lock) lock.remove();
+    }
+  }
+
   var lastMatchTurnIdx = -1;  // turn index of the match (0=most recent, 1+=turns back, -1=no match)
 
   /** Reflect the conversation⇄session match verdict on the 📎 Append button (v3.258).
@@ -4519,11 +4582,12 @@
   function refineUpdateAppendBtnState(verdict) {
     var btn = document.getElementById('deepgram-insert-btn');
     if (!btn) return;
+    lastAppendVerdict = verdict;   // (v3.336) track for the steady-state lock frame
     // While a Refine request is in-flight the button is deliberately disabled (v3.259): keep the
     // disabled dim and skip verdict styling — otherwise each periodic match check (which calls
     // this) would restore full opacity a few seconds in and the button would LOOK enabled
     // mid-flight (v3.261). refineAbortController is non-null for exactly the in-flight window.
-    if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; return; }
+    if (refineAbortController) { btn.style.animation = ''; btn.style.opacity = '0.5'; refineUpdateAppendLock(); return; }
     // The behind-state pulse (v3.263) applies ONLY to the 'match' verdict; clear it for all others.
     if (verdict !== 'match' && btn.style.animationName) btn.style.animation = '';
     // Session-name color (v3.285): yellow when matching, blue when not — mirrors the tail-label
@@ -4587,6 +4651,7 @@
       btn.style.background = '';
       btn.style.color = '';
     }
+    refineUpdateAppendLock();   // (v3.336) re-evaluate the steady-state lock frame
   }
 
   /** Apply the match/no-match rails + turn indicator on the tail label (explicit rail elements). */
