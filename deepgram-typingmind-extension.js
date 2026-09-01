@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.338 Changes:
+ * - 📎 Append button: width 240 → 360px (50% wider, for long session names).
+ * - 📎 Append button name halo v2: the outline is now TAILORED to the hue — a dark
+ *   COMPLEMENTARY color (hue+180, 75% sat, 15% light) as a directional 1px outline + soft
+ *   glow (a tad thicker than the v3.337 pure-black blur). tintSessionNameEl now returns the
+ *   applied hue (int in [30,329], always truthy) instead of true, so callers can derive it.
+ * - 📎 Append button: the session-name row (name + colon + ✓) migrated UP 5px
+ *   (transform:translateY(-5px) — visual only, layout unchanged) into the empty space above,
+ *   clearing any threat of overlap with '📎 Append' below now that the name has an outline.
+ *
  * v3.337 Changes:
  * - 📎 Append button: FIXED WIDE width (240px, flex:0 0 auto) — no more width-snapping to the
  *   session name. Long names ellipsis-crop (the row-1 span already had the ellipsis logic;
@@ -1567,7 +1577,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.337',
+  VERSION: '3.338',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3724,7 +3734,7 @@
     // v3.286: row1 is now a flex row — [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
     // The ✓ is managed by refineUpdateAppendBtnState (appended to #deepgram-append-row1 after the colon).
     btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
-      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:11px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px;">'
+      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:11px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px; transform:translateY(-5px);">'
       + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
       + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
@@ -4612,7 +4622,11 @@
       // button WITHOUT distorting the hue. Hash-less names keep the old verdict colors.
       var tinted = tintSessionNameEl(nameSpan, refineGetActiveContextName());
       if (tinted) {
-        nameSpan.style.textShadow = '0 0 3px rgba(0,0,0,0.85), 0 0 7px rgba(0,0,0,0.45)';
+        // (v3.338) Dark COMPLEMENTARY outline (hue+180, 75% sat, 15% light): directional 1px on
+        // all four sides + soft glow — a tad thicker than the v3.337 pure-black blur, and always
+        // contrasting BY CONSTRUCTION with the hue it surrounds.
+        var oc = 'hsl(' + ((tinted + 180) % 360) + ',75%,15%)';
+        nameSpan.style.textShadow = '1px 1px 0 ' + oc + ', -1px -1px 0 ' + oc + ', 1px -1px 0 ' + oc + ', -1px 1px 0 ' + oc + ', 0 0 6px ' + oc;
       } else {
         nameSpan.style.textShadow = '';
         if (verdict === 'match' || verdict === 'match-current') nameSpan.style.color = '#e6c200';
@@ -8884,7 +8898,7 @@
         </div>
         
         <div class="deepgram-buttons" style="margin-bottom:10px;">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:240px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:360px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
@@ -10306,14 +10320,16 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
   }
 
   /** Tint a session-name element to the Payload session hue of its leading 8-hex hash (when the
-   *  name carries one). Shared by the toggle pills, the Context-modal ribbon rows, and the
-   *  quick-switcher rows (v3.331). Returns true when a tint was applied. */
+   *  name carries one). Shared by the toggle pills, the Context-modal ribbon rows, the
+   *  quick-switcher rows, the slot-picker, and the Append button (v3.331+). Returns the APPLIED
+   *  HUE (int in [30,329] — always truthy, so callers can derive e.g. the complementary outline
+   *  color) or false when no tint was applied. */
   function tintSessionNameEl(el, name, stores) {
     try {
       var m = String(name || '').match(/^\s*([0-9a-f]{8})\s*[-\u2010-\u2015]\s*/i);
       if (!m) return false;
       var hue = tmHueForSessionHash(m[1].toLowerCase(), stores || tmLoadHueStores());
-      if (typeof hue === 'number') { el.style.color = 'hsl(' + hue + ', 55%, 72%)'; return true; }
+      if (typeof hue === 'number') { el.style.color = 'hsl(' + hue + ', 55%, 72%)'; return hue; }
     } catch (e) {}
     return false;
   }
