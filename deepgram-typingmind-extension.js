@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.323 Changes:
+ * - Status block compacted: the deprecated 'Whisper Standing By' queue bar is now HIDDEN
+ *   (Whisper unused for months; Wispr Flow is the path — ask and it returns), and the status
+ *   line's padding/margins are tightened (10px/15px → 4px/4px) since it now earns its keep
+ *   staying open. Font size unchanged.
+ *
  * v3.322 Changes:
  * - 🆕 Session flow now SELECTS the new conversation after the rename completes (clicks the
  *   sidebar row's title element — the tmClickSidebarMatch pattern: title clicks bubble to
@@ -1402,7 +1408,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.322',
+  VERSION: '3.323',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6667,12 +6673,12 @@
       
       /* Status Indicator */
       .deepgram-status {
-        padding: 10px 12px;
+        padding: 4px 10px;   /* (v3.323) compacted from 10px 12px — the status line earns its keep now */
         border-radius: 8px;
         font-size: 13px;
         font-weight: 500;
         text-align: center;
-        margin-bottom: 15px;
+        margin-bottom: 4px;   /* (v3.323) compacted from 15px */
       }
       
       .deepgram-status.connected {
@@ -6731,6 +6737,7 @@
       
       /* Queue Status - Always Visible Above Record Button */
       #deepgram-queue-status {
+        display: none;   /* (v3.323) HIDDEN — Whisper deprecated (Wispr Flow replaced it); ask to restore */
         font-size: 12px;
         margin-top: -16px;
         margin-bottom: 8px;
