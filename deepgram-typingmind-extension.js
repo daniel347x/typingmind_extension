@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.339 Changes:
+ * - 📎 Append button typography rebalance: the '📎 Append' label (row 2) drops 13px → 9px —
+ *   the session NAME (11px) is now the dominant line. Frees the vertical space that was
+ *   cropping the raised name row at the top and the label at the bottom.
+ * - 🔒 Lock frame geometry: the wrapper now PERMANENTLY reserves the frame's space (12px
+ *   padding + 6px border, TRANSPARENT when idle) — the red frame appears as a pure COLOR
+ *   change with zero row-height jumping (was: its appearance grew the row ~36px). The button
+ *   strip is align-items:center, so sibling buttons keep their natural height and never
+ *   stretch to the frame (was: flex-stretch made every button grow to match it).
+ *
  * v3.338 Changes:
  * - 📎 Append button: width 240 → 360px (50% wider, for long session names).
  * - 📎 Append button name halo v2: the outline is now TAILORED to the hue — a dark
@@ -1577,7 +1587,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.338',
+  VERSION: '3.339',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3738,7 +3748,7 @@
       + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
       + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
-      + '<div id="deepgram-append-row2" style="font-size:13px; line-height:1.2; white-space:nowrap;">📎 Append</div>'
+      + '<div id="deepgram-append-row2" style="font-size:9px; line-height:1.1; white-space:nowrap;">📎 Append</div>'
       + '</div>';
   }
 
@@ -4561,7 +4571,10 @@
     if (!wrap && btn.parentNode) {
       wrap = document.createElement('span');
       wrap.id = 'deepgram-append-lockwrap';
-      wrap.style.cssText = 'display:inline-block; position:relative;';
+      // (v3.339) PERMANENT frame geometry: the 12px padding + 6px border are ALWAYS reserved
+      // (transparent when idle), so the red frame appears as a pure COLOR change with zero
+      // row-height jumping.
+      wrap.style.cssText = 'display:inline-block; position:relative; padding:12px; border:6px solid transparent; border-radius:0;';
       btn.parentNode.insertBefore(wrap, btn);
       wrap.appendChild(btn);
     }
@@ -4569,9 +4582,7 @@
     var steady = (lastAppendVerdict === 'match-current') && !refineFrozenAutoSelect && !refineAbortController;
     var lock = document.getElementById('deepgram-append-lock-icon');
     if (steady) {
-      wrap.style.border = '6px solid #8b2020';
-      wrap.style.borderRadius = '0';
-      wrap.style.padding = '12px';
+      wrap.style.borderColor = '#8b2020';
       wrap.style.background = 'rgba(255,214,0,0.08)';
       if (!lock) {
         lock = document.createElement('span');
@@ -4582,10 +4593,8 @@
         wrap.appendChild(lock);
       }
     } else {
-      wrap.style.border = '';
-      wrap.style.borderRadius = '';
-      wrap.style.padding = '';
-      wrap.style.background = '';
+      wrap.style.borderColor = 'transparent';
+      wrap.style.background = 'transparent';
       if (lock) lock.remove();
     }
   }
@@ -8897,7 +8906,7 @@
           </button>
         </div>
         
-        <div class="deepgram-buttons" style="margin-bottom:10px;">
+        <div class="deepgram-buttons" style="margin-bottom:10px; align-items:center;">
           <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:360px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
