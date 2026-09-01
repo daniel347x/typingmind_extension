@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.319 Changes:
+ * - NEW console debug __debugSidebarRow(idx): dumps a sidebar conversation row's class, EVERY
+ *   button it contains (aria-label / data-element-id / id / text), and its outerHTML — the
+ *   exact selectors needed to drive the ⋯ menu → Edit Title chain without guessing. The two
+ *   rename layers are visible separately in testing: the instantaneous (sometimes italic) title
+ *   change is the cosmetic DOM edit; the persisting UI chain fails silently at whichever step
+ *   the status line names.
+ *
  * v3.318 Changes:
  * - Sidebar rename v4: ~120ms delay between the React-safe value set and the Confirm-changes
  *   click — a same-tick input+click could make React's commit read the STALE title and silently
@@ -1374,7 +1382,7 @@
   
   // ==================== CONFIGURATION ====================
   const CONFIG = {
-  VERSION: '3.318',
+  VERSION: '3.319',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9438,6 +9446,33 @@
       return 'renamed via native UI';
     } catch (e) { return 'input found but set failed: ' + (e && e.message); }
   }
+
+  /** Console debug: dump a sidebar conversation row's structure for the rename-UI selectors
+   *  (v3.319). __debugSidebarRow(idx) — defaults to the first 'New Chat' row; pass an index to
+   *  inspect any row. Logs class, every button (aria-label / data-element-id / id / text), and
+   *  the row's outerHTML. */
+  window.__debugSidebarRow = function(idx) {
+    var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
+    var row = null;
+    if (idx === undefined || idx === null) {
+      var hit = findNewChatSidebarRow();
+      row = hit && hit.row;
+      if (!row) { console.log('[debugSidebarRow] no \"New Chat\" row found | total rows:', rows.length); return 'done'; }
+    } else {
+      row = rows[idx];
+      if (!row) { console.log('[debugSidebarRow] no row at index', idx, '| total rows:', rows.length); return 'done'; }
+    }
+    console.log('[debugSidebarRow] row class:', row.className);
+    console.log('[debugSidebarRow] row data-element-id:', row.getAttribute('data-element-id'));
+    var btns = row.querySelectorAll('button');
+    console.log('[debugSidebarRow] buttons in row:', btns.length);
+    btns.forEach(function(b, i) {
+      console.log('  btn', i, '| aria-label:', b.getAttribute('aria-label'), '| data-element-id:', b.getAttribute('data-element-id'), '| id:', b.id, '| text:', (b.textContent || '').trim().slice(0, 40));
+    });
+    console.log('[debugSidebarRow] outerHTML (first 3000 chars):');
+    console.log(row.outerHTML.slice(0, 3000));
+    return 'done';
+  };
 
   /** The 🆕 Session button flow: empty-check → prompt for name → mint ID → type the Load GLIMPSE
    *  initializer → recycle the OLDEST-updated context slot (wipe + rename + seed first block)
