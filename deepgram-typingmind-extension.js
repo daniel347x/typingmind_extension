@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.333 Changes:
+ * - 📊 Sidebar FULLNESS BULGE: sidebar session titles now carry a font-WEIGHT ramp (+ hue glow)
+ *   driven by the Payload extension's context-fullness gauge (as-of-last-payload): <40% normal,
+ *   40–50% weight 600, 50–60% weight 700, 60–75% weight 800 + soft hue glow, ≥75% weight 800 +
+ *   heavy glow (deliberately awful, still readable). Weight/shadow ONLY — no font-size — so row
+ *   height and virtualization are untouched (overflow just ellipsizes a char earlier). Data
+ *   contract (second Payload Q&A): each tm_payload_captures_v1 ring entry's _ctx_snapshot
+ *   carries total (numerator, incl. reasoning + cached prefix) + ts; the denominator re-resolves
+ *   overrides → live discovery (provider-max, 12h TTL) → kimi-k3/gemini seed → stamped max_ctx.
+ *   Pre-v4.297 entries (no snapshot) are skipped, not 0%. Applied in the same observer sweep as
+ *   the hue tint; the two new stores cached by raw-string identity like the others.
+ *
  * v3.332 Changes:
  * - 🆕 Session now ACTIVATES the new session's context pill at the end of the flow (after the
  *   sidebar conversation is selected or found already selected; skipped on any error along
@@ -1513,7 +1525,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.332',
+  VERSION: '3.333',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10089,17 +10101,101 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       var rows = document.querySelectorAll('[data-element-id="custom-chat-item"], [data-element-id="selected-chat-item"]');
       if (!rows.length) return;
       var stores = tmLoadHueStores();
+      var ctxStores = tmLoadCtxStores();
       for (var i = 0; i < rows.length; i++) {
         var tEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
         if (!tEl) continue;
         var m = String(tEl.textContent || '').match(/^\s*([0-9a-f]{8})\s*-\s*\[/i);
         if (!m) continue;
-        var hue = tmHueForSessionHash(m[1].toLowerCase(), stores);
+        var hash = m[1].toLowerCase();
+        var hue = tmHueForSessionHash(hash, stores);
         if (typeof hue === 'number') {
           tEl.style.color = 'hsl(' + hue + ', 55%, 72%)';
         }
+        // (v3.333) Fullness BULGE: font-WEIGHT ramp + hue glow by context fullness
+        // (as-of-last-payload). Weight/shadow only — never font-size — so row height and
+        // virtualization are untouched (overflow just ellipsizes a char earlier).
+        var full = tmCtxFullnessForHash(hash, stores.ring, ctxStores);
+        var pct = full ? Math.min(full.pct, 150) : null;
+        var glowBase = (typeof hue === 'number') ? 'hsla(' + hue + ',60%,70%,' : 'hsla(255,255,255,';
+        if (pct === null || pct < 40) {
+          tEl.style.fontWeight = '';
+          tEl.style.textShadow = '';
+        } else if (pct < 50) {
+          tEl.style.fontWeight = '600';
+          tEl.style.textShadow = '';
+        } else if (pct < 60) {
+          tEl.style.fontWeight = '700';
+          tEl.style.textShadow = '';
+        } else if (pct < 75) {
+          tEl.style.fontWeight = '800';
+          tEl.style.textShadow = '0 0 6px ' + glowBase + '0.55)';
+        } else {
+          tEl.style.fontWeight = '800';
+          tEl.style.textShadow = '0 0 10px ' + glowBase + '0.85), 0 0 3px ' + glowBase + '0.9)';
+        }
       }
     } catch (e) {}
+  }
+
+  // ==================== 📊 SIDEBAR FULLNESS BULGE (v3.333) ====================
+  /** The two Payload stores behind the context-fullness denominator, cached by raw-string
+   *  identity (same pattern as tmLoadHueStores). */
+  var tmCtxStoresCache = { ovRaw: null, liveRaw: null, ov: {}, live: {} };
+  function tmLoadCtxStores() {
+    var ovRaw = null, liveRaw = null;
+    try { ovRaw = localStorage.getItem('tm_model_ctx_overrides_v1'); } catch (e) {}
+    try { liveRaw = localStorage.getItem('tm_provider_live_v2'); } catch (e) {}
+    if (ovRaw !== tmCtxStoresCache.ovRaw) {
+      tmCtxStoresCache.ovRaw = ovRaw;
+      try { tmCtxStoresCache.ov = ovRaw ? JSON.parse(ovRaw) : {}; } catch (e) { tmCtxStoresCache.ov = {}; }
+    }
+    if (liveRaw !== tmCtxStoresCache.liveRaw) {
+      tmCtxStoresCache.liveRaw = liveRaw;
+      try { tmCtxStoresCache.live = liveRaw ? JSON.parse(liveRaw) : {}; } catch (e) { tmCtxStoresCache.live = {}; }
+    }
+    return tmCtxStoresCache;
+  }
+
+  /** Context fullness of the MOST RECENT payload for the 8-hex hash, as { pct, total, max, ts } —
+   *  the Payload extension's gauge contract (their verbatim recipe, provider-max altitude): each
+   *  ring entry's _ctx_snapshot carries total (numerator — provider-reported total tokens incl.
+   *  reasoning + cached prefix) and ts; the denominator re-resolves: model overrides
+   *  (tm_model_ctx_overrides_v1) → live discovery (tm_provider_live_v2, provider-max, 12h TTL) →
+   *  built-in seed (kimi-k3 / gemini = 1M) → the snapshot's stamped max_ctx. Pre-v4.297 entries
+   *  have no snapshot — skipped (null = honest 'no scale', NOT 0%). pct may exceed 100. */
+  function tmCtxFullnessForHash(hash, ring, ctxStores) {
+    try {
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var cap = ring[i];
+        if (!cap || !cap._ctx_snapshot) continue;
+        var sid = String(cap.session_id || cap.pasted_session_id || '');
+        if ((sid.indexOf('tm-') === 0 ? sid.slice(3) : sid) !== hash) continue;
+        var snap = cap._ctx_snapshot;
+        if (!snap || !(snap.total > 0)) return null;
+        var m = String(snap.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+        var ov = ctxStores.ov, live = ctxStores.live;
+        var maxCtx = null;
+        var hit = (m && ov[m] != null) ? ov[m] : ov[(m.split('/').pop())];
+        if (isFinite(Number(hit)) && Number(hit) > 0) maxCtx = Number(hit);
+        if (maxCtx == null && m) {
+          var rec = live[m];
+          if (rec && Array.isArray(rec.entries) && (Date.now() - Number(rec.ts || 0)) <= 12 * 3600 * 1000) {
+            for (var ei = 0; ei < rec.entries.length; ei++) {
+              var e = rec.entries[ei];
+              if (e && e.maxContext != null && (maxCtx == null || e.maxContext > maxCtx)) maxCtx = e.maxContext;
+            }
+          }
+        }
+        if (maxCtx == null) {
+          if (/^kimi[-_]?k3/i.test(m) || /gemini/i.test(m)) maxCtx = 1048576;
+        }
+        if (maxCtx == null && snap.max_ctx != null) maxCtx = snap.max_ctx;
+        if (!(maxCtx > 0)) return null;
+        return { pct: (snap.total / maxCtx) * 100, total: snap.total, max: maxCtx, ts: snap.ts };
+      }
+    } catch (e) {}
+    return null;
   }
 
   /** Tint a session-name element to the Payload session hue of its leading 8-hex hash (when the
