@@ -11,6 +11,23 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.326 Changes:
+ * - ROOT-CAUSE FIX (transcript height "jumps up / never saves" — reported 5+ times): THREE
+ *   cooperating defects. (1) applyTranscriptHeight read the height from the INPUT element, whose
+ *   hardcoded HTML fallback was a stale value="940" — so every time localStorage was empty, the
+ *   box jumped to 940px instead of the 725 default. (2) SIX "one-time reset stanzas"
+ *   (v3203/3232/3247/3250/3297/3302) each DELETED the saved height — every past "fix" added
+ *   another, re-arming defect 1 on the next load (a self-perpetuating complaint loop).
+ *   (3) CSS drag-resizing the textarea was NEVER saved (only the number input saved), and the
+ *   150px quick-toggle wrote its transient into the input. Fix: applyTranscriptHeight now reads
+ *   the ONE truth (localStorage collapsed height, CONFIG default fallback) mode-aware and only
+ *   SYNCS the input from it; all six stanzas deleted; a mouseup handler persists drag-resizes
+ *   (skipped while Now Playing is shrunk / at the 150px transient); quick-toggle Expand restores
+ *   the SAVED height; HTML input fallback 940 → 725.
+ * - Status line: the deprecated 'Ready to Record' ribbon is GONE — initial state is a blank
+ *   neutral bar (no state class) and the six updateStatus('Ready to Record') call sites now show
+ *   blank instead, so a refresh with no current status shows a quiet empty space.
+ *
  * v3.325 Changes:
  * - 🕘 Status HISTORY: updateStatus now feeds a localStorage ring of the last 100 status
  *   messages (newest first; consecutive exact duplicates collapsed so repeats can't flood it).
@@ -1431,7 +1448,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.325',
+  VERSION: '3.326',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -8611,7 +8628,7 @@
               </label>
               <label style="display: flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; color: #444;" title="Height of the main transcript edit box, in pixels (applies live & is remembered)">
                 <span>📏 Box height (px):</span>
-                <input type="number" id="transcript-height-input" min="150" max="1200" step="10" value="940" style="width: 68px; padding: 3px 5px; border: 1px solid #667eea; border-radius: 4px; font-size: 12px;" />
+                <input type="number" id="transcript-height-input" min="150" max="1200" step="10" value="725" style="width: 68px; padding: 3px 5px; border: 1px solid #667eea; border-radius: 4px; font-size: 12px;" />
               </label>
               <button class="deepgram-collapse-btn" id="deepgram-reset-width-btn" onclick="window.resetPanelWidth()" title="Reset panel width to default">↔ Reset</button>
               <button class="deepgram-collapse-btn" id="deepgram-collapse-btn" onclick="window.toggleTranscriptHeight()">Collapse</button>
@@ -8626,7 +8643,7 @@
           <!-- Status (+ v3.325 history clicker to its left — the status line itself is untouched) -->
           <div style="display:flex; align-items:center; gap:5px;">
             <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:2px 6px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
-            <div id="deepgram-status" class="deepgram-status disconnected" style="flex:1 1 auto;">Ready to Record</div>
+            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:17px;"></div>
           </div>
           
           <!-- Queue Status (Always Visible) -->
@@ -9008,48 +9025,17 @@
       document.getElementById('layout-sidebar-width-input').value = savedSidebarWidth;
     }
     
-    // ONE-TIME migration: clear any stale saved transcript height left over from the pre-3.203 version
-    // churn so the box resets to the clean CONFIG default (940 collapsed / 480 expanded). Runs exactly
-    // once (guarded by a flag); a height you set AFTER 3.203 is saved normally and never cleared again.
-    if (localStorage.getItem('transcript_height_reset_v3203') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3203', '1');
-    }
-    // v3.232: reduce default transcript height by 100px
-    if (localStorage.getItem('transcript_height_reset_v3232') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3232', '1');
-    }
-    // v3.247: reduce default transcript height by another 25px
-    if (localStorage.getItem('transcript_height_reset_v3247') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3247', '1');
-    }
-    // v3.250: reduce default transcript height by another 25px
-    if (localStorage.getItem('transcript_height_reset_v3250') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3250', '1');
-    }
-    // v3.297: reduce default transcript height by another 25px (765 → 740, clears the Payload widget)
-    if (localStorage.getItem('transcript_height_reset_v3297') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3297', '1');
-    }
-    // v3.302: reduce default transcript height by another 15px (740 → 725)
-    if (localStorage.getItem('transcript_height_reset_v3302') !== '1') {
-      localStorage.removeItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-      localStorage.setItem('transcript_height_reset_v3302', '1');
-    }
+    // (v3.326) The SIX one-time transcript-height reset stanzas (v3203…v3302) are DELETED.
+    // Each cleared the saved height, and with the input's stale hardcoded value="940" as the
+    // fallback, every stanza made the box JUMP to 940px on the next load — the recurring
+    // "height jumps up" bug. The saved height is now NEVER cleared by code; the fallback is
+    // the CONFIG default. (The saved-height→input copy was removed too: applyTranscriptHeight
+    // syncs the input from the localStorage truth itself.)
 
     // Load saved widget dimensions
     const savedWidgetWidth = localStorage.getItem(CONFIG.WIDGET_WIDTH_STORAGE);
-    const savedTranscriptHeight = localStorage.getItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE);
-    
     if (savedWidgetWidth) {
       document.getElementById('widget-width-input').value = savedWidgetWidth;
-    }
-    if (savedTranscriptHeight) {
-      document.getElementById('transcript-height-input').value = savedTranscriptHeight;
     }
     
     // Apply layout widths immediately on page load
@@ -9215,6 +9201,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     // Widget dimension controls
     document.getElementById('widget-width-input')?.addEventListener('change', onWidgetWidthChange);
     document.getElementById('transcript-height-input')?.addEventListener('change', onTranscriptHeightChange);
+    document.getElementById('deepgram-transcript')?.addEventListener('mouseup', saveDraggedTranscriptHeight);
     
     // Initialize resize functionality
     initializeResize();
@@ -10902,14 +10889,24 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
   //   kind=AST,
   // ]
   function applyTranscriptHeight() {
-    const transcriptHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_TRANSCRIPT_HEIGHT;
-    
+    // (v3.326) ROOT-CAUSE FIX: read the ONE truth (the localStorage collapsed height via
+    // getSavedCollapsedTranscriptHeight, CONFIG default fallback) — NEVER the input, whose
+    // hardcoded HTML value was a stale fallback (the "jumps to 940" bug). Mode-aware exactly
+    // like setTopSectionCollapsed: top section visible ⇒ DELTA shorter; hidden ⇒ full height.
+    // The input is only SYNCED from truth here (it is a write-path control, not a source).
+    const collapsedHeight = getSavedCollapsedTranscriptHeight();
+    const topSection = document.getElementById('deepgram-top-section');
+    const isExpanded = topSection && topSection.style.display !== 'none';
+    const appliedHeight = isExpanded ? expandedHeightFor(collapsedHeight) : collapsedHeight;
     const transcript = document.getElementById('deepgram-transcript');
     if (transcript) {
-      transcript.style.height = transcriptHeight + 'px';
+      transcript.style.height = appliedHeight + 'px';
     }
-    
-    console.log('✓ Transcript height applied:', transcriptHeight);
+    const heightInput = document.getElementById('transcript-height-input');
+    if (heightInput) {
+      heightInput.value = String(collapsedHeight);
+    }
+    console.log('✓ Transcript height applied:', appliedHeight, '(saved collapsed: ' + collapsedHeight + ')');
   }
   
   // @beacon[
@@ -10970,17 +10967,39 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
   }
   
   function onTranscriptHeightChange() {
-    // The typed number is the COLLAPSED (full) height — the one source of truth. Persist it, then apply
-    // to whichever view is currently showing: collapsed => the typed value; expanded => DELTA shorter.
-    // This shifts BOTH modes by the same amount and never snaps back on a toggle.
+    // The typed number is the COLLAPSED (full) height — the one source of truth. Persist it, then
+    // apply via the ONE mode-aware applier (v3.326).
     const collapsedHeight = parseInt(document.getElementById('transcript-height-input')?.value) || CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT;
     localStorage.setItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE, collapsedHeight);
+    applyTranscriptHeight();
+  }
+
+  /** (v3.326) Persist a manual CSS drag-resize of the transcript box (previously NEVER saved — the
+   *  "doesn't remember my height" half of the recurring bug). Wired to mouseup, which fires at the
+   *  end of a resize drag (harmless no-op on ordinary clicks: unchanged height → no write).
+   *  Guards: skip while the Now Playing pane is visible (its shrink is transient, restore pending)
+   *  and skip the 150px quick-toggle transient; an expanded-view drag is converted back to the
+   *  COLLAPSED truth (+DELTA) before saving. */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.saveDraggedTranscriptHeight-drg1,
+  //   role=__lambdao_1.saveDraggedTranscriptHeight,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function saveDraggedTranscriptHeight() {
+    const transcript = document.getElementById('deepgram-transcript');
+    if (!transcript) return;
+    const pane = document.getElementById('deepgram-nowplaying');
+    if (pane && pane.style.display !== 'none' && pane.style.display !== '') return;   // Now Playing shrink is transient
+    const dragged = Math.round(transcript.getBoundingClientRect().height);
+    if (!dragged || dragged <= 155) return;   // the 150px quick-toggle floor is a transient, not a preference
     const topSection = document.getElementById('deepgram-top-section');
     const isExpanded = topSection && topSection.style.display !== 'none';
-    const transcript = document.getElementById('deepgram-transcript');
-    if (transcript) {
-      transcript.style.height = (isExpanded ? expandedHeightFor(collapsedHeight) : collapsedHeight) + 'px';
-    }
+    const collapsedTruth = isExpanded ? dragged + CONFIG.TRANSCRIPT_EXPAND_COLLAPSE_DELTA : dragged;
+    if (Math.abs(collapsedTruth - getSavedCollapsedTranscriptHeight()) < 3) return;   // unchanged → no write
+    localStorage.setItem(CONFIG.TRANSCRIPT_HEIGHT_STORAGE, collapsedTruth);
+    const heightInput = document.getElementById('transcript-height-input');
+    if (heightInput) heightInput.value = String(collapsedTruth);
   }
   
   function onLayoutWidthChange() {
@@ -11007,29 +11026,20 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     const transcript = document.getElementById('deepgram-transcript');
     const keyterms = document.getElementById('deepgram-keyterms-input');
     const btn = document.getElementById('deepgram-collapse-btn');
-    const heightInput = document.getElementById('transcript-height-input');
-    const topSection = document.getElementById('deepgram-top-section');
     
     // Get current height from computed style
     const computedStyle = window.getComputedStyle(transcript);
     const currentHeight = parseInt(computedStyle.height);
     
     if (currentHeight > 150) {
-      // Collapse to 150px
+      // Collapse to a TRANSIENT 150px (v3.326: NOT written to the input or localStorage — the
+      // saved working height stays untouched)
       transcript.style.height = '150px';
-      if (heightInput) {
-        heightInput.value = '150';
-      }
       btn.textContent = 'Expand';
     } else {
-      // Expand back to the current mode's default working height
-      const expandedHeight = topSection?.style.display === 'none'
-        ? CONFIG.DEFAULT_COLLAPSED_TRANSCRIPT_HEIGHT
-        : CONFIG.DEFAULT_EXPANDED_TRANSCRIPT_HEIGHT;
-      transcript.style.height = expandedHeight + 'px';
-      if (heightInput) {
-        heightInput.value = String(expandedHeight);
-      }
+      // Expand back to the SAVED working height for the current mode (v3.326: was DEFAULT
+      // constants, which could silently override the user's saved preference)
+      applyTranscriptHeight();
       if (keyterms) {
         keyterms.style.height = '60px';
       }
@@ -11370,7 +11380,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         
         deepgramSocket.onclose = () => {
           console.log('WebSocket closed');
-          updateStatus('Ready to Record', 'disconnected');
+          updateStatus('', '');
         };
         
         deepgramSocket.onerror = (error) => {
@@ -11431,7 +11441,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
           console.log('✅ WebSocket closed');
         }
         
-        updateStatus('Ready to Record', 'disconnected');
+        updateStatus('', '');
       }, 2000); // 2 seconds should be enough for Finalize response
     } else {
       // WebSocket already closed - stop microphone immediately
@@ -11439,7 +11449,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         mediaRecorder.stop();
         mediaRecorder.stream.getTracks().forEach(track => track.stop());
       }
-      updateStatus('Ready to Record', 'disconnected');
+      updateStatus('', '');
     }
   }
   
@@ -11482,7 +11492,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     
     // Reset status after brief delay
     setTimeout(() => {
-      updateStatus('Ready to Record', 'disconnected');
+      updateStatus('', '');
     }, 2000);
     
     console.log(ts(), '🚫 Deepgram recording CANCELED (audio not submitted)');
@@ -11643,7 +11653,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       
       // Reset status after brief delay
       setTimeout(() => {
-        updateStatus('Ready to Record', 'disconnected');
+        updateStatus('', '');
       }, 2000);
       
       console.log(ts(), '🚫 Whisper recording CANCELED (audio not submitted)');
@@ -11804,7 +11814,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       
       // Update status if no more pending
       if (pendingTranscriptions === 0 && !isRecording) {
-        updateStatus('Ready to Record', 'disconnected');
+        updateStatus('', '');
         console.log('✅ All chunks complete - status updated');
       }
       
