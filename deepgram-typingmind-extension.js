@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.332 Changes:
+ * - 🆕 Session now ACTIVATES the new session's context pill at the end of the flow (after the
+ *   sidebar conversation is selected or found already selected; skipped on any error along
+ *   the way). Via the shared manual-select path (which momentarily freezes auto-select), then
+ *   immediately UNFREEZES — no lingering ❄️. The new empty conversation matches nothing, and
+ *   refineAutoSelectMatch provably never touches the active index on a no-match sweep, so the
+ *   pill stays ACTIVE showing the DASHED red 'selected but not matching' border — flipping
+ *   SOLID on first submit (Load GLIMPSE override). Fixes the 'which session is active right
+ *   now?' confusion between creation and first message.
+ *
  * v3.331 Changes:
  * - 🎨 Session-name hue tinting extended to the REFINE session surfaces: the toggle-pill row
  *   (renderToggleSquare), the Context-modal ribbon rows (paintRibbon), and the quick-switcher
@@ -1503,7 +1513,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.331',
+  VERSION: '3.332',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10355,10 +10365,32 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     setTimeout(function() { try { entry.focus(); } catch (e) {} }, 50);
   }
 
+  /** (v3.332) After the 🆕 Session flow selects its conversation: ACTIVATE the new session's
+   *  context pill via the shared manual-select path (which freezes auto-select because the pick
+   *  differs from the current auto-match), then immediately UNFREEZE — leaving the new session
+   *  active with NO frozen ❄️. Verified matcher semantics: on an empty/unmatched conversation,
+   *  refineAutoSelectMatch NEVER touches the active index (it only clears the temp convo slot,
+   *  which is null here because refineSyncToggleSlots already made this session a primary pill),
+   *  so the pill stays ACTIVE showing the DASHED red 'selected but not matching' border — and
+   *  flips SOLID the moment the first message submits (the v3.313/314 Load GLIMPSE override). */
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.activateNewSessionPill-anp1,
+  //   role=__lambdao_1.activateNewSessionPill,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function activateNewSessionPill(slotIdx) {
+    if (slotIdx === null || slotIdx === undefined || slotIdx < 0) return;
+    refineManualSelectSlot(slotIdx);          // activate + freeze + render
+    refineFrozenAutoSelect = false;           // unfreeze immediately, LEAVING the active pill
+    refineUpdateFreezeButton();
+  }
+
   /** The 🆕 Session button flow: empty-check → prompt for name → mint ID → PICK the context slot
    *  to recycle (v3.324 modal — Esc aborts the whole flow) → type the Load GLIMPSE initializer →
    *  recycle the CHOSEN slot (wipe + rename + seed first block) → shared-store write → sidebar
-   *  rename. Send stays manual. */
+   *  rename → select conversation → ACTIVATE the session's context pill (v3.332). Send stays
+   *  manual. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.startNewSession-5uez,
   //   role=__lambdao_1.startNewSession,
@@ -10429,12 +10461,18 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
                 // (data-element-id="selected-chat-item") — TypingMind treats a click on the
                 // already-selected sidebar row as a COLLAPSE-SIDEBAR toggle. Same guard on the
                 // fallback click.
+                var convoSelected = false;
                 if (hit) {
-                  if (hit.row.getAttribute('data-element-id') === 'selected-chat-item') return;
-                  hit.tEl.click();
-                } else if (sidebarHit && sidebarHit.titleEl && sidebarHit.row
-                  && sidebarHit.row.getAttribute('data-element-id') !== 'selected-chat-item') {
-                  sidebarHit.titleEl.click();
+                  if (hit.row.getAttribute('data-element-id') === 'selected-chat-item') convoSelected = true;
+                  else { hit.tEl.click(); convoSelected = true; }
+                } else if (sidebarHit && sidebarHit.titleEl && sidebarHit.row) {
+                  if (sidebarHit.row.getAttribute('data-element-id') === 'selected-chat-item') convoSelected = true;
+                  else { sidebarHit.titleEl.click(); convoSelected = true; }
+                }
+                // (v3.332) With the conversation selected (or already selected), ACTIVATE the new
+                // session's context pill — dashed red border until the first submit claims it.
+                if (convoSelected) {
+                  try { activateNewSessionPill(pickIdx); } catch (e) {}
                 }
               } catch (e) {}
             });
