@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.350 Changes:
+ * - SESSION-ID SELECTION OVERRIDE from TypingMind's visible selected sidebar row: when a
+ *   `[data-element-id="selected-chat-item"]` row is rendered, read the leading 8-character
+ *   hash from its title and match it against the Refine context-session names. That identity
+ *   is now the highest-priority pill-selection target, ahead of the first-visible-turn Load
+ *   GLIMPSE signature and history-aggregate text matching. If the selected row is collapsed,
+ *   unmounted, hashless, or unmatched, the existing head-signature → aggregate fallbacks remain.
+ * - Identity selection is deliberately separate from match evidence: vise rails, turn-position
+ *   marker, solid-vs-dashed red border, and duplicate warning remain driven by the existing
+ *   block/turn text matching. The snowflake freeze still prevents automatic selection changes.
+ *
  * v3.349 Changes:
  * - CARTOGRAPHER MAP FIX: corrected the synthetic `client-group-11` delimiter label from
  *   "Client group 1" to "Client group 11" so its human-readable name matches its unique ID.
@@ -1664,7 +1675,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.349',
+  VERSION: '3.350',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4955,6 +4966,8 @@
   window.__debugOverride = function() {
     var headNorm = getChatSignature();
     var headHash = refineGlimpseSessionPrefix(headNorm);
+    var sidebarHash = refineSelectedSidebarSessionHash();
+    console.log('[debugOverride] selected-sidebar hash:', sidebarHash);
     console.log('[debugOverride] head turn norm (len ' + headNorm.length + '): "' + headNorm.slice(0, 160) + '"');
     console.log('[debugOverride] headHash:', headHash);
     var ctxs = refineGetContexts();
@@ -4962,8 +4975,9 @@
       var fbn = getFirstBlockNormForText((ctx && ctx.text) || '');
       var fbh = refineGlimpseSessionPrefix(fbn);
       var nh = refineSessionNameHash(ctx && ctx.name);
-      var hit = (headHash && (fbh === headHash || nh === headHash)) ? '  *** OVERRIDE MATCH ***' : '';
-      console.log('[debugOverride] session', i, '(' + (ctx && ctx.name) + '): firstBlockHash:', fbh, '| nameHash:', nh + hit, '| firstBlock head: "' + fbn.slice(0, 70) + '"');
+      var hit = (headHash && (fbh === headHash || nh === headHash)) ? '  *** HEAD OVERRIDE MATCH ***' : '';
+      var sidebarHit = (sidebarHash && nh === sidebarHash) ? '  *** SIDEBAR OVERRIDE MATCH ***' : '';
+      console.log('[debugOverride] session', i, '(' + (ctx && ctx.name) + '): firstBlockHash:', fbh, '| nameHash:', nh + hit + sidebarHit, '| firstBlock head: "' + fbn.slice(0, 70) + '"');
     });
     var m = refineComputeMatches(getRecentChatTurnNorms(20, 4));
     console.log('[debugOverride] aggregate winner:', m.matchIdx, '| aggregates:', JSON.stringify(m.aggregates));
@@ -5079,6 +5093,24 @@
     return m ? m[1].toLowerCase() : null;
   }
 
+  /** (v3.350) Strongest available conversation identity: the leading session hash in
+   *  TypingMind's currently SELECTED sidebar row. Use only a visibly rendered row — when its
+   *  folder/sidebar is collapsed or virtualized away, return null and let the existing
+   *  first-visible-turn / text-history fallbacks decide. */
+  function refineSelectedSidebarSessionHash() {
+    try {
+      var rows = document.querySelectorAll('[data-element-id="selected-chat-item"]');
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        if (row.offsetParent === null && (!row.getClientRects || row.getClientRects().length === 0)) continue;
+        var titleEl = row.querySelector('.truncate.w-full') || row.querySelector('.truncate');
+        var hash = refineSessionNameHash(titleEl ? String(titleEl.textContent || '').trim() : '');
+        if (hash) return hash;
+      }
+    } catch (e) {}
+    return null;
+  }
+
   /** (v3.310) Update the current conversation's match IDENTITY (the aggregate winner),
    *  re-rendering the pill row when it changes — the active pill's solid-vs-dashed red border
    *  tracks this (solid = active session IS the conversation's match). */
@@ -5097,40 +5129,59 @@
   function refineAutoSelectMatch() {
     var turnNorms = getRecentChatTurnNorms(20, 4);   // (v3.303) deeper march: more history for the aggregate match (DOM permitting)
     var m = refineComputeMatches(turnNorms);
-    // (v3.313) LOAD GLIMPSE session-ID override: if the conversation's FIRST visible turn is a
-    // 'Load GLIMPSE / Session ID: <hash>' message and some session's FIRST block carries the
-    // same tight signature + hash, that session ALWAYS wins — a brand-new conversation has at
-    // most ~2 matchable turns and can never outscore an established session's aggregate, even
-    // though it is unambiguously identified by the unique session ID.
-    var headHash = refineGlimpseSessionPrefix(getChatSignature());
-    if (headHash) {
-      var ctxs = refineGetContexts();
-      for (var gi = 0; gi < ctxs.length; gi++) {
-        var ctxI = ctxs[gi];
-        // (v3.314) EITHER signature wins: the first block's Load GLIMPSE line (v3.313) OR the
-        // session NAME's leading 8-char hash (Dan's universal 'hash - Title' naming convention).
-        if (refineGlimpseSessionPrefix(getFirstBlockNormForText((ctxI && ctxI.text) || '')) === headHash
-            || refineSessionNameHash(ctxI && ctxI.name) === headHash) {
-          m = { matchIdx: gi, matchedSessions: [gi], strengths: m.strengths, aggregates: m.aggregates };
+    var selectionIdx = m.matchIdx;   // Text evidence remains authoritative for match UI; identity may override selection only.
+    var ctxs = refineGetContexts();
+
+    // (v3.350) STRONGEST identity override: TypingMind's visibly selected sidebar row. Dan's
+    // conversation titles universally begin '<8-char hash> - ...'. When available, that hash
+    // selects the matching context pill regardless of cross-pasted text or trimmed chat history.
+    // It does NOT rewrite m: rails, solid/dashed border, turn marker, and duplicate warning stay
+    // honest to the block/turn text evidence. Freeze is honored below exactly as before.
+    var sidebarHash = refineSelectedSidebarSessionHash();
+    var sidebarResolved = false;
+    if (sidebarHash) {
+      for (var si = 0; si < ctxs.length; si++) {
+        if (refineSessionNameHash(ctxs[si] && ctxs[si].name) === sidebarHash) {
+          selectionIdx = si;
+          sidebarResolved = true;
           break;
         }
       }
     }
+    if (!sidebarResolved) {
+      // (v3.313/314) FALLBACK identity override: if the conversation's FIRST visible turn is a
+      // 'Load GLIMPSE / Session ID: <hash>' message, match either the context's first block or
+      // its name. This remains valuable when the selected sidebar row is collapsed/unmounted.
+      var headHash = refineGlimpseSessionPrefix(getChatSignature());
+      if (headHash) {
+        for (var gi = 0; gi < ctxs.length; gi++) {
+          var ctxI = ctxs[gi];
+          if (refineGlimpseSessionPrefix(getFirstBlockNormForText((ctxI && ctxI.text) || '')) === headHash
+              || refineSessionNameHash(ctxI && ctxI.name) === headHash) {
+            selectionIdx = gi;
+            break;
+          }
+        }
+      }
+    }
+
     if (refineFrozenAutoSelect) {
-      setLastAutoMatchIdx(m.matchIdx);   // (v3.310) keep the identity current even while frozen (never acted on)
+      setLastAutoMatchIdx(m.matchIdx);   // Keep TEXT-match identity current while freeze blocks selection changes.
       updateMatchBorder();
       updateDuplicateWarning(m.matchedSessions, m.strengths, m.matchIdx, m.aggregates);
       return;
     }
-    if (!turnNorms.length) {
+    // With no text turns, a visible sidebar identity can STILL select the correct pill. Only
+    // clear selection state when neither identity nor text supplied a target.
+    if (!turnNorms.length && selectionIdx === -1) {
       setLastAutoMatchIdx(-1);
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
       updateDuplicateWarning([]);
       return;
     }
-    var matchIdx = m.matchIdx;
-    setLastAutoMatchIdx(matchIdx);
+    var matchIdx = selectionIdx;
+    setLastAutoMatchIdx(m.matchIdx);   // Solid/dashed red border remains based on TEXT evidence, not sidebar identity.
     if (matchIdx === -1) {
       if (refineGetActiveConvoSlot() !== null) { refineSaveActiveConvoSlot(null); refineRenderToggleRow(); }
       updateMatchBorder();
@@ -5139,7 +5190,7 @@
     }
     if (refineGetActiveContextIndex() !== matchIdx) {
       refineSetActiveContextIndex(matchIdx);
-      refineRenderToggleRow();  // always re-render so the red border follows the auto-selected pill
+      refineRenderToggleRow();  // always re-render so the red ACTIVE border follows the selected pill
     }
     var slots = refineGetToggleSlots();
     if (slots.includes(matchIdx)) {
