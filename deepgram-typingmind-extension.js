@@ -11,6 +11,11 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.349 Changes:
+ * - CARTOGRAPHER MAP FIX: corrected the synthetic `client-group-11` delimiter label from
+ *   "Client group 1" to "Client group 11" so its human-readable name matches its unique ID.
+ *   Runtime extension behavior is unchanged.
+ *
  * v3.348 Changes:
  * - FIX (session↔chat match on syntax-highlighted numbered lists): TypingMind/Prism can split
  *   a Markdown list marker and its following space across adjacent text nodes — e.g.
@@ -1659,7 +1664,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.348',
+  VERSION: '3.349',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -12593,7 +12598,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     }
   }
 
-  // @carto-group id=client-group-11 label="Client group 1"
+  // @carto-group id=client-group-11 label="Client group 11"
   
   // @beacon[
   //   id=tm@21,
