@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.346 Changes:
+ * - FIX (widget bounce during the Append flash): the two-row → one-row content swap shrank the
+ *   button ~14px for 1.2s, bouncing the transcript and everything above the strip down-then-up.
+ *   The button's measured height is now PINNED (border-box) for the flash window and restored
+ *   after — the single flash row centers in the same total height; zero reflow.
+ *
  * v3.345 Changes:
  * - 📎 Append confirmation flash now KEEPS THE DESTINATION VISIBLE: the 1.2s flash is a single
  *   row — '📎 Appended:' (bright yellow #ffd400, bold, 15px) + the session name (its Payload
@@ -1635,7 +1641,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.345',
+  VERSION: '3.346',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6968,6 +6974,16 @@
     updateStatus('📎 Appended ' + added.toLocaleString() + ' chars to “' + refineGetActiveContextName() + '” (now ' + combined.length.toLocaleString() + ')', 'success');
     if (btn) {
       if (window.__refineAppendRestoreTimer) { clearTimeout(window.__refineAppendRestoreTimer); }
+      // (v3.346) Pin the button's height for the flash: the two-row → one-row content swap would
+      // otherwise shrink the button ~14px and bounce the transcript (and everything above the
+      // strip) down-then-up. Measured live — self-calibrating across verdict borders and fonts.
+      try {
+        var flashH = btn.getBoundingClientRect().height;
+        if (flashH > 0) {
+          btn.style.boxSizing = 'border-box';
+          btn.style.height = flashH + 'px';
+        }
+      } catch (e) {}
       // (v3.345) The 1.2s confirmation flash now KEEPS the destination visible: a single row —
       // '📎 Appended:' (bright yellow, bold, large) + the session name (its hue + complementary
       // outline, same large size) + a yellow ✓ at the far right — instead of the bare '✓ Appended'
@@ -6990,7 +7006,11 @@
       } catch (e) {}
       window.__refineAppendRestoreTimer = setTimeout(function(){
         const b = document.getElementById('deepgram-insert-btn');
-        if (b) refineRenderAppendBtn();   // v3.284: rebuild two-row content (session name + Append)
+        if (b) {
+          refineRenderAppendBtn();   // v3.284: rebuild two-row content (session name + Append)
+          b.style.height = '';        // (v3.346) unpin the flash height
+          b.style.boxSizing = '';
+        }
         window.__refineAppendRestoreTimer = null;
         try { updateMatchBorder(); } catch (e) {}   // re-apply the up-to-date ✓/styling immediately (v3.262)
       }, 1200);
