@@ -11,6 +11,12 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.344 Changes:
+ * - 🧱 Button strip row SWAP: Send / Paste MD / ✨ Refine (… Ellipsis when legacy is shown) now
+ *   fill the TOP row; the full-width 📎 Append row moves BELOW them. The natural flow is
+ *   Send FIRST, then Append — and Append now sits directly beside its matching pill row.
+ *   Everything else (margins, lock-frame geometry, sizing) is identical.
+ *
  * v3.343 Changes:
  * - FIX (Append button collapsing to text width in row 1): the lazily-created lock wrapper is
  *   the FLEX ITEM (not the button), and with no flex property it defaulted to flex:0 1 auto
@@ -1621,7 +1627,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.343',
+  VERSION: '3.344',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -8969,14 +8975,10 @@
           </button>
         </div>
         
-        <!-- (v3.342) TWO-ROW strip: Append fills row 1; Send / Paste MD / Refine fill row 2
-             (… Ellipsis is a legacy-toggled member of row 2, hidden by default) -->
-        <div class="deepgram-buttons" style="margin-bottom:6px; align-items:center;">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:100%; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
-            📎 Refine: Append
-          </button>
-        </div>
-        <div class="deepgram-buttons" style="margin-bottom:10px;">
+        <!-- (v3.344) TWO-ROW strip, SWAPPED: Send / Paste MD / ✨ Refine fill row 1 (… Ellipsis
+             is a legacy-toggled member, hidden by default); the full-width 📎 Append row sits
+             BELOW them (Send first, then Append — the natural flow; also closer to the pill row). -->
+        <div class="deepgram-buttons" style="margin-bottom:6px;">
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
             ⚡ Send
           </button>
@@ -8988,6 +8990,11 @@
           </button>
           <button id="deepgram-refine-btn" class="deepgram-btn deepgram-btn-info" title="Second-pass cleanup of the highlighted text (or the whole transcript) via Claude / OpenRouter">
             ✨ Refine
+          </button>
+        </div>
+        <div class="deepgram-buttons" style="margin-bottom:10px; align-items:center;">
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:100%; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+            📎 Refine: Append
           </button>
         </div>
 
