@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.342 Changes:
+ * - 📦 LEGACY CONTROLS HIDDEN by default behind one tiny 📦 toggle in the title bar (left of
+ *   ×): the Start Recording ribbon, the 'Click to add paragraph' click bar, AND the … Ellipsis
+ *   button (a legacy member of the button row). tm_legacy_ui_visible flag; the record ribbon's
+ *   visibility is now (status-block expanded ∧ legacy visible) — the two toggles never fight.
+ * - 🧱 Button strip becomes TWO ROWS: 📎 Append fills the ENTIRE first row (width:100%; the
+ *   lock wrapper is display:block so it fills with it), and Send / Paste MD / ✨ Refine fill
+ *   the second row equally (… Ellipsis joins them only when legacy is shown). No more
+ *   right-side overflow; the Refine→Cancel/+30s split pair finally has room.
+ * - 📎 Append name font 13px → 15px (+2). Name outline stronger: darker complementary
+ *   (15%→10% lightness, 85% saturation) + a second wider glow ring.
+ *
  * v3.341 Changes:
  * - FIX (Append name top-crop): the v3.338 transform:translateY(-5px) on the name row painted
  *   the text 5px ABOVE the content wrapper's box, where #deepgram-append-content's
@@ -1602,7 +1614,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.341',
+  VERSION: '3.342',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -3759,7 +3771,7 @@
     // v3.286: row1 is now a flex row — [name (ellipsis-cropable)] [yellow colon] [gap] [✓ when current].
     // The ✓ is managed by refineUpdateAppendBtnState (appended to #deepgram-append-row1 after the colon).
     btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-width:0; gap:0; overflow:hidden;">'
-      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:13px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px 5px 2px;">'
+      + '<div id="deepgram-append-row1" style="display:flex; align-items:baseline; width:100%; min-width:0; gap:3px; justify-content:center; font-size:15px; line-height:1.15; font-weight:700; opacity:0.85; padding:0 2px 5px 2px;">'
       + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0;">' + name + '</span>'
       + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700;">:</span>'
       + '</div>'
@@ -4589,7 +4601,7 @@
       // (v3.339) PERMANENT frame geometry: the 12px padding + 6px border are ALWAYS reserved
       // (transparent when idle), so the red frame appears as a pure COLOR change with zero
       // row-height jumping.
-      wrap.style.cssText = 'display:inline-block; position:relative; padding:12px; border:6px solid transparent; border-radius:0;';
+      wrap.style.cssText = 'display:block; position:relative; padding:12px; border:6px solid transparent; border-radius:0;';
       btn.parentNode.insertBefore(wrap, btn);
       wrap.appendChild(btn);
     }
@@ -4646,11 +4658,11 @@
       // button WITHOUT distorting the hue. Hash-less names keep the old verdict colors.
       var tinted = tintSessionNameEl(nameSpan, refineGetActiveContextName());
       if (tinted) {
-        // (v3.338) Dark COMPLEMENTARY outline (hue+180, 75% sat, 15% light): directional 1px on
-        // all four sides + soft glow — a tad thicker than the v3.337 pure-black blur, and always
-        // contrasting BY CONSTRUCTION with the hue it surrounds.
-        var oc = 'hsl(' + ((tinted + 180) % 360) + ',75%,15%)';
-        nameSpan.style.textShadow = '1px 1px 0 ' + oc + ', -1px -1px 0 ' + oc + ', 1px -1px 0 ' + oc + ', -1px 1px 0 ' + oc + ', 0 0 6px ' + oc;
+        // (v3.338/v3.342) Dark COMPLEMENTARY outline (hue+180): directional 1px on all four
+        // sides + soft glow — always contrasting BY CONSTRUCTION with the hue it surrounds.
+        // v3.342: darker (15%→10% lightness), richer (85% sat), and a second wider glow ring.
+        var oc = 'hsl(' + ((tinted + 180) % 360) + ',85%,10%)';
+        nameSpan.style.textShadow = '1px 1px 0 ' + oc + ', -1px -1px 0 ' + oc + ', 1px -1px 0 ' + oc + ', -1px 1px 0 ' + oc + ', 0 0 4px ' + oc + ', 0 0 9px ' + oc;
       } else {
         nameSpan.style.textShadow = '';
         if (verdict === 'match' || verdict === 'match-current') nameSpan.style.color = '#e6c200';
@@ -6959,7 +6971,7 @@
     // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
     // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
     const recordRow = document.getElementById('deepgram-record-row');
-    if (recordRow) recordRow.style.display = hidden ? 'none' : '';
+    if (recordRow) recordRow.style.display = (hidden || !legacyUiVisible()) ? 'none' : '';
   }
 
   /**
@@ -6976,6 +6988,34 @@
     localStorage.setItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE, hidden ? '0' : '1');
     applyStatusBlockVisibility();
   }
+
+  // ==================== 📦 LEGACY UI VISIBILITY (v3.342) ====================
+  /** The deprecated recording-era controls (Start Recording ribbon, Click-to-add-paragraph bar,
+   *  … Ellipsis button) are HIDDEN BY DEFAULT behind the tiny 📦 title-bar toggle. */
+  function legacyUiVisible() {
+    return localStorage.getItem('tm_legacy_ui_visible') === '1';
+  }
+  function applyLegacyUiVisibility() {
+    const vis = legacyUiVisible();
+    const clickBar = document.getElementById('deepgram-click-bar');
+    if (clickBar) clickBar.style.display = vis ? '' : 'none';
+    const copyBtn = document.getElementById('deepgram-copy-btn');
+    if (copyBtn) copyBtn.style.display = vis ? '' : 'none';
+    const icon = document.getElementById('deepgram-legacy-toggle-btn');
+    if (icon) icon.style.opacity = vis ? '1' : '0.35';
+    applyStatusBlockVisibility();   // re-decides the record ribbon (status toggle ∧ legacy toggle)
+  }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.toggleLegacyUi-lgc1,
+  //   role=__lambdao_1.toggleLegacyUi,
+  //   slice_labels=tm--general,
+  //   kind=ast,
+  // ]
+  function toggleLegacyUi() {
+    localStorage.setItem('tm_legacy_ui_visible', legacyUiVisible() ? '0' : '1');
+    applyLegacyUiVisibility();
+  }
+  window.toggleLegacyUi = toggleLegacyUi;
 
   /**
    * Paste rich text from clipboard and convert to markdown-style plain text
@@ -8759,6 +8799,7 @@
             <button id="deepgram-status-toggle-btn" title="Show/hide the rarely-used (deprecated) Whisper model status block" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Whisper Model Status</button>
             <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
+            <button id="deepgram-legacy-toggle-btn" onclick="window.toggleLegacyUi()" title="Show/hide legacy controls (Start Recording ribbon, Click-to-add-paragraph bar, … Ellipsis button) — deprecated recording-era UI, hidden by default" style="font-size:11px; padding:2px 5px; cursor:pointer; background:transparent; border:none; color:inherit; opacity:0.35;">📦</button>
             <button class="deepgram-close" onclick="document.getElementById('deepgram-panel').classList.remove('open')">×</button>
           </div>
         </div>
@@ -8921,10 +8962,14 @@
           </button>
         </div>
         
-        <div class="deepgram-buttons" style="margin-bottom:10px; align-items:center;">
-          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:430px; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
+        <!-- (v3.342) TWO-ROW strip: Append fills row 1; Send / Paste MD / Refine fill row 2
+             (… Ellipsis is a legacy-toggled member of row 2, hidden by default) -->
+        <div class="deepgram-buttons" style="margin-bottom:6px; align-items:center;">
+          <button id="deepgram-insert-btn" class="deepgram-btn deepgram-btn-info" style="width:100%; flex:0 0 auto;" title="Append the clipboard to the ACTIVE Refine context slot (with a --- section break), and save it — no modal needed">
             📎 Refine: Append
           </button>
+        </div>
+        <div class="deepgram-buttons" style="margin-bottom:10px;">
           <button id="deepgram-send-btn" class="deepgram-btn deepgram-btn-send" disabled>
             ⚡ Send
           </button>
@@ -9382,6 +9427,8 @@
 document.getElementById('deepgram-status-history-btn').addEventListener('click', openStatusHistoryModal);
     // Apply saved status-block visibility on load
     applyStatusBlockVisibility();
+    // (v3.342) Legacy recording-era controls are hidden by default behind the 📦 title-bar toggle
+    applyLegacyUiVisibility();
     document.getElementById('deepgram-eleven-voice-select').addEventListener('change', function() {
       localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, this.value);
     });
