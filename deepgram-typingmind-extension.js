@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.353 Changes:
+ * - FIX (session↔chat match when Prism splits `1.` itself across text nodes): v3.348 handled
+ *   `<span>1.</span><span> Item</span>`, but a second syntax shape emits the digit, period, and
+ *   following text separately. The per-node regex therefore saw only `1`, which survived as the
+ *   exact extra character found by `__debugDiff` (`instrumentv11` vs `instrumentv111`).
+ * - The DOM walker now preserves structural block boundaries as newlines, then performs one final
+ *   ordered-marker strip over the fully reassembled text. This catches arbitrary token splits
+ *   while leaving the final whitespace-insensitive comparison key unchanged.
+ *
  * v3.352 Changes:
  * - 📊 Sidebar FULLNESS signal now starts at 25% (was 40%) and gains a fixed inline BOX-SHADOW
  *   border as it warms: 25–39% weight 600 + thin yellow-green border; 40–49% weight 700 +
@@ -1694,7 +1703,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.352',
+  VERSION: '3.353',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4540,8 +4549,16 @@
       var eid = node.getAttribute && node.getAttribute('data-element-id');
       if (eid && /action|tool/i.test(eid)) return;
       for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
-      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) { text += ' '; atLineStart = true; }
+      // Preserve a REAL line boundary for the final cross-node marker pass below. The final
+      // comparison strips all whitespace, so newline vs space cannot otherwise change the key.
+      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) { text += '\n'; atLineStart = true; }
     })(contentEl);
+    // (v3.353) WHOLE-LINE FALLBACK after all inline syntax tokens have been reassembled. Prism
+    // may split a marker as `1` + `.` + ` Item`; no individual text node contains enough bytes
+    // for the earlier fast-path regexes. Structural boundaries are now newlines, so strip the
+    // same session-side marker grammar once over complete logical lines. Horizontal whitespace
+    // is explicit to prevent the expression from drifting across line boundaries.
+    text = text.replace(/(^|\n)[^\S\r\n]*#{0,6}[^\S\r\n]*(?:[*_]{1,3})?\d{1,3}\.(?:[^\S\r\n]+|(?=\r?(?:\n|$)))/g, '$1');
     var norm = normalizeForChatMatch(text);
     var cls = classifyChatTurn(child, norm);
     if (!cls) return null;
