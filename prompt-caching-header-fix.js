@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.333
+// Version: 4.334
 // Issues Fixed:
+//   - v4.334: HOVERCARD MODEL ON ITS OWN LINE + 30% WIDER. Each session row is now two
+//     lines: line 1 = session name (in its hue, full width available); line 2 leads with
+//     the MODEL name followed by the live badge/timers -- the model identity can never be
+//     ellipsis-cropped again (it was the first casualty of long session names). Card
+//     widened 540px -> 700px.
 //   - v4.333: HOVERCARD FONT RAMP. Every text element in the session-ctx hovercard
 //     (header, session labels, live badge/timer spans, total/max numbers, aggregate cost,
 //     empty states) bumped 10px -> 12px for readability; live-zone min-height 12px -> 14px.
@@ -1388,7 +1393,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.333';
+  const EXT_VERSION = '4.334';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5807,11 +5812,22 @@
           right += '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
         }
       } catch (eCost) {}
+      // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second
+      // line (the model identity is operationally critical and was still being
+      // ellipsis-cropped on long session names); the live badge/timers sit to its right on
+      // the same line, and the dial/numbers/cost stay anchored at the row's right end.
+      var namePart = String(info.label || key);
+      if (info.model && namePart.slice(-(info.model.length + 3)) === (' \u2014 ' + info.model)) {
+        namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
+      }
       rows.push(
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
-          '<span style="display:flex;flex-direction:column;min-width:0;max-width:320px;">' + // (v4.330) 50% wider name column (was 215px)
-            '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(info.label || key) + '</span>' +
-            '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;min-height:14px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+          '<span style="display:flex;flex-direction:column;min-width:0;flex:1 1 auto;">' +
+            '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
+            '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;">' +
+              (info.model ? ('<span style="font-size:12px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
+              '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+            '</span>' +
           '</span>' +
           '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' + right + '</span>' +
         '</div>'
@@ -5842,7 +5858,7 @@
         tmSessionCtxHoverEl.style.borderRadius = '6px';
         tmSessionCtxHoverEl.style.border = '1px solid #3a3f4a';
         tmSessionCtxHoverEl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
-        tmSessionCtxHoverEl.style.width = '540px'; // (v4.330) 50% wider (was 360px) so session names stop cropping
+        tmSessionCtxHoverEl.style.width = '700px'; // (v4.334) +30% wider (was 540px) so names/models/gauges all breathe
         tmSessionCtxHoverEl.style.maxHeight = '50vh';
         tmSessionCtxHoverEl.style.overflowY = 'auto';
         // Moving from the label INTO the card must not dismiss it.
