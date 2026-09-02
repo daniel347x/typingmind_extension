@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.352 Changes:
+ * - 📊 Sidebar FULLNESS signal now starts at 25% (was 40%) and gains a fixed inline BOX-SHADOW
+ *   border as it warms: 25–39% weight 600 + thin yellow-green border; 40–49% weight 700 +
+ *   yellow-green border; 50–59% weight 700 + yellow-orange border; 60–74% weight 800 + orange
+ *   border; ≥75% weight 800 + stronger red border. The border uses symmetric 4px side padding,
+ *   box-shadow only, and a 5px radius — zero layout width/height impact; React/virtualization
+ *   remain untouched. Below 25% and no-scale rows still receive no fullness styling.
+ *
  * v3.351 Changes:
  * - FIX (pristine Append lock surviving a new/streaming turn): match projection intentionally
  *   omits empty/very-short turns, so a newly-created assistant row containing only thinking/tool
@@ -1686,7 +1694,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.351',
+  VERSION: '3.352',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10488,27 +10496,62 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         if (typeof hue === 'number') {
           tEl.style.color = 'hsl(' + hue + ', 55%, 72%)';
         }
-        // (v3.333) Fullness BULGE: font-WEIGHT ramp + hue glow by context fullness
-        // (as-of-last-payload). Weight/shadow only — never font-size — so row height and
-        // virtualization are untouched (overflow just ellipsizes a char earlier).
+        // (v3.352) Fullness BULGE ramp: starts earlier (25%, was 40%) and now adds a fixed
+        // inline BOX-SHADOW border that warms yellow-green → orange → red. Border is symmetric
+        // (4px side padding), box-shadow only, 5px radius — zero layout width/height impact;
+        // row virtualization and TypingMind geometry remain untouched. Weight/shadow still never
+        // change font size. Reset covers border/background so a cooled row returns fully normal.
         var full = tmCtxFullnessForHash(hash, stores.ring, ctxStores);
         var pct = full ? Math.min(full.pct, 150) : null;
         var glowBase = (typeof hue === 'number') ? 'hsla(' + hue + ',60%,70%,' : 'hsla(255,255,255,';
-        if (pct === null || pct < 40) {
+        if (pct === null || pct < 25) {
           tEl.style.fontWeight = '';
           tEl.style.textShadow = '';
-        } else if (pct < 50) {
+          tEl.style.boxShadow = '';
+          tEl.style.paddingLeft = '';
+          tEl.style.paddingRight = '';
+          tEl.style.borderRadius = '';
+          tEl.style.background = '';
+        } else if (pct < 40) {
           tEl.style.fontWeight = '600';
           tEl.style.textShadow = '';
+          tEl.style.paddingLeft = '4px';
+          tEl.style.paddingRight = '4px';
+          tEl.style.borderRadius = '5px';
+          tEl.style.background = 'rgba(255,255,255,0.03)';
+          tEl.style.boxShadow = '0 0 0 1px hsla(85,85%,58%,0.90)';
+        } else if (pct < 50) {
+          tEl.style.fontWeight = '700';
+          tEl.style.textShadow = '';
+          tEl.style.paddingLeft = '4px';
+          tEl.style.paddingRight = '4px';
+          tEl.style.borderRadius = '5px';
+          tEl.style.background = 'rgba(255,255,255,0.03)';
+          tEl.style.boxShadow = '0 0 0 2px hsla(95,90%,54%,0.95), 0 0 5px ' + glowBase + '0.30)';
         } else if (pct < 60) {
           tEl.style.fontWeight = '700';
           tEl.style.textShadow = '';
+          tEl.style.paddingLeft = '4px';
+          tEl.style.paddingRight = '4px';
+          tEl.style.borderRadius = '5px';
+          tEl.style.background = 'rgba(255,200,0,0.04)';
+          tEl.style.boxShadow = '0 0 0 2px hsla(42,95%,52%,0.95), 0 0 7px ' + glowBase + '0.40)';
         } else if (pct < 75) {
           tEl.style.fontWeight = '800';
           tEl.style.textShadow = '0 0 6px ' + glowBase + '0.55)';
+          tEl.style.paddingLeft = '4px';
+          tEl.style.paddingRight = '4px';
+          tEl.style.borderRadius = '5px';
+          tEl.style.background = 'rgba(255,145,0,0.05)';
+          tEl.style.boxShadow = '0 0 0 3px hsla(25,96%,50%,0.98), 0 0 9px ' + glowBase + '0.55)';
         } else {
           tEl.style.fontWeight = '800';
           tEl.style.textShadow = '0 0 10px ' + glowBase + '0.85), 0 0 3px ' + glowBase + '0.9)';
+          tEl.style.paddingLeft = '4px';
+          tEl.style.paddingRight = '4px';
+          tEl.style.borderRadius = '5px';
+          tEl.style.background = 'rgba(255,55,0,0.06)';
+          tEl.style.boxShadow = '0 0 0 4px hsla(8,96%,54%,1), 0 0 13px ' + glowBase + '0.75)';
         }
       }
     } catch (e) {}
