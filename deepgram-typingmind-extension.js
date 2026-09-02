@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.345 Changes:
+ * - 📎 Append confirmation flash now KEEPS THE DESTINATION VISIBLE: the 1.2s flash is a single
+ *   row — '📎 Appended:' (bright yellow #ffd400, bold, 15px) + the session name (its Payload
+ *   hue + complementary outline, same 15px) + a yellow ✓ at the far right — replacing the bare
+ *   '✓ Appended' text that hid WHICH session received the text at the exact moment you wanted
+ *   that confirmed. The name span keeps id #deepgram-append-name so a mid-flash match sweep
+ *   re-applies the identical tint. Restore path (1.2s → two-row content) unchanged.
+ *
  * v3.344 Changes:
  * - 🧱 Button strip row SWAP: Send / Paste MD / ✨ Refine (… Ellipsis when legacy is shown) now
  *   fill the TOP row; the full-width 📎 Append row moves BELOW them. The natural flow is
@@ -1627,7 +1635,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.344',
+  VERSION: '3.345',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -6960,7 +6968,26 @@
     updateStatus('📎 Appended ' + added.toLocaleString() + ' chars to “' + refineGetActiveContextName() + '” (now ' + combined.length.toLocaleString() + ')', 'success');
     if (btn) {
       if (window.__refineAppendRestoreTimer) { clearTimeout(window.__refineAppendRestoreTimer); }
-      btn.innerHTML = '✓ Appended';
+      // (v3.345) The 1.2s confirmation flash now KEEPS the destination visible: a single row —
+      // '📎 Appended:' (bright yellow, bold, large) + the session name (its hue + complementary
+      // outline, same large size) + a yellow ✓ at the far right — instead of the bare '✓ Appended'
+      // that hid WHICH session received the text at the exact moment you wanted it confirmed.
+      var escName = String(refineGetActiveContextName() || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      btn.innerHTML = '<div id="deepgram-append-content" style="display:flex; align-items:baseline; justify-content:center; width:100%; min-width:0; gap:6px; overflow:hidden;">'
+        + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700; font-size:15px;">📎 Appended:</span>'
+        + '<span id="deepgram-append-name" style="flex:0 1 auto; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; font-size:15px; font-weight:700; opacity:0.95;">' + escName + '</span>'
+        + '<span style="flex:0 0 auto; color:#ffd400; font-weight:700; font-size:15px;">✓</span>'
+        + '</div>';
+      try {
+        var flashName = btn.querySelector('#deepgram-append-name');
+        if (flashName) {
+          var flashTint = tintSessionNameEl(flashName, refineGetActiveContextName());
+          if (flashTint) {
+            var foc = 'hsl(' + ((flashTint + 180) % 360) + ',85%,10%)';
+            flashName.style.textShadow = '1px 1px 0 ' + foc + ', -1px -1px 0 ' + foc + ', 1px -1px 0 ' + foc + ', -1px 1px 0 ' + foc + ', 0 0 4px ' + foc + ', 0 0 9px ' + foc;
+          }
+        }
+      } catch (e) {}
       window.__refineAppendRestoreTimer = setTimeout(function(){
         const b = document.getElementById('deepgram-insert-btn');
         if (b) refineRenderAppendBtn();   // v3.284: rebuild two-row content (session name + Append)
