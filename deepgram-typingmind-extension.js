@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.351 Changes:
+ * - FIX (pristine Append lock surviving a new/streaming turn): match projection intentionally
+ *   omits empty/very-short turns, so a newly-created assistant row containing only thinking/tool
+ *   UI could leave the previous completed response looking like normalized turn 0. The outer
+ *   red lock frame now fails closed on EVERY chat MutationObserver event and cannot return until
+ *   the existing 5-second quiet window completes. That timer then performs one final match pass.
+ * - Added a structural newest-turn guard (includes classified turns with no matchable prose): a
+ *   filtered older response can no longer receive `match-current` merely because a newer blank
+ *   or short turn was omitted. This reuses the existing observer/timer/1-second fallback—no new
+ *   polling and negligible additional work.
+ *
  * v3.350 Changes:
  * - SESSION-ID SELECTION OVERRIDE from TypingMind's visible selected sidebar row: when a
  *   `[data-element-id="selected-chat-item"]` row is rendered, read the leading 8-character
@@ -1675,7 +1686,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.350',
+  VERSION: '3.351',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4592,6 +4603,20 @@
     return turns;
   }
 
+  /** The newest classified DOM turn INCLUDING empty/short assistant, tool, and user turns.
+   *  Unlike getRecentChatTurnNorms, this deliberately does not drop norm.length < 5: its job is
+   *  structural freshness, so a newly-created thinking-only row still makes the previous prose
+   *  turn non-current. */
+  function getLatestClassifiedChatTurn() {
+    var container = getChatContainer();
+    if (!container || !container.children.length) return null;
+    for (var i = container.children.length - 1; i >= 0; i--) {
+      var r = extractChatTurnNorm(container.children[i]);
+      if (r) return r;
+    }
+    return null;
+  }
+
   /** Text of the most recent chat turn in TypingMind, normalized (excludes details/tool-calls). */
   function getLatestChatTurnNorm() {
     var turns = getRecentChatTurnNorms(1);
@@ -4638,6 +4663,7 @@
   }
 
   var lastAppendVerdict = 'indeterminate';   // (v3.336) latest Append verdict, for the steady-state lock frame
+  var refineChatActivityPending = false;     // (v3.351) true from first chat mutation until 5s of DOM quiet
 
   /** (v3.336) The 100% STEADY-STATE lock frame around the 📎 Append button: the SAME big red
    *  rectangle as the active pill (6px #8b2020 + padding + faint yellow wash) with a 🔒 icon in
@@ -4667,7 +4693,7 @@
       wrap.appendChild(btn);
     }
     if (!wrap) return;
-    var steady = (lastAppendVerdict === 'match-current') && !refineFrozenAutoSelect && !refineAbortController;
+    var steady = (lastAppendVerdict === 'match-current') && !refineChatActivityPending && !refineFrozenAutoSelect && !refineAbortController;
     var lock = document.getElementById('deepgram-append-lock-icon');
     if (steady) {
       wrap.style.borderColor = '#8b2020';
@@ -4813,26 +4839,43 @@
       return;
     }
     var turnNorms = getRecentChatTurnNorms(10, 4);
+    var latestDomTurn = getLatestClassifiedChatTurn();
     var match = false;
     var matchTurnIdx = -1;
     for (var t = 0; t < turnNorms.length; t++) {
       if (isSessionTurnMatch(sessionNorm, turnNorms[t])) { match = true; matchTurnIdx = t; break; }
     }
-    lastMatchTurnIdx = matchTurnIdx;
-    window.__chatMatchDebug = { session: sessionNorm, turns: turnNorms.length, match: match, turnIdx: matchTurnIdx, ts: Date.now() };
+    // (v3.351) Filtered norms can call an older prose response index 0 when a NEWER classified
+    // DOM turn is empty/short (thinking-only, tool-only, or a tiny user message). Only award
+    // match-current when the actual newest structural turn is itself matchable and matches.
+    var latestDomMatches = !!(latestDomTurn && latestDomTurn.norm && latestDomTurn.norm.length >= 5
+      && isSessionTurnMatch(sessionNorm, latestDomTurn.norm));
+    var effectiveMatchTurnIdx = matchTurnIdx;
+    if (match && matchTurnIdx === 0 && !latestDomMatches) effectiveMatchTurnIdx = 1;
+    lastMatchTurnIdx = effectiveMatchTurnIdx;
+    window.__chatMatchDebug = {
+      session: sessionNorm,
+      turns: turnNorms.length,
+      match: match,
+      turnIdx: effectiveMatchTurnIdx,
+      latestDomClass: latestDomTurn ? latestDomTurn.cls : null,
+      latestDomNormLen: latestDomTurn ? latestDomTurn.norm.length : -1,
+      activityPending: refineChatActivityPending,
+      ts: Date.now()
+    };
     if (match) {
       // Green vise rails on both sides.
       left.style.cssText = RAIL + ' background:#28e05a;';
       right.style.cssText = RAIL + ' background:#28e05a;';
       label.style.color = '#e6c200';
-      if (matchTurnIdx === 0) {
+      if (effectiveMatchTurnIdx === 0) {
         // Most recent turn: yellow-on-black hash rail.
         ind.textContent = '';
         ind.style.cssText = RAIL + ' background:repeating-linear-gradient(60deg, #e6c200 0px, #e6c200 2px, #111 2px, #111 4px);';
         refineUpdateAppendBtnState('match-current');
       } else {
         // Older turn: dark rail with the turn number centered in it.
-        ind.textContent = String(matchTurnIdx);
+        ind.textContent = String(effectiveMatchTurnIdx);
         ind.style.cssText = RAIL + ' background:#333; color:#e6c200; font-size:9px; font-weight:700; display:flex; align-items:center; justify-content:center;';
         refineUpdateAppendBtnState('match');
       }
@@ -5229,6 +5272,12 @@
     if (!container) { setTimeout(initChatMatchWatcher, 2000); return; }
     if (chatMatchObserver) chatMatchObserver.disconnect();
     chatMatchObserver = new MutationObserver(function() {
+      // (v3.351) FAIL CLOSED immediately: the first DOM mutation means pristine/quiescent is no
+      // longer proven. This runs before extraction, so even a brand-new thinking-only row with
+      // zero prose removes the outer lock frame. Subsequent stream mutations only reset the
+      // already-existing quiet timer—no added polling.
+      refineChatActivityPending = true;
+      refineUpdateAppendLock();
       if (quiescenceWindowTimer !== null) {
         // 2nd+ mutation within window: streaming detected.
         quiescenceFlag = true;
@@ -5241,15 +5290,15 @@
       }
       // (Re)start the 5s quiescence window.
       quiescenceWindowTimer = setTimeout(function() {
-        var wasQuiescent = quiescenceFlag;
         quiescenceFlag = false;
         quiescenceWindowTimer = null;
-        if (wasQuiescent) {
-          // Streaming just ended: fire the final search with the complete text.
-          setMatchingState(true);
-          refineAutoSelectMatch();
-          setMatchingState(false);
-        }
+        refineChatActivityPending = false;
+        // Every mutation burst gets ONE final authoritative pass after 5s of quiet. Previously
+        // single-mutation bursts skipped this final pass; now this is also the sole gate that may
+        // restore the pristine lock after activity.
+        setMatchingState(true);
+        refineAutoSelectMatch();
+        setMatchingState(false);
       }, 5000);
     });
     chatMatchObserver.observe(container, { childList: true, subtree: true, characterData: true });
