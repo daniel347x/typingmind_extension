@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.347 Changes:
+ * - FIX (widget bounce from the most-recent-cost blaze): the dgCostBlaze animation bumps the
+ *   amount to 17px/800 inside an 11px BASELINE-aligned row, growing the line box for the
+ *   flash window (and the plain 15px amount likewise exceeded the idle row). The standalone
+ *   cost/last: row is now PRE-SIZED: min-height:24px + align-items:center (was baseline) +
+ *   margin-top 4px → 8px — the blaze fills the reserved space with zero reflow, exactly like
+ *   the v3.346 Append flash pin.
+ *
  * v3.346 Changes:
  * - FIX (widget bounce during the Append flash): the two-row → one-row content swap shrank the
  *   button ~14px for 1.2s, bouncing the transcript and everything above the strip down-then-up.
@@ -1641,7 +1649,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.346',
+  VERSION: '3.347',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -9082,7 +9090,7 @@
         </div>
 
         <!-- ✨ Refine: most-recent cost + last: (standalone row, right-justified) -->
-        <div style="display:flex; align-items:baseline; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:8px; margin-top:4px;">
+        <div style="display:flex; align-items:center; justify-content:flex-end; gap:14px; font-size:11px; opacity:0.85; padding-right:8px; margin-top:8px; min-height:24px;">
           <span id="deepgram-refine-cost-label" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
           <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
