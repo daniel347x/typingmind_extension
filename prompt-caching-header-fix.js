@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.334
+// Version: 4.335
 // Issues Fixed:
+//   - v4.335: PINNABLE/DRAGGABLE SESSION-CTX HOVERCARD (the dashboard mode). The hover card
+//     was force-hidden on every widget re-render (the v4.328 stale-card guard), so with 3-4
+//     sessions rapid-firing tool calls it vanished mid-hover. The card header now carries a
+//     pin button: PINNED mode ignores the re-render/mouseout/click dismiss guards entirely,
+//     is draggable by its header (dragging an unpinned card auto-pins it -- a moved card is
+//     a kept card), closes via its x button or Escape, and PERSISTS across TypingMind
+//     reloads (position + pinned state in tm_session_ctx_hover_pin_v1, restored on load).
+//     While pinned, the 1s ticker additionally rebuilds ALL rows every ~5s (scroll
+//     preserved) so dials/numbers/costs/new sessions stay fresh; hover mode keeps the
+//     light live-zone-only tick. Unpinning returns to normal hover-dismiss behavior.
 //   - v4.334: HOVERCARD MODEL ON ITS OWN LINE + 30% WIDER. Each session row is now two
 //     lines: line 1 = session name (in its hue, full width available); line 2 leads with
 //     the MODEL name followed by the live badge/timers -- the model identity can never be
@@ -1393,7 +1403,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.334';
+  const EXT_VERSION = '4.335';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5689,7 +5699,15 @@
   var tmSessionCtxHoverEl = null;
   var tmSessionCtxHoverHideTimer = 0;
   var tmSessionCtxHoverTickerId = null;
+  var tmSessionCtxHoverTickCount = 0;
   var tmSessionCtxHoverIdentities = {}; // identityKey -> { sid, model, host, isProxy } (rebuilt per card build)
+  // (v4.335) PINNED DASHBOARD MODE: pinning converts the hover card into a persistent,
+  // draggable gauge panel. Pinned state + position persist in localStorage and restore on
+  // load (Dan keeps it up all day watching background sessions).
+  var tmSessionCtxHoverPinned = false;
+  var tmSessionCtxHoverPinRestoreDone = false;
+  var tmSessionCtxHoverDrag = null; // { startX, startY, baseLeft, baseTop }
+  var TM_SESSION_CTX_HOVER_PIN_KEY = 'tm_session_ctx_hover_pin_v1'; // { pinned, left, top }
 
   // Numeric readout beside the dial: '123.4k / 1.0M' ('?' when no denominator exists).
   // Reuses the dial's own denominator chain (override -> discovery -> provider-max -> seed,
@@ -5755,13 +5773,22 @@
     return parts.join(' ');
   }
 
-  // 1s ticker, alive only while the card is visible: rewrites ONLY the per-row live zones
-  // (never rebuilds the card, so scroll position and dial hovers are undisturbed).
+  // 1s ticker, alive only while the card is visible. UNPINNED (hover) mode rewrites ONLY
+  // the per-row live zones. PINNED (v4.335) additionally rebuilds ALL rows every ~5 ticks
+  // (scroll preserved) so dials, total/max numbers, costs, and newly-appearing sessions
+  // stay fresh -- the dashboard Dan watches all day.
   function tmEnsureSessionCtxHoverTicker() {
     if (tmSessionCtxHoverTickerId != null) return;
     tmSessionCtxHoverTickerId = setInterval(function() {
       try {
         if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+        tmSessionCtxHoverTickCount++;
+        if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 5 === 0)) {
+          var st = tmSessionCtxHoverEl.scrollTop;
+          tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
+          tmSessionCtxHoverEl.scrollTop = st;
+          return;
+        }
         var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
         for (var i = 0; i < zones.length; i++) {
           var key = zones[i].getAttribute('data-live-key');
@@ -5776,7 +5803,12 @@
   function tmBuildSessionCtxHoverHtml() {
     tmSessionCtxHoverIdentities = {};
     var rows = [];
-    rows.push('<div style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;">Sessions in memory \u2014 context used</div>');
+    rows.push('<div data-hovercard-drag="1" style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:' + (tmSessionCtxHoverPinned ? 'move' : 'default') + ';">' +
+      '<span>Sessions in memory \u2014 context used</span>' +
+      '<span style="display:inline-flex;gap:8px;flex:none;align-items:center;">' +
+        '<span data-hovercard-action="pin" title="' + (tmSessionCtxHoverPinned ? 'Unpin: return to hover-dismiss' : 'Pin: keep open + draggable (survives widget refreshes; restored after TypingMind reload)') + '" style="cursor:pointer;opacity:' + (tmSessionCtxHoverPinned ? '1' : '0.55') + ';">\uD83D\uDCCC</span>' +
+        (tmSessionCtxHoverPinned ? '<span data-hovercard-action="close" title="Close (unpins)" style="cursor:pointer;color:#d08b8b;font-weight:700;">\u2715</span>' : '') +
+      '</span></div>');
     var ring = [];
     try { ring = tmReadCaptureRing() || []; } catch (eRing) {}
     var seen = {};
@@ -5839,9 +5871,88 @@
     return rows.join('');
   }
 
-  function tmShowSessionCtxHover(anchorEl) {
+  // (v4.335) Pin lifecycle. Dragging IMPLIES pinning (a moved card is a kept card).
+  function tmToggleSessionCtxHoverPin() {
+    tmSessionCtxHoverPinned = !tmSessionCtxHoverPinned;
+    if (tmSessionCtxHoverPinned) tmPersistSessionCtxHoverPin(); else tmClearSessionCtxHoverPin();
+    try { // repaint the header (pin/close buttons + drag cursor) immediately, scroll preserved
+      if (tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
+        var st = tmSessionCtxHoverEl.scrollTop;
+        tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
+        tmSessionCtxHoverEl.scrollTop = st;
+      }
+    } catch (e) {}
+  }
+  function tmClosePinnedSessionCtxHover() {
+    tmSessionCtxHoverPinned = false;
+    tmClearSessionCtxHoverPin();
+    tmHideSessionCtxHover(true);
+  }
+  function tmPersistSessionCtxHoverPin() {
     try {
-      if (!anchorEl) return;
+      var left = null, top = null;
+      if (tmSessionCtxHoverEl) {
+        var r = tmSessionCtxHoverEl.getBoundingClientRect();
+        left = Math.round(r.left); top = Math.round(r.top);
+      }
+      localStorage.setItem(TM_SESSION_CTX_HOVER_PIN_KEY, JSON.stringify({ pinned: true, left: left, top: top }));
+    } catch (e) {}
+  }
+  function tmClearSessionCtxHoverPin() {
+    try { localStorage.removeItem(TM_SESSION_CTX_HOVER_PIN_KEY); } catch (e) {}
+  }
+  // One-shot per page load: a pinned card from a previous session comes back where Dan left it.
+  function tmMaybeRestorePinnedSessionCtxHover() {
+    try {
+      if (tmSessionCtxHoverPinRestoreDone) return;
+      tmSessionCtxHoverPinRestoreDone = true;
+      var raw = localStorage.getItem(TM_SESSION_CTX_HOVER_PIN_KEY);
+      if (!raw) return;
+      var rec = JSON.parse(raw);
+      if (!rec || !rec.pinned) return;
+      tmSessionCtxHoverPinned = true;
+      tmShowSessionCtxHover(null, {
+        left: (typeof rec.left === 'number') ? rec.left : Math.max(8, window.innerWidth - 962),
+        top: (typeof rec.top === 'number') ? rec.top : 80
+      });
+    } catch (e) {}
+  }
+  function tmStartSessionCtxHoverDrag(ev) {
+    try {
+      if (!tmSessionCtxHoverEl) return;
+      if (!tmSessionCtxHoverPinned) tmToggleSessionCtxHoverPin(); // moving = keeping
+      var r = tmSessionCtxHoverEl.getBoundingClientRect();
+      tmSessionCtxHoverDrag = { startX: ev.clientX, startY: ev.clientY, baseLeft: r.left, baseTop: r.top };
+      tmSessionCtxHoverEl.style.left = r.left + 'px';
+      tmSessionCtxHoverEl.style.top = r.top + 'px';
+      tmSessionCtxHoverEl.style.right = 'auto';
+      var move = function(e2) {
+        try {
+          if (!tmSessionCtxHoverDrag || !tmSessionCtxHoverEl) return;
+          var nx = Math.max(0, Math.min(window.innerWidth - 60, tmSessionCtxHoverDrag.baseLeft + (e2.clientX - tmSessionCtxHoverDrag.startX)));
+          var ny = Math.max(0, Math.min(window.innerHeight - 40, tmSessionCtxHoverDrag.baseTop + (e2.clientY - tmSessionCtxHoverDrag.startY)));
+          tmSessionCtxHoverEl.style.left = nx + 'px';
+          tmSessionCtxHoverEl.style.top = ny + 'px';
+        } catch (eM) {}
+      };
+      var up = function() {
+        try {
+          window.removeEventListener('pointermove', move, true);
+          window.removeEventListener('pointerup', up, true);
+          tmSessionCtxHoverDrag = null;
+          tmPersistSessionCtxHoverPin(); // remember the resting spot
+        } catch (eU) {}
+      };
+      window.addEventListener('pointermove', move, true);
+      window.addEventListener('pointerup', up, true);
+      ev.preventDefault();
+    } catch (e) {}
+  }
+
+  function tmShowSessionCtxHover(anchorEl, opts) {
+    try {
+      opts = opts || {};
+      if (!anchorEl && (opts.left == null || opts.top == null)) return;
       if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
       if (!tmSessionCtxHoverEl) {
         tmSessionCtxHoverEl = document.createElement('div');
@@ -5866,13 +5977,48 @@
           if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
         });
         tmSessionCtxHoverEl.addEventListener('mouseleave', function() { tmHideSessionCtxHover(); });
+        // (v4.335) Delegated pin/close actions + header drag (the card's innerHTML is rebuilt
+        // on show and on pinned ticks, so handlers live on the persistent element only).
+        tmSessionCtxHoverEl.addEventListener('click', function(ev) {
+          try {
+            var actEl = ev.target && ev.target.closest ? ev.target.closest('[data-hovercard-action]') : null;
+            if (!actEl) return;
+            var act = actEl.getAttribute('data-hovercard-action');
+            if (act === 'pin') tmToggleSessionCtxHoverPin();
+            else if (act === 'close') tmClosePinnedSessionCtxHover();
+            ev.stopPropagation();
+          } catch (eAct) {}
+        });
+        tmSessionCtxHoverEl.addEventListener('pointerdown', function(ev) {
+          try {
+            var dragZone = ev.target && ev.target.closest ? ev.target.closest('[data-hovercard-drag]') : null;
+            if (!dragZone) return;
+            if (ev.target.closest('[data-hovercard-action]')) return; // buttons are not drag handles
+            tmStartSessionCtxHoverDrag(ev);
+          } catch (eDrag) {}
+        });
+        // (v4.335) Escape closes a pinned card (bound once; no-ops for hover mode/other UI).
+        window.addEventListener('keydown', function(ev) {
+          try {
+            if (ev.key !== 'Escape') return;
+            if (!tmSessionCtxHoverPinned || !tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+            tmClosePinnedSessionCtxHover();
+          } catch (eEsc) {}
+        });
         document.body.appendChild(tmSessionCtxHoverEl);
       }
       tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
-      var r = anchorEl.getBoundingClientRect();
-      tmSessionCtxHoverEl.style.top = Math.min(window.innerHeight - 60, r.bottom + 6) + 'px';
-      tmSessionCtxHoverEl.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
-      tmSessionCtxHoverEl.style.left = 'auto';
+      if (opts.left != null && opts.top != null) {
+        // (v4.335) Explicit position (pinned restore) -- no anchor needed.
+        tmSessionCtxHoverEl.style.left = opts.left + 'px';
+        tmSessionCtxHoverEl.style.top = opts.top + 'px';
+        tmSessionCtxHoverEl.style.right = 'auto';
+      } else {
+        var r = anchorEl.getBoundingClientRect();
+        tmSessionCtxHoverEl.style.top = Math.min(window.innerHeight - 60, r.bottom + 6) + 'px';
+        tmSessionCtxHoverEl.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
+        tmSessionCtxHoverEl.style.left = 'auto';
+      }
       tmSessionCtxHoverEl.style.display = 'block';
       tmEnsureSessionCtxHoverTicker(); // (v4.329) live badges/timers while visible
     } catch (e) {}
@@ -5880,13 +6026,15 @@
 
   function tmScheduleHideSessionCtxHover() {
     try {
+      if (tmSessionCtxHoverPinned) return; // (v4.335) pinned cards ignore hover rules
       if (tmSessionCtxHoverHideTimer) clearTimeout(tmSessionCtxHoverHideTimer);
-      tmSessionCtxHoverHideTimer = setTimeout(tmHideSessionCtxHover, 180);
+      tmSessionCtxHoverHideTimer = setTimeout(function() { tmHideSessionCtxHover(false); }, 180);
     } catch (e) {}
   }
 
-  function tmHideSessionCtxHover() {
+  function tmHideSessionCtxHover(force) {
     try {
+      if (tmSessionCtxHoverPinned && !force) return; // (v4.335) pinned survives re-renders/clicks
       if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
       if (tmSessionCtxHoverTickerId != null) { clearInterval(tmSessionCtxHoverTickerId); tmSessionCtxHoverTickerId = null; }
       if (tmSessionCtxHoverEl) tmSessionCtxHoverEl.style.display = 'none';
@@ -5948,6 +6096,7 @@
       // is the only stable attachment point.
       el.addEventListener('mouseover', function(ev) {
         try {
+          if (tmSessionCtxHoverPinned) return; // (v4.335) a pinned card stays where Dan put it
           var hovT = ev.target && ev.target.closest ? ev.target.closest('[data-hover="session-ctx-list"]') : null;
           if (hovT && el.contains(hovT)) tmShowSessionCtxHover(hovT);
         } catch (eHov) {}
@@ -5958,6 +6107,9 @@
           if (hovO && el.contains(hovO)) tmScheduleHideSessionCtxHover();
         } catch (eHovOut) {}
       });
+
+      // (v4.335) Restore a previously-pinned card (Dan keeps it up all day as a gauge panel).
+      setTimeout(function() { try { tmMaybeRestorePinnedSessionCtxHover(); } catch (eRest) {} }, 1500);
 
       el.addEventListener('click', function(ev) {
         // (v4.328) Any widget click (the label opens the ring modal) dismisses the hovercard.
