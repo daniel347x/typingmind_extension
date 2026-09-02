@@ -11,6 +11,13 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.343 Changes:
+ * - FIX (Append button collapsing to text width in row 1): the lazily-created lock wrapper is
+ *   the FLEX ITEM (not the button), and with no flex property it defaulted to flex:0 1 auto
+ *   (shrink-to-fit) — the button's width:100% resolved against the collapsed wrapper. The
+ *   wrapper now carries flex:1 1 auto + width:100%, so it claims the entire row and the
+ *   button fills it (session name centered, fixed width, no more jumping).
+ *
  * v3.342 Changes:
  * - 📦 LEGACY CONTROLS HIDDEN by default behind one tiny 📦 toggle in the title bar (left of
  *   ×): the Start Recording ribbon, the 'Click to add paragraph' click bar, AND the … Ellipsis
@@ -1614,7 +1621,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.342',
+  VERSION: '3.343',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4601,7 +4608,7 @@
       // (v3.339) PERMANENT frame geometry: the 12px padding + 6px border are ALWAYS reserved
       // (transparent when idle), so the red frame appears as a pure COLOR change with zero
       // row-height jumping.
-      wrap.style.cssText = 'display:block; position:relative; padding:12px; border:6px solid transparent; border-radius:0;';
+      wrap.style.cssText = 'display:block; position:relative; flex:1 1 auto; width:100%; padding:12px; border:6px solid transparent; border-radius:0;';
       btn.parentNode.insertBefore(wrap, btn);
       wrap.appendChild(btn);
     }
