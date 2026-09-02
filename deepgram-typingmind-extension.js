@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.348 Changes:
+ * - FIX (session↔chat match on syntax-highlighted numbered lists): TypingMind/Prism can split
+ *   a Markdown list marker and its following space across adjacent text nodes — e.g.
+ *   `<span>1.</span><span> Item</span>`. The chat walker recognized the line boundary but its
+ *   marker regex required trailing whitespace inside the SAME text node, so `1.` survived in
+ *   the chat norm while the whole-line session normalizer removed it. Numbered code-block
+ *   steps therefore diverged by the surviving marker digits. All three aligned marker strips
+ *   now accept whitespace OR the end of a text node/line (`(?:\s+|$)`), preserving ordinary
+ *   behavior while handling syntax-highlighter token boundaries.
+ *
  * v3.347 Changes:
  * - FIX (widget bounce from the most-recent-cost blaze): the dgCostBlaze animation bumps the
  *   amount to 17px/800 inside an 11px BASELINE-aligned row, growing the line box for the
@@ -689,7 +699,7 @@
  *   session side strips those markers per line (getLastBlockNormForText); the chat side did not,
  *   so the two normalized keys diverged by exactly the marker digits (found byte-exact: 5 marker
  *   runs '6','7','8','9','10' in a 2009-char key). extractChatTurnNorm now tracks line-start
- *   (atLineStart) and strips the SAME /^\s*\d{1,3}\.\s+/ marker pattern the session side strips,
+ *   (atLineStart) and strips the SAME /^\s*\d{1,3}\.(?:\s+|$)/ marker pattern the session side strips,
  *   at the same logical positions (walk start + after P/DIV/LI/H1-6/BR/BLOCKQUOTE/UL/OL/PRE
  *   boundaries). Whitespace-only text nodes do not clear the line-start flag. '11-19.'-style
  *   ranges (en-dash, no period after digits) are untouched on BOTH sides (already consistent).
@@ -1649,7 +1659,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.347',
+  VERSION: '3.348',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4394,7 +4404,7 @@
   function refineNormalizeBlockLines(blockLines) {
     var mapped = blockLines.map(function(l) {
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
-      return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+      return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/, '');
     });
     return normalizeForChatMatch(mapped.join(' '));
   }
@@ -4478,14 +4488,14 @@
         // node-start strip never fires mid-blob while the session side strips those same lines.
         // An embedded '\n' IS a line boundary in both representations (user blobs, <pre> code),
         // so strip there unconditionally — same regex as the session side (emphasis-tolerant).
-        t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/g, '$1');
+        t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/g, '$1');
         // (v3.296) Line start ALSO when the ACCUMULATED text ends with a newline: syntax
         // highlighters split <pre> code into per-line text nodes, so a heading/list marker
         // ('### 2. ') can begin a fresh text node with NO embedded '\n' for the v3.280 strip to
         // key on, while atLineStart=false (the previous node held non-whitespace) — the marker
         // survived as a stray digit and killed the session match (the v3.295 __debugDiff case:
         // '2' before 'anonymity'; chatLen = prefix + block + 3 stray digits, to the char).
-        if (atLineStart || /\n\s*$/.test(text)) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.\s+/, '');
+        if (atLineStart || /\n\s*$/.test(text)) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/, '');
         text += t;
         if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
         return;
