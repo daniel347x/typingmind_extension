@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.344
+// Version: 4.345
 // Issues Fixed:
+//   - v4.345: NONBLANK ORPHAN TOOL-RESULT SWEEP (the surviving direct-OpenRouter 400).
+//     Live evidence on session 9b7f7896 proved the direct branch ran and repaired empty
+//     content on message 350, but the pair report stayed zero while Moonshot returned
+//     'tool_call_id  is not found'. The ring entry was skeletonized, but this combination
+//     identifies the INVERSE corruption the old repair never checked: a role:'tool'
+//     result with a real/nonblank id whose assistant tool_calls container disappeared
+//     during history/context conversion. v4.326/v4.342 only walked assistant calls to
+//     ensure their results; they never validated every result back against its declaring
+//     call. New final structural sweep (after inserts/moves): a tool message is retained
+//     only in the contiguous block immediately after an assistant tool_calls[] message,
+//     only when that assistant declared the exact id, and only once. Orphan, misplaced,
+//     duplicate, and empty results are dropped from the wire (AssemblyDB untouched).
+//     Console report adds droppedOrphan=N.
 //   - v4.344: KIMI TOOL-PAIR REPAIR ON THE PROXY PATH (the surviving 400). The v4.326
 //     and v4.342 tool-call repairs ran only on the DIRECT openrouter.ai and direct-
 //     Moonshot branches; TypingMind's /api/cors-proxy -> OpenRouter chat-completions
@@ -1500,7 +1513,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.344';
+  const EXT_VERSION = '4.345';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12916,7 +12929,7 @@
   // punctuation-safe spelling of the same provider ID (for example run_command:119 ->
   // run_command_119). Repair only the outbound copy; AssemblyDB remains untouched.
   function repairChatCompletionsToolCallPairs(body, label) {
-    var report = { changed: 0, idRepairs: 0, movedResults: 0, stubbedResults: 0, droppedEmptyResults: 0 };
+    var report = { changed: 0, idRepairs: 0, movedResults: 0, stubbedResults: 0, droppedEmptyResults: 0, droppedOrphanResults: 0 };
     if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return report;
 
     var messages = body.messages;
@@ -13051,25 +13064,55 @@
       i = insertAt - 1;
     }
 
-    // (v4.342) FINAL SWEEP: any tool message STILL carrying an empty tool_call_id is
-    // fatal (provider 400 'tool_call_id  is not found') and unpairable (its assistant half
-    // is lost). Drop it from the WIRE payload only -- TypingMind's AssemblyDB keeps the
-    // original, so every turn re-derives this repair from the untouched store.
-    for (var di = messages.length - 1; di >= 0; di--) {
-      var dMsg = messages[di];
-      if (dMsg && dMsg.role === 'tool' && !String(dMsg.tool_call_id || '')) {
-        messages.splice(di, 1);
-        report.droppedEmptyResults++;
+    // (v4.345) FINAL STRUCTURAL SWEEP: after the call-driven repair above has inserted/moved
+    // every expected result into place, enforce the provider grammar in the reverse direction:
+    // a role:'tool' message is legal ONLY inside the contiguous result block immediately after
+    // an assistant tool_calls[] message, its id must be declared by that assistant, and each id
+    // may be consumed once. This catches the inverse corruption v4.326/v4.342 missed: a real,
+    // NONBLANK tool_call_id whose assistant tool_calls container vanished during history/context
+    // conversion. Moonshot reports that as 'tool_call_id <id> is not found' (OpenRouter may omit
+    // the id in its rendered raw string). Also drops duplicates, misplaced results, and blanks.
+    var activeCallIds = null;
+    var consumedCallIds = null;
+    for (var si = 0; si < messages.length;) {
+      var sMsg = messages[si];
+      if (sMsg && sMsg.role === 'assistant' && Array.isArray(sMsg.tool_calls) && sMsg.tool_calls.length) {
+        activeCallIds = new Set();
+        consumedCallIds = new Set();
+        for (var sci = 0; sci < sMsg.tool_calls.length; sci++) {
+          var scId = sMsg.tool_calls[sci] && String(sMsg.tool_calls[sci].id || '');
+          if (scId) activeCallIds.add(scId);
+        }
+        si++;
+        continue;
       }
+      if (sMsg && sMsg.role === 'tool') {
+        var srId = String(sMsg.tool_call_id || '');
+        var validHere = !!(srId && activeCallIds && activeCallIds.has(srId) && !consumedCallIds.has(srId));
+        if (!validHere) {
+          messages.splice(si, 1);
+          if (!srId) report.droppedEmptyResults++;
+          else report.droppedOrphanResults++;
+          continue; // same index now holds the next message
+        }
+        consumedCallIds.add(srId);
+        si++;
+        continue;
+      }
+      // Any non-tool message closes the immediately-preceding assistant's result block.
+      activeCallIds = null;
+      consumedCallIds = null;
+      si++;
     }
 
-    report.changed = report.idRepairs + report.movedResults + report.stubbedResults + report.droppedEmptyResults;
+    report.changed = report.idRepairs + report.movedResults + report.stubbedResults + report.droppedEmptyResults + report.droppedOrphanResults;
     if (report.changed) {
       console.error(
         '🚨 [v' + EXT_VERSION + '] ' + (label || 'chat-completions') +
         ': repaired tool-call pairing before send (ids=' + report.idRepairs +
         ', moved=' + report.movedResults + ', stubbed=' + report.stubbedResults +
-        ', droppedEmpty=' + report.droppedEmptyResults + ')'
+        ', droppedEmpty=' + report.droppedEmptyResults +
+        ', droppedOrphan=' + report.droppedOrphanResults + ')'
       );
     }
     return report;
