@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.338
+// Version: 4.339
 // Issues Fixed:
+//   - v4.339: ZERO-BYTE ABORT DEAD ZONE FIXED (the 'session never wakes' case). When a hung
+//     request ends BEFORE any byte arrives (TypingMind's own client timeout or a cut
+//     connection -- Dan saw Regenerate with NO error text), the continuity tap's reader
+//     catch deliberately queued nothing (stream_aborted requires bytes > 0 to avoid
+//     resurrecting after a user Stop) AND disarmed the 15-minute silence watchdog --
+//     leaving NOTHING armed, so the session stalled forever. New sensor: a zero-byte
+//     stream end now queues 'stream_aborted_no_bytes' (error-backoff class) when the abort
+//     looks AUTONOMOUS -- no TypingMind-UI pointerdown/keydown in the last 5s. Gestures
+//     inside foreign panels (Transcription Control etc.) are excluded from the gesture
+//     clock, so Dan dictating into his edit widget can never masquerade as a Stop. A real
+//     Stop press (recent gesture) still never resurrects. The 15-min silence watchdog
+//     stays as the final net for connections that stay OPEN but silent (Fable's 5+ minute
+//     pre-byte thinking makes anything shorter dangerous).
 //   - v4.338: DASHBOARD HEIGHT RESIZE. The card is now a two-region flex column: a content
 //     region (the only thing rebuilt on ticks) plus a persistent bottom grip strip (ns-
 //     resize cursor, subtle grip lines). Dragging the grip sets an explicit card height
@@ -1433,7 +1446,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.338';
+  const EXT_VERSION = '4.339';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -10160,6 +10173,29 @@
     for (var roi = 0; roi < responseOutput.length; roi++) if (responseOutput[roi] && responseOutput[roi].type === 'function_call') state.sawToolCall = true;
   }
 
+  // (v4.339) USER-GESTURE CLOCK for abort discrimination. The zero-byte stream-end dead zone
+  // cannot be fixed by blindly queueing on every abort: an AbortError is ALSO what a user
+  // pressing Stop produces, and resurrecting after a deliberate Stop is unacceptable. The
+  // discriminator: an abort within ~5s of a REAL TypingMind-UI gesture = Dan did it (never
+  // resurrect); an abort with no recent gesture = TypingMind's own client timeout or a cut
+  // connection (auto-resume). Gestures inside FOREIGN panels (Transcription Control etc.)
+  // are NOT counted -- Dan dictating into his edit widget while a background session hangs
+  // must not masquerade as a Stop.
+  var tmLastUserGestureTs = 0;
+  function tmNoteUserGesture(ev) {
+    try {
+      if (ev && ev.target && tmElementLooksLikeForeignPanel(ev.target)) return;
+      tmLastUserGestureTs = Date.now();
+    } catch (e) {}
+  }
+  try {
+    window.addEventListener('pointerdown', tmNoteUserGesture, true);
+    window.addEventListener('keydown', tmNoteUserGesture, true);
+  } catch (eGest) {}
+  function tmAbortLooksAutonomous() {
+    try { return (Date.now() - tmLastUserGestureTs) > 5000; } catch (e) { return true; }
+  }
+
   function tmTapContinuitySignals(response, sessionId, stubbedIds, hooks) {
     hooks = hooks || {};
     function petWatchdog() { try { if (hooks.pet) hooks.pet(); } catch (e) {} }
@@ -10247,6 +10283,15 @@
             if (state.bytesReceived > 0) {
               stampTrigger('stream_aborted');
               tmQueueAutoContinue(sessionId, 'stream_aborted', 'stream errored after ' + state.bytesReceived + ' bytes');
+            } else if (tmAbortLooksAutonomous()) {
+              // (v4.339) ZERO-BYTE ABORT DEAD ZONE: the stream ended before ANY byte arrived
+              // (TypingMind's own client timeout, or a cut connection -- Dan saw Regenerate
+              // with NO error text). Previously this queued nothing AND disarmed the 15-min
+              // silence watchdog, leaving NOTHING armed: the session stalled forever.
+              // stream_aborted_no_bytes is an error-class reason (backoff-paced), and the
+              // autonomous-gesture check keeps a real Stop press from ever resurrecting.
+              stampTrigger('stream_aborted_no_bytes');
+              tmQueueAutoContinue(sessionId, 'stream_aborted_no_bytes', 'connection ended before first byte (no recent user gesture)');
             }
             disarmWatchdog();
           });
@@ -10256,7 +10301,16 @@
           petWatchdog();
           String(text || '').split(/\r?\n/).forEach(inspectLine);
           finish();
-        }).catch(function() { disarmWatchdog(); });
+        }).catch(function() {
+          // (v4.339) Same zero-byte dead zone on the non-reader (text()) path.
+          try {
+            if (tmAbortLooksAutonomous()) {
+              stampTrigger('stream_aborted_no_bytes');
+              tmQueueAutoContinue(sessionId, 'stream_aborted_no_bytes', 'body read failed before content (no recent user gesture)');
+            }
+          } catch (eTxt) {}
+          disarmWatchdog();
+        });
       }
     } catch (e) { disarmWatchdog(); }
     return response;
