@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.360 Changes:
+ * - REFACTOR: TeX/KaTeX match normalization is now ONE shared table-driven canonicalizer used by
+ *   both context-session text and chat-DOM text. `CHAT_MATCH_TEX_COMMAND_TOKENS` maps TeX command
+ *   names to stable words; `CHAT_MATCH_UNICODE_SYMBOL_TOKENS` maps rendered glyphs to the same
+ *   words; one text-wrapper registry preserves visible contents of `\\text{...}`-style commands.
+ *   This eliminates the duplicated regex lists that drifted during v3.356–v3.359.
+ * - Seeded with all existing transition/implication mappings plus five likely-next relation
+ *   families: not-equal (`\\neq`/`≠`), less-or-equal (`\\leq`/`≤`), greater-or-equal
+ *   (`\\geq`/`≥`), approximately (`\\approx`/`≈`), and plus/minus (`\\pm`/`±`). Unknown
+ *   commands inside delimited math still drop like their non-alphanumeric rendered glyphs;
+ *   ordinary prose/backslash paths remain untouched.
+ *
  * v3.359 Changes:
  * - FIX (remaining 28-char match surplus): frozen bd2a9134 showed chat-only "implies" at the
  *   first divergence, and 5531−5503 = 28 = four × 7-character "implies" tokens. TypingMind left
@@ -1760,7 +1772,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.359',
+  VERSION: '3.360',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4418,6 +4430,67 @@
     }
   }
 
+  // (v3.360) ONE table-driven TeX/KaTeX vocabulary for BOTH normalization sources. Keep command
+  // names case-sensitive (TeX is case-sensitive); every mapped Unicode glyph emits the SAME token.
+  const CHAT_MATCH_TEX_COMMAND_TOKENS = Object.freeze({
+    // Existing transition family
+    to: 'to', rightarrow: 'to', longrightarrow: 'to', mapsto: 'to', longmapsto: 'to',
+    leftarrow: 'to', longleftarrow: 'to', Leftarrow: 'to', Longleftarrow: 'to',
+    leftrightarrow: 'to', longleftrightarrow: 'to', Leftrightarrow: 'to', Longleftrightarrow: 'to',
+    // Existing implication family
+    implies: 'implies', Rightarrow: 'implies', Longrightarrow: 'implies',
+    // Five likely-next relation families
+    neq: 'notequal', ne: 'notequal',
+    leq: 'lessequal', le: 'lessequal',
+    geq: 'greaterequal', ge: 'greaterequal',
+    approx: 'approximately',
+    pm: 'plusminus'
+  });
+  const CHAT_MATCH_UNICODE_SYMBOL_TOKENS = Object.freeze({
+    '⇒': 'implies', '⟹': 'implies',
+    '≠': 'notequal', '≤': 'lessequal', '≥': 'greaterequal',
+    '≈': 'approximately', '±': 'plusminus'
+  });
+  const CHAT_MATCH_TEX_TEXT_WRAPPER_RE = /\\(?:text|mathrm|mathbf|mathit|mathsf|texttt|operatorname|mathbb)\s*\{([^{}]*)\}/g;
+  const CHAT_MATCH_TEX_COMMAND_RE = /\\([a-zA-Z]+)\b/g;
+  const CHAT_MATCH_UNICODE_SYMBOL_RE = /[⇒⟹≠≤≥≈±]/g;
+  const CHAT_MATCH_ANY_ARROW_RE = /[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g;
+
+  function chatMatchMappedCommand(full, command, dropUnknown) {
+    if (Object.prototype.hasOwnProperty.call(CHAT_MATCH_TEX_COMMAND_TOKENS, command)) {
+      return CHAT_MATCH_TEX_COMMAND_TOKENS[command];
+    }
+    return dropUnknown ? '' : full;
+  }
+
+  function chatMatchReduceMathSpan(match, inner) {
+    return inner
+      .replace(CHAT_MATCH_TEX_TEXT_WRAPPER_RE, '$1')
+      .replace(CHAT_MATCH_TEX_COMMAND_RE, function(full, command) {
+        return chatMatchMappedCommand(full, command, true);
+      });
+  }
+
+  function chatMatchCanonicalizeMath(s) {
+    var v = String(s || '')
+      // Delimited source math: preserve visible wrapper text, map known relations, drop unknown commands.
+      .replace(/\$\$([^$]+)\$\$/g, chatMatchReduceMathSpan)
+      .replace(/\$([^$\n]+)\$/g, chatMatchReduceMathSpan)
+      .replace(/\\\(([^]*?)\\\)/g, chatMatchReduceMathSpan)
+      .replace(/\\\[([^]*?)\\\]/g, chatMatchReduceMathSpan)
+      // Known commands can also survive outside delimiters in TypingMind's literal DOM. Map only
+      // known vocabulary here; preserve unknown prose/backslash paths for the legacy normalizer.
+      .replace(CHAT_MATCH_TEX_COMMAND_RE, function(full, command) {
+        return chatMatchMappedCommand(full, command, false);
+      })
+      .replace(CHAT_MATCH_UNICODE_SYMBOL_RE, function(glyph) {
+        return CHAT_MATCH_UNICODE_SYMBOL_TOKENS[glyph];
+      })
+      // All remaining rendered arrows are transition arrows. Implication glyphs were consumed above.
+      .replace(CHAT_MATCH_ANY_ARROW_RE, 'to');
+    return v;
+  }
+
   /** Strip a string to pure alphanumeric, lowercase — comparison key. (Hyphens stripped too: they're
    *  formatting artifacts (table separators, etc.) that create false mismatches between Markdown source
    *  and rendered HTML. The --- breaks are only used for block identification, not comparison.)
@@ -4431,14 +4504,8 @@
   // ]
   function normalizeForChatMatch(s) {
     if (!s) return '';
-    // (v3.359) Canonical relation vocabulary for BOTH inputs. TypingMind may leave isolated
-    // TeX commands literal or render them as Unicode glyphs; both representations must converge.
-    var v = decodeHtmlEntitiesLoop(s)
-      .replace(/\\(?:implies|Longrightarrow|Rightarrow)\b/g, 'implies')
-      .replace(/\\(?:longrightarrow|rightarrow|to|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
-      // Consume implication glyphs BEFORE the broad arrow ranges map every remaining arrow to "to".
-      .replace(/[\u21D2\u27F9]/g, 'implies')
-      .replace(/[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g, 'to');
+    // (v3.360) Entity convergence first, then ONE shared math canonicalizer for session + DOM.
+    var v = chatMatchCanonicalizeMath(decodeHtmlEntitiesLoop(s));
     return v.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
@@ -4512,26 +4579,11 @@
   // ]
   function refineNormalizeBlockLines(blockLines) {
     var mapped = blockLines.map(function(l) {
-      // (v3.356) Reduce delimited MATH spans to their VISIBLE form, mirroring the chat side's
-      // KaTeX render: \text{...} keeps its inner text; bare commands (\longrightarrow etc.)
-      // render as symbol glyphs that the alphanumeric filter drops on BOTH sides. Delimited
-      // spans only — literal backslashes in ordinary prose (C:\path\to\file) are untouched.
-      var reduceMath = function(m, inner) {
-        return inner
-          .replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|texttt)\s*\{([^{}]*)\}/g, '$1')
-          // (v3.359) Implication is semantically distinct from a transition arrow.
-          .replace(/\\(?:implies|Longrightarrow|Rightarrow)\b/g, 'implies')
-          // (v3.357) Transition-arrow commands map to the same "to" token assigned to glyphs.
-          .replace(/\\(?:longrightarrow|rightarrow|to|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
-          .replace(/\\[a-zA-Z]+/g, '');
-      };
-      l = l.replace(/\$\$([^$]+)\$\$/g, reduceMath);
-      l = l.replace(/\$([^$\n]+)\$/g, reduceMath);
-      l = l.replace(/\\\(([^]*?)\\\)/g, reduceMath);
-      l = l.replace(/\\\[([^]*?)\\\]/g, reduceMath);
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
       return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3}\d{1,3}\.(?:\s+|$)|\d{1,3}\.(?:\s+|$))/, '');
     });
+    // (v3.360) Math is intentionally reduced HERE, after lines are joined, by the same shared
+    // normalizeForChatMatch path used for chat DOM. This also handles multi-line display math.
     return normalizeForChatMatch(mapped.join(' '));
   }
 
