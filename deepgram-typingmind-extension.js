@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.362 Changes:
+ * - ✨ Refine button now shows the CURRENT MODEL on a small second line in every mode: idle,
+ *   in-flight split (Cancel + +30s), and cooldown completion. With the aux rows collapsed, the
+ *   active model remains visible without exposing provider/prompt controls. The line updates
+ *   whenever the provider/model dropdowns refresh.
+ * - 📝 Context moved to the TITLE BAR immediately right of 🆕 Session (same existing ID and
+ *   modal behavior), so the context-slot editor stays one click away while the aux provider
+ *   row remains collapsed. The old hidden-row slot is left inert (no ID/handler) as fallback UI.
+ *
  * v3.361 Changes:
  * - FIX (inline `1.` at the start of a rendered list item was eaten): context Markdown with an
  *   outer `1.` list marker followed by inline-code `1.` removes the OUTER marker but correctly
@@ -1783,7 +1792,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.361',
+  VERSION: '3.362',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5674,6 +5683,18 @@
     refineRenderLastDuration(elapsed);
   }
 
+  /** (v3.362) Paint the currently-selected Refine model on the button's small second line.
+   *  Runs at initialization and whenever the provider/model dropdowns refresh; the hidden aux
+   *  provider row can therefore stay collapsed without hiding the most useful identity. */
+  function refineUpdateButtonModelLine() {
+    const line = document.querySelector('#deepgram-refine-btn .deepgram-refine-model-line');
+    if (!line) return;
+    let model = '';
+    try { model = refineGetModel(refineGetProvider()) || ''; } catch (e) {}
+    line.textContent = model;
+    line.title = model ? ('Refine model: ' + model) : 'No Refine model selected';
+  }
+
   /** (Re)populate the provider + model dropdowns from saved state. */
   function refineRefreshProviderDropdown() {
     const sel = document.getElementById('deepgram-refine-provider-select');
@@ -5694,6 +5715,7 @@
       if (m === active) opt.selected = true;
       sel.appendChild(opt);
     });
+    refineUpdateButtonModelLine();
   }
 
   // @beacon[
@@ -6978,7 +7000,7 @@
       const cancelBtn = document.createElement('button');
       cancelBtn.className = 'deepgram-btn deepgram-btn-info';
       cancelBtn.style.cssText = 'flex:2; display:flex; align-items:center; justify-content:center; gap:6px; font-size:11px; line-height:1.2; min-width:0; padding:3px 6px;';
-      cancelBtn.innerHTML = '<span style="font-size:10px; opacity:0.85;">⏹ Cancel</span><span id="deepgram-refine-countdown" style="font-size:11px; font-variant-numeric:tabular-nums;">2:00</span>';
+      cancelBtn.innerHTML = '<span style="display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.05; min-width:0;"><span style="font-size:10px; opacity:0.85;">⏹ Cancel</span><span id="deepgram-refine-countdown" style="font-size:11px; font-variant-numeric:tabular-nums;">2:00</span>' + refineModelSublineHtml() + '</span>';
       cancelBtn.onclick = function(){
         thisAbortController.__refineAbortReason = 'user';
         thisAbortController.abort();
@@ -6990,7 +7012,7 @@
       const addBtn = document.createElement('button');
       addBtn.className = 'deepgram-btn deepgram-btn-info';
       addBtn.style.cssText = 'flex:1; font-size:11px; min-width:0;';
-      addBtn.textContent = '+30s';
+      addBtn.innerHTML = '<span style="display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.05; min-width:0;"><span>+30s</span>' + refineModelSublineHtml() + '</span>';
       addBtn.onclick = function(){
         refineTimeoutEnd += 30000;
         // Brief press feedback.
@@ -7202,6 +7224,21 @@
 
   // @carto-group id=client-group-8 label="Client group 8"
 
+  function refineModelSublineHtml() {
+    let model = '';
+    try { model = refineGetModel(refineGetProvider()) || ''; } catch (e) {}
+    // Model strings are user-editable, so escape before composing innerHTML.
+    const safe = model.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return '<span style="font-size:9px; opacity:0.78; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;">' + safe + '</span>';
+  }
+
+  /** Restore a bare idle ✨ Refine label after a cooldown or split-button teardown. */
+  function refineRestoreIdleButtonLabel(btn) {
+    if (!btn) return;
+    btn.innerHTML = '<span style="display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.05;">'
+      + '<span>✨ Refine</span>' + refineModelSublineHtml() + '</span>';
+  }
+
   /** Start a 2s cooldown on the Refine button (disabled) to prevent misclicks — THE one cooldown
    *  path for every Refine exit (success, cancel, timeout, error). Pass an optional completion label
    *  ('✓ Refined', '✓ Replaced selection', '✓ Canceled') to show it during the window (restored to
@@ -7232,7 +7269,7 @@
         bb.style.opacity = '';
         bb.style.background = '';
         bb.style.color = '';
-        if (labelHtml) bb.innerHTML = '✨ Refine';
+        if (labelHtml) refineRestoreIdleButtonLabel(bb);
       }
       window.__refineCooldownTimer = null;
     }, 2000);
@@ -9204,6 +9241,7 @@
           <h2 id="deepgram-header-title">🎙️ Transcription Control <span class="deepgram-version" id="deepgram-version"></span></h2>
           <div style="display: flex; gap: 10px; align-items: center;">
             <button id="deepgram-newsession-btn" onclick="window.startNewSession()" title="Start a brand-new session: mint a Session ID, type the Load GLIMPSE initializer, recycle the oldest context slot (wipe + rename + seed), and rename the first visible 'New Chat' sidebar row" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.4); border-radius:4px; color:inherit; font-weight:700;">🆕 Session</button>
+            <button id="deepgram-refine-context-btn" title="Edit the 10 named Refine context slots (prior chat turns / topic); the ACTIVE slot is what ✨ Refine sends" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">📝 Context</button>
             <button id="deepgram-status-toggle-btn" title="Show/hide the rarely-used (deprecated) Whisper model status block" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Whisper Model Status</button>
             <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
@@ -9384,7 +9422,10 @@
             📄 Paste MD
           </button>
           <button id="deepgram-refine-btn" class="deepgram-btn deepgram-btn-info" title="Second-pass cleanup of the highlighted text (or the whole transcript) via Claude / OpenRouter">
-            ✨ Refine
+            <span style="display:flex; flex-direction:column; align-items:center; justify-content:center; line-height:1.05;">
+              <span>✨ Refine</span>
+              <span class="deepgram-refine-model-line" style="font-size:9px; opacity:0.78; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-top:2px;"></span>
+            </span>
           </button>
         </div>
         <div class="deepgram-buttons" style="margin-bottom:10px; align-items:center;">
@@ -9454,7 +9495,7 @@
           <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px; padding:3px 7px;">📜 Prompt</button>
           <button id="deepgram-refine-dict-btn" class="deepgram-btn deepgram-btn-secondary" title="Custom dictionary: protect your Wispr Flow canonical terms from being reverted by Refine (menu: copy agent instructions / paste JSON)" style="font-size:11px; padding:3px 7px;">📖 Dictionary</button>
           <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px; padding:3px 7px;">🔑 Key</button>
-          <button id="deepgram-refine-context-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the context slots (prior chat turns / topic). 10 named parallel-session slots; the active one is what Refine sends (its name is shown in the thin row above)." style="font-size:11px; color:#ff8c00;">📝 Context</button>
+          <button class="deepgram-btn deepgram-btn-secondary" title="Context slots moved to the title bar (left of Whisper Model Status). This inert button remains only when the aux row is expanded; use 📝 Context above." disabled style="font-size:11px; color:#ff8c00; opacity:0.45;">📝 Context ↑</button>
         </div>
 
         <!-- ElevenLabs Read-Aloud control row -->
