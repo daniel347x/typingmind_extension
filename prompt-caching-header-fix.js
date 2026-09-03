@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.349
+// Version: 4.350
 // Issues Fixed:
+//   - v4.350: TOOL BADGE IDENTITY-PRECISION + NOTE-TIME IDENTITY RESOLUTION. v4.349 made the
+//     tool spinner/counter identity-precise but left the red tool BADGE sid-wide and resolved
+//     the identity lazily per tick (silently falling back to sid-wide on any resolution
+//     failure) -- so a model-switched session still showed the red tool state on every row
+//     during local tool execution. Now: (1) the ledger stores the responding identity key at
+//     note time (resolved once from the note-time capture); (2) the hovercard tool badge AND
+//     counter light only on the responding provider/model row -- other rows of the session
+//     show the clear badge; (3) if the identity is ever unresolvable, the sid-wide fallback
+//     fires a one-time-per-capture console warning naming the captureId, so any recurrence
+//     is self-diagnosing instead of silent.
 //   - v4.349: SPINNER/TIMER IDENTITY PRECISION + STALE IN-FLIGHT CLEARING (model-switched
 //     sessions). Two bugs Dan caught on a session with three dashboard rows (Kimi direct,
 //     Kimi OpenRouter, Sol OpenRouter). (1) STALE MARKERS: the in-flight trackers cleared
@@ -1553,7 +1563,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.349';
+  const EXT_VERSION = '4.350';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5935,12 +5945,21 @@
   // only. Returns the identity key, or '' when unresolvable (callers fall back to sid-wide).
   function tmToolStateIdentityKey(st) {
     try {
+      if (st && st.idKey) return String(st.idKey); // (v4.350) resolved at note time
       if (st && st.captureId) {
         var cap = getCaptureById(st.captureId);
         if (cap) return tmCapIdentityKey(cap) || '';
       }
     } catch (e) {}
     return '';
+  }
+  // (v4.350) One-time-per-capture log when the sid-wide fallback actually engages.
+  var tmToolStateUnresolvedLogged = {};
+  // Always-clear variant of the shared agent-management badge (non-responding rows).
+  function tmAgentManagementClearBadge() {
+    if (!tmAgentManagementEnabled()) return '';
+    var tip = 'Agent management: no tool-call handoff in flight for this session.';
+    return ' <span title="' + escapeHtml(tip) + '" style="color:#8fb8ff;font-size:9px;font-weight:600;white-space:nowrap;">\uD83D\uDD35 clear</span>';
   }
 
   // (v4.336) Busy detector for the dashboard spinner: a session is busy while a client-side
@@ -6016,15 +6035,26 @@
     // 3) Agent-management badge + live tool-execution timer LAST (per-session ledger state).
     try {
       if (tmAgentManagementEnabled()) {
-        parts.push(tmAgentManagementBadge(info.sid));
         var st = tmAgentManagementDisplayState(info.sid);
-        if (st && st.pendingToolCall && st.responseFinishedAt) {
-          // (v4.349) Identity-precise: the count-up belongs to the responding identity's row
-          // only, not every row sharing the session after a model/endpoint switch.
-          var stKeyT = tmToolStateIdentityKey(st);
-          if (!stKeyT || stKeyT === key) {
-            parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
-          }
+        var stPending = !!(st && st.pendingToolCall && st.responseFinishedAt);
+        // (v4.350) BADGE + TIMER identity-precise: after a model/endpoint switch, only the
+        // responding provider/model row shows the red tool state and count-up; every other
+        // row of the session shows the clear badge. Fallback to sid-wide only when the
+        // identity is genuinely unresolvable -- and that fallback logs once per capture.
+        var stKeyB = stPending ? tmToolStateIdentityKey(st) : '';
+        if (stPending && !stKeyB) {
+          try {
+            var logK = String((st && st.captureId) || 'null');
+            if (!tmToolStateUnresolvedLogged[logK]) {
+              tmToolStateUnresolvedLogged[logK] = true;
+              console.warn('\uD83E\uDDF0 [v' + EXT_VERSION + '] Tool-busy state for ' + info.sid + ' could not resolve an identity key (captureId=' + logK + '); showing on ALL rows of the session (sid-wide fallback).');
+            }
+          } catch (eLog) {}
+        }
+        var showToolHere = stPending && (!stKeyB || stKeyB === key);
+        parts.push(showToolHere ? tmAgentManagementBadge(info.sid) : tmAgentManagementClearBadge());
+        if (showToolHere) {
+          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
         }
       }
     } catch (eTool) {}
@@ -9346,6 +9376,15 @@
     s.pendingToolCall = !!endedWithToolCall;
     s.responseFinishedAt = Date.now();
     s.captureId = captureId || s.captureId || null;
+    // (v4.350) Resolve + store the responding IDENTITY key once at note time, so dashboard
+    // rows can light the tool state only for the provider/model that actually called the
+    // tool (a model-switched session has several rows sharing one sid-keyed ledger entry).
+    try {
+      if (captureId) {
+        var capN = getCaptureById(captureId);
+        if (capN) s.idKey = tmCapIdentityKey(capN) || s.idKey || '';
+      }
+    } catch (eIK) {}
     if (!s.pendingToolCall) s.resumeQueuedAt = 0;
     tmAgentManagementSessions[key] = s;
     if (flipped) tmAgentManagementRefreshBadgeUI();
