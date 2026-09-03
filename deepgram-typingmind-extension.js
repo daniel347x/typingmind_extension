@@ -11,6 +11,17 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.361 Changes:
+ * - FIX (inline `1.` at the start of a rendered list item was eaten): context Markdown with an
+ *   outer `1.` list marker followed by inline-code `1.` removes the OUTER marker but correctly
+ *   retains the inline-code "1"; rendered HTML has a structural `<ol><li>` marker (absent from textContent) followed by
+ *   `<code>1.</code>`. The chat walker's raw-marker regex mistook that real content for another
+ *   list marker, producing the exact one-character deficit at frozen fork divergence 1282.
+ * - Real `<li>` subtrees now carry a private-use comparison sentinel across their start and all
+ *   internal line boundaries. Per-node raw-marker stripping is disabled inside them, and the
+ *   final whole-line fallback cannot cross the sentinel. The sentinel disappears in ordinary
+ *   alphanumeric normalization. Raw markers outside real list items retain existing behavior.
+ *
  * v3.360 Changes:
  * - REFACTOR: TeX/KaTeX match normalization is now ONE shared table-driven canonicalizer used by
  *   both context-session text and chat-DOM text. `CHAT_MATCH_TEX_COMMAND_TOKENS` maps TeX command
@@ -1772,7 +1783,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.360',
+  VERSION: '3.361',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4653,6 +4664,13 @@
     if (!child || !child.querySelector) return null;
     var contentEl = child.querySelector('[data-element-id="ai-response"]') || child.querySelector('[data-element-id="user-message"]') || child;
     var text = '';
+    // (v3.361) A real DOM <li> already expresses its list marker structurally; that marker is
+    // absent from textContent. Any leading `1.` inside the subtree is therefore CONTENT (often
+    // inline code), not another marker. A private-use sentinel protects the subtree's start and
+    // internal line boundaries from both the per-node and whole-line raw-Markdown strippers;
+    // normalizeForChatMatch removes the sentinel automatically as non-alphanumeric.
+    var realListItemDepth = 0;
+    var REAL_LI_CONTENT_SENTINEL = '\uE000';
     // (v3.277) Line-start tracking for ordered-list marker stripping. A continuation-numbered
     // list item ('6. ', '10. ') is literal DOM text on the chat side (the renderer can't open an
     // <ol> above 1), while the session side strips the same marker per line — so both sides now
@@ -4661,6 +4679,13 @@
     (function walk(node) {
       if (node.nodeType === Node.TEXT_NODE) {
         var t = node.textContent;
+        if (realListItemDepth > 0) {
+          // Protect embedded raw newlines too (e.g. <pre> nested inside a real list item).
+          t = t.replace(/\n/g, '\n' + REAL_LI_CONTENT_SENTINEL);
+          text += t;
+          if (/\S/.test(t)) atLineStart = false;
+          return;
+        }
         // (v3.280) Strip ordered-list markers after EMBEDDED newlines too. A plain-text user turn
         // is ONE raw text blob with literal '\n1. ' lines (no block elements), so v3.277's
         // node-start strip never fires mid-blob while the session side strips those same lines.
@@ -4690,10 +4715,20 @@
       if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
       var eid = node.getAttribute && node.getAttribute('data-element-id');
       if (eid && /action|tool/i.test(eid)) return;
+      var isRealListItem = node.tagName === 'LI';
+      if (isRealListItem) {
+        realListItemDepth++;
+        text += REAL_LI_CONTENT_SENTINEL;
+      }
       for (var j = 0; j < node.childNodes.length; j++) walk(node.childNodes[j]);
+      if (isRealListItem) realListItemDepth--;
       // Preserve a REAL line boundary for the final cross-node marker pass below. The final
       // comparison strips all whitespace, so newline vs space cannot otherwise change the key.
-      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) { text += '\n'; atLineStart = true; }
+      // Inside an outer real <li>, protect the new logical line as content too.
+      if (/^(P|DIV|LI|H[1-6]|BR|BLOCKQUOTE|UL|OL|PRE)$/.test(node.tagName)) {
+        text += '\n' + (realListItemDepth > 0 ? REAL_LI_CONTENT_SENTINEL : '');
+        atLineStart = true;
+      }
     })(contentEl);
     // (v3.353) WHOLE-LINE FALLBACK after all inline syntax tokens have been reassembled. Prism
     // may split a marker as `1` + `.` + ` Item`; no individual text node contains enough bytes
