@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.342
+// Version: 4.343
 // Issues Fixed:
+//   - v4.343: DETERMINISTIC-ERROR TOAST (blazing non-resumable errors). A 4xx provider
+//     error (400/401/403/404/422) is never auto-retried and never auto-resumed BY DESIGN --
+//     so nothing fired visibly for Dan's instantly-dying tool_call_id 400 session: the
+//     widget's red error row and orange banner are identity-guarded, and the widget-feed
+//     gate keeps the widget displaying the last-SUCCESS identity, hiding the row exactly
+//     when Dan sits in a different (or even the failing) conversation. NEW: a persistent
+//     bottom-right toast for every non-retryable provider error (HTTP>=400 bodies AND
+//     HTTP-200 streamed error chunks, both routed through the shared error core) -- shows
+//     code, message, raw provider detail, and session; stays until clicked (click opens
+//     the raw-JSON popup and dismisses); deduped per identity+code+message on a 2-minute
+//     re-show window so per-turn failures re-blaze sanely.
 //   - v4.342: EMPTY tool_call_id REPAIR (the instantly-dying OpenRouter/Moonshot session).
 //     Moonshot 400s verbatim with 'Invalid request: tool_call_id  is not found' (note the
 //     double space -- an EMPTY id) when history carries a tool message with a blank
@@ -1478,7 +1489,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.342';
+  const EXT_VERSION = '4.343';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8824,6 +8835,39 @@
     return response;
   }
 
+  // (v4.343) DETERMINISTIC-ERROR TOAST: 4xx provider errors are never auto-retried and never
+  // auto-resumed -- BY DESIGN nothing else fires for them, and the widget's red error row /
+  // orange banner are identity-guarded (invisible while Dan is in ANOTHER conversation, or
+  // while the widget still displays a last-success identity). A persistent bottom-right
+  // toast makes a non-resumable failure unmissable. Deduped per identity+code+message
+  // (2-minute re-show window) so a session failing every turn re-blazes sanely.
+  var tmDetErrToastLast = {}; // dedupeKey -> ts
+  function tmShowDeterministicErrorToast(idKey, code, message, raw) {
+    if (typeof document === 'undefined' || !document.body) return;
+    try {
+      var dkey = String(idKey || '') + '|' + String(code || '') + '|' + String(message || '').slice(0, 80);
+      var now = Date.now();
+      if (tmDetErrToastLast[dkey] && now - tmDetErrToastLast[dkey] < 2 * 60 * 1000) return;
+      tmDetErrToastLast[dkey] = now;
+      var old = document.getElementById('tm-det-error-toast');
+      if (old && old.parentNode) old.parentNode.removeChild(old);
+      var sidShort = String(idKey || '').split('::')[0] || 'unknown session';
+      var overlay = document.createElement('div');
+      overlay.id = 'tm-det-error-toast';
+      overlay.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:2147483647;max-width:460px;background:#2a0d0d;color:#ffd9d9;border:2px solid #ff6b6b;border-radius:8px;padding:12px 14px;font-family:system-ui,sans-serif;font-size:12px;box-shadow:0 8px 40px #000;cursor:pointer;';
+      overlay.innerHTML = '<div style="font-weight:700;color:#ff8a8a;margin-bottom:4px;">\u26D4 Non-resumable provider error (' + escapeHtml(String(code || '4xx')) + ') \u2014 no auto-retry/resume by design</div>' +
+        '<div>' + escapeHtml(String(message || 'deterministic provider failure')) + '</div>' +
+        (raw ? ('<div style="margin-top:2px;opacity:0.8;">' + escapeHtml(String(raw).slice(0, 160)) + '</div>') : '') +
+        '<div style="margin-top:4px;opacity:0.85;">Session <b>' + escapeHtml(sidShort) + '</b></div>' +
+        '<div style="margin-top:6px;opacity:0.8;">Stays until clicked \u2014 click to view raw error JSON and dismiss.</div>';
+      overlay.onclick = function() {
+        try { tmShowErrorPopup(); } catch (eP) {}
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      };
+      document.body.appendChild(overlay);
+    } catch (e) {}
+  }
+
   // (v4.209) Shared error core for BOTH HTTP>=400 bodies and HTTP-200 streamed error chunks.
   // Stamps the widget error banner, then either auto-retries (429 with per-session backoff) or
   // returns `passThrough` (a SAFE, unread response -- NEVER a partially-read original).
@@ -8871,6 +8915,11 @@
     // Do NOT retry 4xx client errors (400/401/403/404/422 -- deterministic, would just fail again).
     var retryCode = (err && err.code != null && !isNaN(Number(err.code))) ? Number(err.code) : status;
     var isRetryable = (retryCode === 429) || (retryCode >= 500 && retryCode < 600);
+    // (v4.343) Blaze NON-retryable (deterministic) provider errors: nothing else fires for
+    // them, and the widget's identity-guarded error row is invisible from other sessions.
+    if (!isRetryable && err) {
+      try { tmShowDeterministicErrorToast(errIdKey, retryCode, err.message, err.raw); } catch (eDet) {}
+    }
     if (isRetryable && attempt < TM_AUTO_RETRY_MAX) {
       var idKey = errIdKey;
       var failsTotal = idKey ? tmBumpRateLimitFails(idKey) : (attempt + 1);
