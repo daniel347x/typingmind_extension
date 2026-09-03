@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.340
+// Version: 4.341
 // Issues Fixed:
+//   - v4.341: PROVIDER-DISCOVERY 404 STORM KILLED. Every context-dial render for a
+//     DIRECT-ROUTE model (bare 'kimi-k3' from Moonshot-direct, bare 'gemini-3.7-flash' from
+//     Gemini-native) fired an OpenRouter Endpoints-API discovery fetch -- but that API only
+//     resolves VENDOR-PREFIXED slugs ('moonshotai/kimi-k3'), so bare names 404 forever, and
+//     with nothing cached on failure the next render (every capture, hovercard 3s rebuild,
+//     badge refresh, 2s memo expiry) refired: a permanent 1-2s 404 storm in the Network
+//     tab. Two fixes: (1) the lazy fetch now fires ONLY for '/'-containing (OpenRouter-slug)
+//     models -- direct routes skip discovery as designed and fall through to the built-in
+//     ctx seed; (2) failures (HTTP !ok, empty endpoint lists, network/CORS errors) are
+//     NEGATIVE-CACHED as 1h tombstones (vs 12h success cache), so even prefixed-slug 404s
+//     and provider outages cannot storm.
 //   - v4.340: GESTURE CLOCK POISONING FIXED (push-to-talk). v4.339's abort discriminator
 //     counted EVERY page keydown as a user gesture -- Dan's held-down transcription
 //     hotkeys (page-level targets, not inside the transcription panel) refreshed the clock
@@ -1454,7 +1465,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.340';
+  const EXT_VERSION = '4.341';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2427,7 +2438,12 @@
       var m = String(model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
       var rec = tmReadProviderLive()[m];
       if (!rec || !Array.isArray(rec.entries)) return null;
-      if (Date.now() - Number(rec.ts || 0) > TM_PROVIDER_LIVE_TTL) return null;
+      // (v4.341) NEGATIVE CACHE: failed discoveries (404s on unresolvable/bare slugs, network
+      // errors during provider outages) are tombstoned for 1h (vs 12h for success). A fresh
+      // tombstone returns [] -- truthy, so callers STOP refetching -- instead of null.
+      var ttl = rec.failed ? (60 * 60 * 1000) : TM_PROVIDER_LIVE_TTL;
+      if (Date.now() - Number(rec.ts || 0) > ttl) return null;
+      if (rec.failed === true) return [];
       // (v4.237) SELF-HEAL: entries cached before maxContext was captured have NO maxContext field
       // and would otherwise be served until the 12h TTL expires, hiding the context-window display.
       // Treat such a record as stale (return null) so the caller refetches/rebuilds with the field.
@@ -2594,13 +2610,31 @@
       fetch(url).then(function(r) { return r.ok ? r.json() : null; }).then(function(j) {
         delete tmProviderFetchInFlight[m];
         var eps = j && j.data && Array.isArray(j.data.endpoints) ? j.data.endpoints : null;
-        if (!eps || !eps.length) return;
+        if (!eps || !eps.length) {
+          // (v4.341) NEGATIVE-CACHE the failure: without a tombstone, EVERY context-dial
+          // render (widget re-render per capture, hovercard 3s rebuild, badge refresh,
+          // 2s resolve-memo expiry) refires this fetch forever -- the observed 1-2s 404 storm.
+          try {
+            var sFail = tmReadProviderLive();
+            sFail[m] = { ts: Date.now(), entries: [], failed: true };
+            localStorage.setItem(TM_PROVIDER_LIVE_KEY, JSON.stringify(sFail));
+          } catch (eWF) {}
+          return;
+        }
         var entries = tmMergeSeedKnowledge(m, tmBuildLiveProviderEntries(eps));
         var s2 = tmReadProviderLive();
         s2[m] = { ts: Date.now(), entries: entries };
         try { localStorage.setItem(TM_PROVIDER_LIVE_KEY, JSON.stringify(s2)); } catch (e) {}
         try { renderGpt51UsageWidget(); } catch (e) {}
-      }).catch(function() { delete tmProviderFetchInFlight[m]; });
+      }).catch(function() {
+        delete tmProviderFetchInFlight[m];
+        // (v4.341) Tombstone network/CORS failures too (same storm during provider outages).
+        try {
+          var sErr = tmReadProviderLive();
+          sErr[m] = { ts: Date.now(), entries: [], failed: true };
+          localStorage.setItem(TM_PROVIDER_LIVE_KEY, JSON.stringify(sErr));
+        } catch (eWE) {}
+      });
     } catch (e) {}
   }
 
@@ -6701,7 +6735,12 @@
       // Kick off the lazy Endpoints-API fetch when nothing usable is cached -- the NEXT turn's
       // snapshot (or a later render) picks up the fresh windows. Carries the tm_passthrough
       // sentinel and is fully guarded/in-flight-deduped by tmMaybeFetchProviderEndpoints itself.
-      if (!anyMax) { try { tmMaybeFetchProviderEndpoints(m); } catch (eF) {} }
+      // (v4.341) Only OPENROUTER-SLUG models (vendor-prefixed, containing '/') are
+      // discoverable via the Endpoints API. Bare names come from DIRECT routes
+      // (Moonshot-direct 'kimi-k3', Gemini-native 'gemini-3.7-flash') where discovery
+      // cannot reach by design -- firing it there produced a PERMANENT 404 storm, since
+      // the API needs the full 'moonshotai/kimi-k3' slug and bare names 404 forever.
+      if (!anyMax && m.indexOf('/') !== -1) { try { tmMaybeFetchProviderEndpoints(m); } catch (eF) {} }
       if (provSlug) {
         for (var i = 0; i < entries.length; i++) {
           var e = entries[i];
