@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.343
+// Version: 4.344
 // Issues Fixed:
+//   - v4.344: KIMI TOOL-PAIR REPAIR ON THE PROXY PATH (the surviving 400). The v4.326
+//     and v4.342 tool-call repairs ran only on the DIRECT openrouter.ai and direct-
+//     Moonshot branches; TypingMind's /api/cors-proxy -> OpenRouter chat-completions
+//     branch had NO repairs at all (session_id/usage accounting only). A proxy-routed
+//     Kimi session with a blank tool_call_id therefore kept 400ing ('tool_call_id  is
+//     not found') on every turn even after v4.342 -- while direct-Moonshot sessions
+//     (which have the repair) stayed healthy, exactly the split Dan observed. The
+//     proxy->OpenRouter branch now runs the SAME Kimi tool-pair repair (gated on
+//     tmIsKimiToolIdGuardModel) plus the shared OpenAI-compatible empty-message-content
+//     repair, wire-only as always. (Moonshot/DeepInfra/etc. TARGETS via proxy still
+//     fall through unrepaired -- flagged for a future pass if such traffic appears.)
 //   - v4.343: DETERMINISTIC-ERROR TOAST (blazing non-resumable errors). A 4xx provider
 //     error (400/401/403/404/422) is never auto-retried and never auto-resumed BY DESIGN --
 //     so nothing fired visibly for Dan's instantly-dying tool_call_id 400 session: the
@@ -1489,7 +1500,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.343';
+  const EXT_VERSION = '4.344';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15409,6 +15420,19 @@
 
             if (tmEnsureOpenRouterAccountingAndSession(body, 'TM Proxy → OpenRouter', tmComputeRoutingIdentityKey(body, url, options))) {
               modified = true;
+            }
+
+            // (v4.344) Crash-prevention repairs on the PROXY path: the v4.326/v4.342 Kimi
+            // tool-call PAIR repair (and the shared OpenAI-compatible empty-content repair)
+            // previously ran ONLY on the direct openrouter.ai and direct-Moonshot branches,
+            // so proxy-routed Kimi traffic (TypingMind /api/cors-proxy -> OpenRouter) never
+            // got them -- Dan's blank tool_call_id session 400'd on every turn even after
+            // v4.342 shipped. Same repairs, same wire-only semantics.
+            var proxyOrChatContentCount = repairChatCompletionsEmptyMessageContent(body, 'TM Proxy → OpenRouter chat-completions');
+            if (proxyOrChatContentCount) modified = true;
+            if (tmIsKimiToolIdGuardModel(body.model)) {
+              var proxyOrKimiPairReport = repairChatCompletionsToolCallPairs(body, 'TM Proxy → OpenRouter Kimi/Moonshot');
+              if (proxyOrKimiPairReport && proxyOrKimiPairReport.changed) modified = true;
             }
 
             if (modified) {
