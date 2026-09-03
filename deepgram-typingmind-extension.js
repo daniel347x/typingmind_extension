@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.359 Changes:
+ * - FIX (remaining 28-char match surplus): frozen bd2a9134 showed chat-only "implies" at the
+ *   first divergence, and 5531−5503 = 28 = four × 7-character "implies" tokens. TypingMind left
+ *   isolated `$\\implies$` commands literal in the DOM, while the session math reducer dropped
+ *   them as unknown commands. Shared canonicalization now maps TeX implication commands
+ *   (`\\implies`, `\\Rightarrow`, `\\Longrightarrow`) and rendered implication glyphs (`⇒`,
+ *   `⟹`) to "implies" on both sides; transition arrows remain canonical "to". This covers
+ *   rendered and unrendered implication notation without weakening ordinary text matching.
+ *
  * v3.358 Changes:
  * - FIX (KaTeX formulas counted three ways in chat normalization): a `.katex` root contains
  *   hidden `.katex-mathml` (semantic mrow + raw TeX `<annotation>`) AND visible `.katex-html`.
@@ -1751,7 +1760,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.358',
+  VERSION: '3.359',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4422,13 +4431,15 @@
   // ]
   function normalizeForChatMatch(s) {
     if (!s) return '';
-    // (v3.357) Rendered math arrows are symbol glyphs while an unrendered `$\\to$` remains
-    // literal letters in TypingMind's DOM. Canonicalize all Unicode arrow blocks to "to" so
-    // rendered and source forms converge before non-alphanumerics are stripped.
-    return decodeHtmlEntitiesLoop(s)
-      .replace(/[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g, 'to')
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .toLowerCase();
+    // (v3.359) Canonical relation vocabulary for BOTH inputs. TypingMind may leave isolated
+    // TeX commands literal or render them as Unicode glyphs; both representations must converge.
+    var v = decodeHtmlEntitiesLoop(s)
+      .replace(/\\(?:implies|Longrightarrow|Rightarrow)\b/g, 'implies')
+      .replace(/\\(?:longrightarrow|rightarrow|to|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
+      // Consume implication glyphs BEFORE the broad arrow ranges map every remaining arrow to "to".
+      .replace(/[\u21D2\u27F9]/g, 'implies')
+      .replace(/[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g, 'to');
+    return v.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
   }
 
   /** Decode ONE layer of HTML entity references (named + numeric) WITHOUT touching tags (v3.270).
@@ -4508,9 +4519,10 @@
       var reduceMath = function(m, inner) {
         return inner
           .replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|texttt)\s*\{([^{}]*)\}/g, '$1')
-          // (v3.357) Arrow commands have visible directional meaning. Map them to the same
-          // "to" token normalizeForChatMatch assigns to rendered Unicode arrow glyphs.
-          .replace(/\\(?:longrightarrow|rightarrow|to|Longrightarrow|Rightarrow|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
+          // (v3.359) Implication is semantically distinct from a transition arrow.
+          .replace(/\\(?:implies|Longrightarrow|Rightarrow)\b/g, 'implies')
+          // (v3.357) Transition-arrow commands map to the same "to" token assigned to glyphs.
+          .replace(/\\(?:longrightarrow|rightarrow|to|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
           .replace(/\\[a-zA-Z]+/g, '');
       };
       l = l.replace(/\$\$([^$]+)\$\$/g, reduceMath);
