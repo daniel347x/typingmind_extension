@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.341
+// Version: 4.342
 // Issues Fixed:
+//   - v4.342: EMPTY tool_call_id REPAIR (the instantly-dying OpenRouter/Moonshot session).
+//     Moonshot 400s verbatim with 'Invalid request: tool_call_id  is not found' (note the
+//     double space -- an EMPTY id) when history carries a tool message with a blank
+//     tool_call_id; the v4.326 pairing repair SKIPPED blank tool-side ids entirely (it
+//     only canonicalized non-blank ones) and memoized every blank assistant id onto ONE
+//     canonical id, so a blank pair stayed fatal: a stub was inserted while the REAL
+//     blank-id response remained. Three repairs, all wire-only (AssemblyDB untouched):
+//     (1) blank assistant tool_call ids now get DISTINCT fresh call_tm_ ids (no blank
+//     memoization); (2) a contiguous blank-id tool message is ADOPTED positionally into
+    //     its block's unmatched call -- real response preserved, no stub; (3) a final
+//     sweep drops any still-unpairable blank-id tool message from the wire payload (it
+//     400s the whole turn otherwise). No auto-resume needed: the NEXT submitted turn just
+//     works, since the repair runs on every outbound payload.
 //   - v4.341: PROVIDER-DISCOVERY 404 STORM KILLED. Every context-dial render for a
 //     DIRECT-ROUTE model (bare 'kimi-k3' from Moonshot-direct, bare 'gemini-3.7-flash' from
 //     Gemini-native) fired an OpenRouter Endpoints-API discovery fetch -- but that API only
@@ -1465,7 +1478,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.341';
+  const EXT_VERSION = '4.342';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12843,7 +12856,7 @@
   // punctuation-safe spelling of the same provider ID (for example run_command:119 ->
   // run_command_119). Repair only the outbound copy; AssemblyDB remains untouched.
   function repairChatCompletionsToolCallPairs(body, label) {
-    var report = { changed: 0, idRepairs: 0, movedResults: 0, stubbedResults: 0 };
+    var report = { changed: 0, idRepairs: 0, movedResults: 0, stubbedResults: 0, droppedEmptyResults: 0 };
     if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return report;
 
     var messages = body.messages;
@@ -12852,6 +12865,10 @@
     function canonicalToolId(raw) {
       var original = (raw == null) ? '' : String(raw);
       if (original && /^[a-zA-Z0-9_-]+$/.test(original)) return original;
+      // (v4.342) NEVER memoize an EMPTY raw id: each blank assistant call needs a DISTINCT
+      // fresh id -- collapsing N blanks onto one canonical id creates duplicate-id 400s and
+      // unpairable results. The tool-side blanks are paired POSITIONALLY in the block below.
+      if (!original) return tmFreshKimiToolCallId(new Set());
       if (canonicalByRaw.has(original)) return canonicalByRaw.get(original);
 
       var canonical = original.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -12916,15 +12933,31 @@
 
       var insertAt = i + 1;
       var contiguousResults = new Set();
+      var emptyIdSlots = []; // (v4.342) contiguous tool messages with an EMPTY tool_call_id
       while (insertAt < messages.length && messages[insertAt] && messages[insertAt].role === 'tool') {
         var contiguousId = messages[insertAt].tool_call_id;
         if (contiguousId != null && String(contiguousId)) contiguousResults.add(String(contiguousId));
+        else emptyIdSlots.push(insertAt);
         insertAt++;
       }
 
       for (var ei = 0; ei < expected.length; ei++) {
         var wantedId = expected[ei];
         if (contiguousResults.has(wantedId)) continue;
+
+        // (v4.342) EMPTY tool_call_id ADOPTION: a contiguous tool message with a blank id is
+        // almost certainly THIS block's unmatched response (TypingMind persisted a blank on
+        // both halves -- Moonshot rejects it verbatim as 'tool_call_id  is not found'). Fill
+        // the earliest blank slot positionally with this wanted id: the REAL response is
+        // preserved and correctly paired, instead of inserting a stub AND leaving the fatal
+        // blank in place.
+        if (emptyIdSlots.length) {
+          var adoptIdx = emptyIdSlots.shift();
+          messages[adoptIdx].tool_call_id = wantedId;
+          report.idRepairs++;
+          contiguousResults.add(wantedId);
+          continue;
+        }
 
         // Preserve a real result if TypingMind merely displaced it. Only synthesize when the
         // matching result is genuinely absent from the remainder of the payload.
@@ -12958,12 +12991,25 @@
       i = insertAt - 1;
     }
 
-    report.changed = report.idRepairs + report.movedResults + report.stubbedResults;
+    // (v4.342) FINAL SWEEP: any tool message STILL carrying an empty tool_call_id is
+    // fatal (provider 400 'tool_call_id  is not found') and unpairable (its assistant half
+    // is lost). Drop it from the WIRE payload only -- TypingMind's AssemblyDB keeps the
+    // original, so every turn re-derives this repair from the untouched store.
+    for (var di = messages.length - 1; di >= 0; di--) {
+      var dMsg = messages[di];
+      if (dMsg && dMsg.role === 'tool' && !String(dMsg.tool_call_id || '')) {
+        messages.splice(di, 1);
+        report.droppedEmptyResults++;
+      }
+    }
+
+    report.changed = report.idRepairs + report.movedResults + report.stubbedResults + report.droppedEmptyResults;
     if (report.changed) {
       console.error(
         '🚨 [v' + EXT_VERSION + '] ' + (label || 'chat-completions') +
         ': repaired tool-call pairing before send (ids=' + report.idRepairs +
-        ', moved=' + report.movedResults + ', stubbed=' + report.stubbedResults + ')'
+        ', moved=' + report.movedResults + ', stubbed=' + report.stubbedResults +
+        ', droppedEmpty=' + report.droppedEmptyResults + ')'
       );
     }
     return report;
