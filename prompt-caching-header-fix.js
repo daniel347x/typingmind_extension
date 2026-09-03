@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.348
+// Version: 4.349
 // Issues Fixed:
+//   - v4.349: SPINNER/TIMER IDENTITY PRECISION + STALE IN-FLIGHT CLEARING (model-switched
+//     sessions). Two bugs Dan caught on a session with three dashboard rows (Kimi direct,
+//     Kimi OpenRouter, Sol OpenRouter). (1) STALE MARKERS: the in-flight trackers cleared
+//     only on the successful round-trip stamp path -- errored turns (400s, zero-byte
+//     aborts, rejections) left entries that kept a row spinning and counting up for the
+//     30-minute ceiling, including AFTER the turn ended. New tmClearInFlightByCapture()
+//     runs on every terminal path: success, error response, fetch rejection, stream end,
+//     and reader-level abort. (2) SID-WIDE TOOL-BUSY: the agent-management tool-suspicion
+//     ledger is keyed by session id, so EVERY row of a model-switched session spun and
+//     counted up during tool execution. Spinner and tool timer now resolve the state's
+//     captureId to its identity key and light only the responding provider/model row
+//     (sid-wide fallback only when unresolvable). The session-level tool/clear badge
+//     intentionally stays sid-wide.
 //   - v4.348: LEGITIMATE TOOL-CALL-ONLY ASSISTANT CONTENT EXEMPTION RESTORED. v4.346
 //     correctly added repair for explicit EMPTY structured text parts
 //     ([{type:'text',text:''}]) but incorrectly removed the long-standing exemption for a
@@ -1540,7 +1553,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.348';
+  const EXT_VERSION = '4.349';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2879,6 +2892,19 @@
   // with 3-4 parallel sessions streaming, only one could ever show a live round-trip count-up
   // or busy spinner. This map lets EVERY in-flight session light up simultaneously.
   var tmInFlightByIdentity = {}; // identityKey -> { captureId, ts }
+  // (v4.349) ONE clear helper for BOTH in-flight trackers: every terminal path (success,
+  // error response, rejection, stream end/abort) must clear by captureId, or a failed turn
+  // leaves a stale marker that keeps a row spinning/counting for the 30-minute ceiling.
+  function tmClearInFlightByCapture(captureId) {
+    try {
+      if (captureId == null) return;
+      var ks = Object.keys(tmInFlightByIdentity);
+      for (var i = 0; i < ks.length; i++) {
+        if (tmInFlightByIdentity[ks[i]] && tmInFlightByIdentity[ks[i]].captureId === captureId) delete tmInFlightByIdentity[ks[i]];
+      }
+      if (tmInFlightTurn && tmInFlightTurn.captureId === captureId) tmInFlightTurn = null;
+    } catch (e) {}
+  }
   var tmRtLiveTickerId = null;
   var tmWidgetCurrentSid = ''; // (v4.323) widget's displayed session id, for the tool timer
   function tmEnsureRtLiveTicker() {
@@ -5238,14 +5264,7 @@
                 }
                 tmUpdateCaptureRecord(captureId, rtStamp);
               }
-              try { if (tmInFlightTurn && tmInFlightTurn.captureId === captureId) tmInFlightTurn = null; } catch (eIF) {}
-              // (v4.336) Clear the per-identity in-flight marker for THIS capture.
-              try {
-                var ifKeys = Object.keys(tmInFlightByIdentity);
-                for (var ifKi = 0; ifKi < ifKeys.length; ifKi++) {
-                  if (tmInFlightByIdentity[ifKeys[ifKi]] && tmInFlightByIdentity[ifKeys[ifKi]].captureId === captureId) delete tmInFlightByIdentity[ifKeys[ifKi]];
-                }
-              } catch (eIFM2) {}
+              try { tmClearInFlightByCapture(captureId); } catch (eIF) {}
             } catch (eRt) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
           } catch (e) {}
@@ -5910,6 +5929,20 @@
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
 
+  // (v4.349) Resolve which IDENTITY a sid-keyed tool-suspicion state actually belongs to.
+  // After a model/endpoint switch one session has several dashboard rows (Kimi direct, Kimi
+  // OpenRouter, Sol OpenRouter...); the tool executing belongs to the LAST response's identity
+  // only. Returns the identity key, or '' when unresolvable (callers fall back to sid-wide).
+  function tmToolStateIdentityKey(st) {
+    try {
+      if (st && st.captureId) {
+        var cap = getCaptureById(st.captureId);
+        if (cap) return tmCapIdentityKey(cap) || '';
+      }
+    } catch (e) {}
+    return '';
+  }
+
   // (v4.336) Busy detector for the dashboard spinner: a session is busy while a client-side
   // tool call runs (agent-management ledger) OR its assistant turn is in flight (the
   // per-identity map; 30-minute ceiling pruned lazily, mirroring the global marker).
@@ -5917,7 +5950,11 @@
     try {
       if (tmAgentManagementEnabled()) {
         var st = tmAgentManagementDisplayState(info && info.sid);
-        if (st && st.pendingToolCall && st.responseFinishedAt) return true;
+        if (st && st.pendingToolCall && st.responseFinishedAt) {
+          // (v4.349) Identity-precise: only the responding provider/model row spins.
+          var stKey = tmToolStateIdentityKey(st);
+          if (!stKey || stKey === key) return true;
+        }
       }
     } catch (e) {}
     try {
@@ -5982,7 +6019,12 @@
         parts.push(tmAgentManagementBadge(info.sid));
         var st = tmAgentManagementDisplayState(info.sid);
         if (st && st.pendingToolCall && st.responseFinishedAt) {
-          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+          // (v4.349) Identity-precise: the count-up belongs to the responding identity's row
+          // only, not every row sharing the session after a model/endpoint switch.
+          var stKeyT = tmToolStateIdentityKey(st);
+          if (!stKeyT || stKeyT === key) {
+            parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+          }
         }
       }
     } catch (eTool) {}
@@ -10440,6 +10482,8 @@
     }
     function finish() {
       disarmWatchdog();
+      // (v4.349) Stream end is terminal for THIS capture's in-flight markers (idempotent).
+      try { tmClearInFlightByCapture(hooks.captureId || null); } catch (eClrF) {}
       if (state.rawCarry) inspectLine(state.rawCarry);
       var queuedReason = null;
       // (v4.287) HTTP STATUS sensor (authoritative, checked first). On OpenRouter this only fires
@@ -10491,6 +10535,8 @@
             }
             pump();
           }).catch(function() {
+            // (v4.349) A reader-level abort is terminal for THIS capture's in-flight markers.
+            try { tmClearInFlightByCapture(hooks.captureId || null); } catch (eClrC) {}
             // (v4.286) STREAM ABORTED: connection dropped mid-turn after bytes were flowing.
             if (state.bytesReceived > 0) {
               stampTrigger('stream_aborted');
@@ -15895,6 +15941,9 @@
           if (captureId) tmUpdateCaptureRecord(captureId, { _auto_resume_triggered: 'fetch_dropped' });
         }
       } catch (eDrop) {}
+      // (v4.349) A rejected fetch is terminal for THIS capture's in-flight markers --
+      // previously neither tracker cleared here, so dead turns kept spinning for 30 minutes.
+      try { tmClearInFlightByCapture(captureId); } catch (eClrR) {}
       try {
         if (captureId) {
           var fetchPayload = {
