@@ -11,10 +11,19 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.357 Changes:
+ * - FIX (mixed rendered/unrendered TeX arrows): TypingMind leaves isolated `$\\to$` literal in
+ *   the DOM (`<code>acquired</code> $\\to$ <code>sent</code>`), so chat normalization keeps
+ *   the letters "to"; v3.356's session math reducer dropped the command entirely. Arrow meaning
+ *   is now canonicalized on BOTH sides: TeX arrow commands (`\\to`, `\\rightarrow`,
+ *   `\\longrightarrow`, map/left/right variants) → "to", and rendered Unicode arrow glyphs →
+ *   "to" before the alphanumeric filter. Thus raw `$\\to$`, rendered `→`, and long-arrow TeX
+ *   all compare identically. Other bare TeX commands retain v3.356's drop behavior.
+ *
  * v3.356 Changes:
  * - FIX (Load GLIMPSE prefix override NEVER fired — typo shipped in v3.313): the signature regex
- *   read /^loadglimpsesessionid.../ (one 'e' short at the glimpse|session junction) while the
- *   normalized data is 'loadglimpsesessionid<hash>'. Every headHash/firstBlockHash in every
+ *   read /^loadglimpsessionid.../ (missing the final "se" of "glimpse" at the
+ *   glimpse|session junction) while the normalized data is 'loadglimpsesessionid<hash>'. Every headHash/firstBlockHash in every
  *   __debugOverride log has been null since v3.313; the override survived only via the v3.314
  *   session-NAME path (and later the v3.350 sidebar path). Regex corrected — the head/first-block
  *   signature path is live for the first time.
@@ -1733,7 +1742,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.356',
+  VERSION: '3.357',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4404,7 +4413,13 @@
   // ]
   function normalizeForChatMatch(s) {
     if (!s) return '';
-    return decodeHtmlEntitiesLoop(s).replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+    // (v3.357) Rendered math arrows are symbol glyphs while an unrendered `$\\to$` remains
+    // literal letters in TypingMind's DOM. Canonicalize all Unicode arrow blocks to "to" so
+    // rendered and source forms converge before non-alphanumerics are stripped.
+    return decodeHtmlEntitiesLoop(s)
+      .replace(/[\u2190-\u21FF\u27F0-\u27FF\u2900-\u297F]/g, 'to')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .toLowerCase();
   }
 
   /** Decode ONE layer of HTML entity references (named + numeric) WITHOUT touching tags (v3.270).
@@ -4484,6 +4499,9 @@
       var reduceMath = function(m, inner) {
         return inner
           .replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|texttt)\s*\{([^{}]*)\}/g, '$1')
+          // (v3.357) Arrow commands have visible directional meaning. Map them to the same
+          // "to" token normalizeForChatMatch assigns to rendered Unicode arrow glyphs.
+          .replace(/\\(?:longrightarrow|rightarrow|to|Longrightarrow|Rightarrow|longmapsto|mapsto|longleftarrow|leftarrow|Longleftarrow|Leftarrow|longleftrightarrow|leftrightarrow|Longleftrightarrow|Leftrightarrow)\b/g, 'to')
           .replace(/\\[a-zA-Z]+/g, '');
       };
       l = l.replace(/\$\$([^$]+)\$\$/g, reduceMath);
