@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.336
+// Version: 4.337
 // Issues Fixed:
+//   - v4.337: AUTO-RESUME RETURN-TRIP FIXES. (1) WRONG-CONVERSATION RETURN: the return-trip
+//     bookmark read the FIRST 'selected-chat-item' sidebar row in DOM order with no visibility
+//     check -- TypingMind keeps stale hidden selected rows mounted, so the bookmark could capture
+//     a conversation Dan was NOT viewing, and the courtesy return faithfully navigated back to
+//     that wrong row. tmActiveSidebarSessionHash now skips hidden rows (offsetParent null):
+//     only a rendered selected row can be Dan's active conversation. (2) TRANSCRIPT FOCUS
+//     RESTORE: the wake-up submission types into TypingMind's native chat box, so a
+//     mid-transcription Dan resumed dictating into the wrong field. The bookmark flow now also
+//     captures transcript (deepgram-transcript) focus + selection + scroll at navigation, and a
+//     successful return trip (or the already-home fast path) restores the cursor where it was
+//     (end-of-text fallback). Never restored when Dan navigated himself in the meantime.
 //   - v4.336: DASHBOARD BUSY SPINNERS + PER-IDENTITY IN-FLIGHT + WIDTH CONTROLS. (1) A
 //     CSS spinner now marks every BUSY row at the left of the gauge cluster (busy =
 //     client-side tool call running OR assistant turn in flight) -- fixed 16px slot, no
@@ -1415,7 +1426,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.336';
+  const EXT_VERSION = '4.337';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -9736,6 +9747,7 @@
   // '<hash> - [<name>]'), and a successful resume hands the UI back. Courtesy navigation
   // ONLY: console-logged, never a failure toast, never a yank when Dan moved himself.
   var tmAutoResumeReturnBookmark = null; // { sid: <8-hex lowercase>, ts }
+  var tmAutoResumeFocusSnapshot = null;  // (v4.337) { start, end, scrollTop } transcript cursor at navigation
 
   // Extract the active (selected) sidebar conversation's leading 8-hex session hash.
   // Primary: the selected row's title. Fallback: the visible conversation's own
@@ -9744,6 +9756,11 @@
     try {
       var rows = document.querySelectorAll('[data-element-id="selected-chat-item"]');
       for (var i = 0; i < rows.length; i++) {
+        // (v4.337) VISIBILITY GUARD: TypingMind keeps stale selected rows mounted-but-hidden;
+        // the first in DOM order used to win regardless, bookmarking a conversation Dan was NOT
+        // viewing -- the return trip then 'came back' to the wrong conversation. Only a
+        // rendered row can be Dan's active conversation.
+        if (rows[i].offsetParent === null) continue;
         var titleEl = rows[i].querySelector('.truncate.w-full') || rows[i].querySelector('.truncate');
         var title = titleEl ? String(titleEl.textContent || '').trim() : '';
         var m = title.match(/^\s*([0-9a-f]{8})\b/i);
@@ -9765,6 +9782,35 @@
     return null;
   }
 
+  // (v4.337) TRANSCRIPT FOCUS SNAPSHOT. The wake-up submission types into TypingMind's native
+  // chat box, so a mid-transcription Dan resumes dictating into the wrong field. Capture the
+  // deepgram-transcript focus/selection/scroll at navigation; restore on the return trip.
+  function tmCaptureTranscriptFocusSnapshot() {
+    tmAutoResumeFocusSnapshot = null;
+    try {
+      var el = document.getElementById('deepgram-transcript');
+      if (!el || document.activeElement !== el) return;
+      tmAutoResumeFocusSnapshot = { start: el.selectionStart, end: el.selectionEnd, scrollTop: el.scrollTop };
+    } catch (e) {}
+  }
+
+  function tmRestoreTranscriptFocusSnapshot() {
+    var snap = tmAutoResumeFocusSnapshot;
+    tmAutoResumeFocusSnapshot = null;
+    if (!snap) return;
+    try {
+      var el = document.getElementById('deepgram-transcript');
+      if (!el) return;
+      el.focus();
+      var len = String(el.value || '').length;
+      var s = (typeof snap.start === 'number') ? Math.min(snap.start, len) : len;
+      var e2 = (typeof snap.end === 'number') ? Math.min(snap.end, len) : s;
+      try { el.setSelectionRange(s, e2); } catch (eSel) {}
+      try { el.scrollTop = snap.scrollTop || 0; } catch (eScr) {}
+      console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Restored transcript focus after auto-resume return trip.');
+    } catch (e) {}
+  }
+
   // Record the pre-navigation conversation. FIRST bookmark wins (the sweep's inspection
   // switch is the true moment Dan loses his view; later captures during the same episode
   // would see the stalled session itself). 15-minute rolling expiry.
@@ -9774,6 +9820,7 @@
       var cur = tmActiveSidebarSessionHash();
       if (cur && cur !== String(targetSid || '').toLowerCase()) {
         tmAutoResumeReturnBookmark = { sid: cur, ts: Date.now() };
+        tmCaptureTranscriptFocusSnapshot();   // (v4.337) remember the transcript cursor for the return trip
       }
     } catch (e) {}
   }
@@ -9785,7 +9832,7 @@
   function tmScheduleAutoResumeReturn(resumedSid) {
     var bm = tmAutoResumeReturnBookmark;
     if (!bm || !bm.sid) return;
-    if (Date.now() - Number(bm.ts || 0) > 15 * 60 * 1000) { tmAutoResumeReturnBookmark = null; return; }
+    if (Date.now() - Number(bm.ts || 0) > 15 * 60 * 1000) { tmAutoResumeReturnBookmark = null; tmAutoResumeFocusSnapshot = null; return; }
     var resumed = String(resumedSid || '').toLowerCase();
     setTimeout(function() {
       try {
@@ -9794,11 +9841,15 @@
         var bmNow = tmAutoResumeReturnBookmark;
         if (!bmNow || !bmNow.sid) return;
         var cur = tmActiveSidebarSessionHash();
-        if (!cur || cur === bmNow.sid) return; // already home (or Dan navigated back himself)
-        if (resumed && cur !== resumed) return;  // Dan went somewhere ELSE -- respect it
+        if (!cur) { tmAutoResumeFocusSnapshot = null; return; }
+        if (cur === bmNow.sid) { tmRestoreTranscriptFocusSnapshot(); return; } // already home -- hand the cursor back
+        if (resumed && cur !== resumed) { tmAutoResumeFocusSnapshot = null; return; }  // Dan went somewhere ELSE -- respect it
         tmAgentManagementOpenSession(bmNow.sid, function(err) {
           if (err) console.warn('\u21A9\uFE0F [v' + EXT_VERSION + '] Auto-resume return trip skipped: ' + err.message);
-          else console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Returned UI to session ' + bmNow.sid + ' after auto-resume of ' + resumed + '.');
+          else {
+            console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Returned UI to session ' + bmNow.sid + ' after auto-resume of ' + resumed + '.');
+            tmRestoreTranscriptFocusSnapshot();
+          }
         });
       } catch (e) {}
     }, 2500);
