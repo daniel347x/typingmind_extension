@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.355 Changes:
+ * - FIX (session↔chat match when a line STARTS with a bold word): the ordered-list stripper's
+ *   leading-emphasis allowance `(?:[*_]{1,3})?` fired on `**text** → **leased** ...` (a line that
+ *   begins with a BOLD WORD, not a list number), stripping the leading `**` and deleting that
+ *   word from the session norm while the chat DOM kept it. The emphasis is now gated to wrap
+ *   the digits themselves: `(?:[*_]{1,3}\d{1,3}\.\s+|\d{1,3}\.\s+)` — bold list numbers
+ *   (`**1. `) still strip; bold non-numbered text (`**text** ...`) no longer does.
+ *
  * v3.354 Changes:
  * - 🧰 AUX ROWS collapse: a hairline expander ribbon now sits between the cost row and the ✨
  *   Refine provider row. Click it to expand/collapse BOTH rarely-accessed control rows (the ✨
@@ -1711,7 +1719,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.354',
+  VERSION: '3.355',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4456,7 +4464,7 @@
   function refineNormalizeBlockLines(blockLines) {
     var mapped = blockLines.map(function(l) {
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
-      return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/, '');
+      return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3}\d{1,3}\.(?:\s+|$)|\d{1,3}\.(?:\s+|$))/, '');
     });
     return normalizeForChatMatch(mapped.join(' '));
   }
@@ -4540,14 +4548,14 @@
         // node-start strip never fires mid-blob while the session side strips those same lines.
         // An embedded '\n' IS a line boundary in both representations (user blobs, <pre> code),
         // so strip there unconditionally — same regex as the session side (emphasis-tolerant).
-        t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/g, '$1');
+        t = t.replace(/(\n)\s*#{0,6}\s*(?:[*_]{1,3}\d{1,3}\.(?:\s+|$)|\d{1,3}\.(?:\s+|$))/g, '$1');
         // (v3.296) Line start ALSO when the ACCUMULATED text ends with a newline: syntax
         // highlighters split <pre> code into per-line text nodes, so a heading/list marker
         // ('### 2. ') can begin a fresh text node with NO embedded '\n' for the v3.280 strip to
         // key on, while atLineStart=false (the previous node held non-whitespace) — the marker
         // survived as a stray digit and killed the session match (the v3.295 __debugDiff case:
         // '2' before 'anonymity'; chatLen = prefix + block + 3 stray digits, to the char).
-        if (atLineStart || /\n\s*$/.test(text)) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3})?\d{1,3}\.(?:\s+|$)/, '');
+        if (atLineStart || /\n\s*$/.test(text)) t = t.replace(/^\s*#{0,6}\s*(?:[*_]{1,3}\d{1,3}\.(?:\s+|$)|\d{1,3}\.(?:\s+|$))/, '');
         text += t;
         if (/\S/.test(t)) atLineStart = false;  // whitespace-only nodes keep the flag
         return;
@@ -4566,7 +4574,7 @@
     // for the earlier fast-path regexes. Structural boundaries are now newlines, so strip the
     // same session-side marker grammar once over complete logical lines. Horizontal whitespace
     // is explicit to prevent the expression from drifting across line boundaries.
-    text = text.replace(/(^|\n)[^\S\r\n]*#{0,6}[^\S\r\n]*(?:[*_]{1,3})?\d{1,3}\.(?:[^\S\r\n]+|(?=\r?(?:\n|$)))/g, '$1');
+    text = text.replace(/(^|\n)[^\S\r\n]*#{0,6}[^\S\r\n]*(?:[*_]{1,3}\d{1,3}\.[^\S\r\n]+|\d{1,3}\.[^\S\r\n]+)/g, '$1');
     var norm = normalizeForChatMatch(text);
     var cls = classifyChatTurn(child, norm);
     if (!cls) return null;
