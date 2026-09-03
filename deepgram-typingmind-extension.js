@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.358 Changes:
+ * - FIX (KaTeX formulas counted three ways in chat normalization): a `.katex` root contains
+ *   hidden `.katex-mathml` (semantic mrow + raw TeX `<annotation>`) AND visible `.katex-html`.
+ *   The generic DOM walker traversed all branches, producing visible lifecycle words, then raw
+ *   `textadoptlongrightarrow...` command text, then the visible words again — the exact
+ *   334-character surplus in the frozen bd2a9134 reproduction. `extractChatTurnNorm` now
+ *   special-cases `.katex` and walks only `.katex-html` once. v3.357's Unicode-arrow → "to"
+ *   canonicalization then aligns that visible branch with the session-side TeX reduction.
+ *
  * v3.357 Changes:
  * - FIX (mixed rendered/unrendered TeX arrows): TypingMind leaves isolated `$\\to$` literal in
  *   the DOM (`<code>acquired</code> $\\to$ <code>sent</code>`), so chat normalization keeps
@@ -1742,7 +1751,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.357',
+  VERSION: '3.358',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4606,6 +4615,14 @@
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
+      // (v3.358) KaTeX renders each formula as TWO representations beneath one `.katex` root:
+      // hidden MathML (including a raw TeX <annotation>) plus visible `.katex-html`. Walking the
+      // generic tree reads the formula three times (mrow + annotation + HTML). Consume only the
+      // visible branch once; normalizeForChatMatch canonicalizes its arrow glyphs to "to".
+      if (node.classList && node.classList.contains('katex')) {
+        var katexVisual = node.querySelector('.katex-html');
+        if (katexVisual) { walk(katexVisual); return; }
+      }
       if (node.tagName === 'DETAILS' || node.tagName === 'SCRIPT' || node.tagName === 'STYLE' || node.tagName === 'BUTTON' || node.tagName === 'SVG' || node.tagName === 'TIME') return;
       var eid = node.getAttribute && node.getAttribute('data-element-id');
       if (eid && /action|tool/i.test(eid)) return;
