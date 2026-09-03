@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.335
+// Version: 4.336
 // Issues Fixed:
+//   - v4.336: DASHBOARD BUSY SPINNERS + PER-IDENTITY IN-FLIGHT + WIDTH CONTROLS. (1) A
+//     CSS spinner now marks every BUSY row at the left of the gauge cluster (busy =
+//     client-side tool call running OR assistant turn in flight) -- fixed 16px slot, no
+//     row-height change, motion is pure CSS. (2) NEW per-identity in-flight map
+//     (tmInFlightByIdentity) alongside the single global marker: with 3-4 parallel
+//     sessions streaming, EVERY in-flight session now shows its own live round-trip
+//     count-up AND spinner simultaneously (previously only the newest request could
+//     ever light up). (3) Card default width 700px -> 840px (+20%) plus persistent
+//     [-]/[+] width buttons in the header (tm_session_ctx_hover_width_v1, 420-1400px,
+//     80px steps). (4) Pinned full-row rebuild cadence 5s -> 3s -- the rebuild
+//     re-enumerates the ring newest-first, so rows visibly re-sort by most-recent
+//     activity.
 //   - v4.335: PINNABLE/DRAGGABLE SESSION-CTX HOVERCARD (the dashboard mode). The hover card
 //     was force-hidden on every widget re-render (the v4.328 stale-card guard), so with 3-4
 //     sessions rapid-firing tool calls it vanished mid-hover. The card header now carries a
@@ -1403,7 +1415,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.335';
+  const EXT_VERSION = '4.336';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2715,6 +2727,10 @@
   // in-flight session must not paint itself onto the widget). Any newer payload simply takes
   // over the marker; a 30-minute ceiling clears a marker whose response never arrives.
   var tmInFlightTurn = null; // { captureId, ts }
+  // (v4.336) PER-IDENTITY in-flight map: the global above tracks only the NEWEST request, so
+  // with 3-4 parallel sessions streaming, only one could ever show a live round-trip count-up
+  // or busy spinner. This map lets EVERY in-flight session light up simultaneously.
+  var tmInFlightByIdentity = {}; // identityKey -> { captureId, ts }
   var tmRtLiveTickerId = null;
   var tmWidgetCurrentSid = ''; // (v4.323) widget's displayed session id, for the tool timer
   function tmEnsureRtLiveTicker() {
@@ -2743,6 +2759,12 @@
   function tmNoteInFlightCapture(captureId, ts) {
     try {
       tmInFlightTurn = { captureId: captureId, ts: Number(ts) || Date.parse(ts) || Date.now() };
+      // (v4.336) Mirror into the per-identity map for the session dashboard.
+      try {
+        var ifCap0 = getCaptureById(captureId);
+        var ifKey0 = ifCap0 ? tmCapIdentityKey(ifCap0) : '';
+        if (ifKey0) tmInFlightByIdentity[ifKey0] = { captureId: captureId, ts: tmInFlightTurn.ts };
+      } catch (eIFM) {}
       tmEnsureRtLiveTicker();
     } catch (e) {}
   }
@@ -5069,6 +5091,13 @@
                 tmUpdateCaptureRecord(captureId, rtStamp);
               }
               try { if (tmInFlightTurn && tmInFlightTurn.captureId === captureId) tmInFlightTurn = null; } catch (eIF) {}
+              // (v4.336) Clear the per-identity in-flight marker for THIS capture.
+              try {
+                var ifKeys = Object.keys(tmInFlightByIdentity);
+                for (var ifKi = 0; ifKi < ifKeys.length; ifKi++) {
+                  if (tmInFlightByIdentity[ifKeys[ifKi]] && tmInFlightByIdentity[ifKeys[ifKi]].captureId === captureId) delete tmInFlightByIdentity[ifKeys[ifKi]];
+                }
+              } catch (eIFM2) {}
             } catch (eRt) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
           } catch (e) {}
@@ -5721,6 +5750,26 @@
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
 
+  // (v4.336) Busy detector for the dashboard spinner: a session is busy while a client-side
+  // tool call runs (agent-management ledger) OR its assistant turn is in flight (the
+  // per-identity map; 30-minute ceiling pruned lazily, mirroring the global marker).
+  function tmSessionCtxIsBusy(key, info) {
+    try {
+      if (tmAgentManagementEnabled()) {
+        var st = tmAgentManagementDisplayState(info && info.sid);
+        if (st && st.pendingToolCall && st.responseFinishedAt) return true;
+      }
+    } catch (e) {}
+    try {
+      var rec = tmInFlightByIdentity[key];
+      if (rec && Number(rec.ts) > 0) {
+        if (Date.now() - Number(rec.ts) > 30 * 60 * 1000) { delete tmInFlightByIdentity[key]; return false; }
+        return true;
+      }
+    } catch (e2) {}
+    return false;
+  }
+
   // (v4.329) Per-identity LIVE zone: the same gauges the persistent widget shows for the
   // most-recent session only -- rendered here for EVERY ring session at once, and ticked
   // once a second while the card is visible. Contents: agent-management badge
@@ -5746,8 +5795,15 @@
     //    marker resolves back to its capture's identity); otherwise the latest completed
     //    turn's duration for this identity.
     try {
+      // (v4.336) PER-IDENTITY map first: with parallel sessions streaming, EVERY in-flight
+      // session gets its own live count-up; the single global marker is the fallback.
       var liveMs = 0;
-      if (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
+      var liveRec = tmInFlightByIdentity[key];
+      if (liveRec && Number(liveRec.ts) > 0) {
+        if (Date.now() - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eDel) {} }
+        else liveMs = Date.now() - Number(liveRec.ts);
+      }
+      if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
         var ifCap = getCaptureById(tmInFlightTurn.captureId);
         if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = Date.now() - Number(tmInFlightTurn.ts);
       }
@@ -5783,7 +5839,9 @@
       try {
         if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
         tmSessionCtxHoverTickCount++;
-        if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 5 === 0)) {
+        // (v4.336) Rebuild cadence 5s -> 3s: the rebuild re-enumerates the ring newest-first,
+        // so rows re-sort by most-recent activity this often when pinned.
+        if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 3 === 0)) {
           var st = tmSessionCtxHoverEl.scrollTop;
           tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
           tmSessionCtxHoverEl.scrollTop = st;
@@ -5796,8 +5854,32 @@
           if (!info) continue;
           zones[i].innerHTML = tmSessionCtxLiveHtml(key, info);
         }
+        // (v4.336) Busy spinners ride the same 1s tick (presence only; CSS does the motion).
+        var spins = tmSessionCtxHoverEl.querySelectorAll('[data-spin-key]');
+        for (var spi = 0; spi < spins.length; spi++) {
+          var spinKey = spins[spi].getAttribute('data-spin-key');
+          var spinInfo = tmSessionCtxHoverIdentities[spinKey];
+          spins[spi].innerHTML = (spinInfo && tmSessionCtxIsBusy(spinKey, spinInfo)) ? '<span class="tm-hc-spin"></span>' : '';
+        }
       } catch (e) {}
     }, 1000);
+  }
+
+  // (v4.336) Dashboard width: persisted, header [-]/[+] adjustable (80px steps, clamped).
+  var TM_SESSION_CTX_HOVER_WIDTH_KEY = 'tm_session_ctx_hover_width_v1';
+  function tmGetSessionCtxHoverWidth() {
+    try {
+      var w = Number(localStorage.getItem(TM_SESSION_CTX_HOVER_WIDTH_KEY));
+      if (isFinite(w) && w >= 420 && w <= 1400) return w;
+    } catch (e) {}
+    return 840; // (v4.336) default widened 700 -> 840 (+20%)
+  }
+  function tmAdjustSessionCtxHoverWidth(delta) {
+    try {
+      var next = Math.max(420, Math.min(1400, tmGetSessionCtxHoverWidth() + delta));
+      localStorage.setItem(TM_SESSION_CTX_HOVER_WIDTH_KEY, String(next));
+      if (tmSessionCtxHoverEl) tmSessionCtxHoverEl.style.width = next + 'px';
+    } catch (e) {}
   }
 
   function tmBuildSessionCtxHoverHtml() {
@@ -5806,6 +5888,8 @@
     rows.push('<div data-hovercard-drag="1" style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:' + (tmSessionCtxHoverPinned ? 'move' : 'default') + ';">' +
       '<span>Sessions in memory \u2014 context used</span>' +
       '<span style="display:inline-flex;gap:8px;flex:none;align-items:center;">' +
+        '<span data-hovercard-action="width-minus" title="Narrower (persisted)" style="cursor:pointer;opacity:0.7;font-weight:700;">\u2212</span>' +
+        '<span data-hovercard-action="width-plus" title="Wider (persisted)" style="cursor:pointer;opacity:0.7;font-weight:700;">+</span>' +
         '<span data-hovercard-action="pin" title="' + (tmSessionCtxHoverPinned ? 'Unpin: return to hover-dismiss' : 'Pin: keep open + draggable (survives widget refreshes; restored after TypingMind reload)') + '" style="cursor:pointer;opacity:' + (tmSessionCtxHoverPinned ? '1' : '0.55') + ';">\uD83D\uDCCC</span>' +
         (tmSessionCtxHoverPinned ? '<span data-hovercard-action="close" title="Close (unpins)" style="cursor:pointer;color:#d08b8b;font-weight:700;">\u2715</span>' : '') +
       '</span></div>');
@@ -5861,7 +5945,10 @@
               '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
             '</span>' +
           '</span>' +
-          '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' + right + '</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' +
+            '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
+            right +
+          '</span>' +
         '</div>'
       );
     }
@@ -5969,10 +6056,19 @@
         tmSessionCtxHoverEl.style.borderRadius = '6px';
         tmSessionCtxHoverEl.style.border = '1px solid #3a3f4a';
         tmSessionCtxHoverEl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
-        tmSessionCtxHoverEl.style.width = '700px'; // (v4.334) +30% wider (was 540px) so names/models/gauges all breathe
+        tmSessionCtxHoverEl.style.width = tmGetSessionCtxHoverWidth() + 'px'; // (v4.336) persisted, header [-]/[+] adjustable
         tmSessionCtxHoverEl.style.maxHeight = '50vh';
         tmSessionCtxHoverEl.style.overflowY = 'auto';
         // Moving from the label INTO the card must not dismiss it.
+        try {
+          if (!document.getElementById('tm-hovercard-style')) {
+            var hcStyle = document.createElement('style');
+            hcStyle.id = 'tm-hovercard-style';
+            // (v4.336) Row-height-safe busy spinner (CSS-animated; JS only toggles presence).
+            hcStyle.textContent = '@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}';
+            document.head.appendChild(hcStyle);
+          }
+        } catch (eSty) {}
         tmSessionCtxHoverEl.addEventListener('mouseenter', function() {
           if (tmSessionCtxHoverHideTimer) { clearTimeout(tmSessionCtxHoverHideTimer); tmSessionCtxHoverHideTimer = 0; }
         });
@@ -5986,6 +6082,8 @@
             var act = actEl.getAttribute('data-hovercard-action');
             if (act === 'pin') tmToggleSessionCtxHoverPin();
             else if (act === 'close') tmClosePinnedSessionCtxHover();
+            else if (act === 'width-minus') tmAdjustSessionCtxHoverWidth(-80);
+            else if (act === 'width-plus') tmAdjustSessionCtxHoverWidth(80);
             ev.stopPropagation();
           } catch (eAct) {}
         });
