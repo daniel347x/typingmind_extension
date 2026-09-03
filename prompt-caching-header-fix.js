@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.346
+// Version: 4.347
 // Issues Fixed:
+//   - v4.347: DASHBOARD FIXED GAUGE COLUMNS + RELIABLE TRANSCRIPT FOCUS RETURN. (1) The
+//     Sessions-in-Memory right cluster is now an identical 300px grid on every row:
+//     16px busy spinner | 68px context dial+percent | 124px total/max | 76px aggregate
+//     cost (fixed gaps included). Digit-count changes and spinner appearance can no
+//     longer shift or overlap columns across rows. (2) Auto-resume now snapshots the
+//     current conversation/transcript focus at COUNTDOWN START, before its controls can
+//     take focus (execute-time capture remains fallback). On return, transcript focus,
+//     selection, and scroll are restored on a guarded 0/250/800/1600ms cadence because
+//     TypingMind navigation can asynchronously steal focus after verification; any real
+//     pointerdown outside the transcript cancels remaining attempts, so Dan wins.
 //   - v4.346: MOONSHOT EMPTY TEXT-PART REPAIR ('Invalid request: text content is empty').
 //     The OpenAI-compatible sanitizer only caught whole-message emptiness (content '', null,
 //     or []), but cross-model conversion can produce a nonempty structured container with
@@ -1522,7 +1532,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.346';
+  const EXT_VERSION = '4.347';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6052,14 +6062,16 @@
       tmSessionCtxHoverIdentities[key] = { sid: info.sid || '', model: info.model || '', host: info.host || '', isProxy: !!info.isProxy };
       var hue = '#c8d0dc';
       try { hue = tmModelEndpointColor(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eH) {}
-      var right;
+      var ctxDialHtml = '';
+      var ctxNumsHtml = '';
+      var ctxCostHtml = '';
       var ctxCap = null;
       try { ctxCap = tmLatestCtxSnapshotEntryForIdentity(key); } catch (eC) {}
       if (ctxCap && ctxCap._ctx_snapshot) {
-        right = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 14, noClick: true, cap: ctxCap }) +
-          '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
+        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 14, noClick: true, cap: ctxCap });
+        ctxNumsHtml = '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
       } else {
-        right = '<span style="font-size:12px;color:#6a7280;white-space:nowrap;">no ctx snapshot yet</span>';
+        ctxNumsHtml = '<span style="font-size:12px;color:#6a7280;white-space:nowrap;">no ctx snapshot</span>';
       }
       // (v4.332) Aggregate session cost at the right end (tm_session_costs_v2 ledger, the
       // SAME tmGetSessionCost the widget '$' total and the Filter dropdown's ($total) read):
@@ -6067,9 +6079,17 @@
       try {
         var hoverSessCost = tmGetSessionCost(info.sid || '', info.model || '', info.host, info.isProxy);
         if (hoverSessCost > 0) {
-          right += '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
+          ctxCostHtml = '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
         }
       } catch (eCost) {}
+      // (v4.347) Fixed dashboard gauge columns. Every row reserves identical widths for
+      // spinner | context dial+percent | total/max | aggregate cost, so changing digit
+      // counts and spinner appearance cannot make columns jump or overlap neighboring rows.
+      var right = '<span style="display:grid;grid-template-columns:68px 124px 76px;align-items:center;column-gap:6px;width:280px;flex:none;">' +
+        '<span style="display:inline-flex;align-items:center;justify-content:flex-start;min-width:0;">' + ctxDialHtml + '</span>' +
+        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxNumsHtml + '</span>' +
+        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxCostHtml + '</span>' +
+      '</span>';
       // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second
       // line (the model identity is operationally critical and was still being
       // ellipsis-cropped on long session names); the live badge/timers sit to its right on
@@ -6087,7 +6107,7 @@
               '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
             '</span>' +
           '</span>' +
-          '<span style="display:inline-flex;align-items:center;gap:4px;flex:none;">' +
+          '<span style="display:grid;grid-template-columns:16px 280px;align-items:center;column-gap:4px;width:300px;flex:none;">' +
             '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
             right +
           '</span>' +
@@ -10020,15 +10040,40 @@
     tmAutoResumeFocusSnapshot = null;
     if (!snap) return;
     try {
-      var el = document.getElementById('deepgram-transcript');
-      if (!el) return;
-      el.focus();
-      var len = String(el.value || '').length;
-      var s = (typeof snap.start === 'number') ? Math.min(snap.start, len) : len;
-      var e2 = (typeof snap.end === 'number') ? Math.min(snap.end, len) : s;
-      try { el.setSelectionRange(s, e2); } catch (eSel) {}
-      try { el.scrollTop = snap.scrollTop || 0; } catch (eScr) {}
-      console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Restored transcript focus after auto-resume return trip.');
+      // (v4.347) TypingMind's conversation navigation can focus its native composer AFTER
+      // tmAgentManagementOpenSession has already verified the new view and invoked us. A
+      // single immediate focus therefore looked successful, then got stolen milliseconds
+      // later. Restore on a short guarded cadence (0/250/800/1600ms). Any real pointerdown
+      // outside the transcript cancels remaining attempts, so Dan's manual choice wins.
+      var cancelled = false;
+      var cancelOnPointer = function(ev) {
+        try {
+          var t = ev && ev.target;
+          if (!t || t.id !== 'deepgram-transcript') cancelled = true;
+        } catch (e) { cancelled = true; }
+      };
+      window.addEventListener('pointerdown', cancelOnPointer, true);
+      function applyFocus() {
+        if (cancelled) return;
+        try {
+          var el = document.getElementById('deepgram-transcript');
+          if (!el) return;
+          el.focus();
+          var len = String(el.value || '').length;
+          var s = (typeof snap.start === 'number') ? Math.min(snap.start, len) : len;
+          var e2 = (typeof snap.end === 'number') ? Math.min(snap.end, len) : s;
+          try { el.setSelectionRange(s, e2); } catch (eSel) {}
+          try { el.scrollTop = snap.scrollTop || 0; } catch (eScr) {}
+        } catch (e) {}
+      }
+      applyFocus();
+      setTimeout(applyFocus, 250);
+      setTimeout(applyFocus, 800);
+      setTimeout(function() {
+        applyFocus();
+        try { window.removeEventListener('pointerdown', cancelOnPointer, true); } catch (eRm) {}
+        if (!cancelled) console.log('\u21A9\uFE0F [v' + EXT_VERSION + '] Restored transcript focus after auto-resume return trip (guarded deferred cadence).');
+      }, 1600);
     } catch (e) {}
   }
 
@@ -10081,6 +10126,10 @@
 
   function tmShowAutoContinueCountdown(item) {
     if (typeof document === 'undefined' || !document.body) { tmFinishAutoContinue(false, 'DOM unavailable'); return; }
+    // (v4.347) Capture the pre-switch conversation + transcript focus BEFORE the countdown
+    // can move focus to its Resume-now/Cancel controls. The later execute-time capture remains
+    // as a fallback; first bookmark wins.
+    try { tmNoteAutoResumeReturnBookmark(item && item.sessionId); } catch (eBkEarly) {}
     var old = document.getElementById('tm-auto-continue-overlay');
     if (old && old.parentNode) old.parentNode.removeChild(old);
     var overlay = document.createElement('div');
