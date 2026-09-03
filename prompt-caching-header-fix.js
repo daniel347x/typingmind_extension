@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.345
+// Version: 4.346
 // Issues Fixed:
+//   - v4.346: MOONSHOT EMPTY TEXT-PART REPAIR ('Invalid request: text content is empty').
+//     The OpenAI-compatible sanitizer only caught whole-message emptiness (content '', null,
+//     or []), but cross-model conversion can produce a nonempty structured container with
+//     an EMPTY text-bearing part: [{type:'text', text:''}] (or content:'' variant), which
+//     Moonshot rejects. The sanitizer now repairs empty text/input_text/output_text parts
+//     inside message.content arrays/objects without touching tool arguments, images, files,
+//     reasoning, or arbitrary nested data. It also no longer skips a whole-empty assistant
+//     message merely because tool_calls[] is present: Moonshot rejects that empty text too,
+//     and a deterministic placeholder alongside the real tool call is semantic-neutral.
 //   - v4.345: NONBLANK ORPHAN TOOL-RESULT SWEEP (the surviving direct-OpenRouter 400).
 //     Live evidence on session 9b7f7896 proved the direct branch ran and repaired empty
 //     content on message 350, but the pair report stayed zero while Moonshot returned
@@ -1513,7 +1522,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.345';
+  const EXT_VERSION = '4.346';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12905,15 +12914,47 @@
       if (!msg) return;
       if (msg.role !== 'assistant' && msg.role !== 'user' && msg.role !== 'system' && msg.role !== 'tool') return;
       const c = msg.content;
+
+      // (v4.346) Structured-content repair: Moonshot rejects an empty text PART even when
+      // the content array/object itself is nonempty, e.g. [{type:'text', text:''}]. The old
+      // whole-message predicate missed this cross-model-conversion shape. Repair only
+      // recognized text-bearing message parts -- never tool arguments, image URLs, files,
+      // reasoning, or arbitrary nested data.
+      function repairTextPart(part, partIdx) {
+        if (!part || typeof part !== 'object') return false;
+        var typ = String(part.type || '').toLowerCase();
+        if (typ !== 'text' && typ !== 'input_text' && typ !== 'output_text') return false;
+        if (typeof part.text === 'string' && part.text.trim() === '') {
+          part.text = '[tm_repaired_empty_' + msg.role + '_text_part]';
+          console.log('🩹 [v' + EXT_VERSION + '] ' + (label || 'chat-completions') + ': repaired empty ' + msg.role + ' text part on message ' + msgIdx + (partIdx != null ? (', part ' + partIdx) : ''));
+          return true;
+        }
+        // A few OpenAI-compatible converters use {type:'text', content:''} instead.
+        if (typeof part.content === 'string' && part.content.trim() === '') {
+          part.content = '[tm_repaired_empty_' + msg.role + '_text_part]';
+          console.log('🩹 [v' + EXT_VERSION + '] ' + (label || 'chat-completions') + ': repaired empty ' + msg.role + ' content part on message ' + msgIdx + (partIdx != null ? (', part ' + partIdx) : ''));
+          return true;
+        }
+        return false;
+      }
+
+      if (Array.isArray(c)) {
+        for (var ci = 0; ci < c.length; ci++) {
+          if (repairTextPart(c[ci], ci)) changed++;
+        }
+      } else if (c && typeof c === 'object') {
+        if (repairTextPart(c, null)) changed++;
+      }
+
       const empty =
         c == null ||
         (typeof c === 'string' && c.trim() === '') ||
         (Array.isArray(c) && c.length === 0);
       if (empty) {
-        // v4.188: Skip replacement when a real tool call is the message content.
-        // v4.274: An empty tool_calls:[] is not content and must not suppress this repair.
-        if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return;
-        // Replace empty content (string or array) with placeholder.
+        // (v4.346) Moonshot now rejects empty text content even on a legitimate assistant
+        // tool_calls message. A deterministic placeholder alongside tool_calls is valid and
+        // semantic-neutral; skipping these messages (the old v4.188 rule) left fatal empty
+        // content in converted histories.
         msg.content = `[tm_repaired_empty_${msg.role}_message]`;
         console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
         changed++;
