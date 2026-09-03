@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.354 Changes:
+ * - 🧰 AUX ROWS collapse: a hairline expander ribbon now sits between the cost row and the ✨
+ *   Refine provider row. Click it to expand/collapse BOTH rarely-accessed control rows (the ✨
+ *   Refine provider/model/prompt row and the 🔊 Read Aloud row). Default: HIDDEN, persisted
+ *   (tm_aux_controls_visible) — day-to-day the widget no longer spends vertical space on rows
+ *   used only for provider/model/prompt changes or occasional playback. Click again to minimize.
+ *   The ribbon is a thin 9px-centered strip (brightens on hover); all other rows untouched.
+ *
  * v3.353 Changes:
  * - FIX (session↔chat match when Prism splits `1.` itself across text nodes): v3.348 handled
  *   `<span>1.</span><span> Item</span>`, but a second syntax shape emits the digit, period, and
@@ -1703,7 +1711,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.353',
+  VERSION: '3.354',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7225,6 +7233,26 @@
   }
   window.toggleLegacyUi = toggleLegacyUi;
 
+  // (v3.354) AUX ROWS expander ribbon: the ✨ Refine provider row + 🔊 Read Aloud row are
+  // rarely accessed; they collapse behind a hairline ribbon, hidden by default (persisted).
+  function auxControlsVisible() {
+    try { return localStorage.getItem('tm_aux_controls_visible') === '1'; } catch (e) { return false; }
+  }
+  function applyAuxControlsVisibility() {
+    var vis = auxControlsVisible();
+    ['deepgram-refine-controls', 'deepgram-eleven-controls'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = vis ? 'flex' : 'none';
+    });
+    var rib = document.getElementById('deepgram-aux-expander');
+    if (rib) rib.textContent = vis ? '▾ refine · audio' : '▸ refine · audio';
+  }
+  function toggleAuxControlsVisibility() {
+    localStorage.setItem('tm_aux_controls_visible', auxControlsVisible() ? '0' : '1');
+    applyAuxControlsVisibility();
+  }
+  window.toggleAuxControlsVisibility = toggleAuxControlsVisibility;
+
   /**
    * Paste rich text from clipboard and convert to markdown-style plain text
    */
@@ -7826,6 +7854,9 @@
       .keyboard-bell.ultimate { background: #17a2b8; }
       .keyboard-bell.ultimate-ultimate { background: #9b59b6; }
       
+      /* Aux expander ribbon (v3.354) */
+      #deepgram-aux-expander:hover { opacity: 0.85; background: rgba(128,128,128,0.12); }
+
       /* Transcript Area */
       .deepgram-transcript {
         width: 100%;
@@ -9235,6 +9266,9 @@
           <span id="deepgram-refine-last-duration" style="flex:0 0 auto; font-variant-numeric:tabular-nums; white-space:nowrap;"></span>
         </div>
 
+        <!-- 🧰 Aux rows expander ribbon (v3.354): Refine provider + Read Aloud rows, hidden by default -->
+        <div id="deepgram-aux-expander" title="Show/hide the ✨ Refine provider row and the 🔊 Read Aloud row" style="margin-top:4px; padding:2px 0; line-height:1; text-align:center; font-size:9px; letter-spacing:0.6px; opacity:0.35; cursor:pointer; user-select:none; border-radius:4px;">▸ refine · audio</div>
+
         <!-- ✨ Refine control row (2nd-pass transcription cleanup via Claude / OpenRouter) -->
         <div id="deepgram-refine-controls" style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:2px; padding:6px; border:1px solid rgba(128,128,128,0.3); border-radius:6px;">
           <span style="font-size:11px; opacity:0.8;">✨ Refine:</span>
@@ -9638,6 +9672,10 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     applyStatusBlockVisibility();
     // (v3.342) Legacy recording-era controls are hidden by default behind the 📦 title-bar toggle
     applyLegacyUiVisibility();
+    // (v3.354) Aux control rows hidden by default behind the thin expander ribbon
+    applyAuxControlsVisibility();
+    var auxExpanderEl = document.getElementById('deepgram-aux-expander');
+    if (auxExpanderEl) auxExpanderEl.addEventListener('click', toggleAuxControlsVisibility);
     document.getElementById('deepgram-eleven-voice-select').addEventListener('change', function() {
       localStorage.setItem(CONFIG.ELEVENLABS_VOICE_ID_STORAGE, this.value);
     });
