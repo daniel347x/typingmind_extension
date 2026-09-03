@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.347
+// Version: 4.348
 // Issues Fixed:
+//   - v4.348: LEGITIMATE TOOL-CALL-ONLY ASSISTANT CONTENT EXEMPTION RESTORED. v4.346
+//     correctly added repair for explicit EMPTY structured text parts
+//     ([{type:'text',text:''}]) but incorrectly removed the long-standing exemption for a
+//     standard assistant tool-call message with no prose ({role:'assistant', content:null,
+//     tool_calls:[...]}). Moonshot accepts that grammar; v4.346 therefore injected the ugly
+//     [tm_repaired_empty_assistant_message] placeholder on EVERY tool turn, polluting prompt
+//     history and potentially affecting behavior. The structured empty-text-PART repair stays;
+//     whole-empty assistant content is skipped only when a real nonempty tool_calls[] exists.
 //   - v4.347: DASHBOARD FIXED GAUGE COLUMNS + RELIABLE TRANSCRIPT FOCUS RETURN. (1) The
 //     Sessions-in-Memory right cluster is now an identical 300px grid on every row:
 //     16px busy spinner | 68px context dial+percent | 124px total/max | 76px aggregate
@@ -1532,7 +1540,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.347';
+  const EXT_VERSION = '4.348';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -13000,10 +13008,14 @@
         (typeof c === 'string' && c.trim() === '') ||
         (Array.isArray(c) && c.length === 0);
       if (empty) {
-        // (v4.346) Moonshot now rejects empty text content even on a legitimate assistant
-        // tool_calls message. A deterministic placeholder alongside tool_calls is valid and
-        // semantic-neutral; skipping these messages (the old v4.188 rule) left fatal empty
-        // content in converted histories.
+        // (v4.348) A real assistant tool_calls[] message is complete WITHOUT text content:
+        // {role:'assistant', content:null, tool_calls:[...]} is standard OpenAI-compatible
+        // grammar and Moonshot accepts it. v4.346 removed this exemption and consequently
+        // injected [tm_repaired_empty_assistant_message] on EVERY tool turn -- ugly prompt
+        // pollution that could alter model behavior. Keep the structured empty-text-PART
+        // repair above (the actual 'text content is empty' fix), but never synthesize prose
+        // merely because a legitimate tool-call-only assistant message has no prose.
+        if (msg.role === 'assistant' && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return;
         msg.content = `[tm_repaired_empty_${msg.role}_message]`;
         console.log(`🩹 [v${EXT_VERSION}] ${label || 'chat-completions'}: repaired empty ${msg.role} content on message ${msgIdx}`);
         changed++;
