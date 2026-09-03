@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.337
+// Version: 4.338
 // Issues Fixed:
+//   - v4.338: DASHBOARD HEIGHT RESIZE. The card is now a two-region flex column: a content
+//     region (the only thing rebuilt on ticks) plus a persistent bottom grip strip (ns-
+//     resize cursor, subtle grip lines). Dragging the grip sets an explicit card height
+//     (clamped 100px..90vh), persisted to tm_session_ctx_hover_height_v1 and restored on
+//     reload; before any drag the content auto-sizes up to 46vh as before. Scrollbars ride
+//     the content region. Identity cap raised 12 -> 40 so a large session fleet (25-30+)
+//     actually lists instead of truncating.
 //   - v4.337: AUTO-RESUME RETURN-TRIP FIXES. (1) WRONG-CONVERSATION RETURN: the return-trip
 //     bookmark read the FIRST 'selected-chat-item' sidebar row in DOM order with no visibility
 //     check -- TypingMind keeps stale hidden selected rows mounted, so the bookmark could capture
@@ -1426,7 +1433,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.337';
+  const EXT_VERSION = '4.338';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5748,6 +5755,18 @@
   var tmSessionCtxHoverPinRestoreDone = false;
   var tmSessionCtxHoverDrag = null; // { startX, startY, baseLeft, baseTop }
   var TM_SESSION_CTX_HOVER_PIN_KEY = 'tm_session_ctx_hover_pin_v1'; // { pinned, left, top }
+  // (v4.337) Two-region card structure: content (scrolls; rebuilt on ticks) + persistent
+  // bottom resize grip (survives rebuilds because rebuilds replace ONLY the content div).
+  var tmSessionCtxHoverContentEl = null;
+  var tmSessionCtxHoverGripEl = null;
+  var TM_SESSION_CTX_HOVER_HEIGHT_KEY = 'tm_session_ctx_hover_height_v1';
+  function tmGetSessionCtxHoverHeight() {
+    try {
+      var h = Number(localStorage.getItem(TM_SESSION_CTX_HOVER_HEIGHT_KEY));
+      if (isFinite(h) && h >= 100 && h <= 4000) return h;
+    } catch (e) {}
+    return 0; // 0 = auto (content max-height governs)
+  }
 
   // Numeric readout beside the dial: '123.4k / 1.0M' ('?' when no denominator exists).
   // Reuses the dial's own denominator chain (override -> discovery -> provider-max -> seed,
@@ -5853,9 +5872,9 @@
         // (v4.336) Rebuild cadence 5s -> 3s: the rebuild re-enumerates the ring newest-first,
         // so rows re-sort by most-recent activity this often when pinned.
         if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 3 === 0)) {
-          var st = tmSessionCtxHoverEl.scrollTop;
-          tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
-          tmSessionCtxHoverEl.scrollTop = st;
+          var st = tmSessionCtxHoverContentEl ? tmSessionCtxHoverContentEl.scrollTop : 0;
+          if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+          if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.scrollTop = st;
           return;
         }
         var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
@@ -5908,7 +5927,7 @@
     try { ring = tmReadCaptureRing() || []; } catch (eRing) {}
     var seen = {};
     var count = 0;
-    for (var i = ring.length - 1; i >= 0 && count < 12; i--) {
+    for (var i = ring.length - 1; i >= 0 && count < 40; i--) { // (v4.338) cap 12 -> 40: resizable height + scrollbar make large fleets listable
       var cap = ring[i];
       if (!cap) continue;
       var key = '';
@@ -5974,10 +5993,10 @@
     tmSessionCtxHoverPinned = !tmSessionCtxHoverPinned;
     if (tmSessionCtxHoverPinned) tmPersistSessionCtxHoverPin(); else tmClearSessionCtxHoverPin();
     try { // repaint the header (pin/close buttons + drag cursor) immediately, scroll preserved
-      if (tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
-        var st = tmSessionCtxHoverEl.scrollTop;
-        tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
-        tmSessionCtxHoverEl.scrollTop = st;
+      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
+        var st = tmSessionCtxHoverContentEl.scrollTop;
+        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+        tmSessionCtxHoverContentEl.scrollTop = st;
       }
     } catch (e) {}
   }
@@ -6068,8 +6087,55 @@
         tmSessionCtxHoverEl.style.border = '1px solid #3a3f4a';
         tmSessionCtxHoverEl.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
         tmSessionCtxHoverEl.style.width = tmGetSessionCtxHoverWidth() + 'px'; // (v4.336) persisted, header [-]/[+] adjustable
-        tmSessionCtxHoverEl.style.maxHeight = '50vh';
-        tmSessionCtxHoverEl.style.overflowY = 'auto';
+        // (v4.337) Two-region structure: content region (scrolls; the ONLY thing rebuilt on
+        // ticks) + persistent bottom resize grip. Outer becomes a fixed-height flex column
+        // once Dan drags a height; until then the content's max-height governs (auto).
+        tmSessionCtxHoverEl.style.display = 'none'; // 'flex' when shown
+        tmSessionCtxHoverEl.style.flexDirection = 'column';
+        tmSessionCtxHoverEl.style.overflow = 'hidden';
+        tmSessionCtxHoverContentEl = document.createElement('div');
+        tmSessionCtxHoverContentEl.style.flex = '1 1 auto';
+        tmSessionCtxHoverContentEl.style.minHeight = '0';
+        tmSessionCtxHoverContentEl.style.overflowY = 'auto';
+        tmSessionCtxHoverContentEl.style.padding = '6px 9px';
+        tmSessionCtxHoverEl.appendChild(tmSessionCtxHoverContentEl);
+        tmSessionCtxHoverGripEl = document.createElement('div');
+        tmSessionCtxHoverGripEl.style.flex = 'none';
+        tmSessionCtxHoverGripEl.style.height = '7px';
+        tmSessionCtxHoverGripEl.style.cursor = 'ns-resize';
+        tmSessionCtxHoverGripEl.style.borderTop = '1px solid #3a3f4a';
+        tmSessionCtxHoverGripEl.style.background = 'repeating-linear-gradient(180deg, rgba(255,255,255,0.08) 0 1px, transparent 1px 3px)';
+        tmSessionCtxHoverGripEl.title = 'Drag to resize height (saved)';
+        tmSessionCtxHoverEl.appendChild(tmSessionCtxHoverGripEl);
+        var savedHcH = tmGetSessionCtxHoverHeight();
+        if (savedHcH) tmSessionCtxHoverEl.style.height = savedHcH + 'px';
+        else tmSessionCtxHoverContentEl.style.maxHeight = '46vh';
+        tmSessionCtxHoverGripEl.addEventListener('pointerdown', function(ev) {
+          try {
+            if (!tmSessionCtxHoverEl || !tmSessionCtxHoverContentEl) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            var gripStartY = ev.clientY;
+            var gripStartH = tmSessionCtxHoverEl.getBoundingClientRect().height;
+            var gripMove = function(e2) {
+              try {
+                var nh = Math.max(100, Math.min(window.innerHeight * 0.9, gripStartH + (e2.clientY - gripStartY)));
+                tmSessionCtxHoverEl.style.height = Math.round(nh) + 'px';
+                tmSessionCtxHoverContentEl.style.maxHeight = 'none'; // explicit height now governs
+              } catch (eGM) {}
+            };
+            var gripUp = function() {
+              try {
+                window.removeEventListener('pointermove', gripMove, true);
+                window.removeEventListener('pointerup', gripUp, true);
+                var h = Math.round(tmSessionCtxHoverEl.getBoundingClientRect().height);
+                localStorage.setItem(TM_SESSION_CTX_HOVER_HEIGHT_KEY, String(h));
+              } catch (eGU) {}
+            };
+            window.addEventListener('pointermove', gripMove, true);
+            window.addEventListener('pointerup', gripUp, true);
+          } catch (eGrip) {}
+        });
         // Moving from the label INTO the card must not dismiss it.
         try {
           if (!document.getElementById('tm-hovercard-style')) {
@@ -6116,7 +6182,7 @@
         });
         document.body.appendChild(tmSessionCtxHoverEl);
       }
-      tmSessionCtxHoverEl.innerHTML = tmBuildSessionCtxHoverHtml();
+      if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
       if (opts.left != null && opts.top != null) {
         // (v4.335) Explicit position (pinned restore) -- no anchor needed.
         tmSessionCtxHoverEl.style.left = opts.left + 'px';
@@ -6128,7 +6194,7 @@
         tmSessionCtxHoverEl.style.right = Math.max(8, window.innerWidth - r.right) + 'px';
         tmSessionCtxHoverEl.style.left = 'auto';
       }
-      tmSessionCtxHoverEl.style.display = 'block';
+      tmSessionCtxHoverEl.style.display = 'flex'; // (v4.337) flex column: content + grip
       tmEnsureSessionCtxHoverTicker(); // (v4.329) live badges/timers while visible
     } catch (e) {}
   }
