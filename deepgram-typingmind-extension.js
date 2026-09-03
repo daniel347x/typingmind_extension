@@ -11,6 +11,20 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.356 Changes:
+ * - FIX (Load GLIMPSE prefix override NEVER fired — typo shipped in v3.313): the signature regex
+ *   read /^loadglimpsesessionid.../ (one 'e' short at the glimpse|session junction) while the
+ *   normalized data is 'loadglimpsesessionid<hash>'. Every headHash/firstBlockHash in every
+ *   __debugOverride log has been null since v3.313; the override survived only via the v3.314
+ *   session-NAME path (and later the v3.350 sidebar path). Regex corrected — the head/first-block
+ *   signature path is live for the first time.
+ * - FIX (session↔chat match on KaTeX-rendered math): a session block containing
+ *   $\text{adopt} \longrightarrow \text{leased}$ normalizes to literal 'textadoptlongrightarrow…'
+ *   while the chat renders the same math as glyphs ('adopt ⟶ leased'), dropping the command
+ *   names. refineNormalizeBlockLines now reduces $- / \(...\)-delimited math spans to their
+ *   VISIBLE form (\text{…} keeps its inner text; bare \commands are dropped like their rendered
+ *   glyphs). Only delimited spans are touched — literal backslashes in prose paths are safe.
+ *
  * v3.355 Changes:
  * - FIX (session↔chat match when a line STARTS with a bold word): the ordered-list stripper's
  *   leading-emphasis allowance `(?:[*_]{1,3})?` fired on `**text** → **leased** ...` (a line that
@@ -402,7 +416,7 @@
  *   signature with the SAME hash, that session ALWAYS wins — regardless of aggregate scores.
  *   Rationale: a brand-new conversation has at most ~2 matchable turns and can never outscore an
  *   established session's aggregate, yet it is UNIQUELY identified by the session ID hash
- *   (normalized key 'loadglimpsessionid<hash>' — whitespace/case/colon independent by
+ *   (normalized key 'loadglimpsesessionid<hash>' — whitespace/case/colon independent by
  *   construction; only the beginning of the turn/block is matched, anything after the hash is
  *   ignored). If the true first turn is scrolled out of the DOM, the override simply doesn't
  *   fire and the aggregate decides, exactly as intended.
@@ -1719,7 +1733,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.355',
+  VERSION: '3.356',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -4463,6 +4477,19 @@
   // ]
   function refineNormalizeBlockLines(blockLines) {
     var mapped = blockLines.map(function(l) {
+      // (v3.356) Reduce delimited MATH spans to their VISIBLE form, mirroring the chat side's
+      // KaTeX render: \text{...} keeps its inner text; bare commands (\longrightarrow etc.)
+      // render as symbol glyphs that the alphanumeric filter drops on BOTH sides. Delimited
+      // spans only — literal backslashes in ordinary prose (C:\path\to\file) are untouched.
+      var reduceMath = function(m, inner) {
+        return inner
+          .replace(/\\(?:text|mathrm|mathbf|mathit|mathsf|texttt)\s*\{([^{}]*)\}/g, '$1')
+          .replace(/\\[a-zA-Z]+/g, '');
+      };
+      l = l.replace(/\$\$([^$]+)\$\$/g, reduceMath);
+      l = l.replace(/\$([^$\n]+)\$/g, reduceMath);
+      l = l.replace(/\\\(([^]*?)\\\)/g, reduceMath);
+      l = l.replace(/\\\[([^]*?)\\\]/g, reduceMath);
       l = l.replace(/!?\[([^\]]*)\]\([^)]*\)/g, '$1');
       return l.replace(/^\s*#{0,6}\s*(?:[*_]{1,3}\d{1,3}\.(?:\s+|$)|\d{1,3}\.(?:\s+|$))/, '');
     });
@@ -5141,7 +5168,7 @@
   }
 
   /** (v3.313) The 'Load GLIMPSE / Session ID: <8-char hash>' tight signature on a NORMALIZED
-   *  string: 'loadglimpsessionid' + 8 alnum chars at the very START. Whitespace/case/colon
+   *  string: 'loadglimpsesessionid' + 8 alnum chars at the very START. Whitespace/case/colon
    *  independent by construction (normalization strips all three). Returns the hash or null. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.refineGlimpseSessionPrefix-xi7n,
@@ -5150,7 +5177,7 @@
   //   kind=ast,
   // ]
   function refineGlimpseSessionPrefix(norm) {
-    var m = /^loadglimpsessionid([a-z0-9]{8})/.exec(norm || '');
+    var m = /^loadglimpsesessionid([a-z0-9]{8})/.exec(norm || '');
     return m ? m[1] : null;
   }
 
