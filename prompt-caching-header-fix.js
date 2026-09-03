@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.339
+// Version: 4.340
 // Issues Fixed:
+//   - v4.340: GESTURE CLOCK POISONING FIXED (push-to-talk). v4.339's abort discriminator
+//     counted EVERY page keydown as a user gesture -- Dan's held-down transcription
+//     hotkeys (page-level targets, not inside the transcription panel) refreshed the clock
+//     continuously while he dictated, so the zero-byte sensor suppressed itself exactly
+//     when he was transcribing and waiting for a wake-up. The clock now counts only
+//     plausible DELIBERATE-STOP gestures: pointerdowns (excluding foreign panels AND our
+//     own extension UI) and the Escape key alone. Also: the sensor now console-logs when
+//     it holds back due to a recent gesture (never silent about staying silent).
 //   - v4.339: ZERO-BYTE ABORT DEAD ZONE FIXED (the 'session never wakes' case). When a hung
 //     request ends BEFORE any byte arrives (TypingMind's own client timeout or a cut
 //     connection -- Dan saw Regenerate with NO error text), the continuity tap's reader
@@ -1446,7 +1454,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.339';
+  const EXT_VERSION = '4.340';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -10184,7 +10192,20 @@
   var tmLastUserGestureTs = 0;
   function tmNoteUserGesture(ev) {
     try {
-      if (ev && ev.target && tmElementLooksLikeForeignPanel(ev.target)) return;
+      if (!ev) return;
+      // (v4.340) NARROWED: the clock must track only plausible DELIBERATE-STOP gestures.
+      // v4.339 counted EVERY keydown -- Dan's push-to-talk hotkeys (held down while he
+      // transcribes) have PAGE-LEVEL targets (document.body, not the transcription panel),
+      // so they poisoned the clock and suppressed the v4.339 zero-byte sensor exactly
+      // while he dictates. Now: keydowns count ONLY for Escape (the one keyboard stop
+      // gesture); pointerdowns count anywhere EXCEPT foreign panels and our own extension
+      // UI (widget, dashboard, our modals/overlays).
+      if (ev.type === 'keydown' && ev.key !== 'Escape') return;
+      var t = ev.target;
+      if (t) {
+        if (tmElementLooksLikeForeignPanel(t)) return;
+        if (t.closest && (t.closest('#gpt51-usage-widget') || t.closest('#tm-session-ctx-hovercard') || t.closest('[id^="tm-auto-continue"]') || t.closest('[id^="tm-payload"]'))) return;
+      }
       tmLastUserGestureTs = Date.now();
     } catch (e) {}
   }
@@ -10292,6 +10313,9 @@
               // autonomous-gesture check keeps a real Stop press from ever resurrecting.
               stampTrigger('stream_aborted_no_bytes');
               tmQueueAutoContinue(sessionId, 'stream_aborted_no_bytes', 'connection ended before first byte (no recent user gesture)');
+            } else {
+              // (v4.340) Never silent about staying silent: log WHY the sensor held back.
+              console.log('\u270B [v' + EXT_VERSION + '] Zero-byte stream end on ' + sessionId + ' NOT auto-resumed: recent Stop-like user gesture (pointer/Escape within 5s).');
             }
             disarmWatchdog();
           });
