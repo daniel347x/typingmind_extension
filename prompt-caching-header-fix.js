@@ -1,6 +1,27 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.366
+// Version: 4.367
 // Issues Fixed:
+//   - v4.367: FIX 26 -- REASONING-REPLAY LOSS TRACKER (Dan's #1 visibility goal: 'when I switch
+//     models mid-conversation, what reasoning did I just LOSE?'). Answers it empirically on the
+//     wire, no AssemblyDB spelunking: INBOUND accumulates per-conversation-x-origin
+//     (sid::model::host) replayable reasoning at response receipt (raw text blocks/chars +
+//     encrypted blob blocks/chars from _think_obs; summaries excluded -- display-class, not
+//     replay material; tiny aggregates in tm_replay_ledger_v1 riding the same prune/touch
+//     lifecycle as the other session stores). OUTBOUND counts reasoning content in the FINAL
+//     post-mutation body at capture time (all 4 wire shapes; runs after Fix 19's foreign-blob
+//     strip, so surviving encrypted blobs are origin-kept by definition). COMPARE, stamped on the
+//     row as _replay_warn: RED double-triangle (large, glowing) = this route SUPPORTS replay
+//     (Anthropic Messages / Responses / Gemini / Kimi-Moonshot-DeepSeek-GLM chat), this
+//     conversation already received reasoning from THIS origin, and this payload carries ZERO
+//     reasoning blocks -- TypingMind almost certainly dropped the history in cross-model
+//     conversion (fork conversations instead of switching inline). YELLOW triangle = reasoning
+//     received from OTHER origins is missing from this payload (the cross-model switching-cost
+//     reminder; expected whenever encrypted blobs are foreign-sealed -- informational, not
+//     alarming). Renders on the OBS label zone of the shared think badge, so the sessions-in-
+//     memory card, ring rows, and the widget all inherit it; hover carries the per-origin
+//     received-vs-outbound count table. Counts forward from install only; v1 fires RED only on
+//     TOTAL own-origin loss (partial-loss nuance is visible numerically in the tooltip; gating
+//     refinement deferred).
 //   - v4.366: SESSIONS-IN-MEMORY POLISH (per Dan). (1) OUTLINE TYPOGRAPHY: session name row at 15px
 //     (was 12px) flush-left; everything under it inset 48px as an indented block (outline-like);
 //     model name on row 2 at 14px (was 12px; live timers unchanged). (2) THINK DROPDOWN READOUT,
@@ -1838,7 +1859,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.366';
+  const EXT_VERSION = '4.367';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1936,6 +1957,7 @@
     pruneMap('gpt51_conv_usage', true);
     pruneMap(TM_PROVIDER_LOCKS_KEY, false);
     pruneMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361) per-identity thinking overrides
+    pruneMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367) per-origin reasoning-replay ledger
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -3380,6 +3402,7 @@
     touchMap('gpt51_conv_usage', 'gpt51');
     touchMap(TM_PROVIDER_LOCKS_KEY, false);
     touchMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361)
+    touchMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367)
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -5353,8 +5376,10 @@
       var line1 = '<div style="white-space:nowrap;">' +
         '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqLead +
         (hist ? tmThinkHistHtml(hist, 'req', fs) : '') + '</div>';
+      // (Fix 26, v4.367) Reasoning-replay loss warning rides the OBS label zone (row-level status).
+      var replayWarn = (cap && cap._replay_warn) ? tmReplayWarnHtml(cap._replay_warn, fs) : '';
       var line2 = '<div style="white-space:nowrap;margin-top:3px;">' +
-        '<span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsLead +
+        '<span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + replayWarn + obsLead +
         (hist ? tmThinkHistHtml(hist, 'obs', fs) : '') + '</div>';
       return '<div style="display:flex;flex-direction:column;min-width:0;">' + line1 + line2 + '</div>';
     } catch (e) { return ''; }
@@ -6533,6 +6558,161 @@
     rerender(); return true;
   }
 
+  // ==================== FIX 26 (v4.367): REASONING-REPLAY LOSS TRACKER ====================
+  // Answers Dan's standing question empirically, on the wire: 'when I switch models mid-
+  // conversation, does the reasoning I already received (raw text + encrypted blobs) still make
+  // it into later outbound payloads -- or did TypingMind's cross-model conversion drop it?'
+  // INBOUND ledger keyed sid::model::host; OUTBOUND counted on the final body; warnings stamped
+  // per capture row (_replay_warn) and rendered by the shared think badge.
+  var TM_REPLAY_LEDGER_KEY = 'tm_replay_ledger_v1';
+
+  function tmReplayLedgerRead() {
+    try { var raw = localStorage.getItem(TM_REPLAY_LEDGER_KEY); var m = raw ? JSON.parse(raw) : {}; return (m && typeof m === 'object') ? m : {}; } catch (e) { return {}; }
+  }
+
+  // Response-receipt accumulator: fold one turn's replayable reasoning evidence into the ledger.
+  function tmReplayLedgerBump(capRec, obs) {
+    try {
+      if (!capRec || !obs) return;
+      var sid = capRec.pasted_session_id || capRec.session_id; if (!sid) return;
+      var model = capRec._model || ''; if (!model) return;
+      var host = tmExtractEndpointHost(capRec);
+      var b = obs.blocks || {};
+      var rawBlocks = Number(b.thinking || 0) + Number(b.reasoning_text || 0) + Number(b.reasoning_content || 0) + Number(b.reasoning_str || 0) + Number(b.gemini_thought_parts || 0);
+      var encBlocks = Number(b.redacted || 0) + Number(b.reasoning_encrypted || 0);
+      var rawChars = Number(obs.raw_chars || 0), encChars = Number(obs.encrypted_chars || 0);
+      if (!rawBlocks && !encBlocks && !rawChars && !encChars) return;
+      var store = tmReplayLedgerRead();
+      var key = String(sid) + '::' + model + '::' + host;
+      var e = (store[key] && typeof store[key] === 'object') ? store[key] : {};
+      e.rawBlocks = Number(e.rawBlocks || 0) + rawBlocks;
+      e.rawChars = Number(e.rawChars || 0) + rawChars;
+      e.encBlocks = Number(e.encBlocks || 0) + encBlocks;
+      e.encChars = Number(e.encChars || 0) + encChars;
+      e.turns = Number(e.turns || 0) + 1;
+      e.model = model; e.host = host; e._session_id = String(sid); e._ts = Date.now();
+      store[key] = e;
+      localStorage.setItem(TM_REPLAY_LEDGER_KEY, JSON.stringify(store));
+    } catch (e2) {}
+  }
+
+  // Does this route support replaying received reasoning at all? (No mechanism -> nothing to lose.)
+  function tmReplayRouteSupports(protocol, model, host) {
+    try {
+      var p = String(protocol || '');
+      if (/anthropic/i.test(p)) return true;
+      if (/responses/i.test(p)) return true;
+      if (/gemini/i.test(p)) return true;
+      if (/openai|chat/i.test(p)) return /kimi|moonshot|deepseek|glm|zhipu/i.test(String(model || '') + ' ' + String(host || ''));
+    } catch (e) {}
+    return false;
+  }
+
+  // Count reasoning content in the FINAL outbound body, all four wire shapes. Runs after every
+  // repair INCLUDING Fix 19's foreign-blob strip, so surviving encrypted blobs are origin-kept.
+  function tmCountOutboundReasoning(body) {
+    var out = { rawBlocks: 0, rawChars: 0, encBlocks: 0, encChars: 0, totalBlocks: 0 };
+    try {
+      if (!body) return out;
+      var i, j;
+      if (Array.isArray(body.messages)) {
+        for (i = 0; i < body.messages.length; i++) {
+          var msg = body.messages[i]; if (!msg) continue;
+          if (Array.isArray(msg.content)) {
+            for (j = 0; j < msg.content.length; j++) {
+              var blk = msg.content[j]; if (!blk || typeof blk !== 'object') continue;
+              if (blk.type === 'thinking') { out.rawBlocks++; out.rawChars += String(blk.thinking || '').length; }
+              else if (blk.type === 'redacted_thinking') { out.encBlocks++; out.encChars += String(blk.data || '').length; }
+            }
+          }
+          if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) { out.rawBlocks++; out.rawChars += msg.reasoning_content.length; }
+          if (typeof msg.reasoning === 'string' && msg.reasoning) { out.rawBlocks++; out.rawChars += msg.reasoning.length; }
+          if (Array.isArray(msg.reasoning_details)) {
+            for (j = 0; j < msg.reasoning_details.length; j++) {
+              var rd = msg.reasoning_details[j]; if (!rd) continue;
+              if (rd.type === 'reasoning.encrypted') { out.encBlocks++; out.encChars += String(rd.data || '').length; }
+              else if (/^reasoning\.(text|summary)/.test(String(rd.type || ''))) { out.rawBlocks++; out.rawChars += String(rd.text || rd.summary || '').length; }
+            }
+          }
+        }
+      }
+      if (Array.isArray(body.input)) {
+        for (i = 0; i < body.input.length; i++) {
+          var it = body.input[i]; if (!it || typeof it !== 'object') continue;
+          if (it.type === 'reasoning') {
+            out.rawBlocks++;
+            if (Array.isArray(it.summary)) for (j = 0; j < it.summary.length; j++) out.rawChars += String((it.summary[j] && it.summary[j].text) || '').length;
+            if (it.encrypted_content) { out.encBlocks++; out.encChars += String(it.encrypted_content).length; }
+          }
+        }
+      }
+      if (Array.isArray(body.contents)) {
+        for (i = 0; i < body.contents.length; i++) {
+          var parts = body.contents[i] && body.contents[i].parts; if (!Array.isArray(parts)) continue;
+          for (j = 0; j < parts.length; j++) {
+            var p2 = parts[j]; if (!p2 || typeof p2 !== 'object') continue;
+            if (p2.thought === true || p2.thought === 'true') { out.rawBlocks++; out.rawChars += String(p2.text || '').length; }
+            if (p2.thoughtSignature) { out.encBlocks++; out.encChars += String(p2.thoughtSignature).length; }
+          }
+        }
+      }
+    } catch (e) {}
+    out.totalBlocks = out.rawBlocks + out.encBlocks;
+    return out;
+  }
+
+  // The comparison + warning, computed at capture time (post-mutation body) and stamped on the row.
+  function tmComputeReplayWarning(url, headersNorm, body, record) {
+    try {
+      if (!record) return null;
+      var sid = record.pasted_session_id || record.session_id; if (!sid) return null;
+      var model = record._model || (body && body.model) || ''; if (!model) return null;
+      var host = tmExtractEndpointHost({ url: url, headers: headersNorm || {} });
+      var protocol = (record._think_req && record._think_req.protocol) || '';
+      var routeOk = tmReplayRouteSupports(protocol, model, host);
+      var counts = tmCountOutboundReasoning(body);
+      var ledger = tmReplayLedgerRead();
+      var sidStr = String(sid), ownKey = sidStr + '::' + model + '::' + host;
+      var origins = [], ownInBlocks = 0, otherInBlocks = 0;
+      var keys = Object.keys(ledger);
+      for (var i = 0; i < keys.length; i++) {
+        var e = ledger[keys[i]];
+        if (!e || String(e._session_id || '') !== sidStr) continue;
+        var line = { model: e.model || '?', host: e.host || '?', rawBlocks: Number(e.rawBlocks || 0), encBlocks: Number(e.encBlocks || 0), rawChars: Number(e.rawChars || 0), encChars: Number(e.encChars || 0), turns: Number(e.turns || 0), own: keys[i] === ownKey };
+        origins.push(line);
+        if (line.own) ownInBlocks += line.rawBlocks + line.encBlocks; else otherInBlocks += line.rawBlocks + line.encBlocks;
+      }
+      if (!ownInBlocks && !otherInBlocks) return null; // nothing received yet -> nothing to lose
+      var level = null;
+      if (routeOk && ownInBlocks > 0 && counts.totalBlocks === 0) level = 'red';
+      else if (otherInBlocks > 0 && counts.totalBlocks < ownInBlocks + otherInBlocks) level = 'yellow';
+      if (!level) return null;
+      return { v: 1, level: level, sid: sidStr, model: model, host: host, protocol: protocol, routeOk: routeOk,
+        out: { rawBlocks: counts.rawBlocks, rawChars: counts.rawChars, encBlocks: counts.encBlocks, encChars: counts.encChars },
+        origins: origins, ts: Date.now() };
+    } catch (e) { return null; }
+  }
+
+  // Shared triangle renderer: rides the OBS label zone of the think badge (card + ring + widget).
+  function tmReplayWarnHtml(w, fs) {
+    try {
+      if (!w || !w.level) return '';
+      var lines = [];
+      if (w.level === 'red') {
+        lines.push('REASONING HISTORY LOST ON THIS ROUTE: this conversation already received reasoning from ' + w.model + ' @ ' + w.host + ' (a route that SUPPORTS replay), but THIS outbound payload carries ZERO reasoning blocks -- TypingMind almost certainly dropped the history converting across a model switch. Fork conversations instead of switching models inline.');
+      } else {
+        lines.push('Cross-model reasoning not in this payload: this conversation received reasoning from OTHER model/endpoint origin(s) that cannot be replayed to ' + w.model + ' @ ' + w.host + ' (foreign encrypted blobs are sealed to their origin; foreign raw reasoning is typically dropped in conversion). Context from those turns is missing on this route.');
+      }
+      lines.push('');
+      lines.push('Received per origin (this conversation):');
+      (w.origins || []).forEach(function(o) { lines.push('- ' + o.model + ' @ ' + o.host + ': ' + o.rawBlocks + ' raw (' + tmThinkFmtK(o.rawChars) + 'c) + ' + o.encBlocks + ' encrypted (' + tmThinkFmtK(o.encChars) + 'c) over ' + o.turns + ' turn(s)' + (o.own ? '  <- THIS origin' : '')); });
+      lines.push('Outbound THIS payload: ' + w.out.rawBlocks + ' raw (' + tmThinkFmtK(w.out.rawChars) + 'c) + ' + w.out.encBlocks + ' encrypted (' + tmThinkFmtK(w.out.encChars) + 'c)');
+      var tip = lines.join('\n');
+      if (w.level === 'red') return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + (parseInt(fs, 10) + 5 || 15) + 'px;font-weight:900;color:#ff4d4d;text-shadow:0 0 7px rgba(255,60,60,0.85);margin:0 3px 0 1px;">\u26a0\ufe0f\u26a0\ufe0f</span>';
+      return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + fs + ';color:#ffd166;margin:0 3px 0 1px;">\u26a0\ufe0f</span>';
+    } catch (e) { return ''; }
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
@@ -6682,6 +6862,9 @@
         // (Fix 24 Phase 2, v4.361) The universal outbound pass leaves its writer report on the request
         // init object; stamp it beside the scan so the badge/report show WHAT the extension rewrote.
         try { if (record._think_req && options && options._tm_think_ovr) record._think_req.override = options._tm_think_ovr; } catch (eOv) {}
+        // (Fix 26, v4.367) REASONING-REPLAY LOSS check: compare this FINAL body's reasoning content
+        // against everything this conversation has received per origin; stamp the warning tier.
+        try { record._replay_warn = tmComputeReplayWarning(url, headersNorm, parsed, record); } catch (eRW) {}
 
         // (Fix 25, v4.360) KEEP-ALIVE wire snapshot: store this identity's FINAL outbound bytes
         // (RAW options.headers, never the redacted copy; memory-only) so a keep-alive ping can
@@ -7565,6 +7748,8 @@
               patch.response_anthropic_usage || (_tkRec && _tkRec.response_anthropic_usage) || null,
               _tkRec && _tkRec._model);
             tmUpdateCaptureRecord(captureId, { _think_obs: _tkObs });
+            // (Fix 26, v4.367) Accumulate this turn's replayable reasoning into the per-origin ledger.
+            try { tmReplayLedgerBump(_tkRec, _tkObs); } catch (eRL) {}
             var _tkReq = _tkRec && _tkRec._think_req;
             console.log('\ud83e\udde0 [v' + EXT_VERSION + '] ' + ((_tkRec && _tkRec._model) || '?') + ' via ' + ((_tkReq && _tkReq.route) || '?') +
               ' [' + ((_tkReq && _tkReq.protocol) || '?') + ']: requested ' + ((_tkReq && _tkReq.summary) || '?') + ' \u2192 observed ' + (_tkObs && _tkObs.summary));
