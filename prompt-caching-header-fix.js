@@ -1,6 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.357
+// Version: 4.358
 // Issues Fixed:
+//   - v4.358: AUDIT NIT (Fable 5.1 review of Qwen 3.8 Max's v4.357): a 0-token turn rendered the
+//     leading-edge amount glyph as '\ud83d\udca4(0)' while the aggregate \ud83d\udca4 correctly carried no
+//     paren. Leading edge now passes null for 0 tokens, so \ud83d\udca4 renders bare on both sides;
+//     parens appear only when there is an amount to show. No other findings -- v4.357 verified
+//     correct (layout, separator ownership, band attribution, base64->bytes, signature bytes).
 //   - v4.357: THINKING BADGE -- TWO-ROW LAYOUT + AMOUNT PARENTHESES + SIGNATURE BYTES. (a) The
 //     badge is now TWO ROWS wherever there is space (ring rows + sessions-in-memory hovercard):
 //     REQ on the first line, OBS on the second, with a 12px-separated '│' gap between the
@@ -1671,7 +1676,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.357';
+  const EXT_VERSION = '4.358';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4850,7 +4855,7 @@
         if (g && /^AMT/.test(g.state)) {
           var g2 = g;
           if (g.value) { g2 = {}; for (var kk in g) if (g.hasOwnProperty(kk)) g2[kk] = g[kk]; g2.value = null; }
-          var paren = tmThinkAmtParen(obs && obs.tokens ? obs.tokens.reasoning : null, tmThinkObsBytes(obs));
+          var paren = tmThinkAmtParen((obs && obs.tokens && obs.tokens.reasoning > 0) ? obs.tokens.reasoning : null, tmThinkObsBytes(obs));
           return '<span style="white-space:nowrap;">' + tmThinkGlyphHtml(g2, fs) + (paren ? ('<span style="' + small + '">' + escapeHtml(paren) + '</span>') : '') + '</span>';
         }
         return tmThinkGlyphHtml(g, fs);
