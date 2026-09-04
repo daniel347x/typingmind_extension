@@ -1,6 +1,37 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.360
+// Version: 4.361
 // Issues Fixed:
+//   - v4.361: FIX 24 PHASE 2 -- THINKING CONTROL (first increment: Anthropic Messages shape). Phase 1
+//     only OBSERVED the thinking level; TypingMind cannot change it call-by-call. NEW per-identity
+//     (sid::model::host::proxy) override store tm_think_overrides_v1 {level, display, steps[]}, READ
+//     AT REQUEST TIME in the universal outbound pass so it shapes the NEXT send (mid-conversation).
+//     TWO ORTHOGONAL AXES, never blended (per Dan): LEVEL = how much thinking (inherit | off | minimal
+//     | low | medium | high | xhigh | max | budget:N) and DISPLAY = do the words come back (inherit |
+//     show | hide). UI: '🎛️ Think:' level <select> + '👁' display <select> on the persistent
+//     widget (under the 🧠 badge line, identity-guarded) and on the ring modal's most-recent row per
+//     identity ('Next call thinks:'), Anthropic-shaped identities only in this increment. WRITER
+//     tmThinkApplyOverride(url, body, headers, ov) -- protocol-aware, facts verified against
+//     platform.claude.com 2026-09-04: thinking.display in {summarized, omitted, updates(beta)} (there
+//     is NO 'full'); display is invalid with type=disabled; Fable/Mythos 5.x REJECT type=disabled
+//     (always-on) -> 'off' CLAMPS to effort low; Opus 5 rejects disabled at xhigh/max -> effort
+//     lowered to high; xhigh unsupported on 4.6 / Mythos Preview -> clamps to high; 'minimal' -> low;
+//     budget:N on adaptive-only models -> nearest effort; effort on extended-thinking-only models
+//     (4.5 and older) -> budget_tokens; max_tokens raised (never lowered) so thinking has room.
+//     CACHE-PRESERVING PER-MESSAGE EFFORT: changing top-level output_config.effort re-renders the
+//     prompt and restarts the cache prefix (~$10 on a 500K session). On the DIRECT route for Fable
+//     5.1 / Mythos 5.1 / Opus 5 the writer instead inserts {role:'system', content:[], output_config:
+//     {effort}} inside messages (beta header mid-conversation-output-config-2026-07-01), anchored
+//     before the LAST user message of the request that first carried the new level (content-hash
+//     anchor persisted in ov.steps, so every later request replays the SAME wire bytes at the SAME
+//     spot -> the cached prefix stays intact and only the tail re-caches). Changing the level again
+//     appends another step; reverting to inherit appends a return-to-TypingMind's-level step (never
+//     deletes earlier steps); '✖ clear per-message steps' is the explicit cache-miss escape hatch.
+//     Other routes/models fall back to top-level output_config.effort (one cache miss, reported).
+//     EVERY change and clamp is stamped on _think_req.override and surfaces as a new REQ glyph
+//     🎛️ OVERRIDDEN (cyan; amber when a clamp fired; hover = exact edits) on badges, histogram,
+//     Glyph Map and Thinking Report. Scanner now also reads per-message effort
+//     (messages[].output_config.effort, which supersedes the top-level value in the glyphs).
+//     Acceptance = the Phase 1 obs scanner: set a level/display, the next row's OBS glyphs move.
 //   - v4.360: FIX 25 -- PROMPT-CACHE KEEP-ALIVE. Fable 5.1's cache-read price dropped to $0.25/M,
 //     making it economical to keep a session's prompt cache WARM across breaks: a cache HIT RESETS
 //     the TTL (verified Anthropic/Bedrock/GCP) at read price, so one ping at ~50min on the 1h TTL
@@ -1708,7 +1739,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.360';
+  const EXT_VERSION = '4.361';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -1805,6 +1836,7 @@
     pruneMap(TM_SESSION_HUES_KEY, true);
     pruneMap('gpt51_conv_usage', true);
     pruneMap(TM_PROVIDER_LOCKS_KEY, false);
+    pruneMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361) per-identity thinking overrides
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -3248,6 +3280,7 @@
     touchMap(TM_SESSION_HUES_KEY, 'hue');
     touchMap('gpt51_conv_usage', 'gpt51');
     touchMap(TM_PROVIDER_LOCKS_KEY, false);
+    touchMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361)
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -4538,6 +4571,19 @@
       var known = {};
       function mark(p) { known[p] = true; }
 
+      // (v4.361) Per-message effort (Anthropic beta mid-conversation-output-config-2026-07-01): effort-only
+      // {role:'system', content:[], output_config:{effort}} entries INSIDE messages. The LAST one is the
+      // effective level from that point on, so it SUPERSEDES the top-level output_config.effort.
+      var perMsg = [];
+      try {
+        if (Array.isArray(b.messages)) {
+          for (var pi = 0; pi < b.messages.length; pi++) {
+            var pm = b.messages[pi];
+            if (pm && pm.role === 'system' && pm.output_config && typeof pm.output_config === 'object' && pm.output_config.effort !== undefined) perMsg.push({ index: pi, effort: pm.output_config.effort });
+          }
+        }
+      } catch (e) {}
+
       // --- Anthropic Messages `thinking` (direct / proxy->OR Anthropic-skin) + Moonshot/DeepSeek/GLM `thinking`
       if (b.thinking !== undefined) {
         mark('thinking');
@@ -4545,7 +4591,12 @@
           for (var tk in b.thinking) { if (Object.prototype.hasOwnProperty.call(b.thinking, tk)) tmThinkPush(C, 'thinking.' + tk, b.thinking[tk]); }
         } else { tmThinkPush(C, 'thinking', b.thinking); }
       }
-      if (b.output_config && typeof b.output_config === 'object' && b.output_config.effort !== undefined) { tmThinkPush(C, 'output_config.effort', b.output_config.effort); mark('output_config'); }
+      if (b.output_config && typeof b.output_config === 'object' && b.output_config.effort !== undefined) {
+        if (perMsg.length) { req.superseded = [{ path: 'output_config.effort', value: b.output_config.effort, by: 'messages[].output_config.effort' }]; }
+        else tmThinkPush(C, 'output_config.effort', b.output_config.effort);
+        mark('output_config');
+      }
+      if (perMsg.length) { tmThinkPush(C, 'messages[].output_config.effort', perMsg[perMsg.length - 1].effort); req.per_message_effort = perMsg; }
       // --- OpenAI Chat Completions / OpenAI-compat / xAI / Gemini-compat
       if (b.reasoning_effort !== undefined) { tmThinkPush(C, 'reasoning_effort', b.reasoning_effort); mark('reasoning_effort'); }
       // --- OpenRouter unified + OpenAI Responses `reasoning` object
@@ -4834,7 +4885,8 @@
       if (req.verdict === 'implicit-only') return 'implicit';
       var p = [];
       var tType = tmThinkCtl(req, 'thinking.type'), tBudget = tmThinkCtl(req, 'thinking.budget_tokens'), tDisplay = tmThinkCtl(req, 'thinking.display');
-      var effort = tmThinkCtl(req, 'output_config.effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning_effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning.effort');
+      var effort = tmThinkCtl(req, 'messages[].output_config.effort'); // (v4.361) per-message effort supersedes top-level
+      if (effort === undefined) effort = tmThinkCtl(req, 'output_config.effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning_effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning.effort');
       var rMax = tmThinkCtl(req, 'reasoning.max_tokens'), rEnabled = tmThinkCtl(req, 'reasoning.enabled'), rExclude = tmThinkCtl(req, 'reasoning.exclude');
       var gLevel = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinkingLevel'); if (gLevel === undefined) gLevel = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinking_level');
       var gBudget = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinkingBudget'); if (gBudget === undefined) gBudget = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinking_budget');
@@ -4877,6 +4929,15 @@
       if (obs && obs.visibility === 'encrypted') out.push('Only encrypted/redacted reasoning blocks returned; content is sealed to the origin model.');
       if (req && req.unrecognized && req.unrecognized.length) out.push('UNRECOGNIZED thinking-ish field(s): ' + req.unrecognized.map(function(u) { return u.path; }).join(', ') + ' -- extend the scanner.');
       if (req && req.verdict === 'explicit' && (tok == null || src === 'none') && !(obs && obs.raw_chars)) out.push('Explicit control sent but NO thinking evidence came back: either the model did not think, or this provider reports nothing.');
+      // (v4.361) Phase 2 control: what the extension rewrote on this call, and every clamp.
+      var ovr = req && req.override;
+      if (ovr && ovr.applied) {
+        out.push('EXTENSION OVERRIDE applied (level=' + ovr.level + ', display=' + ovr.display + (ovr.mode ? (', mode=' + ovr.mode) : '') + '): ' + (ovr.changes || []).join('; '));
+        (ovr.clamps || []).forEach(function(c) { out.push('CLAMP: ' + c); });
+        (ovr.notes || []).forEach(function(c) { out.push('NOTE: ' + c); });
+      } else if (ovr && !ovr.applied) {
+        out.push('Override configured (level=' + ovr.level + ', display=' + ovr.display + ') but NOT applied: ' + ((ovr.notes || []).concat(ovr.clamps || []).join('; ') || 'nothing to change'));
+      }
     } catch (e) {}
     return out;
   }
@@ -4946,6 +5007,7 @@
     NONE:     { g: '\u2754', label: 'NONE',      side: 'req', kind: 'absence', order: 11, desc: 'NO thinking control sent -- provider/model default (orange)' },
     IMPLICIT: { g: '\u26aa', label: 'IMPLICIT',  side: 'req', kind: 'absence', order: 12, desc: 'no explicit control; thinking implied by the model name only' },
     UNMAPPED: { g: '\ud83e\udde9', label: 'UNMAPPED',  side: 'req', kind: 'absence', order: 13, desc: 'a thinking-ish field was sent that the Glyph Map does not know -- hover for the raw field, then tell the agent to add a mapping' },
+    OVR:      { g: '\ud83c\udf9b\ufe0f', label: 'OVERRIDDEN', side: 'req', kind: 'control', order: 14, rank: -3, desc: 'the extension REWROTE the thinking config for this call (Fix 24 Phase 2 control: your Think/Display dropdown) -- hover for the exact edits; amber = a clamp fired' },
     IGNORE:   { g: '',  label: 'IGNORE',           side: 'req', kind: 'meta', order: 99, desc: 'known field with no bearing on the level (not displayed)' },
     AMT0:    { g: '\ud83d\udca4', label: 'NO THINKING', side: 'obs', kind: 'amount', order: 0, desc: '0 thinking tokens this turn' },
     AMT1:    { g: '\ud83d\udd39', label: 'LIGHT',       side: 'obs', kind: 'amount', order: 1, desc: 'under 1K thinking tokens' },
@@ -4980,6 +5042,10 @@
     { fam: 'Anthropic Messages', path: 'output_config.effort', val: 'medium', state: 'MED' },
     { fam: 'Anthropic Messages', path: 'output_config.effort', val: 'high', state: 'HIGH' },
     { fam: 'Anthropic Messages', path: 'output_config.effort', val: ['max', 'xhigh'], state: 'MAX' },
+    { fam: 'Anthropic Messages (per-message effort, beta mid-conversation-output-config-2026-07-01)', path: 'messages[].output_config.effort', val: ['low', 'minimal'], state: 'LOW' },
+    { fam: 'Anthropic Messages (per-message effort, beta mid-conversation-output-config-2026-07-01)', path: 'messages[].output_config.effort', val: 'medium', state: 'MED' },
+    { fam: 'Anthropic Messages (per-message effort, beta mid-conversation-output-config-2026-07-01)', path: 'messages[].output_config.effort', val: 'high', state: 'HIGH' },
+    { fam: 'Anthropic Messages (per-message effort, beta mid-conversation-output-config-2026-07-01)', path: 'messages[].output_config.effort', val: ['max', 'xhigh'], state: 'MAX' },
     { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: 'none', state: 'OFF' },
     { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: ['minimal', 'low'], state: 'LOW' },
     { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: 'medium', state: 'MED' },
@@ -5080,6 +5146,16 @@
         byState.UNMAPPED.raws.push(U[u].path + '=' + String(U[u].value));
         out.unmapped.push({ path: U[u].path, value: U[u].value });
       }
+      // (v4.361) Phase 2 control marker: the extension rewrote the thinking config on this call.
+      var ovr = req.override;
+      if (ovr && ovr.applied) {
+        var oraws = ['level=' + ovr.level + ' \u00b7 display=' + ovr.display + (ovr.mode ? (' \u00b7 mode=' + ovr.mode) : '')];
+        (ovr.changes || []).forEach(function(c) { oraws.push('\u270e ' + c); });
+        (ovr.clamps || []).forEach(function(c) { oraws.push('\u26a0 clamp: ' + c); });
+        (ovr.notes || []).forEach(function(c) { oraws.push('\u2139 ' + c); });
+        if (req.superseded && req.superseded.length) req.superseded.forEach(function(s) { oraws.push('(top-level ' + s.path + '=' + String(s.value) + ' superseded by ' + s.by + ')'); });
+        byState.OVR = tmThinkGlyph('OVR', { raws: oraws, clamped: !!(ovr.clamps && ovr.clamps.length) });
+      }
       for (var k in byState) if (byState.hasOwnProperty(k)) out.glyphs.push(byState[k]);
       out.glyphs.sort(function(a, b) { return a.order - b.order; });
       if (!out.glyphs.length) { out.isNone = true; out.glyphs.push(tmThinkGlyph('NONE', { raws: ['only non-level fields present: ' + C.map(function(c) { return c.path + '=' + String(c.value); }).join(', ')] })); }
@@ -5132,7 +5208,7 @@
   // One glyph span (title carries meaning + raw fields). Value (budget / token count) rides as a small suffix.
   function tmThinkGlyphHtml(gl, fs) {
     var val = gl.value ? ('<span style="font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;opacity:0.9;margin-left:1px;">' + escapeHtml(String(gl.value)) + '</span>') : '';
-    var color = gl.state === 'NONE' ? '#ffb84d' : gl.state === 'UNMAPPED' ? '#ff9b9b' : gl.state === 'CONTRA' ? '#ff6b6b' : 'inherit';
+    var color = gl.state === 'NONE' ? '#ffb84d' : gl.state === 'UNMAPPED' ? '#ff9b9b' : gl.state === 'CONTRA' ? '#ff6b6b' : gl.state === 'OVR' ? (gl.clamped ? '#ffd166' : '#7fd8ff') : 'inherit';
     return '<span title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
   }
   // (v4.357) Thinking amounts helpers: sealed-bytes conversion + parenthesized 'tokens[, bytes]'.
@@ -5248,7 +5324,7 @@
       var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
       var runs = keys.map(function(k) {
         var st = TM_THINK_STATES[k];
-        var color = k === 'NONE' ? '#ffb84d' : k === 'UNMAPPED' ? '#ff9b9b' : k === 'CONTRA' ? '#ff6b6b' : 'inherit';
+        var color = k === 'NONE' ? '#ffb84d' : k === 'UNMAPPED' ? '#ff9b9b' : k === 'CONTRA' ? '#ff6b6b' : k === 'OVR' ? '#7fd8ff' : 'inherit';
         // (v4.357) Amount bands carry parenthesized totals: sum of word tokens (, sealed KB) for
         // every turn that landed in this band.
         var paren = '';
@@ -5670,6 +5746,375 @@
     document.body.appendChild(overlay);
   }
 
+  // ==================== FIX 24 PHASE 2 -- THINKING CONTROL (v4.361) ====================
+  // Per-identity (sid::model::host::proxy) thinking OVERRIDE, read at REQUEST time in the universal
+  // outbound pass so it shapes the NEXT send (call-by-call, mid-conversation -- which TypingMind
+  // cannot do). Two ORTHOGONAL axes, never blended (Dan):
+  //   LEVEL   -> how much thinking:  inherit | off | minimal | low | medium | high | xhigh | max | budget:N
+  //   DISPLAY -> do the words come back: inherit | show | hide
+  // v4.361 writer = the Anthropic Messages shape (direct api.anthropic.com + proxy->OpenRouter
+  // Anthropic-skin). Facts verified against platform.claude.com docs (2026-09-04):
+  //   * thinking.display in { summarized, omitted, updates (beta hdr thinking-display-updates-2026-08-18) }.
+  //     There is NO 'full'. 'omitted' is the default on Fable/Mythos 5.x, Opus 5/4.8/4.7, Sonnet 5.
+  //   * display is INVALID with thinking.type=disabled.
+  //   * Fable 5.1 / Mythos 5.1 / Fable 5 / Mythos 5 / Mythos Preview REJECT type=disabled (always-on).
+  //   * Opus 5: disabled + effort xhigh/max -> 400. effort in { low, medium, high, xhigh, max };
+  //     xhigh is NOT on Opus 4.6 / Sonnet 4.6 / Mythos Preview.
+  //   * Changing top-level thinking type/budget/effort re-renders the prompt -> cache prefix RESTARTS.
+  //     PER-MESSAGE EFFORT (beta mid-conversation-output-config-2026-07-01; Fable 5.1 / Mythos 5.1 /
+  //     Opus 5): {role:'system', content:[], output_config:{effort}} inside messages -- 'takes effect
+  //     from the next user turn and holds until a later message changes it'; may sit anywhere
+  //     (first entry, or between assistant and user). PRESERVES the cache. Preferred here on direct.
+  //   * 4.5-and-older models have NO adaptive / effort (Opus 4.5 has effort+budget): translate to
+  //     type:'enabled' + budget_tokens.
+  // Every edit/clamp is reported on _think_req.override -> REQ glyph 🎛️ OVERRIDDEN (Phase 1 shows it).
+  var TM_THINK_OVERRIDES_KEY = 'tm_think_overrides_v1';
+  var TM_THINK_LEVELS = ['inherit', 'off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  var TM_THINK_BETA_PER_MSG_EFFORT = 'mid-conversation-output-config-2026-07-01';
+  var TM_THINK_EFFORT_TO_BUDGET = { low: 4096, medium: 10240, high: 20480, xhigh: 40960, max: 60000 };
+
+  function tmGetThinkOverrides() { try { var v = JSON.parse(localStorage.getItem(TM_THINK_OVERRIDES_KEY) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; } }
+  function tmGetThinkOverride(idKey) { if (!idKey) return null; try { return tmGetThinkOverrides()[idKey] || null; } catch (e) { return null; } }
+  function tmSetThinkOverride(idKey, patch) {
+    if (!idKey) return null;
+    try {
+      var all = tmGetThinkOverrides();
+      var e = all[idKey] || { level: 'inherit', display: 'inherit', steps: [] };
+      for (var k in patch) if (Object.prototype.hasOwnProperty.call(patch, k)) e[k] = patch[k];
+      if (!Array.isArray(e.steps)) e.steps = [];
+      e.ts = Date.now(); e._ts = e.ts; e._session_id = String(idKey).split('::')[0];
+      all[idKey] = e;
+      localStorage.setItem(TM_THINK_OVERRIDES_KEY, JSON.stringify(all));
+      return e;
+    } catch (e2) { return null; }
+  }
+  function tmClearThinkOverride(idKey) { try { var all = tmGetThinkOverrides(); delete all[idKey]; localStorage.setItem(TM_THINK_OVERRIDES_KEY, JSON.stringify(all)); } catch (e) {} }
+  function tmThinkOverrideIsActive(ov) {
+    return !!(ov && ((ov.level && ov.level !== 'inherit') || (ov.display && ov.display !== 'inherit') || (Array.isArray(ov.steps) && ov.steps.length)));
+  }
+
+  // Model capability table for the Anthropic Messages writer (regexes tolerate 'claude-fable-5-1',
+  // 'claude-fable-5.1', 'anthropic/claude-fable-5.1', dated suffixes). Conservative on unknowns.
+  function tmThinkAnthropicCaps(model) {
+    var m = String(model || '').toLowerCase().replace(/^anthropic\//, '');
+    var c = { family: 'claude-unknown', adaptive: false, enabled: true, disable: true, display: false, effort: false, xhigh: false, onByDefault: false, perMsgEffort: false, effortWithBudget: false, maxOut: 32000 };
+    var is51 = /(fable|mythos)[-_.]?5[-_.]1/.test(m);
+    if (/fable|mythos/.test(m)) {
+      var preview = /mythos[-_.]?preview/.test(m);
+      c.family = 'claude-5x'; c.adaptive = true; c.enabled = preview; c.disable = false; c.display = true; c.effort = true; c.xhigh = !preview; c.onByDefault = true; c.perMsgEffort = is51; c.maxOut = 128000;
+    } else if (/opus[-_.]?5(?![0-9])|sonnet[-_.]?5(?![0-9])/.test(m)) {
+      c.family = 'claude-5'; c.adaptive = true; c.enabled = false; c.disable = true; c.display = true; c.effort = true; c.xhigh = true; c.onByDefault = true; c.perMsgEffort = /opus[-_.]?5/.test(m); c.maxOut = 128000;
+    } else if (/opus[-_.]?4[-_.]?[78]/.test(m)) {
+      c.family = 'claude-4.7+'; c.adaptive = true; c.enabled = false; c.disable = true; c.display = true; c.effort = true; c.xhigh = true; c.maxOut = 128000;
+    } else if (/opus[-_.]?4[-_.]?6|sonnet[-_.]?4[-_.]?6/.test(m)) {
+      c.family = 'claude-4.6'; c.adaptive = true; c.enabled = true; c.disable = true; c.display = true; c.effort = true; c.xhigh = false; c.maxOut = 128000;
+    } else if (/opus[-_.]?4[-_.]?5|sonnet[-_.]?4[-_.]?5|haiku[-_.]?4[-_.]?5/.test(m)) {
+      c.family = 'claude-4.5'; c.adaptive = false; c.enabled = true; c.disable = true; c.display = false; c.effort = /opus/.test(m); c.effortWithBudget = /opus/.test(m); c.xhigh = false; c.maxOut = 64000;
+    } else if (/claude/.test(m)) {
+      c.family = 'claude-legacy';
+    }
+    return c;
+  }
+  function tmThinkBudgetToEffort(n) { n = Number(n) || 0; return n < 6000 ? 'low' : n < 16000 ? 'medium' : n < 32000 ? 'high' : n < 56000 ? 'xhigh' : 'max'; }
+  function tmThinkEffortToBudget(eff) { return TM_THINK_EFFORT_TO_BUDGET[eff] || TM_THINK_EFFORT_TO_BUDGET.high; }
+
+  // Stable content key for a user message (anchor for per-message effort steps): hash of its text, or
+  // its tool_use_ids for tool_result turns. Content-based (not positional) so our own later repairs /
+  // stubs that insert or rewrite OTHER messages cannot shift it.
+  function tmThinkUserMsgKey(m) {
+    var s = '';
+    try {
+      if (typeof m.content === 'string') s = m.content;
+      else if (Array.isArray(m.content)) {
+        for (var i = 0; i < m.content.length; i++) {
+          var b = m.content[i]; if (!b) continue;
+          if (b.type === 'text' && typeof b.text === 'string') s += b.text;
+          else if (b.type === 'tool_result') s += '[tr:' + (b.tool_use_id || '') + ']';
+          else if (b.type) s += '[' + b.type + ']';
+        }
+      }
+    } catch (e) {}
+    return tmFnv1a32('u|' + s.slice(0, 600) + '|' + s.length);
+  }
+
+  // Append a token to a comma-separated header (plain object / Headers / array-of-pairs), case-insensitive key.
+  function tmThinkAppendHeaderToken(options, name, token) {
+    try {
+      if (!options) return false;
+      if (!options.headers) options.headers = {};
+      var h = options.headers;
+      function has(cur) { return String(cur || '').split(',').map(function(s) { return s.trim(); }).indexOf(token) !== -1; }
+      if (typeof h.get === 'function' && typeof h.set === 'function') { var cur = h.get(name) || ''; if (has(cur)) return false; h.set(name, cur ? (cur + ',' + token) : token); return true; }
+      if (Array.isArray(h)) { for (var i = 0; i < h.length; i++) { if (h[i] && String(h[i][0]).toLowerCase() === name.toLowerCase()) { if (has(h[i][1])) return false; h[i][1] = h[i][1] ? (h[i][1] + ',' + token) : token; return true; } } h.push([name, token]); return true; }
+      var key = null; for (var k in h) if (Object.prototype.hasOwnProperty.call(h, k) && String(k).toLowerCase() === name.toLowerCase()) { key = k; break; }
+      if (!key) { h[name] = token; return true; }
+      if (has(h[key])) return false;
+      h[key] = h[key] ? (String(h[key]) + ',' + token) : token; return true;
+    } catch (e) { return false; }
+  }
+
+  // Per-message effort: replay every persisted step (anchor -> effort) as an effort-only system message
+  // inserted immediately BEFORE its anchor user message; when `eff` differs from the last step, anchor a
+  // NEW step at the LAST user message of THIS request. Anchors are content hashes (+ occurrence index),
+  // so every later request lands the SAME bytes at the SAME spot -> cached prefix preserved; only the
+  // tail after a new step re-caches. Steps whose anchor vanished (history edited) are dropped, except
+  // the last one, which re-anchors. Mutates body.messages + ov.steps; reports into rep.
+  function tmThinkApplyPerMessageEffort(body, eff, ov, rep, ctx) {
+    var msgs = body && body.messages;
+    if (!Array.isArray(msgs) || !msgs.length) return false;
+    var steps = Array.isArray(ov.steps) ? ov.steps.slice() : [];
+    var anchors = {}, order = [], occ = {};
+    for (var i = 0; i < msgs.length; i++) {
+      var m = msgs[i]; if (!m || m.role !== 'user') continue;
+      var k = tmThinkUserMsgKey(m); occ[k] = occ[k] || 0;
+      var id = k + '#' + occ[k]; occ[k]++;
+      anchors[id] = i; order.push(id);
+    }
+    if (!order.length) { rep.notes.push('per-message effort skipped: no user message to anchor on'); return false; }
+    var lastId = order[order.length - 1];
+    var kept = [];
+    for (var s = 0; s < steps.length; s++) {
+      var st = steps[s];
+      if (st && anchors[st.a] != null) kept.push(st);
+      else if (s === steps.length - 1 && st) { rep.notes.push('per-message anchor lost (history edited) -- re-anchored the current level at the latest user turn'); kept.push({ a: lastId, effort: st.effort, ts: Date.now() }); rep.persist = true; }
+      else rep.notes.push('dropped a stale per-message effort step (its anchor message vanished)');
+    }
+    if (kept.length !== steps.length) rep.persist = true;
+    steps = kept;
+    var last = steps.length ? steps[steps.length - 1] : null;
+    if (eff) {
+      if (!last || last.effort !== eff) {
+        if (last && last.a === lastId) last.effort = eff;            // level changed again before sending: replace
+        else steps.push({ a: lastId, effort: eff, ts: Date.now() });  // new step from THIS user turn onward
+        rep.persist = true;
+      }
+    }
+    ov.steps = steps;
+    if (!steps.length) return false;
+    var byIdx = {};
+    for (var s2 = 0; s2 < steps.length; s2++) byIdx[anchors[steps[s2].a]] = steps[s2].effort;
+    var inserted = 0;
+    for (var j = msgs.length - 1; j >= 0; j--) {
+      if (byIdx[j] !== undefined) { msgs.splice(j, 0, { role: 'system', content: [], output_config: { effort: byIdx[j] } }); inserted++; }
+    }
+    if (inserted) {
+      rep.applied = true; rep.mode = 'per-message';
+      rep.changes.push('per-message effort ' + steps.map(function(x) { return x.effort; }).join(' \u2192 ') + ' (' + inserted + ' effort-only system message' + (inserted === 1 ? '' : 's') + ' replayed at stable anchors; top-level effort untouched; cache prefix preserved)');
+      rep.headers = [TM_THINK_BETA_PER_MSG_EFFORT];
+      if (ctx && typeof ctx.setHeader === 'function') ctx.setHeader('anthropic-beta', TM_THINK_BETA_PER_MSG_EFFORT);
+    }
+    return inserted > 0;
+  }
+
+  // @beacon[
+  //   id=fix24-think-apply-override,
+  //   role=__lambdao_1.tmThinkApplyOverride,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 Phase 2 (v4.361): protocol-aware thinking-control WRITER. Translates the abstract {level, display} override into the Anthropic Messages field shape (thinking.type / thinking.display / output_config.effort or per-message effort system messages / budget_tokens / max_tokens), removing conflicting fields, clamping unmappable levels to the nearest supported one, and reporting every change + clamp for _think_req.override. Pure on (url, body, headers, ov); mutates body in place; ctx.setHeader adds beta headers.,
+  // ]
+  function tmThinkApplyOverride(url, body, headersNorm, ov, ctx) {
+    ctx = ctx || {};
+    var rep = { v: 1, applied: false, level: (ov && ov.level) || 'inherit', display: (ov && ov.display) || 'inherit', mode: null, protocol: null, route: null, model: null, changes: [], clamps: [], notes: [], headers: [], persist: false };
+    try {
+      if (!body || typeof body !== 'object' || Array.isArray(body) || !tmThinkOverrideIsActive(ov)) return rep;
+      var r = tmThinkClassifyRoute(url, headersNorm);
+      rep.route = r.label;
+      var proto = 'unknown';
+      try { proto = tmDetectProtocol(r.target || url, body); } catch (e) {}
+      rep.protocol = proto;
+      if (proto !== 'anthropic-messages') { rep.notes.push('v4.361 writer covers the Anthropic Messages shape only; ' + proto + ' left unchanged (next increment)'); return rep; }
+      var model = String(body.model || ''); rep.model = model;
+      var caps = tmThinkAnthropicCaps(model); rep.caps = caps.family;
+      var lvl = String(rep.level).toLowerCase(), disp = String(rep.display).toLowerCase();
+      var th = (body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)) ? body.thinking : null;
+      var topEffort = (body.output_config && typeof body.output_config === 'object' && body.output_config.effort) ? String(body.output_config.effort) : null;
+      var steps = Array.isArray(ov.steps) ? ov.steps : [];
+      function change(s) { rep.changes.push(s); rep.applied = true; }
+      function clamp(s) { rep.clamps.push(s); }
+
+      // ---------------- LEVEL ----------------
+      var eff = null, budget = null, off = false;
+      if (lvl && lvl !== 'inherit') {
+        var mb = /^budget:(\d+)$/.exec(lvl);
+        if (lvl === 'off') {
+          if (caps.disable) off = true; else { eff = 'low'; clamp('off \u2192 low: ' + model + ' cannot disable thinking (always-on model rejects type=disabled)'); }
+        } else if (lvl === 'minimal') { eff = 'low'; clamp('minimal \u2192 low: Anthropic effort has no minimal level'); }
+        else if (mb) {
+          budget = parseInt(mb[1], 10);
+          if (!(budget >= 1024)) { budget = 1024; clamp('budget raised to 1024 (Anthropic minimum budget_tokens)'); }
+          if (!caps.enabled) { eff = tmThinkBudgetToEffort(budget); clamp('budget:' + budget + ' \u2192 effort ' + eff + ': ' + model + ' has no budget_tokens (adaptive-only)'); budget = null; }
+        } else if (TM_THINK_LEVELS.indexOf(lvl) > 0) { eff = lvl; }
+        else { rep.notes.push('unknown level "' + lvl + '" ignored'); }
+        if (eff === 'xhigh' && !caps.xhigh) { eff = 'high'; clamp('xhigh \u2192 high: xhigh is not supported on ' + model); }
+        if (eff && !caps.effort) { budget = tmThinkEffortToBudget(eff); clamp('effort ' + eff + ' \u2192 budget_tokens ' + budget + ': ' + model + ' has no effort parameter (extended thinking only)'); eff = null; }
+      } else if (steps.length) {
+        // Reverted to inherit AFTER per-message steps exist: return to TypingMind's level with ONE MORE
+        // step so the earlier steps (and the cached prefix they sit in) stay byte-stable.
+        eff = topEffort || 'high';
+        rep.notes.push('inherit after per-message steps: appending a return-to-' + eff + ' step (earlier steps replayed so the prefix stays stable; \u2716 clear steps to drop them)');
+      }
+
+      if (off) {
+        var hadDisplay = !!(th && th.display);
+        body.thinking = { type: 'disabled' }; th = body.thinking;
+        change('thinking = {type:"disabled"}' + (hadDisplay ? ' (display dropped: invalid with disabled)' : ''));
+        if (topEffort && /^(xhigh|max)$/i.test(topEffort)) { body.output_config.effort = 'high'; change('output_config.effort ' + topEffort + ' \u2192 high (disabled is rejected at xhigh/max)'); }
+        if (disp !== 'inherit') rep.notes.push('display ignored: thinking is disabled');
+        disp = 'inherit';
+        if (steps.length) tmThinkApplyPerMessageEffort(body, null, ov, rep, ctx); // replay existing steps unchanged
+      } else if (budget != null) {
+        if (!th) th = body.thinking = {};
+        if (th.type !== 'enabled' || th.budget_tokens !== budget) { th.type = 'enabled'; th.budget_tokens = budget; change('thinking = {type:"enabled", budget_tokens:' + budget + '}'); }
+        if (body.output_config && body.output_config.effort !== undefined && !caps.effortWithBudget) {
+          delete body.output_config.effort; if (!Object.keys(body.output_config).length) delete body.output_config;
+          change('output_config.effort removed (budget mode; effort composes with budget only on Opus 4.5)');
+        }
+        var mt = Number(body.max_tokens) || 0, floor = budget + 4096;
+        if (mt < floor) { var nm = Math.min(floor, caps.maxOut); if (nm > mt) { body.max_tokens = nm; change('max_tokens ' + mt + ' \u2192 ' + nm + ' (must exceed budget_tokens)'); } }
+        if (steps.length) tmThinkApplyPerMessageEffort(body, null, ov, rep, ctx);
+      } else if (eff) {
+        if (!th) th = body.thinking = {};
+        if (caps.adaptive) {
+          if (th.type !== 'adaptive') { var was = th.type; th.type = 'adaptive'; if (th.budget_tokens !== undefined) delete th.budget_tokens; change('thinking.type ' + (was || '(none)') + ' \u2192 adaptive'); }
+        } else if (!th.type || th.type === 'disabled') {
+          th.type = 'enabled'; if (!th.budget_tokens) th.budget_tokens = tmThinkEffortToBudget(eff);
+          change('thinking.type \u2192 enabled (budget_tokens ' + th.budget_tokens + ')');
+        }
+        var perMsg = (r.kind === 'direct' && caps.perMsgEffort);
+        if (perMsg) {
+          tmThinkApplyPerMessageEffort(body, eff, ov, rep, ctx);
+        } else {
+          rep.mode = 'top-level';
+          if (!body.output_config || typeof body.output_config !== 'object') body.output_config = {};
+          if (body.output_config.effort !== eff) { body.output_config.effort = eff; change('output_config.effort ' + (topEffort || '(none)') + ' \u2192 ' + eff + ' (top-level: the cache prefix restarts once at this change)'); }
+          if (r.kind === 'direct') rep.notes.push(model + ' has no per-message effort beta; top-level effort used');
+          else rep.notes.push('per-message effort beta not attempted via ' + r.label + '; top-level effort used');
+        }
+        if (/^(high|xhigh|max)$/.test(eff)) {
+          var mt2 = Number(body.max_tokens) || 0;
+          if (mt2 && mt2 < 16000) { var nm2 = Math.min(32000, caps.maxOut); body.max_tokens = nm2; change('max_tokens ' + mt2 + ' \u2192 ' + nm2 + ' (room for thinking at ' + eff + '; never lowered)'); }
+        }
+      } else if (steps.length) {
+        tmThinkApplyPerMessageEffort(body, null, ov, rep, ctx); // level inherit + display-only change: keep replaying steps
+      }
+
+      // ---------------- DISPLAY ----------------
+      if (disp === 'show' || disp === 'hide') {
+        var want = disp === 'show' ? 'summarized' : 'omitted';
+        th = (body.thinking && typeof body.thinking === 'object' && !Array.isArray(body.thinking)) ? body.thinking : null;
+        if (th && th.type === 'disabled') rep.notes.push('display ignored: thinking is disabled');
+        else if (!caps.display) clamp('display ' + disp + ' skipped: ' + model + ' predates thinking.display');
+        else {
+          if (!th) {
+            if (caps.onByDefault) { th = body.thinking = { type: caps.adaptive ? 'adaptive' : 'enabled' }; change('thinking = {type:"' + th.type + '"} added (thinking is on by default on ' + model + '; the object is needed to carry display)'); }
+            else rep.notes.push('display skipped: no thinking config on the wire and thinking is off by default on ' + model + ' -- set a level first');
+          }
+          if (th && th.display !== want) { var wasD = th.display; th.display = want; change('thinking.display ' + (wasD || '(default)') + ' \u2192 ' + want + (want === 'summarized' ? ' (thinking words stream back; TypingMind will replay the signed blocks)' : '')); }
+        }
+      }
+      rep.summary = (rep.applied ? 'applied' : 'no-op') + (rep.mode ? (' \u00b7 ' + rep.mode) : '') + ' \u00b7 level=' + rep.level + ' \u00b7 display=' + rep.display + (rep.clamps.length ? (' \u00b7 ' + rep.clamps.length + ' clamp' + (rep.clamps.length === 1 ? '' : 's')) : '');
+    } catch (e) { rep.error = String(e && e.message || e); }
+    return rep;
+  }
+
+  // Request-time entry point (universal outbound pass): resolve the identity, load its override, run
+  // the writer, persist new per-message steps, log once. Returns the report (stamped on the capture
+  // row as _think_req.override via options._tm_think_ovr) or null when nothing is configured.
+  function tmThinkApplyOverrideForRequest(url, options, body) {
+    try {
+      if (!body || typeof body !== 'object') return null;
+      var idKey = tmComputeRoutingIdentityKey(body, url, options);
+      if (!idKey) return null;
+      var ov = tmGetThinkOverride(idKey);
+      if (!tmThinkOverrideIsActive(ov)) return null;
+      var headersNorm = {};
+      try { headersNorm = tmNormalizeHeaders(options && options.headers) || {}; } catch (e) {}
+      var rep = tmThinkApplyOverride(url, body, headersNorm, ov, { setHeader: function(name, token) { tmThinkAppendHeaderToken(options, name, token); } });
+      rep.identity = idKey;
+      if (rep.persist) tmSetThinkOverride(idKey, { steps: ov.steps || [] });
+      if (rep.applied) console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override applied for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ' [' + (rep.mode || 'n/a') + ']: ' + rep.changes.join(' | ') + (rep.clamps.length ? (' \u26a0 clamps: ' + rep.clamps.join(' | ')) : ''));
+      else console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override configured but nothing to change for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ': ' + (rep.notes.concat(rep.clamps).join(' | ') || 'already at the requested state'));
+      return rep;
+    } catch (e) { return null; }
+  }
+
+  // Which identities get the control (v4.361: Anthropic-shaped routes). Data-driven from the newest
+  // stamped ring row for the identity, with the host as a fallback before any row exists.
+  function tmThinkControlSupportedForIdentity(idKey) {
+    try {
+      if (!idKey) return false;
+      var cap = tmLatestThinkEntryForIdentity(idKey);
+      if (cap && cap._think_req && cap._think_req.protocol) return cap._think_req.protocol === 'anthropic-messages';
+      var host = String(idKey).split('::')[2] || '';
+      return host.indexOf('api.anthropic.com') !== -1;
+    } catch (e) { return false; }
+  }
+
+  // Shared control builder (widget line + ring-modal most-recent row): '🎛️ Think: [level] 👁 [display]'.
+  function tmBuildThinkControlHtml(idKey) {
+    try {
+      var ov = tmGetThinkOverride(idKey) || {};
+      var lvl = ov.level || 'inherit', disp = ov.display || 'inherit';
+      var active = tmThinkOverrideIsActive(ov);
+      var isBudget = /^budget:(\d+)$/.test(lvl);
+      var nSteps = Array.isArray(ov.steps) ? ov.steps.length : 0;
+      var S = TM_THINK_STATES;
+      var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : '#aab') + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;max-width:150px;';
+      function opt(v, label, cur) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>'; }
+      var curSel = isBudget ? '__budget' : lvl;
+      var levelOpts = opt('inherit', '\u21a9 inherit (TypingMind\'s)', curSel) +
+        opt('off', S.OFF.g + ' off', curSel) + opt('minimal', S.LOW.g + ' minimal', curSel) + opt('low', S.LOW.g + ' low', curSel) +
+        opt('medium', S.MED.g + ' medium', curSel) + opt('high', S.HIGH.g + ' high', curSel) + opt('xhigh', S.HIGH.g + ' xhigh', curSel) + opt('max', S.MAX.g + ' max', curSel) +
+        opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : ''), curSel) +
+        (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
+      var dispOpts = opt('inherit', '\u21a9 inherit', disp) + opt('show', S.SHOW_REQ.g + ' show words (summarized)', disp) + opt('hide', S.HIDE_REQ.g + ' hide (omitted)', disp);
+      var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Anthropic: output_config.effort. Direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta; other models/routes set the top-level value (one cache miss at the change). Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
+      var dispTitle = 'Thinking DISPLAY for the NEXT call: show = thinking.display=summarized (the thinking words stream back and enter history), hide = omitted (signature only). Independent of the level.';
+      return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control" style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
+        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
+        '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:5px;">\ud83d\udc41</span>' +
+        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle) + '" style="' + selStyle + 'max-width:120px;">' + dispOpts + '</select></span>';
+    } catch (e) { return ''; }
+  }
+
+  // Change handler for both selects (document-level 'change' listener routes here).
+  function tmHandleThinkControlChange(target) {
+    if (!target || !target.dataset) return false;
+    var idKey = target.dataset.identityKey || '';
+    var v = target.value;
+    if (!idKey || v == null || v === '') return false;
+    var act = target.dataset.action;
+    var ov = tmGetThinkOverride(idKey) || {};
+    function rerender() {
+      try { renderGpt51UsageWidget(); } catch (e) {}
+      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+    }
+    if (act === 'set-think-display') {
+      tmSetThinkOverride(idKey, { display: v });
+      console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking DISPLAY for next call set to ' + v + ' on ' + idKey);
+      rerender(); return true;
+    }
+    if (v === '__clear_steps') {
+      tmSetThinkOverride(idKey, { steps: [] });
+      console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Per-message effort steps cleared on ' + idKey + ' (expect one cache miss)');
+      rerender(); return true;
+    }
+    if (v === '__budget') {
+      var cur = /^budget:(\d+)$/.exec(ov.level || '');
+      tmPromptActive = true;
+      var ans = prompt('Thinking budget_tokens for the NEXT call on this session\n' + idKey.split('::')[1] + '\n\n(Anthropic extended thinking, type:enabled. Adaptive-only models such as Fable 5.1 have no budget -- the value clamps to the nearest effort level and the \ud83c\udf9b\ufe0f glyph reports it.)', cur ? cur[1] : '16000');
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = false; }, 100);
+      var n = ans == null ? NaN : parseInt(String(ans).replace(/[^0-9]/g, ''), 10);
+      if (!(n > 0)) { rerender(); return false; }
+      v = 'budget:' + n;
+    }
+    tmSetThinkOverride(idKey, { level: v });
+    console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking LEVEL for next call set to ' + v + ' on ' + idKey);
+    rerender(); return true;
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
@@ -5816,6 +6261,9 @@
         // FULL post-mutation body + headers are present (skeletonization would hide config fields);
         // underscore field survives rich->compact stripping.
         try { record._think_req = tmThinkScanOutbound(url, headersNorm, parsed); } catch (eTk) {}
+        // (Fix 24 Phase 2, v4.361) The universal outbound pass leaves its writer report on the request
+        // init object; stamp it beside the scan so the badge/report show WHAT the extension rewrote.
+        try { if (record._think_req && options && options._tm_think_ovr) record._think_req.override = options._tm_think_ovr; } catch (eOv) {}
 
         // (Fix 25, v4.360) KEEP-ALIVE wire snapshot: store this identity's FINAL outbound bytes
         // (RAW options.headers, never the redacted copy; memory-only) so a keep-alive ping can
@@ -8494,6 +8942,12 @@
       ev.stopPropagation();
       return;
     }
+    // (Fix 24 Phase 2, v4.361) Thinking level / display selects (widget + ring modal share the builder).
+    if (t.dataset.action === 'set-think-level' || t.dataset.action === 'set-think-display') {
+      tmHandleThinkControlChange(t);
+      ev.stopPropagation();
+      return;
+    }
     if (t.dataset.action === 'set-sol-reasoning-effort') {
       var newLevel = t.value;
       if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
@@ -9208,6 +9662,12 @@
         var tkCapW = tmLatestThinkEntryForIdentity(widgetIdentity && widgetIdentity.key);
         if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px', layout: 'inline' }) + '</div>');
       } catch (eTkW) {}
+      // (Fix 24 Phase 2, v4.361) Thinking CONTROL for THIS identity's NEXT call (Anthropic-shaped
+      // routes in this increment). Identity-guarded like the badge above.
+      try {
+        var tkIdW = (widgetIdentity && widgetIdentity.key) || '';
+        if (tkIdW && tmThinkControlSupportedForIdentity(tkIdW)) lines.push('<div style="font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:visible;">' + tmBuildThinkControlHtml(tkIdW) + '</div>');
+      } catch (eTkC) {}
     } else {
       tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
       // (v4.330) data-hover added: the hovercard must work in the blank post-refresh state
@@ -14309,6 +14769,8 @@
     // (v4.206) Track which identities already got a provider-routing dropdown, so only the MOST
     // RECENT entry per identity (first occurrence in the current sort) carries the control.
     var seenRouteIdentities = {};
+    // (Fix 24 Phase 2, v4.361) Same rule for the thinking control: most-recent row per identity only.
+    var seenThinkIdentities = {};
 
     items.forEach((cap, idx) => {
       if (!cap) return;
@@ -14366,6 +14828,14 @@
           capRouteDropdown = '<span style="font-size:9px;opacity:0.7;margin-left:6px;white-space:nowrap;" title="The provider the NEXT call will use -- historical rows show what actually served each turn">Next call will use:</span>' + tmBuildProviderRoutingDropdown(capRouteIdKey, capRouteModel, capRouteProv);
         }
       }
+      // (Fix 24 Phase 2, v4.361) Thinking CONTROL on the most-recent row per identity (Anthropic-shaped).
+      var capThinkCtl = '';
+      try {
+        if (capRouteIdKey && !seenThinkIdentities[capRouteIdKey]) {
+          seenThinkIdentities[capRouteIdKey] = true;
+          if (tmThinkControlSupportedForIdentity(capRouteIdKey)) capThinkCtl = '<span style="font-size:9px;opacity:0.7;margin-left:8px;white-space:nowrap;" title="Thinking level / display the NEXT call on this session will carry -- the \ud83e\udde0 row below shows what each historical turn actually sent">Next call thinks:</span>' + tmBuildThinkControlHtml(capRouteIdKey);
+        }
+      } catch (eTkCtl) {}
 
       html += '<div style="margin-bottom:8px;padding:8px;border-radius:6px;background:rgba(30,30,36,0.85);">';
 
@@ -14404,6 +14874,7 @@
               })() +
               disabledNote +
               capRouteDropdown +
+              capThinkCtl +
               '</div>';
 
       // (v4.111) Title row: #N (fixed-width, very left) + HIT/MISS + cost + model + hash.
@@ -16935,6 +17406,16 @@
         if (tmEnsurePlainSolReasoningHigh(tmUniversalBody)) {
           tmUniversalChanged = true;
         }
+        // (Fix 24 Phase 2, v4.361) Thinking CONTROL: apply this identity's {level, display} override to
+        // the wire (Anthropic Messages shape in this increment). Runs AFTER canonicalization so the
+        // effort-only system messages / thinking fields it writes are what the capture scanner sees.
+        try {
+          var tmThinkOvrRep = tmThinkApplyOverrideForRequest(url, options, tmUniversalBody);
+          if (tmThinkOvrRep) {
+            options._tm_think_ovr = tmThinkOvrRep;
+            if (tmThinkOvrRep.applied) tmUniversalChanged = true;
+          }
+        } catch (eThinkOvr) {}
         if (tmUniversalChanged) {
           options.body = JSON.stringify(tmUniversalBody);
           console.log('✅ [v' + EXT_VERSION + '] Universal outbound pass: tools canonicalized and/or Sol reasoning injected before endpoint-specific handling.');
