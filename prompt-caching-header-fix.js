@@ -1,6 +1,27 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.350
+// Version: 4.351
 // Issues Fixed:
+//   - v4.351: FIX 24 -- THINKING OBSERVATORY, PHASE 1 (observe). Thinking level is the highest-
+//     leverage cost+quality knob, yet it was set by an opaque stack (TypingMind per-model setting ->
+//     route direct/OpenRouter/proxy->OpenRouter -> API type Messages/Chat/Responses/Gemini ->
+//     provider translation -> model-family defaults) and the extension observed NONE of it for
+//     Claude (only GPT plain-Sol had an injector). NOW every capture row carries TWO underscore
+//     stamps (survive compaction): _think_req = tmThinkScanOutbound over the FINAL outbound
+//     body+headers+URL -- thinking.*, output_config.effort, reasoning_effort, reasoning.*,
+//     include_reasoning, include[], generationConfig.thinkingConfig.*, extra_body.google.*,
+//     enable_thinking, thinking_budget, chat_template_kwargs, output bounds, anthropic-beta
+//     tokens, model-name implicit hints (:thinking, o-series, sol-pro, -max, ...) and a
+//     catch-all deep-walk that reports UNRECOGNIZED thinking-ish keys so new provider fields
+//     surface instead of vanishing; verdict explicit | implicit-only | NONE (provider default).
+//     _think_obs = per-turn accumulator fed by every SSE event (Anthropic thinking/redacted
+//     blocks + deltas; chat delta.reasoning / reasoning_content / reasoning_details text|summary|
+//     encrypted; Responses reasoning items + deltas + encrypted_content; Gemini thought parts +
+//     thoughtSignature) finalized against usage: reasoning tokens with a trust tag (reported |
+//     bytes-estimate raw_chars/4 | heuristic completion-visible/4 | none), visibility raw |
+//     summary | encrypted | hidden | none, block counts, ratio of output. Surfaces: one console
+//     line per turn ('requested X -> observed Y') and think_req/think_obs in Copy Summary. Pure
+//     observation -- NOTHING on the wire changes. Badges/Report/Notes modal follow in v4.352;
+//     per-call control (Phase 2) later. Spec: Anchor Dock '🧠 Fix 24' [ap:167SG6].
 //   - v4.350: TOOL BADGE IDENTITY-PRECISION + NOTE-TIME IDENTITY RESOLUTION. v4.349 made the
 //     tool spinner/counter identity-precise but left the red tool BADGE sid-wide and resolved
 //     the identity lazily per tick (silently falling back to sid-wide on any resolution
@@ -1563,7 +1584,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.350';
+  const EXT_VERSION = '4.351';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -3987,6 +4008,357 @@
     tmWriteCaptureRing(ring);
   }
 
+  // ==================== FIX 24 — THINKING OBSERVATORY (v4.351) ====================
+  // PHASE 1 (observe). Pure scanners + one accumulator; NOTHING here mutates the outbound request
+  // or the response. Spec: Anchor Dock "🧠 Fix 24 — Thinking Observatory" [ap:167SG6].
+  //  * tmThinkScanOutbound(url, headersNorm, body) -> _think_req : every conceivable thinking-
+  //    control field across every protocol (Anthropic Messages / Chat Completions / OpenRouter
+  //    unified / Responses / Gemini native / OpenAI-compat families) + model-name implicit hints
+  //    + a catch-all deep-walk so NEW provider fields surface as `unrecognized` instead of being
+  //    silently missed. verdict: 'explicit' | 'implicit-only' | 'NONE' (= provider default).
+  //  * tmThinkNewObsAccumulator / tmThinkAccumulateEvent / tmThinkFinalizeObs -> _think_obs :
+  //    what the model ACTUALLY did -- reasoning tokens (reported | bytes-estimate | heuristic |
+  //    none) + visibility mode (raw | summary | encrypted | hidden | none) + block counts.
+  // Both stamps are underscore-prefixed so they survive rich->compact ring stripping.
+
+  var TM_THINK_KEY_RX = /think|reason|effort|budget|thought/i;
+
+  function tmThinkHostFromUrl(u) {
+    try { return new URL(String(u)).hostname.toLowerCase(); } catch (e) {
+      var m = String(u || '').match(/^[a-z]+:\/\/([^\/?#]+)/i); return m ? m[1].toLowerCase() : '';
+    }
+  }
+
+  // Route classification: direct host vs OpenRouter vs proxy->(x-target-endpoint host). There is
+  // NO proxy->api.anthropic.com path: TypingMind's cors-proxy only fronts OpenRouter's Anthropic skin.
+  function tmThinkClassifyRoute(url, headersNorm) {
+    var u = String(url || '');
+    var proxy = u.indexOf('/api/cors-proxy') !== -1;
+    var host = '', target = null;
+    if (proxy) {
+      try {
+        var tgt = headersNorm && (headersNorm['x-target-endpoint'] || headersNorm['X-Target-Endpoint']);
+        if (tgt) { target = String(tgt); host = tmThinkHostFromUrl(target); }
+      } catch (e) {}
+    }
+    if (!host) host = tmThinkHostFromUrl(u);
+    var kind = 'direct';
+    if (host.indexOf('openrouter.ai') !== -1) kind = 'openrouter';
+    else if (host.indexOf('deepinfra.com') !== -1) kind = 'aggregator';
+    return { host: host, proxy: proxy, kind: kind, target: target, label: (proxy ? 'proxy\u2192' : '') + (host || '?') };
+  }
+
+  function tmThinkPush(list, path, value) {
+    var v = value;
+    try { if (v && typeof v === 'object') v = JSON.stringify(v); } catch (e) { v = String(v); }
+    if (typeof v === 'string' && v.length > 120) v = v.slice(0, 117) + '...';
+    list.push({ path: path, value: v });
+  }
+
+  // @beacon[
+  //   id=fix24-think-scan-outbound,
+  //   role=__lambdao_1.tmThinkScanOutbound,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.351): protocol-agnostic scan of the FINAL outbound body+headers+URL for every thinking-control field (thinking.*, output_config.effort, reasoning_effort, reasoning.*, include_reasoning, include[], thinkingConfig.*, extra_body.google.*, enable_thinking, thinking_budget, chat_template_kwargs) + output bounds + anthropic-beta tokens + model-name implicit hints + catch-all deep-walk for unrecognized keys. verdict explicit|implicit-only|NONE.,
+  // ]
+  function tmThinkScanOutbound(url, headersNorm, body) {
+    var req = { v: 1, protocol: null, route: null, route_kind: null, host: null, proxy: false, model: null,
+                controls: [], bounds: [], implicit: [], unrecognized: [], headers: [],
+                verdict: 'NONE', summary: '' };
+    try {
+      var b = (body && typeof body === 'object' && !Array.isArray(body)) ? body : {};
+      var r = tmThinkClassifyRoute(url, headersNorm);
+      req.route = r.label; req.host = r.host; req.proxy = r.proxy; req.route_kind = r.kind;
+      try { req.protocol = tmDetectProtocol(r.target || url, b); } catch (e) { req.protocol = 'unknown'; }
+      var model = (typeof b.model === 'string' && b.model) ? b.model : null;
+      if (!model) { try { var mm = String(r.target || url || '').match(/\/models\/([^\/:?#]+)/i); if (mm) model = decodeURIComponent(mm[1]); } catch (e) {} }
+      req.model = model;
+      var C = req.controls, B = req.bounds;
+      var known = {};
+      function mark(p) { known[p] = true; }
+
+      // --- Anthropic Messages `thinking` (direct / proxy->OR Anthropic-skin) + Moonshot/DeepSeek/GLM `thinking`
+      if (b.thinking !== undefined) {
+        mark('thinking');
+        if (b.thinking && typeof b.thinking === 'object') {
+          for (var tk in b.thinking) { if (Object.prototype.hasOwnProperty.call(b.thinking, tk)) tmThinkPush(C, 'thinking.' + tk, b.thinking[tk]); }
+        } else { tmThinkPush(C, 'thinking', b.thinking); }
+      }
+      if (b.output_config && typeof b.output_config === 'object' && b.output_config.effort !== undefined) { tmThinkPush(C, 'output_config.effort', b.output_config.effort); mark('output_config'); }
+      // --- OpenAI Chat Completions / OpenAI-compat / xAI / Gemini-compat
+      if (b.reasoning_effort !== undefined) { tmThinkPush(C, 'reasoning_effort', b.reasoning_effort); mark('reasoning_effort'); }
+      // --- OpenRouter unified + OpenAI Responses `reasoning` object
+      if (b.reasoning !== undefined) {
+        mark('reasoning');
+        if (b.reasoning && typeof b.reasoning === 'object') {
+          for (var rk in b.reasoning) { if (Object.prototype.hasOwnProperty.call(b.reasoning, rk)) tmThinkPush(C, 'reasoning.' + rk, b.reasoning[rk]); }
+        } else { tmThinkPush(C, 'reasoning', b.reasoning); }
+      }
+      if (b.include_reasoning !== undefined) { tmThinkPush(C, 'include_reasoning', b.include_reasoning); mark('include_reasoning'); }
+      if (Array.isArray(b.include)) { for (var ii = 0; ii < b.include.length; ii++) { if (/reason/i.test(String(b.include[ii]))) tmThinkPush(C, 'include[]', b.include[ii]); } mark('include'); }
+      // --- Gemini native
+      var gc = b.generationConfig || b.generation_config;
+      if (gc && typeof gc === 'object') {
+        var tc = gc.thinkingConfig || gc.thinking_config;
+        if (tc && typeof tc === 'object') {
+          for (var gk in tc) { if (Object.prototype.hasOwnProperty.call(tc, gk)) tmThinkPush(C, 'generationConfig.thinkingConfig.' + gk, tc[gk]); }
+          mark('generationConfig.thinkingConfig'); mark('generation_config.thinking_config');
+        }
+        if (gc.maxOutputTokens !== undefined) tmThinkPush(B, 'generationConfig.maxOutputTokens', gc.maxOutputTokens);
+        if (gc.max_output_tokens !== undefined) tmThinkPush(B, 'generationConfig.max_output_tokens', gc.max_output_tokens);
+      }
+      // --- Gemini via OpenAI-compat extra_body
+      try {
+        var eb = b.extra_body && b.extra_body.google && (b.extra_body.google.thinking_config || b.extra_body.google.thinkingConfig);
+        if (eb && typeof eb === 'object') { for (var ek in eb) { if (Object.prototype.hasOwnProperty.call(eb, ek)) tmThinkPush(C, 'extra_body.google.thinking_config.' + ek, eb[ek]); } mark('extra_body.google.thinking_config'); mark('extra_body.google.thinkingConfig'); }
+      } catch (e) {}
+      // --- Qwen / vLLM style
+      if (b.enable_thinking !== undefined) { tmThinkPush(C, 'enable_thinking', b.enable_thinking); mark('enable_thinking'); }
+      if (b.thinking_budget !== undefined) { tmThinkPush(C, 'thinking_budget', b.thinking_budget); mark('thinking_budget'); }
+      if (b.chat_template_kwargs && typeof b.chat_template_kwargs === 'object') { for (var ck in b.chat_template_kwargs) { if (TM_THINK_KEY_RX.test(ck)) tmThinkPush(C, 'chat_template_kwargs.' + ck, b.chat_template_kwargs[ck]); } mark('chat_template_kwargs'); }
+      // --- Output bounds (not levels, but they cap thinking)
+      if (b.max_tokens !== undefined) tmThinkPush(B, 'max_tokens', b.max_tokens);
+      if (b.max_completion_tokens !== undefined) tmThinkPush(B, 'max_completion_tokens', b.max_completion_tokens);
+      if (b.max_output_tokens !== undefined) tmThinkPush(B, 'max_output_tokens', b.max_output_tokens);
+      // --- Headers (Anthropic betas that touch thinking/effort)
+      try {
+        var hb = headersNorm && (headersNorm['anthropic-beta'] || headersNorm['Anthropic-Beta']);
+        if (hb) { var toks = String(hb).split(','); for (var hi = 0; hi < toks.length; hi++) { var ht = toks[hi].trim(); if (ht && TM_THINK_KEY_RX.test(ht)) req.headers.push('anthropic-beta: ' + ht); } }
+      } catch (e) {}
+      // --- Implicit (model-name encoded)
+      if (model) {
+        var ml = model.toLowerCase();
+        if (/:thinking$/.test(ml)) req.implicit.push('model suffix :thinking');
+        else if (/-thinking(?:-|$)/.test(ml)) req.implicit.push('model name -thinking');
+        if (/reasoner/.test(ml)) req.implicit.push('model name reasoner');
+        if (/(^|[\/_-])(o1|o3|o4)(-|$)/.test(ml)) req.implicit.push('OpenAI o-series (always reasons)');
+        if (/sol-pro/.test(ml)) req.implicit.push('Sol Pro (hidden server-side reasoning)');
+        if (/(^|[\/_-])max($|[\/_-])/.test(ml)) req.implicit.push('model name -max variant');
+        if (/gemini/.test(ml) && /-pro($|[\/_-])/.test(ml)) req.implicit.push('Gemini Pro (thinking always on)');
+        if (/k2-thinking|kimi-k3|k3/.test(ml) && /kimi|moonshot/.test(ml)) req.implicit.push('Kimi thinking family');
+        if (/deepseek-r1|deepseek-reasoner/.test(ml)) req.implicit.push('DeepSeek reasoner');
+      }
+      // --- Catch-all deep-walk for UNRECOGNIZED thinking-ish keys (skips the big content arrays).
+      try {
+        var SKIP = { messages: 1, input: 1, contents: 1, tools: 1, system: 1, systemInstruction: 1, system_instruction: 1, functions: 1, tool_choice: 1, response_format: 1, metadata: 1, provider: 1, plugins: 1, safetySettings: 1 };
+        (function walk(o, path, depth) {
+          if (!o || typeof o !== 'object' || depth > 6) return;
+          if (Array.isArray(o)) { for (var ai = 0; ai < o.length && ai < 32; ai++) walk(o[ai], path + '[' + ai + ']', depth + 1); return; }
+          for (var k in o) {
+            if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+            if (depth === 0 && SKIP[k]) continue;
+            var p = path ? (path + '.' + k) : k;
+            if (known[p]) continue;
+            if (TM_THINK_KEY_RX.test(k) && req.unrecognized.length < 24) { tmThinkPush(req.unrecognized, p, o[k]); continue; }
+            walk(o[k], p, depth + 1);
+          }
+        })(b, '', 0);
+      } catch (e) {}
+
+      req.verdict = C.length ? 'explicit' : (req.implicit.length ? 'implicit-only' : 'NONE');
+      req.summary = tmThinkFormatReq(req);
+    } catch (e) { req.error = String(e && e.message || e); }
+    return req;
+  }
+
+  function tmThinkFormatReq(req) {
+    try {
+      if (!req) return '?';
+      if (req.controls && req.controls.length) {
+        var parts = [];
+        for (var i = 0; i < req.controls.length && i < 5; i++) {
+          var c = req.controls[i];
+          var p = String(c.path).replace(/^generationConfig\.thinkingConfig\./, 'thinkingConfig.').replace(/^extra_body\.google\.thinking_config\./, 'g.thinking_config.');
+          parts.push(p + '=' + String(c.value));
+        }
+        if (req.controls.length > 5) parts.push('+' + (req.controls.length - 5));
+        return parts.join(' \u00b7 ');
+      }
+      if (req.implicit && req.implicit.length) return 'implicit: ' + req.implicit.join(', ');
+      return 'NONE (provider default)';
+    } catch (e) { return '?'; }
+  }
+
+  function tmThinkNewObsAccumulator() {
+    return { raw_chars: 0, summary_chars: 0, encrypted_chars: 0, visible_chars: 0,
+             blocks: { thinking: 0, redacted: 0, reasoning_text: 0, reasoning_summary: 0, reasoning_encrypted: 0, reasoning_content: 0, reasoning_str: 0, responses_reasoning_items: 0, gemini_thought_parts: 0 },
+             signature: false, events: 0, channels: {} };
+  }
+
+  function tmThinkAddChars(acc, kind, s) {
+    if (typeof s !== 'string' || !s.length) return;
+    acc[kind] += s.length;
+  }
+
+  function tmThinkScanAnthropicBlocks(acc, blocks) {
+    try {
+      for (var i = 0; i < blocks.length; i++) {
+        var bl = blocks[i]; if (!bl) continue;
+        if (bl.type === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', bl.thinking); if (bl.signature) acc.signature = true; }
+        else if (bl.type === 'redacted_thinking') { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', bl.data); }
+        else if (bl.type === 'text') tmThinkAddChars(acc, 'visible_chars', bl.text);
+      }
+    } catch (e) {}
+  }
+
+  function tmThinkScanResponsesReasoningItem(acc, item) {
+    try {
+      acc.blocks.responses_reasoning_items++;
+      acc.channels.responses_reasoning_item = 1;
+      if (typeof item.encrypted_content === 'string') { tmThinkAddChars(acc, 'encrypted_chars', item.encrypted_content); acc.channels.responses_encrypted = 1; }
+      // Summary / raw text: only count from the item when NO streaming deltas already counted them.
+      if (Array.isArray(item.summary) && !acc.channels.responses_summary_delta) { for (var i = 0; i < item.summary.length; i++) { var s = item.summary[i]; tmThinkAddChars(acc, 'summary_chars', s && (typeof s === 'string' ? s : s.text)); } if (item.summary.length) acc.channels.responses_summary = 1; }
+      if (Array.isArray(item.content) && !acc.channels.responses_reasoning_text_delta) { for (var j = 0; j < item.content.length; j++) { var c = item.content[j]; if (c && typeof c.text === 'string') { tmThinkAddChars(acc, 'raw_chars', c.text); acc.channels.responses_reasoning_text = 1; } } }
+    } catch (e) {}
+  }
+
+  // @beacon[
+  //   id=fix24-think-accumulate-event,
+  //   role=__lambdao_1.tmThinkAccumulateEvent,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.351): feeds ONE SSE event (or one non-streaming body) into the thinking accumulator -- Anthropic thinking/redacted_thinking blocks + thinking_delta/signature_delta; chat-completions delta.reasoning / reasoning_content (Kimi/DeepSeek/GLM/Grok) / reasoning_details[reasoning.text|summary|encrypted]; Responses reasoning items + summary/text deltas + encrypted_content; Gemini thought:true parts + thoughtSignature. Counts chars and blocks only -- never stores content; never throws.,
+  // ]
+  function tmThinkAccumulateEvent(acc, ev) {
+    if (!acc || !ev || typeof ev !== 'object') return;
+    try {
+      acc.events++;
+      // ---- Anthropic streaming
+      if (ev.type === 'content_block_start' && ev.content_block) {
+        var cbt = ev.content_block.type;
+        if (cbt === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', ev.content_block.thinking); }
+        else if (cbt === 'redacted_thinking') { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', ev.content_block.data); }
+      }
+      if (ev.type === 'content_block_delta' && ev.delta) {
+        var dt = ev.delta.type;
+        if (dt === 'thinking_delta') { tmThinkAddChars(acc, 'raw_chars', ev.delta.thinking); acc.channels.anthropic_thinking = 1; }
+        else if (dt === 'signature_delta') { acc.signature = true; }
+        else if (dt === 'text_delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta.text); }
+      }
+      // ---- Anthropic non-streaming message body (type:'message' with content[])
+      if (ev.type === 'message' && Array.isArray(ev.content)) tmThinkScanAnthropicBlocks(acc, ev.content);
+      // ---- Chat Completions / OpenRouter (streaming delta OR non-streaming message)
+      if (Array.isArray(ev.choices)) {
+        for (var ci = 0; ci < ev.choices.length; ci++) {
+          var ch = ev.choices[ci]; if (!ch) continue;
+          var d = ch.delta || ch.message; if (!d || typeof d !== 'object') continue;
+          if (typeof d.content === 'string') tmThinkAddChars(acc, 'visible_chars', d.content);
+          var rdTextChars = 0;
+          if (Array.isArray(d.reasoning_details)) {
+            for (var ri = 0; ri < d.reasoning_details.length; ri++) {
+              var rd = d.reasoning_details[ri]; if (!rd) continue;
+              var rt = String(rd.type || rd.format || '');
+              if (rt === 'reasoning.text') { acc.blocks.reasoning_text++; if (typeof rd.text === 'string') rdTextChars += rd.text.length; tmThinkAddChars(acc, 'raw_chars', rd.text); acc.channels.reasoning_details_text = 1; }
+              else if (rt === 'reasoning.summary') { acc.blocks.reasoning_summary++; tmThinkAddChars(acc, 'summary_chars', rd.summary); acc.channels.reasoning_details_summary = 1; }
+              else if (rt === 'reasoning.encrypted') { acc.blocks.reasoning_encrypted++; tmThinkAddChars(acc, 'encrypted_chars', rd.data); acc.channels.reasoning_details_encrypted = 1; }
+              else { acc.channels['reasoning_details:' + (rt || '?')] = 1; }
+            }
+          }
+          // OpenRouter mirrors reasoning_details text into the plain `reasoning` string; count it only once.
+          if (typeof d.reasoning === 'string' && d.reasoning.length) { acc.blocks.reasoning_str++; acc.channels.openrouter_reasoning = 1; if (!rdTextChars) tmThinkAddChars(acc, 'raw_chars', d.reasoning); }
+          if (typeof d.reasoning_content === 'string' && d.reasoning_content.length) { acc.blocks.reasoning_content++; acc.channels.reasoning_content = 1; tmThinkAddChars(acc, 'raw_chars', d.reasoning_content); }
+        }
+      }
+      // ---- OpenAI Responses (streaming events)
+      if (typeof ev.type === 'string' && ev.type.indexOf('response.') === 0) {
+        if (ev.type === 'response.reasoning_summary_text.delta' || ev.type === 'response.reasoning_summary.delta') { tmThinkAddChars(acc, 'summary_chars', typeof ev.delta === 'string' ? ev.delta : (ev.delta && ev.delta.text)); acc.channels.responses_summary = 1; acc.channels.responses_summary_delta = 1; }
+        else if (ev.type === 'response.reasoning_text.delta' || ev.type === 'response.reasoning.delta') { tmThinkAddChars(acc, 'raw_chars', typeof ev.delta === 'string' ? ev.delta : (ev.delta && ev.delta.text)); acc.channels.responses_reasoning_text = 1; acc.channels.responses_reasoning_text_delta = 1; }
+        else if (ev.type === 'response.output_text.delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta); }
+        else if (ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'reasoning') { tmThinkScanResponsesReasoningItem(acc, ev.item); }
+        else if (ev.type === 'response.completed' && ev.response && Array.isArray(ev.response.output) && !acc.blocks.responses_reasoning_items) {
+          for (var oi = 0; oi < ev.response.output.length; oi++) { var it = ev.response.output[oi]; if (it && it.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, it); }
+        }
+      }
+      // ---- OpenAI Responses non-streaming body
+      if (ev.object === 'response' && Array.isArray(ev.output) && !acc.blocks.responses_reasoning_items) {
+        for (var oj = 0; oj < ev.output.length; oj++) { var it2 = ev.output[oj]; if (it2 && it2.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, it2); }
+      }
+      // ---- Gemini native (streaming chunks and non-streaming share the candidates[] shape)
+      if (Array.isArray(ev.candidates)) {
+        for (var gi = 0; gi < ev.candidates.length; gi++) {
+          var cand = ev.candidates[gi]; var parts = cand && cand.content && cand.content.parts;
+          if (!Array.isArray(parts)) continue;
+          for (var pi = 0; pi < parts.length; pi++) {
+            var pt = parts[pi]; if (!pt) continue;
+            if (pt.thought === true) { acc.blocks.gemini_thought_parts++; acc.channels.gemini_thought = 1; tmThinkAddChars(acc, 'raw_chars', pt.text); }
+            else if (typeof pt.text === 'string') tmThinkAddChars(acc, 'visible_chars', pt.text);
+            if (pt.thoughtSignature || pt.thought_signature) { acc.signature = true; acc.channels.gemini_thought_signature = 1; }
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  function tmThinkNum(v) { var n = Number(v); return (v != null && v !== '' && isFinite(n) && n >= 0) ? n : null; }
+
+  function tmThinkFmtK(n) { if (n == null) return '?'; n = Number(n); return n >= 10000 ? (Math.round(n / 1000) + 'K') : n >= 1000 ? ((n / 1000).toFixed(1) + 'K') : String(Math.round(n)); }
+
+  // @beacon[
+  //   id=fix24-think-finalize-obs,
+  //   role=__lambdao_1.tmThinkFinalizeObs,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.351): turns the accumulator + final usage into _think_obs -- reasoning tokens with a trust tag (reported: every known usage spelling incl. output_tokens_details.thinking_tokens and thoughtsTokenCount | bytes-estimate: raw reasoning chars/4 | heuristic: completion - visible/4 | none), primary visibility (raw|summary|encrypted|hidden|none) + secondary modes, ratio of output, one-line summary.,
+  // ]
+  function tmThinkFinalizeObs(acc, usage, anthropicUsage, model) {
+    var obs = { v: 1, tokens: { reasoning: null, source: 'none', field: null }, visibility: 'none', also: [],
+                raw_chars: 0, summary_chars: 0, encrypted_chars: 0, visible_chars: 0, blocks: null, signature: false,
+                completion_tokens: null, ratio: null, channels: [], summary: '' };
+    try {
+      acc = acc || tmThinkNewObsAccumulator();
+      obs.raw_chars = acc.raw_chars; obs.summary_chars = acc.summary_chars; obs.encrypted_chars = acc.encrypted_chars; obs.visible_chars = acc.visible_chars;
+      obs.blocks = acc.blocks; obs.signature = !!acc.signature;
+      for (var chk in acc.channels) { if (acc.channels[chk] && !/_delta$/.test(chk)) obs.channels.push(chk); }
+      var u = usage || {}; var au = anthropicUsage || {};
+      var cands = [
+        ['completion_tokens_details.reasoning_tokens', u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens],
+        ['output_tokens_details.reasoning_tokens', u.output_tokens_details && u.output_tokens_details.reasoning_tokens],
+        ['output_tokens_details.thinking_tokens', u.output_tokens_details && u.output_tokens_details.thinking_tokens],
+        ['anthropic.output_tokens_details.thinking_tokens', au.output_tokens_details && au.output_tokens_details.thinking_tokens],
+        ['anthropic.output_tokens_details.reasoning_tokens', au.output_tokens_details && au.output_tokens_details.reasoning_tokens],
+        ['completion_tokens_details.thinking_tokens', u.completion_tokens_details && u.completion_tokens_details.thinking_tokens],
+        ['reasoning_tokens', u.reasoning_tokens], ['thinking_tokens', u.thinking_tokens],
+        ['thoughtsTokenCount', u.thoughtsTokenCount], ['thoughts_token_count', u.thoughts_token_count]
+      ];
+      for (var i = 0; i < cands.length; i++) { var n = tmThinkNum(cands[i][1]); if (n != null) { obs.tokens.reasoning = n; obs.tokens.source = 'reported'; obs.tokens.field = cands[i][0]; break; } }
+      var comp = tmThinkNum(u.completion_tokens); if (comp == null) comp = tmThinkNum(u.output_tokens); if (comp == null) comp = tmThinkNum(au.output_tokens);
+      if (comp == null) { var candT = tmThinkNum(u.candidatesTokenCount); var thT = tmThinkNum(u.thoughtsTokenCount); if (candT != null) comp = candT + (thT || 0); }
+      obs.completion_tokens = comp;
+      if (obs.tokens.source === 'none') {
+        if (acc.raw_chars > 0) { obs.tokens.reasoning = Math.round(acc.raw_chars / 4); obs.tokens.source = 'bytes-estimate'; obs.tokens.field = 'raw_chars/4'; }
+        else if (comp != null && acc.visible_chars > 0) {
+          var est = comp - Math.round(acc.visible_chars / 4);
+          if (est > 200 && est / comp > 0.15) { obs.tokens.reasoning = est; obs.tokens.source = 'heuristic'; obs.tokens.field = 'completion - visible_chars/4'; }
+        }
+      }
+      var vis = [];
+      if (acc.raw_chars > 0) vis.push('raw');
+      if (acc.summary_chars > 0) vis.push('summary');
+      if (acc.encrypted_chars > 0 || acc.blocks.redacted > 0 || acc.blocks.reasoning_encrypted > 0) vis.push('encrypted');
+      if (!vis.length && obs.tokens.reasoning > 0 && obs.tokens.source === 'reported') vis.push('hidden');
+      obs.visibility = vis.length ? vis[0] : 'none';
+      obs.also = vis.slice(1);
+      if (comp && obs.tokens.reasoning != null) obs.ratio = Math.min(1, obs.tokens.reasoning / comp);
+      obs.summary = tmThinkFormatObs(obs);
+    } catch (e) { obs.error = String(e && e.message || e); }
+    return obs;
+  }
+
+  function tmThinkFormatObs(obs) {
+    try {
+      if (!obs) return '?';
+      var parts = [];
+      if (obs.tokens && obs.tokens.reasoning != null) parts.push(tmThinkFmtK(obs.tokens.reasoning) + ' think (' + obs.tokens.source + ')');
+      else if (obs.visibility === 'encrypted') parts.push('encrypted only (' + tmThinkFmtK(obs.encrypted_chars) + ' chars)');
+      else parts.push('0 think');
+      var v = obs.visibility + (obs.also && obs.also.length ? ('+' + obs.also.join('+')) : '');
+      if (v !== 'none') parts.push(v);
+      if (obs.ratio != null) parts.push(Math.round(obs.ratio * 100) + '% of output');
+      return parts.join(' \u00b7 ');
+    } catch (e) { return '?'; }
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
@@ -4128,6 +4500,11 @@
           record.session_id = null;
           record.pasted_session_id = null;
         }
+
+        // (Fix 24, v4.351) THINKING OBSERVATORY -- REQUESTED thinking level. Stamped NOW while the
+        // FULL post-mutation body + headers are present (skeletonization would hide config fields);
+        // underscore field survives rich->compact stripping.
+        try { record._think_req = tmThinkScanOutbound(url, headersNorm, parsed); } catch (eTk) {}
 
         // (v4.317) USER-CANCEL LATCH clear: any outbound payload for a session means Dan is
         // driving again -- re-arm auto-resume for it (both id forms, tm- alias tolerant).
@@ -4801,9 +5178,13 @@
           // so the widget-feed gate below can leave the last SUCCESSFUL turn's values untouched.
           var capHadError = false;
           try { capHadError = (Number(response.status) >= 400); } catch (e) {}
+          // (Fix 24, v4.351) THINKING OBSERVATORY -- per-turn observed-thinking accumulator. Fed by
+          // every SSE data event (or the one non-streaming body); finalized after the patch below.
+          var thinkAcc = tmThinkNewObsAccumulator();
           try {
             // Try JSON parse first (non-streaming responses)
             const parsed = JSON.parse(text);
+            try { tmThinkAccumulateEvent(thinkAcc, parsed); } catch (eTk) {}
             var storedResponse = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
             if (JSON.stringify(storedResponse).length <= TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS) {
               patch.response_body = storedResponse;
@@ -4854,6 +5235,8 @@
                 try {
                   var parsed2 = JSON.parse(jsonStr);
                   var hit = false;
+                  // (Fix 24, v4.351) Feed the thinking accumulator (counts only; never stores content).
+                  try { tmThinkAccumulateEvent(thinkAcc, parsed2); } catch (eTk) {}
                   // Generic fallback for unfamiliar providers / field nesting. This is read-only:
                   // it merely promotes cache read/write + cost evidence into the capture/widget.
                   var genericUsage = tmExtractKnownUsageEvidence(parsed2);
@@ -4987,6 +5370,20 @@
             } catch (usageErr) {}
           }
           tmUpdateCaptureRecord(captureId, patch);
+
+          // (Fix 24, v4.351) THINKING OBSERVATORY -- finalize OBSERVED thinking evidence for this turn
+          // and stamp it beside the requested level. One console line per turn: requested -> observed.
+          try {
+            var _tkRec = getCaptureById(captureId);
+            var _tkObs = tmThinkFinalizeObs(thinkAcc,
+              patch.response_usage || (_tkRec && _tkRec.response_usage) || null,
+              patch.response_anthropic_usage || (_tkRec && _tkRec.response_anthropic_usage) || null,
+              _tkRec && _tkRec._model);
+            tmUpdateCaptureRecord(captureId, { _think_obs: _tkObs });
+            var _tkReq = _tkRec && _tkRec._think_req;
+            console.log('\ud83e\udde0 [v' + EXT_VERSION + '] ' + ((_tkRec && _tkRec._model) || '?') + ' via ' + ((_tkReq && _tkReq.route) || '?') +
+              ' [' + ((_tkReq && _tkReq.protocol) || '?') + ']: requested ' + ((_tkReq && _tkReq.summary) || '?') + ' \u2192 observed ' + (_tkObs && _tkObs.summary));
+          } catch (eTk) {}
 
           // (v4.63) Feed the always-visible widget header with this (most-recent) payload's status.
           try {
@@ -11548,6 +11945,9 @@
       response_content_type: cap.response_headers ? (cap.response_headers['content-type'] || cap.response_headers['Content-Type'] || null) : null,
       response_usage: cap.response_usage || null,
       response_anthropic_usage: cap.response_anthropic_usage || null,
+      // (Fix 24, v4.351) Thinking Observatory: requested vs observed thinking level for this turn.
+      think_req: cap._think_req || null,
+      think_obs: cap._think_obs || null,
       error: cap.error || null
     };
   }
