@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.358
+// Version: 4.359
 // Issues Fixed:
+//   - v4.359: FIX 24 BEACON CURATION (comment-only, zero behavior change). Removed the two UI-leaf
+//     beacons (Thinking Notes modal, Glyph Map modal -- reachable via badge/button wiring) and
+//     added ONE curated beacon on tmRecordThinkHistogram, the session thinking-histogram ledger
+//     writer (the session-state surface Phase 2 control will build on). The tm-thinking-observatory
+//     slice now holds the core pipeline: scan-outbound, accumulate-event, finalize-obs,
+//     classify-req, classify-obs, render-think-badge, record-think-histogram.
 //   - v4.358: AUDIT NIT (Fable 5.1 review of Qwen 3.8 Max's v4.357): a 0-token turn rendered the
 //     leading-edge amount glyph as '\ud83d\udca4(0)' while the aggregate \ud83d\udca4 correctly carried no
 //     paren. Leading edge now passes null for 0 tokens, so \ud83d\udca4 renders bare on both sides;
@@ -1676,7 +1682,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.358';
+  const EXT_VERSION = '4.359';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4877,6 +4883,13 @@
   // anti-leak lifecycle), so it survives ring eviction on long sessions. Incremented once per turn at
   // response time; each state counted at most once per turn per side. Snapshotted onto the ring row
   // (_think_hist) so rows read as-of-that-turn; widget + hovercard read the ledger live.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRecordThinkHistogram-1avf,
+  //   role=__lambdao_1.tmRecordThinkHistogram,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.356+): session thinking histogram ledger writer -- per-glyph turn counts + per-band token/sealed-byte sums (_think_hist on tm_session_costs_v2); the session-state surface Phase 2 control will build on.,
+  // ]
   function tmRecordThinkHistogram(sessionId, model, endpointHost, isProxy, reqGlyphs, obsGlyphs, obsRec) {
     if (!sessionId || !model) return null;
     try {
@@ -4943,13 +4956,6 @@
     } catch (e) { return ''; }
   }
 
-  // @beacon[
-  //   id=fix24-think-glyph-map-modal,
-  //   role=__lambdao_1.tmShowThinkGlyphMapModal,
-  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
-  //   kind=ast,
-  //   comment=v4.355: read-only Glyph Map modal -- (1) legend of every REQ / OBS glyph, (2) the TM_THINK_MAP mapping table grouped by family with live 'seen xN in ring' counts, (3) UNMAPPED fields actually seen in the ring (path=value, count, models, routes) = the gap list Dan points the agent at.,
-  // ]
   function tmShowThinkGlyphMapModal() {
     if (typeof document === 'undefined') return;
     var old = document.getElementById('tm-think-map-overlay'); if (old) old.parentNode.removeChild(old);
@@ -5193,13 +5199,6 @@
   }
   function tmThinkTreeGet(tree, path) { try { var b = tree[path[0]]; if (path.length === 1) return b; var v = b.variants[path[1]]; if (path.length === 2) return v; var e = v.endpoints[path[2]]; if (path.length === 3) return e; return e.leaves[path[3]]; } catch (err) { return null; } }
 
-  // @beacon[
-  //   id=fix24-think-notes-modal,
-  //   role=__lambdao_1.tmShowThinkNotesModal,
-  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
-  //   kind=ast,
-  //   comment=Fix 24 (v4.352): Thinking Notes modal -- left: the SHARED 4-level provider catalog tree (tmBuildProviderCatalogTree, same as Rate Providers / Set Costs) with an 'All notes' root; click ANY node to select it (auto-expands) and the right pane shows every note in that subtree newest-first with req->obs context, edit/delete, and 'Add note here' on a leaf. Selection + expansion persist (tm_think_notes_tree_path_v1). Self-uninstalling Escape guard; tmPromptActive while open.,
-  // ]
   function tmShowThinkNotesModal(_isRerender) {
     if (typeof document === 'undefined') return;
     var notes = tmGetThinkNotes();
