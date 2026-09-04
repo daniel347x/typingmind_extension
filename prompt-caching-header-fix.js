@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.369
+// Version: 4.370
 // Issues Fixed:
+//   - v4.370: FIX 26 REASONING-REPLAY SUPPORT MAP (TM_REPLAY_SUPPORT) + READ-ONLY VIEWER. Dan:
+//     'zero outbound reasoning turns means something completely different when the route CAN'T
+//     accept replay vs when it CAN.' New hard-coded table maps model family x protocol shape ->
+//     replay verdict (raw | enc | both | none; a trailing ? = documentation heuristic to verify
+//     live -- the Fix 26 tracker is the empirical truth over time): Anthropic BOTH; OpenAI NONE
+//     on chat-completions but BOTH on Responses; Kimi RAW (docs require); Gemini BOTH
+//     (thoughtSignature mandatory on tool turns); Grok-via-OpenRouter ENC (origin-sealed blobs);
+//     DeepSeek NONE per docs; MiniMax RAW; GLM/Qwen flagged verify-live. The red-gate now
+//     consults the TABLE (DeepSeek correctly stops being red-eligible; uncertain verdicts stay
+//     eligible but flag their ? in the tooltip). Warning tooltips NAME the route's verdict and
+//     explicitly say '0 outbound turns is EXPECTED, not loss' on none-verdict routes; the
+//     _replay_warn stamp carries support{fam,replay,note}. New read-only 'Replay Map' modal
+//     (ring-modal control row, sibling of the Glyph Map) renders the whole table.
 //   - v4.369: FIX 26 OUTBOUND REASONING CENSUS (_replay_out stamped on EVERY capture, warning or
 //     not): the headline confirmation Dan asked for -- 'how many chat turns in THIS outbound
 //     payload actually carried reasoning?' -- split non-encrypted vs encrypted (raw_turns /
@@ -1871,7 +1884,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.369';
+  const EXT_VERSION = '4.370';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6613,14 +6626,61 @@
     } catch (e2) {}
   }
 
+  // (v4.370) REASONING-REPLAY SUPPORT MAP: which models/routes accept reasoning replay, and in
+  // which form. Verdicts: 'raw' | 'enc' | 'both' | 'none' ('?' = documentation heuristic, verify
+  // live -- the Fix 26 tracker is the empirical truth over time). First matching row wins.
+  var TM_REPLAY_SUPPORT = [
+    { fam: 'Anthropic Claude (Messages API, direct or proxied)', match: /claude|anthropic/i, proto: 'anthropic', replay: 'both',
+      note: 'thinking blocks replayed verbatim (REQUIRED on tool-use turns); redacted_thinking = sealed encrypted thinking that must be replayed verbatim; block signatures must be preserved.' },
+    { fam: 'Anthropic Claude via OpenRouter (chat-completions)', match: /claude|anthropic/i, proto: 'openrouter', replay: 'raw?',
+      note: 'OpenRouter normalizes Claude to chat shape; reasoning blocks believed replayable to the same origin -- verify live.' },
+    { fam: 'OpenAI GPT-5.x / o-series (chat-completions)', match: /gpt|openai|^o[0-9]/i, proto: 'chat', replay: 'none',
+      note: 'chat-completions has NO reasoning-replay field: reasoning is server-side only, never sent back. Zero outbound reasoning turns is EXPECTED, not loss.' },
+    { fam: 'OpenAI GPT-5.x / o-series (Responses API)', match: /gpt|openai|^o[0-9]/i, proto: 'responses', replay: 'both',
+      note: 'reasoning items replayable (summary parts); encrypted replay via include:["reasoning.encrypted_content"]; previous_response_id chains server-side state.' },
+    { fam: 'Moonshot Kimi K2 / K3', match: /kimi|moonshot/i, proto: 'any', replay: 'raw',
+      note: 'reasoning_content returned; Moonshot docs recommend/require replaying it multi-turn (mandatory for tool-call thinking continuity). No encrypted form.' },
+    { fam: 'DeepSeek reasoner (R1)', match: /deepseek/i, proto: 'any', replay: 'none',
+      note: 'official docs: reasoning_content should NOT be sent back in later turns. Zero outbound reasoning is EXPECTED, not loss.' },
+    { fam: 'xAI Grok via OpenRouter', match: /grok|x-ai/i, proto: 'openrouter', replay: 'enc',
+      note: 'mints sealed reasoning.encrypted blobs replayable to the SAME origin endpoint only (Fix 19 keeps origin-matching blobs, strips foreign).' },
+    { fam: 'xAI Grok (direct)', match: /grok|x-ai|xai/i, proto: 'any', replay: 'none?',
+      note: 'xAI guidance: reasoning_content is not replayed (stateless). Verify live.' },
+    { fam: 'Google Gemini 3 / 2.5 (native)', match: /gemini/i, proto: 'gemini', replay: 'both',
+      note: 'thought parts replayable; thoughtSignature REQUIRED on function-calling turns (Gemini 3) or the request 400s; 2.5 thinking summaries via includeThoughts.' },
+    { fam: 'Zhipu GLM 4.5+', match: /glm|zhipu/i, proto: 'any', replay: 'raw?',
+      note: 'thinking content returned; believed replayable / recommended multi-turn -- verify live.' },
+    { fam: 'MiniMax M2 / M3', match: /minimax/i, proto: 'any', replay: 'raw',
+      note: 'interleaved thinking: reasoning blocks are preserved in history for multi-turn per MiniMax docs.' },
+    { fam: 'Qwen (DashScope)', match: /qwen|dashscope/i, proto: 'any', replay: 'none?',
+      note: 'reasoning_content returned; believed NOT replayable per docs -- verify live.' },
+    { fam: 'OpenRouter (generic reasoning models)', match: /./, proto: 'openrouter', replay: 'unknown',
+      note: 'OpenRouter advertises reasoning preservation for reasoning models routed to the same origin; per-model behavior undocumented -- verify live.' }
+  ];
+
+  // Resolve the replay-support verdict for (model, protocol, host). Protocol class derives from
+  // the request shape; OpenRouter is its OWN class (blob semantics differ). Always returns a row
+  // (UNKNOWN fallback) so tooltips can name the verdict.
+  function tmReplaySupportFor(model, protocol, host) {
+    var p = String(protocol || '');
+    var proto = /anthropic/i.test(p) ? 'anthropic' : /responses/i.test(p) ? 'responses' : /gemini/i.test(p) ? 'gemini' : 'chat';
+    if (/openrouter/i.test(String(host || ''))) proto = 'openrouter';
+    var m = String(model || '');
+    for (var i = 0; i < TM_REPLAY_SUPPORT.length; i++) {
+      var row = TM_REPLAY_SUPPORT[i];
+      if (!row.match.test(m)) continue;
+      if (row.proto !== 'any' && row.proto !== proto) continue;
+      return row;
+    }
+    return { fam: 'Unmapped model family', match: null, proto: 'any', replay: 'unknown', note: 'no replay-support mapping for this model family -- add one to TM_REPLAY_SUPPORT as evidence accrues.' };
+  }
+
   // Does this route support replaying received reasoning at all? (No mechanism -> nothing to lose.)
+  // (v4.370) Now table-driven; uncertain ('?') verdicts stay red-eligible but flag in the tooltip.
   function tmReplayRouteSupports(protocol, model, host) {
     try {
-      var p = String(protocol || '');
-      if (/anthropic/i.test(p)) return true;
-      if (/responses/i.test(p)) return true;
-      if (/gemini/i.test(p)) return true;
-      if (/openai|chat/i.test(p)) return /kimi|moonshot|deepseek|glm|zhipu/i.test(String(model || '') + ' ' + String(host || ''));
+      var v = tmReplaySupportFor(model, protocol, host).replay;
+      return v === 'raw' || v === 'enc' || v === 'both' || v === 'raw?' || v === 'enc?' || v === 'both?';
     } catch (e) {}
     return false;
   }
@@ -6707,6 +6767,7 @@
       var model = record._model || (body && body.model) || ''; if (!model) return null;
       var host = tmExtractEndpointHost({ url: url, headers: headersNorm || {} });
       var protocol = (record._think_req && record._think_req.protocol) || '';
+      var support = tmReplaySupportFor(model, protocol, host);
       var routeOk = tmReplayRouteSupports(protocol, model, host);
       var counts = countsIn || tmCountOutboundReasoning(body);
       var ledger = tmReplayLedgerRead();
@@ -6726,6 +6787,7 @@
       else if (otherInBlocks > 0 && counts.totalBlocks < ownInBlocks + otherInBlocks) level = 'yellow';
       if (!level) return null;
       return { v: 1, level: level, sid: sidStr, model: model, host: host, protocol: protocol, routeOk: routeOk,
+        support: { fam: support.fam, replay: support.replay, note: support.note },
         out: { rawBlocks: counts.rawBlocks, rawChars: counts.rawChars, encBlocks: counts.encBlocks, encChars: counts.encChars },
         origins: origins, ts: Date.now() };
     } catch (e) { return null; }
@@ -6741,6 +6803,10 @@
       } else {
         lines.push('Cross-model reasoning not in this payload: this conversation received reasoning from OTHER model/endpoint origin(s) that cannot be replayed to ' + w.model + ' @ ' + w.host + ' (foreign encrypted blobs are sealed to their origin; foreign raw reasoning is typically dropped in conversion). Context from those turns is missing on this route.');
       }
+      var sup = w.support || { fam: '?', replay: (w.routeOk ? 'raw?' : 'unknown'), note: '' };
+      lines.push('');
+      lines.push('Replay support on THIS route -- ' + sup.fam + ': ' + String(sup.replay || '?').toUpperCase() + (sup.note ? (' -- ' + sup.note) : ''));
+      if (sup.replay === 'none' || sup.replay === 'none?') lines.push('NOTE: this route does NOT accept reasoning replay -- 0 outbound reasoning turns is EXPECTED, not history loss.');
       lines.push('');
       lines.push('Received per origin (this conversation):');
       (w.origins || []).forEach(function(o) { lines.push('- ' + o.model + ' @ ' + o.host + ': ' + o.rawBlocks + ' raw (' + tmThinkFmtK(o.rawChars) + 'c) + ' + o.encBlocks + ' encrypted (' + tmThinkFmtK(o.encChars) + 'c) over ' + o.turns + ' turn(s)' + (o.own ? '  <- THIS origin' : '')); });
@@ -6749,6 +6815,35 @@
       if (w.level === 'red') return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + (parseInt(fs, 10) + 5 || 15) + 'px;font-weight:900;color:#ff4d4d;text-shadow:0 0 7px rgba(255,60,60,0.85);margin:0 3px 0 1px;">\u26a0\ufe0f\u26a0\ufe0f</span>';
       return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + fs + ';color:#ffd166;margin:0 3px 0 1px;">\u26a0\ufe0f</span>';
     } catch (e) { return ''; }
+  }
+
+  // (v4.370) Read-only REASONING-REPLAY SUPPORT MAP modal (sibling of the Glyph Map modal).
+  function tmShowReplaySupportModal() {
+    if (typeof document === 'undefined') return;
+    var old = document.getElementById('tm-replay-support-overlay'); if (old) old.parentNode.removeChild(old);
+    var overlay = document.createElement('div'); overlay.id = 'tm-replay-support-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:78vw;max-width:1050px;height:80vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var vColor = { raw: '#8ef0a0', enc: '#c8b4ff', both: '#7fd8ff', none: '#ff9b9b', unknown: '#9aa4b2' };
+    function vc(v) { return vColor[String(v).replace('?', '')] || '#9aa4b2'; }
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="font-weight:bold;font-size:13px;color:#ffd166;">\u21c4 Reasoning-Replay Support Map <span style="color:#8b93a3;font-weight:normal;font-size:11px;">(read-only; documentation heuristics -- the Fix 26 tracker gives the EMPIRICAL truth live)</span></span><button data-action="close-replay-support" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.5;">RAW = raw reasoning text accepted back \u00b7 ENC = sealed/encrypted blobs accepted back \u00b7 BOTH = both forms \u00b7 NONE = no replay mechanism (zero outbound reasoning turns is EXPECTED, not loss). A trailing ? marks a documentation heuristic to verify live. Scope: ANY = all wire shapes for that family; otherwise the named shape only. First matching row wins.</div>';
+    var body = '<div style="overflow-y:auto;flex:1 1 auto;border-top:1px solid rgba(255,255,255,0.08);padding-top:6px;"><table style="border-collapse:collapse;font-size:11px;width:100%;">';
+    body += '<tr style="color:#8b93a3;text-align:left;"><th style="padding:3px 8px;">Model family</th><th style="padding:3px 8px;">Accepts</th><th style="padding:3px 8px;">Scope</th><th style="padding:3px 8px;">Notes</th></tr>';
+    for (var i = 0; i < TM_REPLAY_SUPPORT.length; i++) {
+      var r = TM_REPLAY_SUPPORT[i];
+      body += '<tr style="border-top:1px solid rgba(255,255,255,0.06);"><td style="padding:3px 8px;color:#e6e6ee;font-weight:600;white-space:nowrap;">' + escapeHtml(r.fam) + '</td><td style="padding:3px 8px;font-weight:700;color:' + vc(r.replay) + ';white-space:nowrap;">' + escapeHtml(String(r.replay).toUpperCase()) + '</td><td style="padding:3px 8px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(r.proto) + '</td><td style="padding:3px 8px;color:#b8b8c8;">' + escapeHtml(r.note) + '</td></tr>';
+    }
+    body += '</table></div>';
+    box.innerHTML = h + body;
+    overlay.appendChild(box);
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); }
+    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
+    overlay.addEventListener('click', function(ev) { var t = ev.target; if (t === overlay || (t && t.dataset && t.dataset.action === 'close-replay-support')) close(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
   }
 
   // @beacon[
@@ -11557,10 +11652,11 @@
       // (Fix 24, v4.352) Thinking Observatory: report / quick note / notes modal. Resolved via
       // closest() because the badge span and buttons carry inner text nodes.
       try {
-        var tkEl = (t && t.closest) ? t.closest('[data-action="think-report"],[data-action="think-note"],[data-action="show-think-notes"],[data-action="show-think-map"]') : null;
+        var tkEl = (t && t.closest) ? t.closest('[data-action="think-report"],[data-action="think-note"],[data-action="show-think-notes"],[data-action="show-think-map"],[data-action="show-replay-support"]') : null;
         if (tkEl && tkEl.dataset) {
           ev.stopPropagation();
           if (tkEl.dataset.action === 'show-think-map') { tmShowThinkGlyphMapModal(); return; }
+          if (tkEl.dataset.action === 'show-replay-support') { tmShowReplaySupportModal(); return; }
           if (tkEl.dataset.action === 'show-think-notes') { tmShowThinkNotesModal(); return; }
           if (tkEl.dataset.action === 'think-report') { tmShowThinkReport(tkEl.dataset.captureId); return; }
           if (tkEl.dataset.action === 'think-note') {
@@ -15420,6 +15516,8 @@
     initRowHtml += '<button data-action="show-think-notes" title="Thinking Notes: your experience with thinking levels, by model / route / serving provider (subtree aggregation)" style="font-size:10px;background:#2a1a3a;color:#c8b4ff;border:1px solid #4a3a6a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\ud83e\udde0 Thinking Notes</button>';
     // (v4.355) Glyph Map: legend + raw-field mapping table + unmapped-fields gap list.
     initRowHtml += '<button data-action="show-think-map" title="Thinking Glyph Map: what every \ud83e\udde0 glyph means, how each provider\'s raw fields map onto them, and which fields are still unmapped" style="font-size:10px;background:#1a2a2a;color:#8ef0d0;border:1px solid #2a4a4a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\ud83d\uddfa\ufe0f Glyph Map</button>';
+    // (v4.370) Reasoning-Replay Support Map: which models/routes accept replayed reasoning.
+    initRowHtml += '<button data-action="show-replay-support" title="Reasoning-Replay Support Map: which models/routes accept replayed reasoning (raw vs encrypted), per documentation -- the Fix 26 tracker gives the empirical truth live" style="font-size:10px;background:#2a2a1a;color:#ffd166;border:1px solid #5a5a2a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\u21c4 Replay Map</button>';
     initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
