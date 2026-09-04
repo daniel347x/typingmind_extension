@@ -1,6 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.372
+// Version: 4.373
 // Issues Fixed:
+//   - v4.373: GROUPED GLYPH TOOLTIPS + no help-cursor (per Dan). (1) Hovering ANY glyph in a
+//     subgroup now shows ONE tooltip listing EVERY glyph in that group -- the glyph itself at the
+//     left, its text indented beside/below it, a blank line between entries -- instead of forcing
+//     a glyph-by-glyph hunt (annoying, each with its own hover delay, and you forget the previous
+//     one before the next appears). Seeing the actual glyphs inside the tooltip also lets them be
+//     compared directly against the row. Groups: REQ current · OBS evidence (on the label) · OBS
+//     current data (count / visibility / census) · each aggregate cluster. Children now render
+//     title-less (a child title would win over the group's) via tmThinkGlyphHtml(gl, fs, true),
+//     and tmThinkGroupTip composes the combined text. (2) cursor:help removed from every think-row
+//     element: the question-mark cursor covered the tooltip and fought Dan's cursor mod.
 //   - v4.372: OBS-ROW REDESIGN + SESSION REASONING HISTOGRAM + WARNING-TOOLTIP REWRITE (per Dan).
 //     (1) The amount BAND glyph is GONE from both the current-turn row and the aggregates ('the
 //     number is what matters; a heuristic light/heavy verdict is worthless'). The reasoning-token
@@ -1920,7 +1930,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.372';
+  const EXT_VERSION = '4.373';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5393,11 +5403,27 @@
   function tmThinkGlyphTitle(gl) {
     return gl.label + ' \u2014 ' + gl.desc + (gl.raws && gl.raws.length ? ('\n' + gl.raws.join('\n')) : '');
   }
-  // One glyph span (title carries meaning + raw fields). Value (budget / token count) rides as a small suffix.
-  function tmThinkGlyphHtml(gl, fs) {
+  // (v4.373) ONE grouped tooltip for a whole glyph SUBGROUP: glyph at the left, its first line
+  // beside it, any further lines indented under it, a blank line between entries. Native title
+  // attributes are plain text, so layout is spaces + newlines only.
+  function tmThinkGroupTip(entries) {
+    var out = [];
+    (entries || []).forEach(function(e) {
+      if (!e) return;
+      var ls = (e.lines || []).filter(function(x) { return x != null && String(x).length > 0; });
+      if (!ls.length) return;
+      if (out.length) out.push('');
+      out.push((e.g || '') + ' ' + String(ls[0]));
+      for (var i = 1; i < ls.length; i++) out.push('   ' + String(ls[i]));
+    });
+    return out.join('\n');
+  }
+  // One glyph span. (v4.373) noTitle=true omits the per-glyph title so an enclosing SUBGROUP
+  // wrapper can carry one combined tooltip (a child title would otherwise win on hover).
+  function tmThinkGlyphHtml(gl, fs, noTitle) {
     var val = gl.value ? ('<span style="font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;opacity:0.9;margin-left:1px;">' + escapeHtml(String(gl.value)) + '</span>') : '';
     var color = gl.state === 'NONE' ? '#ffb84d' : gl.state === 'UNMAPPED' ? '#ff9b9b' : gl.state === 'CONTRA' ? '#ff6b6b' : gl.state === 'OVR' ? (gl.clamped ? '#ffd166' : '#7fd8ff') : 'inherit';
-    return '<span title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
+    return '<span' + (noTitle ? '' : (' title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '"')) + ' style="color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
   }
   // (v4.357) Thinking amounts helpers: sealed-bytes conversion + parenthesized 'tokens[, bytes]'.
   function tmThinkObsBytes(obs) { try { return obs && obs.encrypted_chars ? Math.round(Number(obs.encrypted_chars) * 3 / 4) : 0; } catch (e) { return 0; } }
@@ -5442,25 +5468,31 @@
       });
       var obsTok = (obs && obs.tokens && typeof obs.tokens.reasoning === 'number') ? obs.tokens.reasoning : null;
       var obsPct = (obs && typeof obs.ratio === 'number' && obs.ratio > 0) ? Math.round(obs.ratio * 100) : null;
-      var dataParts = [];
+      // (v4.373) Children render TITLE-LESS; each subgroup wrapper carries one combined tooltip.
+      var dataParts = [], dataTips = [];
       if (obsTok != null) {
-        var cTip = obsTok + ' reasoning tokens this turn' + (obsPct != null ? (' (' + obsPct + '% of the output tokens for this turn)') : '') + '.';
-        dataParts.push('<span title="' + escapeHtml(cTip) + '" style="cursor:help;white-space:nowrap;">\uD83E\uDDEE<span style="' + small + '">(' + escapeHtml(tmThinkFmtK(obsTok)) + ')</span></span>');
+        dataTips.push({ g: '\uD83E\uDDEE', lines: [obsTok + ' reasoning tokens this turn', obsPct != null ? (obsPct + '% of the output tokens for this turn') : ''] });
+        dataParts.push('<span style="white-space:nowrap;">\uD83E\uDDEE<span style="' + small + '">(' + escapeHtml(tmThinkFmtK(obsTok)) + ')</span></span>');
       }
       visG.forEach(function(g) {
         var vChars = 0, vWhat = 'reasoning text';
         if (g.state === 'VIS_RAW') vChars = Number((obs && obs.raw_chars) || 0);
         else if (g.state === 'VIS_SUM') { vChars = Number((obs && obs.summary_chars) || 0); vWhat = 'reasoning summary text'; }
         else if (g.state === 'VIS_ENC') { vChars = Number((obs && obs.encrypted_chars) || 0); vWhat = 'sealed (encrypted) reasoning'; }
-        var gHtml = tmThinkGlyphHtml(g, fs);
+        var gLines = tmThinkGlyphTitle(g).split('\n');
+        var gHtml = tmThinkGlyphHtml(g, fs, true);
         if (vChars > 0) {
           var vEst = Math.round(vChars / 4);
-          var vTip = vChars + ' characters of ' + vWhat + ' streamed back (\u2248' + vEst + ' tokens at ~4 chars/token' + (obsTok != null ? ('; the provider reported ' + obsTok) : '') + ').';
-          gHtml += '<span title="' + escapeHtml(vTip) + '" style="' + small + 'cursor:help;margin-left:3px;">' + escapeHtml(tmThinkFmtK(vChars) + 'c (~' + tmThinkFmtK(vEst) + 't)') + '</span>';
+          gLines.push(vChars + ' characters of ' + vWhat + ' streamed back (\u2248' + vEst + ' tokens at ~4 chars/token' + (obsTok != null ? ('; the provider reported ' + obsTok) : '') + ').');
+          gHtml += '<span style="' + small + 'margin-left:3px;">' + escapeHtml(tmThinkFmtK(vChars) + 'c (~' + tmThinkFmtK(vEst) + 't)') + '</span>';
         }
+        dataTips.push({ g: g.g, lines: gLines });
         dataParts.push('<span style="white-space:nowrap;">' + gHtml + '</span>');
       });
-      othG.forEach(function(g) { dataParts.push(tmThinkGlyphHtml(g, fs)); });
+      othG.forEach(function(g) {
+        dataTips.push({ g: g.g, lines: tmThinkGlyphTitle(g).split('\n') });
+        dataParts.push(tmThinkGlyphHtml(g, fs, true));
+      });
       // (v4.372) Fix 26 census chip: how many turns of THIS payload carried reasoning back.
       try {
         var roC = cap && cap._replay_out;
@@ -5469,20 +5501,28 @@
           var segs = [];
           if (rtC) segs.push(rtC + ' raw');
           if (etC) segs.push(etC + ' encrypted');
-          var roTip = 'Reasoning REPLAYED in this outbound payload: ' + segs.join(' + ') + ' prior turn(s) carried their reasoning back to the model' + (roC.raw_chars ? (' \u2014 ' + tmThinkFmtK(roC.raw_chars) + 'c raw' + (roC.enc_chars ? (' + ' + tmThinkFmtK(roC.enc_chars) + 'c sealed') : '')) : '') + '. This is the reasoning history the model can actually see.';
-          dataParts.push('<span title="' + escapeHtml(roTip) + '" style="cursor:help;white-space:nowrap;color:#8ef0a0;">\u21c4<span style="' + small + 'color:#8ef0a0;">' + (rtC + etC) + '</span></span>');
+          dataTips.push({ g: '\u21c4', lines: ['REPLAYED \u2014 ' + segs.join(' + ') + ' prior turn(s) carried reasoning back',
+            'This is the reasoning history the model can actually see in this payload' + (roC.raw_chars ? (' \u2014 ' + tmThinkFmtK(roC.raw_chars) + 'c raw' + (roC.enc_chars ? (' + ' + tmThinkFmtK(roC.enc_chars) + 'c sealed') : '')) : '') + '.'] });
+          dataParts.push('<span style="white-space:nowrap;color:#8ef0a0;">\u21c4<span style="' + small + 'color:#8ef0a0;">' + (rtC + etC) + '</span></span>');
         }
       } catch (eRoC) {}
-      var obsData = dataParts.length ? dataParts.join(' ') : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
-      var evHtml = evG.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
-      var reqLead = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join(' ');
+      function tmGrpWrap(list, joiner) {
+        if (!list || !list.length) return '';
+        return '<span title="' + escapeHtml(tmThinkGroupTip(list.map(function(g) { return { g: g.g, lines: tmThinkGlyphTitle(g).split('\n') }; }))) + '">' +
+          list.map(function(g) { return tmThinkGlyphHtml(g, fs, true); }).join(joiner || '') + '</span>';
+      }
+      var obsData = dataParts.length
+        ? ('<span title="' + escapeHtml(tmThinkGroupTip(dataTips)) + '">' + dataParts.join(' ') + '</span>')
+        : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
+      var evHtml = evG.length ? (' ' + tmGrpWrap(evG, '')) : '';
+      var reqLead = tmGrpWrap(R.glyphs, ' ');
       var line1 = '<div style="white-space:nowrap;">' +
         '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqLead +
         (hist ? tmThinkHistHtml(hist, 'req', fs) : '') + '</div>';
       // (Fix 26, v4.367) Reasoning-replay loss warning rides the OBS label zone (row-level status).
       var replayWarn = (cap && cap._replay_warn) ? tmReplayWarnHtml(cap._replay_warn, fs) : '';
       var line2 = '<div style="white-space:nowrap;margin-top:3px;">' +
-        '<span style="' + lab + 'color:#9aa4b2;">OBS</span>' + (evHtml ? (' ' + evHtml) : '') + replayWarn +
+        '<span style="' + lab + 'color:#9aa4b2;">OBS</span>' + evHtml + replayWarn +
         '<span style="display:inline-block;width:11px;"></span>' + obsData +
         (hist ? tmThinkHistHtml(hist, 'obs', fs) : '') + '</div>';
       return '<div style="display:flex;flex-direction:column;min-width:0;">' + line1 + line2 + '</div>';
@@ -5603,7 +5643,7 @@
       svg += '</svg>';
       var tip = 'Reasoning tokens per turn \u2014 ' + n + ' turn' + (n === 1 ? '' : 's') + ' this session; range ' + tmThinkFmtK(mn) + '\u2013' + tmThinkFmtK(mx) +
         (mode === 'binned' ? ('; ' + bars.length + ' equal-width bins (\u221an rule)') : '; one bar per distinct value, height = how many turns') + '. Hover a bar for its exact figures.';
-      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;cursor:help;margin-left:2px;">' + svg + '</span>';
+      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;margin-left:2px;">' + svg + '</span>';
     } catch (e) { return ''; }
   }
 
@@ -5634,16 +5674,24 @@
           var encSum = hist.obsEnc && typeof hist.obsEnc[k] === 'number' ? hist.obsEnc[k] : 0;
           paren = tmThinkAmtParen(tokSum || null, encSum);
         }
-        // (v4.366) Space between the turn count and the (tokens, KB) paren (was 'N(x)').
-        return { kind: st.kind, html: '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' \u2014 total ' + paren) : '') + ' \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>' };
+        // (v4.373) Title-less: the enclosing subgroup wrapper carries one combined tooltip.
+        return { kind: st.kind, g: st.g,
+          lines: [st.label + ' \u2014 ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' (total ' + paren + ')') : ''), st.desc],
+          html: '<span style="color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>' };
       });
       var pipe = '<span style="opacity:0.45;margin:0 12px;">\u2502</span>';
-      if (side !== 'obs') return pipe + runs.map(function(r) { return r.html; }).join(' ');
-      // (v4.366/v4.372) OBS aggregates: [histogram + evidence] \u2502 [visibility cluster].
-      var head = histoHtml ? [histoHtml] : [], tail = [];
-      runs.forEach(function(r) { (r.kind === 'visibility' ? tail : head).push(r.html); });
-      if (!head.length && !tail.length) return '';
-      return pipe + head.join(' ') + (tail.length ? (pipe + tail.join(' ')) : '');
+      // (v4.373) One combined tooltip per aggregate cluster.
+      function grp(list) {
+        if (!list.length) return '';
+        return '<span title="' + escapeHtml(tmThinkGroupTip(list)) + '">' + list.map(function(r) { return r.html; }).join(' ') + '</span>';
+      }
+      if (side !== 'obs') return pipe + grp(runs);
+      // (v4.366/v4.372) OBS aggregates: [histogram + evidence] | [visibility cluster].
+      var headRuns = [], tailRuns = [];
+      runs.forEach(function(r) { (r.kind === 'visibility' ? tailRuns : headRuns).push(r); });
+      var headHtml = (histoHtml || '') + (headRuns.length ? ((histoHtml ? ' ' : '') + grp(headRuns)) : '');
+      if (!headHtml && !tailRuns.length) return '';
+      return pipe + headHtml + (tailRuns.length ? (pipe + grp(tailRuns)) : '');
     } catch (e) { return ''; }
   }
 
@@ -7003,8 +7051,8 @@
         L.push('\u00b7 ' + x.m + ': ' + String(tmReplaySupportFor(x.m, x.p, x.h).replay || '?').toUpperCase());
       });
       var tip = L.join('\n');
-      if (w.level === 'red') return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + (parseInt(fs, 10) + 5 || 15) + 'px;font-weight:900;color:#ff4d4d;text-shadow:0 0 7px rgba(255,60,60,0.85);margin:0 3px 0 1px;">\u26a0\ufe0f\u26a0\ufe0f</span>';
-      return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + fs + ';color:#ffd166;margin:0 3px 0 1px;">\u26a0\ufe0f</span>';
+      if (w.level === 'red') return '<span title="' + escapeHtml(tip) + '" style="font-size:' + (parseInt(fs, 10) + 5 || 15) + 'px;font-weight:900;color:#ff4d4d;text-shadow:0 0 7px rgba(255,60,60,0.85);margin:0 3px 0 1px;">\u26a0\ufe0f\u26a0\ufe0f</span>';
+      return '<span title="' + escapeHtml(tip) + '" style="font-size:' + fs + ';color:#ffd166;margin:0 3px 0 1px;">\u26a0\ufe0f</span>';
     } catch (e) { return ''; }
   }
 
