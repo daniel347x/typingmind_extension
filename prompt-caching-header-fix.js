@@ -1,6 +1,26 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.354
+// Version: 4.355
 // Issues Fixed:
+//   - v4.355: FIX 24 -- THINKING GLYPHS (normalize, then draw). Raw provider field names are for
+//     hover/JSON, not for reading at a glance. NEW two-layer design: TM_THINK_MAP is a declarative
+//     table (field path + value pattern -> canonical state; first match wins) covering Anthropic
+//     thinking.*/output_config.effort, OpenAI-compat reasoning_effort, OpenRouter/Responses
+//     reasoning.*, include_reasoning, include[], Gemini thinkingConfig.* (+ extra_body.google.*),
+//     Qwen enable_thinking/thinking_budget/chat_template_kwargs. TM_THINK_STATES is the ONE fixed
+//     glyph vocabulary: REQ = \ud83d\udeab OFF \ud83d\udd39 LOW \ud83d\udd38 MED \ud83d\udd36 HIGH \ud83d\udd34 MAX \u00b7 \ud83c\udf9a\ufe0f ADAPTIVE \ud83d\udcb0 BUDGET n \ud83d\udfe2 ON
+//     \u00b7 \ud83d\ude48 hidden-by-request \ud83d\udc41\ufe0f visible-requested \ud83d\udd12 encrypted-replay \u00b7 \u2754 NONE (orange) \u26aa IMPLICIT
+//     \ud83e\udde9 UNMAPPED; OBS = absolute thinking-token band \ud83d\udca4 0 / \ud83d\udd39 <1K / \ud83d\udd38 1-8K / \ud83d\udd36 8-32K / \ud83d\udd34 >32K
+//     (+ count) \u00b7 evidence \u2705 reported \u2248 estimated ~ heuristic \u2753 none \u00b7 visibility \ud83d\udcd6 raw \ud83d\udcdd summary
+//     \ud83d\udd12 encrypted \ud83d\ude48 omitted-by-request \ud83d\udc7b hidden \u00b7 \u26a0\ufe0f CONTRADICTION (OFF requested but
+//     tokens reported; hidden requested but content streamed). A response never states a level, so
+//     none is inferred -- the amount band IS the observation. The shared badge now renders
+//     '\ud83e\udde0 REQ <glyphs> -> OBS <glyphs>' everywhere (ring rows, widget, hovercard); each glyph's
+//     hover = meaning + the raw path=value(s) that produced it; the old compact text moved into
+//     the badge tooltip; the Thinking Report gains glyphs.req / glyphs.obs with provenance. NEW
+//     '\ud83d\uddfa\ufe0f Glyph Map' modal (ring control row): REQ/OBS legends, the full mapping table grouped
+//     by family with live 'seen xN' counts from the ring, and the UNMAPPED-fields-seen gap list
+//     (path=value, count, models, routes) -- Dan points at a row, the agent adds the mapping.
+//     Session histogram (per-glyph turn counts) follows in v4.356.
 //   - v4.354: HOVERCARD THINKING ROW + SHARPER DIVIDERS. Each sessions-in-memory row gains a third
 //     line: the Fix 24 Thinking Observatory badge for that identity's newest stamped turn
 //     ('\ud83e\udde0 <requested> -> <observed>', orange on NONE; click -> Thinking Report) plus the
@@ -1626,7 +1646,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.354';
+  const EXT_VERSION = '4.355';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4545,10 +4565,13 @@
       var cap = getCaptureById(captureId);
       if (!cap) return;
       var req = cap._think_req || null, obs = cap._think_obs || null;
+      var Rg = tmThinkClassifyReq(req), Og = obs ? tmThinkClassifyObs(obs, Rg.glyphs) : { glyphs: [] };
       var report = {
         captured: cap.ts_local || cap.ts, model: tmCaptureModel(cap), url: cap.url,
         route: req && req.route, protocol: (req && req.protocol) || cap.protocol,
         serving_provider: (typeof cap._provider_label === 'string' && cap._provider_label) || cap.response_provider || null,
+        glyphs: { req: Rg.glyphs.map(function(g) { return g.g + ' ' + g.label + (g.value ? (' ' + g.value) : '') + '  <- ' + g.raws.join(' ; '); }),
+                  obs: Og.glyphs.map(function(g) { return g.g + ' ' + g.label + (g.value ? (' ' + g.value) : '') + '  <- ' + g.raws.join(' ; '); }) },
         requested_compact: tmThinkCompactReq(req), observed_compact: tmThinkCompactObs(obs, req),
         interpretation: tmThinkInterpret(req, obs),
         requested: req, observed: obs,
@@ -4558,6 +4581,303 @@
       try { copyTextToClipboard(txt, 'Thinking Report'); } catch (e) {}
       tmShowJsonViewerModal(txt, '\ud83e\udde0 Thinking Report \u2014 ' + (report.model || '?') + ' via ' + (report.route || '?'));
     } catch (e) {}
+  }
+
+  // ---------- v4.355: THINKING GLYPHS -- normalize every provider's raw fields into ONE fixed vocabulary ----------
+  // Layer 1: TM_THINK_MAP, a declarative table (field path + value pattern -> canonical state). Layer 2:
+  // TM_THINK_STATES, the small glyph vocabulary Dan learns once. Anything the scanner finds that matches no
+  // row -> 🧩 UNMAPPED (hover shows the raw field) AND it is listed in the Glyph Map modal's gap section.
+  // Rendering: same intensity scale on both sides (🔹🔸🔶🔴): REQ = level asked for, OBS = absolute thinking-token band.
+  var TM_THINK_STATES = {
+    OFF:      { g: '\ud83d\udeab', label: 'OFF',       side: 'req', kind: 'level', order: 0,  desc: 'thinking explicitly disabled' },
+    LOW:      { g: '\ud83d\udd39', label: 'LOW',       side: 'req', kind: 'level', order: 1,  desc: 'low / minimal effort requested' },
+    MED:      { g: '\ud83d\udd38', label: 'MED',       side: 'req', kind: 'level', order: 2,  desc: 'medium effort requested' },
+    HIGH:     { g: '\ud83d\udd36', label: 'HIGH',      side: 'req', kind: 'level', order: 3,  desc: 'high effort requested' },
+    MAX:      { g: '\ud83d\udd34', label: 'MAX',       side: 'req', kind: 'level', order: 4,  desc: 'maximum effort requested (xhigh / max)' },
+    ADAPTIVE: { g: '\ud83c\udf9a\ufe0f', label: 'ADAPTIVE', side: 'req', kind: 'mode', order: 5, rank: -2, desc: 'the model decides how much to think per turn (adaptive / dynamic budget)' },
+    BUDGET:   { g: '\ud83d\udcb0', label: 'BUDGET',    side: 'req', kind: 'mode',  order: 6,  desc: 'explicit thinking token budget (number shown)', hasValue: true },
+    ON:       { g: '\ud83d\udfe2', label: 'ON',        side: 'req', kind: 'mode',  order: 7,  rank: -1, desc: 'thinking enabled with no level given' },
+    HIDE_REQ: { g: '\ud83d\ude48', label: 'HIDDEN-BY-REQUEST', side: 'req', kind: 'visibility', order: 8, desc: 'the request asks the provider NOT to return thinking content (display=omitted / exclude=true)' },
+    SHOW_REQ: { g: '\ud83d\udc41\ufe0f', label: 'VISIBLE-REQUESTED', side: 'req', kind: 'visibility', order: 9, desc: 'the request asks for thinking content / summaries to be returned' },
+    ENC_REQ:  { g: '\ud83d\udd12', label: 'ENCRYPTED-REPLAY', side: 'req', kind: 'visibility', order: 10, desc: 'encrypted reasoning replay requested (include reasoning.encrypted_content)' },
+    NONE:     { g: '\u2754', label: 'NONE',      side: 'req', kind: 'absence', order: 11, desc: 'NO thinking control sent -- provider/model default (orange)' },
+    IMPLICIT: { g: '\u26aa', label: 'IMPLICIT',  side: 'req', kind: 'absence', order: 12, desc: 'no explicit control; thinking implied by the model name only' },
+    UNMAPPED: { g: '\ud83e\udde9', label: 'UNMAPPED',  side: 'req', kind: 'absence', order: 13, desc: 'a thinking-ish field was sent that the Glyph Map does not know -- hover for the raw field, then tell the agent to add a mapping' },
+    IGNORE:   { g: '',  label: 'IGNORE',           side: 'req', kind: 'meta', order: 99, desc: 'known field with no bearing on the level (not displayed)' },
+    AMT0:    { g: '\ud83d\udca4', label: 'NO THINKING', side: 'obs', kind: 'amount', order: 0, desc: '0 thinking tokens this turn' },
+    AMT1:    { g: '\ud83d\udd39', label: 'LIGHT',       side: 'obs', kind: 'amount', order: 1, desc: 'under 1K thinking tokens' },
+    AMT2:    { g: '\ud83d\udd38', label: 'MODERATE',    side: 'obs', kind: 'amount', order: 2, desc: '1K - 8K thinking tokens' },
+    AMT3:    { g: '\ud83d\udd36', label: 'HEAVY',       side: 'obs', kind: 'amount', order: 3, desc: '8K - 32K thinking tokens' },
+    AMT4:    { g: '\ud83d\udd34', label: 'VERY HEAVY',  side: 'obs', kind: 'amount', order: 4, desc: 'over 32K thinking tokens' },
+    EV_REP:  { g: '\u2705', label: 'REPORTED',   side: 'obs', kind: 'evidence', order: 5, desc: 'thinking token count reported by the provider' },
+    EV_EST:  { g: '\u2248', label: 'ESTIMATED',  side: 'obs', kind: 'evidence', order: 6, desc: 'estimated from raw reasoning text (chars / 4)' },
+    EV_HEUR: { g: '~',      label: 'HEURISTIC',  side: 'obs', kind: 'evidence', order: 7, desc: 'inferred: completion tokens minus visible text (low confidence)' },
+    EV_NONE: { g: '\u2753', label: 'NO EVIDENCE', side: 'obs', kind: 'evidence', order: 8, desc: 'no thinking count and no reasoning content of any kind came back' },
+    VIS_RAW: { g: '\ud83d\udcd6', label: 'RAW',       side: 'obs', kind: 'visibility', order: 9,  desc: 'raw thinking text was streamed back' },
+    VIS_SUM: { g: '\ud83d\udcdd', label: 'SUMMARY',   side: 'obs', kind: 'visibility', order: 10, desc: 'a reasoning summary was streamed back' },
+    VIS_ENC: { g: '\ud83d\udd12', label: 'ENCRYPTED', side: 'obs', kind: 'visibility', order: 11, desc: 'encrypted / redacted reasoning blocks came back (sealed to the origin model)' },
+    VIS_OMIT:{ g: '\ud83d\ude48', label: 'OMITTED',   side: 'obs', kind: 'visibility', order: 12, desc: 'no thinking content came back because the request asked for none' },
+    VIS_HID: { g: '\ud83d\udc7b', label: 'HIDDEN',    side: 'obs', kind: 'visibility', order: 13, desc: 'thinking tokens reported but nothing was shown, and nothing asked for it to be hidden' },
+    CONTRA:  { g: '\u26a0\ufe0f', label: 'CONTRADICTION', side: 'obs', kind: 'flag', order: 14, desc: 'observed behavior contradicts the request (e.g. OFF requested but thinking tokens reported)' }
+  };
+
+  // Rows are matched IN ORDER by control path (exact string or list) + value pattern
+  // (string / list = case-insensitive exact; RegExp; 'number'; '*'). First match wins.
+  var TM_THINK_GEMINI_LEVEL = ['generationConfig.thinkingConfig.thinkingLevel', 'generationConfig.thinkingConfig.thinking_level'];
+  var TM_THINK_GEMINI_BUDGET = ['generationConfig.thinkingConfig.thinkingBudget', 'generationConfig.thinkingConfig.thinking_budget'];
+  var TM_THINK_GEMINI_THOUGHTS = ['generationConfig.thinkingConfig.includeThoughts', 'generationConfig.thinkingConfig.include_thoughts'];
+  var TM_THINK_MAP = [
+    { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.type', val: 'adaptive', state: 'ADAPTIVE' },
+    { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.type', val: 'enabled',  state: 'ON' },
+    { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.type', val: 'disabled', state: 'OFF' },
+    { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.budget_tokens', val: 'number', state: 'BUDGET' },
+    { fam: 'Anthropic Messages', path: 'thinking.display', val: 'omitted', state: 'HIDE_REQ' },
+    { fam: 'Anthropic Messages', path: 'thinking.display', val: ['summarized', 'summary', 'full', 'visible'], state: 'SHOW_REQ' },
+    { fam: 'Anthropic Messages', path: 'output_config.effort', val: ['low', 'minimal'], state: 'LOW' },
+    { fam: 'Anthropic Messages', path: 'output_config.effort', val: 'medium', state: 'MED' },
+    { fam: 'Anthropic Messages', path: 'output_config.effort', val: 'high', state: 'HIGH' },
+    { fam: 'Anthropic Messages', path: 'output_config.effort', val: ['max', 'xhigh'], state: 'MAX' },
+    { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: 'none', state: 'OFF' },
+    { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: ['minimal', 'low'], state: 'LOW' },
+    { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: 'medium', state: 'MED' },
+    { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: 'high', state: 'HIGH' },
+    { fam: 'OpenAI-compat Chat Completions (OpenAI / xAI / Moonshot / DeepInfra / Gemini-compat)', path: 'reasoning_effort', val: ['xhigh', 'max'], state: 'MAX' },
+    { fam: 'OpenRouter unified / OpenAI Responses `reasoning`', path: 'reasoning.effort', val: 'none', state: 'OFF' },
+    { fam: 'OpenRouter unified / OpenAI Responses `reasoning`', path: 'reasoning.effort', val: ['minimal', 'low'], state: 'LOW' },
+    { fam: 'OpenRouter unified / OpenAI Responses `reasoning`', path: 'reasoning.effort', val: 'medium', state: 'MED' },
+    { fam: 'OpenRouter unified / OpenAI Responses `reasoning`', path: 'reasoning.effort', val: 'high', state: 'HIGH' },
+    { fam: 'OpenRouter unified / OpenAI Responses `reasoning`', path: 'reasoning.effort', val: ['xhigh', 'max'], state: 'MAX' },
+    { fam: 'OpenRouter unified', path: 'reasoning.max_tokens', val: 'number', state: 'BUDGET' },
+    { fam: 'OpenRouter unified', path: 'reasoning.enabled', val: 'true',  state: 'ON' },
+    { fam: 'OpenRouter unified', path: 'reasoning.enabled', val: 'false', state: 'OFF' },
+    { fam: 'OpenRouter unified', path: 'reasoning.exclude', val: 'true',  state: 'HIDE_REQ' },
+    { fam: 'OpenRouter unified', path: 'reasoning.exclude', val: 'false', state: 'SHOW_REQ' },
+    { fam: 'OpenRouter unified (legacy)', path: 'include_reasoning', val: 'true',  state: 'SHOW_REQ' },
+    { fam: 'OpenRouter unified (legacy)', path: 'include_reasoning', val: 'false', state: 'HIDE_REQ' },
+    { fam: 'OpenAI Responses', path: 'reasoning.summary', val: ['auto', 'concise', 'detailed'], state: 'SHOW_REQ' },
+    { fam: 'OpenAI Responses', path: 'reasoning.summary', val: 'none', state: 'HIDE_REQ' },
+    { fam: 'OpenAI Responses', path: 'reasoning.context', val: '*', state: 'IGNORE', note: 'persisted-reasoning context mode -- not a level' },
+    { fam: 'OpenAI Responses', path: 'include[]', val: /encrypted/i, state: 'ENC_REQ' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_LEVEL, val: ['minimal', 'low'], state: 'LOW' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_LEVEL, val: 'medium', state: 'MED' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_LEVEL, val: 'high', state: 'HIGH' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_BUDGET, val: /^-1$/, state: 'ADAPTIVE', note: '-1 = dynamic budget' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_BUDGET, val: /^0$/, state: 'OFF' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_BUDGET, val: 'number', state: 'BUDGET' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_THOUGHTS, val: 'true',  state: 'SHOW_REQ' },
+    { fam: 'Gemini native', path: TM_THINK_GEMINI_THOUGHTS, val: 'false', state: 'HIDE_REQ' },
+    { fam: 'Gemini via OpenAI-compat (extra_body.google)', path: ['extra_body.google.thinking_config.thinking_budget', 'extra_body.google.thinking_config.thinkingBudget'], val: /^-1$/, state: 'ADAPTIVE' },
+    { fam: 'Gemini via OpenAI-compat (extra_body.google)', path: ['extra_body.google.thinking_config.thinking_budget', 'extra_body.google.thinking_config.thinkingBudget'], val: /^0$/, state: 'OFF' },
+    { fam: 'Gemini via OpenAI-compat (extra_body.google)', path: ['extra_body.google.thinking_config.thinking_budget', 'extra_body.google.thinking_config.thinkingBudget'], val: 'number', state: 'BUDGET' },
+    { fam: 'Gemini via OpenAI-compat (extra_body.google)', path: ['extra_body.google.thinking_config.include_thoughts', 'extra_body.google.thinking_config.includeThoughts'], val: 'true', state: 'SHOW_REQ' },
+    { fam: 'Qwen / vLLM', path: 'enable_thinking', val: 'true',  state: 'ON' },
+    { fam: 'Qwen / vLLM', path: 'enable_thinking', val: 'false', state: 'OFF' },
+    { fam: 'Qwen / vLLM', path: 'thinking_budget', val: /^0$/, state: 'OFF' },
+    { fam: 'Qwen / vLLM', path: 'thinking_budget', val: 'number', state: 'BUDGET' },
+    { fam: 'Qwen / vLLM', path: 'chat_template_kwargs.enable_thinking', val: 'true',  state: 'ON' },
+    { fam: 'Qwen / vLLM', path: 'chat_template_kwargs.enable_thinking', val: 'false', state: 'OFF' }
+  ];
+
+  function tmThinkValMatches(pattern, value) {
+    var s = String(value == null ? '' : value).trim().toLowerCase();
+    if (pattern === '*') return true;
+    if (pattern === 'number') return /^-?\d+(\.\d+)?$/.test(s);
+    if (pattern instanceof RegExp) return pattern.test(s);
+    if (Array.isArray(pattern)) { for (var i = 0; i < pattern.length; i++) if (String(pattern[i]).toLowerCase() === s) return true; return false; }
+    return String(pattern).toLowerCase() === s;
+  }
+  // -> { idx, row } or null
+  function tmThinkMatchControl(path, value) {
+    try {
+      for (var i = 0; i < TM_THINK_MAP.length; i++) {
+        var row = TM_THINK_MAP[i];
+        var paths = Array.isArray(row.path) ? row.path : [row.path];
+        if (paths.indexOf(path) === -1) continue;
+        if (tmThinkValMatches(row.val, value)) return { idx: i, row: row };
+      }
+    } catch (e) {}
+    return null;
+  }
+  function tmThinkGlyph(stateKey, extra) {
+    var st = TM_THINK_STATES[stateKey] || TM_THINK_STATES.UNMAPPED;
+    var gl = { state: stateKey, g: st.g, label: st.label, kind: st.kind, order: (st.rank != null ? st.rank : st.order), desc: st.desc, value: null, raws: [], rowIdx: [] };
+    if (extra) { for (var k in extra) if (extra.hasOwnProperty(k)) gl[k] = extra[k]; }
+    return gl;
+  }
+
+  // @beacon[
+  //   id=fix24-think-classify-req,
+  //   role=__lambdao_1.tmThinkClassifyReq,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=v4.355: maps _think_req.controls through TM_THINK_MAP into canonical REQ glyphs (OFF/LOW/MED/HIGH/MAX, ADAPTIVE/BUDGET/ON, HIDE/SHOW/ENC, NONE/IMPLICIT/UNMAPPED); one glyph per state with all matching raw path=value pairs attached for hover; verdict NONE -> single orange NONE glyph.,
+  // ]
+  function tmThinkClassifyReq(req) {
+    var out = { glyphs: [], unmapped: [], isNone: false };
+    try {
+      if (!req) return out;
+      if (req.verdict === 'NONE') { out.isNone = true; out.glyphs.push(tmThinkGlyph('NONE', { raws: ['no thinking-control field in the outbound body'] })); return out; }
+      if (req.verdict === 'implicit-only') { out.glyphs.push(tmThinkGlyph('IMPLICIT', { raws: (req.implicit || []).slice() })); return out; }
+      var byState = {};
+      var C = req.controls || [];
+      for (var i = 0; i < C.length; i++) {
+        var c = C[i]; if (!c) continue;
+        var m = tmThinkMatchControl(c.path, c.value);
+        var key = m ? m.row.state : 'UNMAPPED';
+        if (key === 'IGNORE') continue;
+        if (!byState[key]) byState[key] = tmThinkGlyph(key);
+        byState[key].raws.push(c.path + '=' + String(c.value));
+        if (m) byState[key].rowIdx.push(m.idx);
+        if (key === 'BUDGET') byState[key].value = tmThinkFmtBudget(c.value);
+        if (key === 'UNMAPPED') out.unmapped.push({ path: c.path, value: c.value });
+      }
+      var U = req.unrecognized || [];
+      for (var u = 0; u < U.length; u++) {
+        if (!byState.UNMAPPED) byState.UNMAPPED = tmThinkGlyph('UNMAPPED');
+        byState.UNMAPPED.raws.push(U[u].path + '=' + String(U[u].value));
+        out.unmapped.push({ path: U[u].path, value: U[u].value });
+      }
+      for (var k in byState) if (byState.hasOwnProperty(k)) out.glyphs.push(byState[k]);
+      out.glyphs.sort(function(a, b) { return a.order - b.order; });
+      if (!out.glyphs.length) { out.isNone = true; out.glyphs.push(tmThinkGlyph('NONE', { raws: ['only non-level fields present: ' + C.map(function(c) { return c.path + '=' + String(c.value); }).join(', ')] })); }
+    } catch (e) {}
+    return out;
+  }
+
+  // @beacon[
+  //   id=fix24-think-classify-obs,
+  //   role=__lambdao_1.tmThinkClassifyObs,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=v4.355: turns _think_obs (+ the REQ glyphs for the join) into OBS glyphs -- absolute thinking-token band (0 / <1K / 1-8K / 8-32K / >32K), evidence quality (reported / estimated / heuristic / none), what visibility actually happened (raw / summary / encrypted / omitted-by-request / hidden), and a CONTRADICTION flag for hard request-vs-observation violations. Never infers a level from a response.,
+  // ]
+  function tmThinkClassifyObs(obs, reqGlyphs) {
+    var out = { glyphs: [] };
+    try {
+      if (!obs) return out;
+      var has = {}; (reqGlyphs || []).forEach(function(g) { has[g.state] = true; });
+      var tok = obs.tokens ? obs.tokens.reasoning : null;
+      var src = obs.tokens ? obs.tokens.source : 'none';
+      if (tok != null) {
+        var band = tok <= 0 ? 'AMT0' : tok < 1000 ? 'AMT1' : tok < 8000 ? 'AMT2' : tok < 32000 ? 'AMT3' : 'AMT4';
+        out.glyphs.push(tmThinkGlyph(band, { value: tok > 0 ? tmThinkFmtK(tok) : null, raws: [(obs.tokens.field || 'reasoning tokens') + '=' + tok] }));
+        out.glyphs.push(tmThinkGlyph(src === 'reported' ? 'EV_REP' : src === 'bytes-estimate' ? 'EV_EST' : 'EV_HEUR', { raws: ['source=' + src + (obs.tokens.field ? (' (' + obs.tokens.field + ')') : '')] }));
+      } else {
+        out.glyphs.push(tmThinkGlyph('EV_NONE', { raws: ['no reasoning token field; raw_chars=' + obs.raw_chars + ', encrypted_chars=' + obs.encrypted_chars] }));
+      }
+      var vis = [obs.visibility].concat(obs.also || []);
+      var visRaws = ['visibility=' + obs.visibility + (obs.also && obs.also.length ? ('+' + obs.also.join('+')) : ''), 'channels=' + ((obs.channels || []).join(',') || '-')];
+      var sawVis = false;
+      for (var i = 0; i < vis.length; i++) {
+        var v = vis[i];
+        if (v === 'raw') { out.glyphs.push(tmThinkGlyph('VIS_RAW', { raws: visRaws.concat(['raw_chars=' + obs.raw_chars]) })); sawVis = true; }
+        else if (v === 'summary') { out.glyphs.push(tmThinkGlyph('VIS_SUM', { raws: visRaws.concat(['summary_chars=' + obs.summary_chars]) })); sawVis = true; }
+        else if (v === 'encrypted') { out.glyphs.push(tmThinkGlyph('VIS_ENC', { raws: visRaws.concat(['encrypted_chars=' + obs.encrypted_chars]) })); sawVis = true; }
+        else if (v === 'hidden') { out.glyphs.push(tmThinkGlyph(has.HIDE_REQ ? 'VIS_OMIT' : 'VIS_HID', { raws: visRaws })); sawVis = true; }
+      }
+      if (!sawVis && has.HIDE_REQ) out.glyphs.push(tmThinkGlyph('VIS_OMIT', { raws: visRaws.concat(['request asked for no thinking content']) }));
+      if (has.OFF && tok > 0) out.glyphs.push(tmThinkGlyph('CONTRA', { raws: ['OFF requested but ' + tmThinkFmtK(tok) + ' thinking tokens reported'] }));
+      if (has.HIDE_REQ && (obs.raw_chars > 0 || obs.summary_chars > 0)) out.glyphs.push(tmThinkGlyph('CONTRA', { raws: ['hidden requested but reasoning content was streamed (' + (obs.raw_chars + obs.summary_chars) + ' chars)'] }));
+      out.glyphs.sort(function(a, b) { return a.order - b.order; });
+    } catch (e) {}
+    return out;
+  }
+
+  function tmThinkGlyphTitle(gl) {
+    return gl.label + ' \u2014 ' + gl.desc + (gl.raws && gl.raws.length ? ('\n' + gl.raws.join('\n')) : '');
+  }
+  // One glyph span (title carries meaning + raw fields). Value (budget / token count) rides as a small suffix.
+  function tmThinkGlyphHtml(gl, fs) {
+    var val = gl.value ? ('<span style="font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;opacity:0.9;margin-left:1px;">' + escapeHtml(String(gl.value)) + '</span>') : '';
+    var color = gl.state === 'NONE' ? '#ffb84d' : gl.state === 'UNMAPPED' ? '#ff9b9b' : gl.state === 'CONTRA' ? '#ff6b6b' : 'inherit';
+    return '<span title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
+  }
+  // REQ glyphs -> OBS glyphs, as ONE string. Used by the badge (rows / widget / hovercard).
+  function tmThinkGlyphRowHtml(cap, fs) {
+    try {
+      var req = cap && cap._think_req, obs = cap && cap._think_obs;
+      var R = tmThinkClassifyReq(req);
+      var O = obs ? tmThinkClassifyObs(obs, R.glyphs) : { glyphs: [] };
+      var reqHtml = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
+      var obsHtml = O.glyphs.length ? O.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('') : (cap && cap.response_status == null ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
+      var lab = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;font-weight:700;letter-spacing:0.3px;';
+      return '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqHtml +
+             ' <span style="opacity:0.5;">\u2192</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsHtml;
+    } catch (e) { return ''; }
+  }
+
+  // @beacon[
+  //   id=fix24-think-glyph-map-modal,
+  //   role=__lambdao_1.tmShowThinkGlyphMapModal,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=v4.355: read-only Glyph Map modal -- (1) legend of every REQ / OBS glyph, (2) the TM_THINK_MAP mapping table grouped by family with live 'seen xN in ring' counts, (3) UNMAPPED fields actually seen in the ring (path=value, count, models, routes) = the gap list Dan points the agent at.,
+  // ]
+  function tmShowThinkGlyphMapModal() {
+    if (typeof document === 'undefined') return;
+    var old = document.getElementById('tm-think-map-overlay'); if (old) old.parentNode.removeChild(old);
+    var seen = {}, unm = {}, rowsScanned = 0;
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = 0; i < ring.length; i++) {
+        var cap = ring[i]; if (!cap || !cap._think_req) continue;
+        rowsScanned++;
+        var R = tmThinkClassifyReq(cap._think_req);
+        for (var g = 0; g < R.glyphs.length; g++) { var ri = R.glyphs[g].rowIdx || []; for (var r = 0; r < ri.length; r++) seen[ri[r]] = (seen[ri[r]] || 0) + 1; }
+        for (var u = 0; u < R.unmapped.length; u++) {
+          var k = R.unmapped[u].path + '=' + String(R.unmapped[u].value);
+          if (!unm[k]) unm[k] = { count: 0, models: {}, routes: {} };
+          unm[k].count++;
+          unm[k].models[String(cap._model || (cap._think_req && cap._think_req.model) || '?')] = 1;
+          unm[k].routes[String((cap._think_req && cap._think_req.route) || '?')] = 1;
+        }
+      }
+    } catch (e) {}
+    var overlay = document.createElement('div'); overlay.id = 'tm-think-map-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:80vw;max-width:1100px;height:84vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;"><span style="font-weight:bold;font-size:13px;color:#c8b4ff;">\ud83d\uddfa\ufe0f Thinking Glyph Map <span style="color:#8b93a3;font-weight:normal;font-size:11px;">(read-only; agent-maintained; ' + rowsScanned + ' stamped rows scanned)</span></span><button data-action="close-think-map" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;">Every provider\'s raw thinking fields are normalized into this ONE vocabulary. REQ = what the outbound payload asked for. OBS = what actually came back (an absolute thinking-token band + evidence quality + visibility; a response never states a \'level\'). Anything unmapped shows \ud83e\udde9 and is listed at the bottom \u2014 point the agent at a row to add it.</div>';
+    var body = '<div style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
+    function section(title) { return '<div style="font-weight:700;font-size:12px;color:#8ef0a0;margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
+    function legend(side) {
+      var keys = Object.keys(TM_THINK_STATES).filter(function(k) { return TM_THINK_STATES[k].side === side && k !== 'IGNORE'; }).sort(function(a, b) { return TM_THINK_STATES[a].order - TM_THINK_STATES[b].order; });
+      return '<table style="border-collapse:collapse;font-size:11px;width:100%;">' + keys.map(function(k) { var s = TM_THINK_STATES[k]; return '<tr><td style="padding:2px 8px 2px 2px;font-size:14px;width:28px;">' + s.g + '</td><td style="padding:2px 8px;color:#e6e6ee;font-weight:600;white-space:nowrap;">' + escapeHtml(s.label) + '</td><td style="padding:2px 8px;color:#9aa4b2;">' + escapeHtml(s.desc) + '</td><td style="padding:2px 8px;color:#6f7a8a;font-size:10px;white-space:nowrap;">' + escapeHtml(s.kind) + '</td></tr>'; }).join('') + '</table>';
+    }
+    body += section('LEGEND \u2014 REQ (what was asked for)') + legend('req');
+    body += section('LEGEND \u2014 OBS (what actually happened)') + legend('obs');
+    body += section('MAPPING TABLE \u2014 raw field \u2192 glyph (first match wins; \u201cseen\u201d = matched rows in the current ring)');
+    var byFam = {}; var famOrder = [];
+    for (var mi = 0; mi < TM_THINK_MAP.length; mi++) { var row = TM_THINK_MAP[mi]; if (!byFam[row.fam]) { byFam[row.fam] = []; famOrder.push(row.fam); } byFam[row.fam].push({ idx: mi, row: row }); }
+    function valStr(v) { if (v === '*') return 'any'; if (v === 'number') return 'number'; if (v instanceof RegExp) return String(v); if (Array.isArray(v)) return v.join(' | '); return String(v); }
+    for (var f = 0; f < famOrder.length; f++) {
+      body += '<div style="color:#8fc4ff;font-weight:700;font-size:11px;margin:8px 0 2px;">' + escapeHtml(famOrder[f]) + '</div><table style="border-collapse:collapse;font-size:11px;width:100%;">';
+      var list = byFam[famOrder[f]];
+      for (var li = 0; li < list.length; li++) {
+        var rw = list[li].row, ix = list[li].idx, st = TM_THINK_STATES[rw.state] || {};
+        var pth = Array.isArray(rw.path) ? rw.path.join('<br>') : escapeHtml(rw.path);
+        var cnt = seen[ix] || 0;
+        body += '<tr style="border-top:1px solid rgba(255,255,255,0.06);"><td style="padding:2px 8px 2px 14px;font-family:monospace;color:#d0d0d8;">' + pth + '</td><td style="padding:2px 8px;font-family:monospace;color:#ffd166;white-space:nowrap;">' + escapeHtml(valStr(rw.val)) + '</td><td style="padding:2px 8px;white-space:nowrap;"><span style="font-size:14px;">' + (st.g || '') + '</span> <span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(st.label || rw.state) + '</span>' + (rw.note ? (' <span style="color:#6f7a8a;">(' + escapeHtml(rw.note) + ')</span>') : '') + '</td><td style="padding:2px 8px;text-align:right;color:' + (cnt ? '#8ef0a0' : '#4a5260') + ';white-space:nowrap;">' + (cnt ? ('seen \u00d7' + cnt) : 'not seen') + '</td></tr>';
+      }
+      body += '</table>';
+    }
+    var unmKeys = Object.keys(unm).sort(function(a, b) { return unm[b].count - unm[a].count; });
+    body += section('\ud83e\udde9 UNMAPPED FIELDS SEEN IN THE RING \u2014 ' + (unmKeys.length ? (unmKeys.length + ' distinct; tell the agent to add mappings') : 'none \ud83c\udf89'));
+    if (unmKeys.length) {
+      body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+      for (var ui = 0; ui < unmKeys.length; ui++) { var e = unm[unmKeys[ui]]; body += '<tr style="border-top:1px solid rgba(255,255,255,0.06);"><td style="padding:2px 8px;font-family:monospace;color:#ff9b9b;">' + escapeHtml(unmKeys[ui]) + '</td><td style="padding:2px 8px;color:#e6e6ee;white-space:nowrap;">\u00d7' + e.count + '</td><td style="padding:2px 8px;color:#9aa4b2;">' + escapeHtml(Object.keys(e.models).join(', ')) + '</td><td style="padding:2px 8px;color:#6f7a8a;">' + escapeHtml(Object.keys(e.routes).join(', ')) + '</td></tr>'; }
+      body += '</table>';
+    }
+    body += '</div>';
+    box.innerHTML = h + body;
+    overlay.appendChild(box);
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); }
+    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
+    overlay.addEventListener('click', function(ev) { var t = ev.target; if (t === overlay || (t && t.dataset && t.dataset.action === 'close-think-map')) close(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
   }
 
   // @beacon[
@@ -4577,9 +4897,9 @@
       var fs = opts.fontSize || '10px';
       var reqTxt = tmThinkCompactReq(req);
       var obsTxt = obs ? tmThinkCompactObs(obs, req) : (cap.response_status == null ? 'pending\u2026' : '?');
-      var title = 'Thinking Observatory \u2014 requested: ' + ((req && req.summary) || '?') + '  |  observed: ' + ((obs && obs.summary) || '?') + '  \u2014 click for the full report';
+      var title = 'Thinking Observatory \u2014 requested: ' + reqTxt + ' [' + ((req && req.summary) || '?') + ']  |  observed: ' + obsTxt + ' [' + ((obs && obs.summary) || '?') + ']  \u2014 hover each glyph for its meaning + raw field; click for the full report';
       var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' +
-        '\ud83e\udde0 ' + escapeHtml(reqTxt) + ' \u2192 ' + escapeHtml(obsTxt) + '</span>';
+        '\ud83e\udde0 ' + tmThinkGlyphRowHtml(cap, fs) + '</span>';
       if (!opts.noNote) {
         var ctx = tmThinkNoteContextFromCap(cap);
         var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
@@ -9597,9 +9917,10 @@
       // (Fix 24, v4.352) Thinking Observatory: report / quick note / notes modal. Resolved via
       // closest() because the badge span and buttons carry inner text nodes.
       try {
-        var tkEl = (t && t.closest) ? t.closest('[data-action="think-report"],[data-action="think-note"],[data-action="show-think-notes"]') : null;
+        var tkEl = (t && t.closest) ? t.closest('[data-action="think-report"],[data-action="think-note"],[data-action="show-think-notes"],[data-action="show-think-map"]') : null;
         if (tkEl && tkEl.dataset) {
           ev.stopPropagation();
+          if (tkEl.dataset.action === 'show-think-map') { tmShowThinkGlyphMapModal(); return; }
           if (tkEl.dataset.action === 'show-think-notes') { tmShowThinkNotesModal(); return; }
           if (tkEl.dataset.action === 'think-report') { tmShowThinkReport(tkEl.dataset.captureId); return; }
           if (tkEl.dataset.action === 'think-note') {
@@ -13451,6 +13772,8 @@
     initRowHtml += '<button data-action="show-cost-editor" title="Set per-million pricing for client-side cost calculation" style="font-size:10px;background:#1a2a3a;color:#a0c0ff;border:1px solid #2a4a5a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">💲 Set Costs</button>';
     // (Fix 24, v4.352) Thinking Notes modal (same catalog tree as Rate Providers / Set Costs).
     initRowHtml += '<button data-action="show-think-notes" title="Thinking Notes: your experience with thinking levels, by model / route / serving provider (subtree aggregation)" style="font-size:10px;background:#2a1a3a;color:#c8b4ff;border:1px solid #4a3a6a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\ud83e\udde0 Thinking Notes</button>';
+    // (v4.355) Glyph Map: legend + raw-field mapping table + unmapped-fields gap list.
+    initRowHtml += '<button data-action="show-think-map" title="Thinking Glyph Map: what every \ud83e\udde0 glyph means, how each provider\'s raw fields map onto them, and which fields are still unmapped" style="font-size:10px;background:#1a2a2a;color:#8ef0d0;border:1px solid #2a4a4a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\ud83d\uddfa\ufe0f Glyph Map</button>';
     initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
