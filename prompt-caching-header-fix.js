@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.365
+// Version: 4.366
 // Issues Fixed:
+//   - v4.366: SESSIONS-IN-MEMORY POLISH (per Dan). (1) OUTLINE TYPOGRAPHY: session name row at 15px
+//     (was 12px) flush-left; everything under it inset 48px as an indented block (outline-like);
+//     model name on row 2 at 14px (was 12px; live timers unchanged). (2) THINK DROPDOWN READOUT,
+//     CONCRETE-FIRST: the inherit option now leads with the ACTUAL native value ('↩ adaptive ·
+//     high', '↩ implicit (model name)', '↩ provider default (nothing sent)') instead of the long
+//     '↩ inherit → TypingMind sends: ...' phrasing that cropped at 190px; when no stamped row
+//     exists for the identity it reads '↩ inherit (awaiting a stamped turn)'. NOT a data
+//     regression: the readout comes from the newest _think_req-stamped ring row per identity
+//     (the localStorage ring persists across refresh); implicit/none answers mean TypingMind
+//     genuinely sends no explicit level on that route. (3) Dropdown max-widths are now per-call
+//     options; the hovercard passes 285px/255px (was 190/170) so long labels no longer crop --
+//     widget and ring modal keep their widths. (4) Histogram aggregate parens now have a space
+//     after the turn count (was 'N(x, yKB)'); same on the current-turn amount paren. (5) OBS
+//     aggregate VISIBILITY glyphs (RAW/SUMMARY/ENCRYPTED/OMITTED/HIDDEN -- the trailing cluster
+//     incl. the ghost) are now pipe-separated from the amount/evidence aggregates to their left,
+//     matching the existing current|aggregate pipe.
 //   - v4.365: SESSIONS-IN-MEMORY ENTRY REDESIGN + VANISHING-PIN ROOT-CAUSE FIX. (1) ROOT CAUSE of
 //     the vanishing pinned dashboard: the hovercard's window-level Escape listener closed AND
 //     unpinned the card on ANY Escape anywhere (closing the ring modal, JSON viewer, note editor,
@@ -1822,7 +1838,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.365';
+  const EXT_VERSION = '4.366';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5328,7 +5344,7 @@
           var g2 = g;
           if (g.value) { g2 = {}; for (var kk in g) if (g.hasOwnProperty(kk)) g2[kk] = g[kk]; g2.value = null; }
           var paren = tmThinkAmtParen((obs && obs.tokens && obs.tokens.reasoning > 0) ? obs.tokens.reasoning : null, tmThinkObsBytes(obs));
-          return '<span style="white-space:nowrap;">' + tmThinkGlyphHtml(g2, fs) + (paren ? ('<span style="' + small + '">' + escapeHtml(paren) + '</span>') : '') + '</span>';
+          return '<span style="white-space:nowrap;">' + tmThinkGlyphHtml(g2, fs) + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>';
         }
         return tmThinkGlyphHtml(g, fs);
       }
@@ -5416,9 +5432,18 @@
           var encSum = hist.obsEnc && typeof hist.obsEnc[k] === 'number' ? hist.obsEnc[k] : 0;
           paren = tmThinkAmtParen(tokSum || null, encSum);
         }
-        return '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' \u2014 total ' + paren) : '') + ' \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + '">' + escapeHtml(paren) + '</span>') : '') + '</span>';
+        // (v4.366) Space between the turn count and the (tokens, KB) paren (was 'N(x)').
+        return { kind: st.kind, html: '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' \u2014 total ' + paren) : '') + ' \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>' };
       });
-      return '<span style="opacity:0.45;margin:0 12px;">\u2502</span>' + runs.join(' ');
+      // (v4.366) OBS side: pipe-separate the trailing VISIBILITY aggregate cluster (RAW / SUMMARY /
+      // ENCRYPTED / OMITTED / HIDDEN) from the amount+evidence aggregates to its left (per Dan),
+      // matching the existing current|aggregate pipe. REQ side keeps the single leading pipe.
+      var pipe = '<span style="opacity:0.45;margin:0 12px;">\u2502</span>';
+      var visStart = -1;
+      if (side === 'obs') { for (var vi = 0; vi < runs.length; vi++) { if (runs[vi].kind === 'visibility') { visStart = vi; break; } } }
+      var head = [], tail = [];
+      runs.forEach(function(r, i) { (visStart > 0 && i >= visStart ? tail : head).push(r.html); });
+      return pipe + head.join(' ') + (tail.length ? (pipe + tail.join(' ')) : '');
     } catch (e) { return ''; }
   }
 
@@ -6416,9 +6441,14 @@
     } catch (e) { return false; }
   }
 
-  // Shared control builder (widget line + ring-modal most-recent row): '🎛️ Think: [level] 👁 [display]'.
-  function tmBuildThinkControlHtml(idKey) {
+  // Shared control builder (widget line + ring-modal most-recent row + sessions-in-memory
+  // controls row): '🎛️ Think: [level] 👁 [display]'. (v4.366) opts.selMaxWidth / selMaxWidthDisp
+  // widen the selects on roomy surfaces (the hovercard passes 285px/255px).
+  function tmBuildThinkControlHtml(idKey, opts) {
     try {
+      opts = opts || {};
+      var selMaxW = opts.selMaxWidth || '190px';
+      var selMaxWD = opts.selMaxWidthDisp || '170px';
       var ov = tmGetThinkOverride(idKey) || {};
       var lvl = ov.level || 'inherit', disp = ov.display || 'inherit';
       var active = tmThinkOverrideIsActive(ov);
@@ -6433,16 +6463,19 @@
       var LAST = ' \u25c2 last sent';
       function tagL(v) { return sentLvlKey === v ? LAST : ''; }
       function tagD(v) { return sentDispKey === v ? LAST : ''; }
-      var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;max-width:190px;';
+      var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;';
       function opt(v, label, cur) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>'; }
       var curSel = isBudget ? '__budget' : lvl;
-      var inheritLbl = '\u21a9 inherit \u2192 TypingMind sends: ' + (natLvl ? escapeHtml(natLvl) : '(no row yet)');
+      // (v4.366) Concrete-first readout: lead with the ACTUAL native value (Dan: 'a reference to
+      // a default I have no idea about is useless'). The ↩ prefix + non-active styling carry the
+      // 'TypingMind native, not an override' meaning; the tooltip keeps the full explanation.
+      var inheritLbl = natLvl ? ('\u21a9 ' + escapeHtml(natLvl)) : '\u21a9 inherit (awaiting a stamped turn)';
       var levelOpts = opt('inherit', inheritLbl, curSel) +
         opt('off', S.OFF.g + ' off' + tagL('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low'), curSel) +
         opt('medium', S.MED.g + ' medium' + tagL('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max'), curSel) +
         opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : '') + tagL('budget'), curSel) +
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
-      var dispOpts = opt('inherit', '\u21a9 inherit \u2192 TypingMind sends: ' + (natDisp ? escapeHtml(natDisp) : '(no row yet)'), disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
+      var dispOpts = opt('inherit', natDisp ? ('\u21a9 ' + escapeHtml(natDisp)) : '\u21a9 inherit (awaiting a stamped turn)', disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
       var readout = eff ? ('\n\nREADOUT (newest row' + (eff.ts ? (' ' + eff.ts) : '') + '): TypingMind natively sends level "' + natLvl + '", display "' + natDisp + '"' + (eff.overridden ? ('; last wire (after override): level "' + (sent && sent.level) + '", display "' + (sent && sent.display) + '"') : '') + (nat && nat.raw && nat.raw.length ? ('\nraw: ' + nat.raw.slice(0, 6).join(' ; ')) : '')) : '\n\n(no stamped row for this identity yet -- send one turn and the readout appears)';
       // (v4.364) OpenRouter warning: Claude gets the full cache-findings text; placed BETWEEN the two selects, 15px.
       var orWarn = '';
@@ -6454,10 +6487,10 @@
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
       var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace. Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts. Not controllable on OpenAI/xAI chat-completions or Kimi/DeepSeek/GLM/Qwen direct (reported as a note). Independent of the level.';
       return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control. \u25c2 last sent marks the option matching the newest wire; the inherit line shows what TypingMind sends natively." style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
-        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
+        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyle + 'max-width:' + selMaxW + ';">' + levelOpts + '</select>' +
         orWarn +
         '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:' + (orWarn ? '0' : '5px') + ';">\ud83d\udc41</span>' +
-        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:170px;">' + dispOpts + '</select></span>';
+        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:' + selMaxWD + ';">' + dispOpts + '</select></span>';
     } catch (e) { return ''; }
   }
 
@@ -8795,10 +8828,10 @@
       }
       var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;">' +
         '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
-        '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
+        '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
       '</div>';
       var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' +
-        (info.model ? ('<span style="font-size:12px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
+        (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
         '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
       '</div>';
       // (v4.354/v4.365) Thinking Observatory rows: REQ/OBS stacked at 13px (was 11px); the
@@ -8822,14 +8855,16 @@
       // Controls row: Think level/display dropdowns (shared builder, incl. the OpenRouter
       // warning triangle) + thinking-note button + keep-alive toggle/interval/status.
       var ctlParts = [];
-      try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key)); } catch (eCtl) {}
+      try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key, { selMaxWidth: '285px', selMaxWidthDisp: '255px' })); } catch (eCtl) {}
       if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
       try { ctlParts.push(tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key])); } catch (eKaH) {}
       var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
         '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
-          nameRow + modelLiveRow + thinkRow + gaugesRow + ctlRow +
+          nameRow +
+          // (v4.366) Everything under the name row is inset 48px (outline-like hierarchy, per Dan).
+          '<div style="padding-left:48px;">' + modelLiveRow + thinkRow + gaugesRow + ctlRow + '</div>' +
         '</div>'
       );
     }
