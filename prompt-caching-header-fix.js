@@ -1,6 +1,27 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.371
+// Version: 4.372
 // Issues Fixed:
+//   - v4.372: OBS-ROW REDESIGN + SESSION REASONING HISTOGRAM + WARNING-TOOLTIP REWRITE (per Dan).
+//     (1) The amount BAND glyph is GONE from both the current-turn row and the aggregates ('the
+//     number is what matters; a heuristic light/heavy verdict is worthless'). The reasoning-token
+//     COUNT is now the datum and carries its own 🧮 glyph: '🧮(21)', hover = '21 reasoning tokens
+//     this turn (3% of the output tokens for this turn)'. (2) The EVIDENCE glyph (✅/≈/~/❓) moved
+//     onto the OBS LABEL as a row-level status ('did we get trustworthy thinking evidence at
+//     all?'), separated from the data fields by whitespace -- no pipe, because it is part of the
+//     label, not a field. (3) VISIBILITY glyphs now DISPLAY their streamed size: '📖 83c (~21t)',
+//     hover = '83 characters of reasoning text streamed back (~21 tokens at ~4 chars/token; the
+//     provider reported 21)'. (4) NEW per-turn reasoning-token HISTOGRAM (inline SVG) replaces
+//     the aggregate band cluster: ONE rule for every n -- <=10 distinct values renders one bar
+//     per distinct value (the small-session case emerges naturally, no mode switch, no dashed
+//     'warming up' box needed), beyond that equal-width bins with k = min(10, ceil(sqrt(n))) (the
+//     square-root rule). Fed by new per-turn samples on the _think_hist ledger (capped 200,
+//     ledger-ONLY -- deliberately stripped from ring-row snapshots so 500 rows x an array cannot
+//     blow the localStorage budget). (5) Fix 26 census chip '⇄N' on the OBS row: turns of THIS
+//     payload that carried reasoning back. (6) WARNING TOOLTIPS rewritten from a wall of prose to
+//     headline + per-origin ✅ included / ❌ not-included ledger + ONE route-verdict line + a
+//     replay-support list for every model in the conversation. (7) Think dropdown inherit label
+//     names the provider's KNOWN default (Gemini 3.x -> 'dynamic ≈ medium') instead of a bare
+//     'provider default' / '?' that told Dan nothing.
 //   - v4.371: FIX 24/25 GEMINI-NATIVE IDENTITY-KEY REPAIR (the 'high + show' dropdown that never
 //     reached the wire). ROOT CAUSE: tmComputeRoutingIdentityKey bailed with NULL whenever
 //     body.model was empty -- and Gemini NATIVE requests carry no body.model (it lives in the
@@ -1899,7 +1920,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.371';
+  const EXT_VERSION = '4.372';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5407,24 +5428,62 @@
           '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqInline +
           ' <span style="opacity:0.5;">\u2192</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsInline + '</span>';
       }
-      function obsLeadGlyph(g) {
-        if (g && /^AMT/.test(g.state)) {
-          var g2 = g;
-          if (g.value) { g2 = {}; for (var kk in g) if (g.hasOwnProperty(kk)) g2[kk] = g[kk]; g2.value = null; }
-          var paren = tmThinkAmtParen((obs && obs.tokens && obs.tokens.reasoning > 0) ? obs.tokens.reasoning : null, tmThinkObsBytes(obs));
-          return '<span style="white-space:nowrap;">' + tmThinkGlyphHtml(g2, fs) + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>';
-        }
-        return tmThinkGlyphHtml(g, fs);
+      // (v4.372) OBS ROW REBUILD (per Dan). The amount BAND glyph is gone: the reasoning-token
+      // COUNT is the datum and carries its own 🧮 glyph. The EVIDENCE glyph joins the OBS LABEL as
+      // a row-level status (whitespace separator, no pipe -- it is part of the label, not a
+      // field). VISIBILITY glyphs display their streamed size inline as '83c (~21t)'.
+      var evG = [], visG = [], othG = [];
+      O.glyphs.forEach(function(g) {
+        var stK = TM_THINK_STATES[g.state] || {};
+        if (stK.kind === 'amount') return; // replaced by the 🧮 count + the session histogram
+        if (stK.kind === 'evidence') evG.push(g);
+        else if (stK.kind === 'visibility') visG.push(g);
+        else othG.push(g);
+      });
+      var obsTok = (obs && obs.tokens && typeof obs.tokens.reasoning === 'number') ? obs.tokens.reasoning : null;
+      var obsPct = (obs && typeof obs.ratio === 'number' && obs.ratio > 0) ? Math.round(obs.ratio * 100) : null;
+      var dataParts = [];
+      if (obsTok != null) {
+        var cTip = obsTok + ' reasoning tokens this turn' + (obsPct != null ? (' (' + obsPct + '% of the output tokens for this turn)') : '') + '.';
+        dataParts.push('<span title="' + escapeHtml(cTip) + '" style="cursor:help;white-space:nowrap;">\uD83E\uDDEE<span style="' + small + '">(' + escapeHtml(tmThinkFmtK(obsTok)) + ')</span></span>');
       }
+      visG.forEach(function(g) {
+        var vChars = 0, vWhat = 'reasoning text';
+        if (g.state === 'VIS_RAW') vChars = Number((obs && obs.raw_chars) || 0);
+        else if (g.state === 'VIS_SUM') { vChars = Number((obs && obs.summary_chars) || 0); vWhat = 'reasoning summary text'; }
+        else if (g.state === 'VIS_ENC') { vChars = Number((obs && obs.encrypted_chars) || 0); vWhat = 'sealed (encrypted) reasoning'; }
+        var gHtml = tmThinkGlyphHtml(g, fs);
+        if (vChars > 0) {
+          var vEst = Math.round(vChars / 4);
+          var vTip = vChars + ' characters of ' + vWhat + ' streamed back (\u2248' + vEst + ' tokens at ~4 chars/token' + (obsTok != null ? ('; the provider reported ' + obsTok) : '') + ').';
+          gHtml += '<span title="' + escapeHtml(vTip) + '" style="' + small + 'cursor:help;margin-left:3px;">' + escapeHtml(tmThinkFmtK(vChars) + 'c (~' + tmThinkFmtK(vEst) + 't)') + '</span>';
+        }
+        dataParts.push('<span style="white-space:nowrap;">' + gHtml + '</span>');
+      });
+      othG.forEach(function(g) { dataParts.push(tmThinkGlyphHtml(g, fs)); });
+      // (v4.372) Fix 26 census chip: how many turns of THIS payload carried reasoning back.
+      try {
+        var roC = cap && cap._replay_out;
+        var rtC = Number((roC && roC.raw_turns) || 0), etC = Number((roC && roC.enc_turns) || 0);
+        if (rtC > 0 || etC > 0) {
+          var segs = [];
+          if (rtC) segs.push(rtC + ' raw');
+          if (etC) segs.push(etC + ' encrypted');
+          var roTip = 'Reasoning REPLAYED in this outbound payload: ' + segs.join(' + ') + ' prior turn(s) carried their reasoning back to the model' + (roC.raw_chars ? (' \u2014 ' + tmThinkFmtK(roC.raw_chars) + 'c raw' + (roC.enc_chars ? (' + ' + tmThinkFmtK(roC.enc_chars) + 'c sealed') : '')) : '') + '. This is the reasoning history the model can actually see.';
+          dataParts.push('<span title="' + escapeHtml(roTip) + '" style="cursor:help;white-space:nowrap;color:#8ef0a0;">\u21c4<span style="' + small + 'color:#8ef0a0;">' + (rtC + etC) + '</span></span>');
+        }
+      } catch (eRoC) {}
+      var obsData = dataParts.length ? dataParts.join(' ') : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
+      var evHtml = evG.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
       var reqLead = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join(' ');
-      var obsLead = O.glyphs.length ? O.glyphs.map(obsLeadGlyph).join(' ') : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
       var line1 = '<div style="white-space:nowrap;">' +
         '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqLead +
         (hist ? tmThinkHistHtml(hist, 'req', fs) : '') + '</div>';
       // (Fix 26, v4.367) Reasoning-replay loss warning rides the OBS label zone (row-level status).
       var replayWarn = (cap && cap._replay_warn) ? tmReplayWarnHtml(cap._replay_warn, fs) : '';
       var line2 = '<div style="white-space:nowrap;margin-top:3px;">' +
-        '<span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + replayWarn + obsLead +
+        '<span style="' + lab + 'color:#9aa4b2;">OBS</span>' + (evHtml ? (' ' + evHtml) : '') + replayWarn +
+        '<span style="display:inline-block;width:11px;"></span>' + obsData +
         (hist ? tmThinkHistHtml(hist, 'obs', fs) : '') + '</div>';
       return '<div style="display:flex;flex-direction:column;min-width:0;">' + line1 + line2 + '</div>';
     } catch (e) { return ''; }
@@ -5466,12 +5525,20 @@
         if (tt > 0) h.obsTok[amtState] = Number(h.obsTok[amtState] || 0) + tt;
         if (eb > 0) h.obsEnc[amtState] = Number(h.obsEnc[amtState] || 0) + eb;
       }
+      // (v4.372) Per-turn reasoning-token SAMPLES for the histogram. Ledger-ONLY and capped at
+      // 200: the row snapshot below deliberately strips them, because 500 ring rows each
+      // carrying an array would blow the localStorage budget.
+      if (!Array.isArray(h.samples)) h.samples = [];
+      h.samples.push((obsRec && obsRec.tokens && typeof obsRec.tokens.reasoning === 'number') ? obsRec.tokens.reasoning : 0);
+      if (h.samples.length > 200) h.samples = h.samples.slice(h.samples.length - 200);
       entry._think_hist = h;
       entry._session_id = String(sessionId);
       entry._ts = Date.now();
       costs[key] = entry;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
-      return JSON.parse(JSON.stringify(h));
+      var snapH = JSON.parse(JSON.stringify(h));
+      delete snapH.samples;
+      return snapH;
     } catch (e) {}
     return null;
   }
@@ -5482,13 +5549,78 @@
       return (rec && typeof rec === 'object' && rec._think_hist && typeof rec._think_hist === 'object') ? rec._think_hist : null;
     } catch (e) { return null; }
   }
+  // (v4.372) SESSION REASONING-TOKEN HISTOGRAM (inline SVG). ONE rule for every n, so the
+  // small-session case degrades gracefully with no mode switch and no 'warming up' decoration:
+  //   <= 10 DISTINCT values -> one bar per distinct value (bar height = how many turns hit it,
+  //                            value labelled beneath when there is room);
+  //   otherwise             -> equal-width bins, k = min(10, ceil(sqrt(n))) (square-root rule).
+  // Turns with zero reasoning are real samples (a bar at 0). Every bar carries an exact tooltip.
+  function tmThinkRenderHistogram(samples, fs) {
+    try {
+      if (!Array.isArray(samples) || !samples.length) return '';
+      var vals = [];
+      for (var i = 0; i < samples.length; i++) { var v = Number(samples[i]); if (isFinite(v) && v >= 0) vals.push(v); }
+      if (!vals.length) return '';
+      var n = vals.length;
+      var sorted = vals.slice().sort(function(a, b) { return a - b; });
+      var mn = sorted[0], mx = sorted[n - 1];
+      var distinct = [], seenV = {};
+      for (var d = 0; d < sorted.length; d++) { if (!seenV[sorted[d]]) { seenV[sorted[d]] = 1; distinct.push(sorted[d]); } }
+      var bars = [], mode;
+      if (distinct.length <= 10) {
+        mode = 'distinct';
+        for (var k = 0; k < distinct.length; k++) {
+          var c = 0;
+          for (var q = 0; q < vals.length; q++) if (vals[q] === distinct[k]) c++;
+          bars.push({ count: c, label: tmThinkFmtK(distinct[k]), tip: tmThinkFmtK(distinct[k]) + ' thinking tokens \u00d7 ' + c + ' turn' + (c === 1 ? '' : 's') });
+        }
+      } else {
+        mode = 'binned';
+        var kb = Math.min(10, Math.ceil(Math.sqrt(n)));
+        var w = ((mx - mn) || 1) / kb;
+        for (var b = 0; b < kb; b++) {
+          var lo = mn + b * w, hi = (b === kb - 1) ? mx : (mn + (b + 1) * w), cc = 0;
+          for (var s = 0; s < vals.length; s++) {
+            var vv = vals[s];
+            if (b === kb - 1 ? (vv >= lo && vv <= hi) : (vv >= lo && vv < hi)) cc++;
+          }
+          bars.push({ count: cc, label: '', tip: tmThinkFmtK(Math.round(lo)) + '\u2013' + tmThinkFmtK(Math.round(hi)) + ' thinking tokens: ' + cc + ' turn' + (cc === 1 ? '' : 's') });
+        }
+      }
+      var maxC = 0;
+      for (var mI = 0; mI < bars.length; mI++) if (bars[mI].count > maxC) maxC = bars[mI].count;
+      if (!maxC) return '';
+      var showLabels = (mode === 'distinct' && bars.length <= 6);
+      var barW = showLabels ? 20 : 10, gap = 3, chartH = 16, labH = showLabels ? 9 : 0;
+      var W = bars.length * (barW + gap), H = chartH + labH + 1;
+      var svg = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" style="vertical-align:middle;overflow:visible;">';
+      for (var bi = 0; bi < bars.length; bi++) {
+        var bh = Math.max(1, Math.round((bars[bi].count / maxC) * chartH));
+        var x = bi * (barW + gap);
+        svg += '<rect x="' + x + '" y="' + (chartH - bh) + '" width="' + barW + '" height="' + bh + '" rx="1" fill="#c8b4ff" opacity="0.85"><title>' + escapeHtml(bars[bi].tip) + '</title></rect>';
+        if (showLabels) svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + labH - 1) + '" font-size="7" fill="#9aa4b2" text-anchor="middle">' + escapeHtml(bars[bi].label) + '</text>';
+      }
+      svg += '</svg>';
+      var tip = 'Reasoning tokens per turn \u2014 ' + n + ' turn' + (n === 1 ? '' : 's') + ' this session; range ' + tmThinkFmtK(mn) + '\u2013' + tmThinkFmtK(mx) +
+        (mode === 'binned' ? ('; ' + bars.length + ' equal-width bins (\u221an rule)') : '; one bar per distinct value, height = how many turns') + '. Hover a bar for its exact figures.';
+      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;cursor:help;margin-left:2px;">' + svg + '</span>';
+    } catch (e) { return ''; }
+  }
+
   // One side of the histogram as glyph+count runs, sorted like the live glyphs (rank, then order).
   function tmThinkHistHtml(hist, side, fs) {
     try {
       if (!hist || !hist[side]) return '';
       var counts = hist[side];
-      var keys = Object.keys(counts).filter(function(k) { return TM_THINK_STATES[k] && k !== 'IGNORE' && Number(counts[k]) > 0; });
-      if (!keys.length) return '';
+      // (v4.372) OBS amount BANDS are replaced by the per-turn reasoning-token HISTOGRAM.
+      var keys = Object.keys(counts).filter(function(k) {
+        var stF = TM_THINK_STATES[k];
+        if (!stF || k === 'IGNORE' || !(Number(counts[k]) > 0)) return false;
+        if (side === 'obs' && stF.kind === 'amount') return false;
+        return true;
+      });
+      var histoHtml = (side === 'obs') ? tmThinkRenderHistogram(hist.samples, fs) : '';
+      if (!keys.length && !histoHtml) return '';
       keys.sort(function(a, b) { var A = TM_THINK_STATES[a], B = TM_THINK_STATES[b]; return ((A.rank != null ? A.rank : A.order) - (B.rank != null ? B.rank : B.order)); });
       var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
       var runs = keys.map(function(k) {
@@ -5505,14 +5637,12 @@
         // (v4.366) Space between the turn count and the (tokens, KB) paren (was 'N(x)').
         return { kind: st.kind, html: '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' \u2014 total ' + paren) : '') + ' \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + 'margin-left:4px;">' + escapeHtml(paren) + '</span>') : '') + '</span>' };
       });
-      // (v4.366) OBS side: pipe-separate the trailing VISIBILITY aggregate cluster (RAW / SUMMARY /
-      // ENCRYPTED / OMITTED / HIDDEN) from the amount+evidence aggregates to its left (per Dan),
-      // matching the existing current|aggregate pipe. REQ side keeps the single leading pipe.
       var pipe = '<span style="opacity:0.45;margin:0 12px;">\u2502</span>';
-      var visStart = -1;
-      if (side === 'obs') { for (var vi = 0; vi < runs.length; vi++) { if (runs[vi].kind === 'visibility') { visStart = vi; break; } } }
-      var head = [], tail = [];
-      runs.forEach(function(r, i) { (visStart > 0 && i >= visStart ? tail : head).push(r.html); });
+      if (side !== 'obs') return pipe + runs.map(function(r) { return r.html; }).join(' ');
+      // (v4.366/v4.372) OBS aggregates: [histogram + evidence] \u2502 [visibility cluster].
+      var head = histoHtml ? [histoHtml] : [], tail = [];
+      runs.forEach(function(r) { (r.kind === 'visibility' ? tail : head).push(r.html); });
+      if (!head.length && !tail.length) return '';
       return pipe + head.join(' ') + (tail.length ? (pipe + tail.join(' ')) : '');
     } catch (e) { return ''; }
   }
@@ -6511,6 +6641,20 @@
     } catch (e) { return false; }
   }
 
+  // (v4.372) Documented provider DEFAULT thinking levels -- what you actually GET when nothing is
+  // sent on the wire. Heuristic table (verify live via the next row's glyphs); '' = truly unknown.
+  function tmKnownProviderDefault(model, host) {
+    var m = String(model || '').toLowerCase(), h = String(host || '').toLowerCase();
+    if (/gemini-3/.test(m)) return 'dynamic \u2248 medium';
+    if (/gemini/.test(m)) return 'dynamic';
+    if (/claude|anthropic/.test(m) || /anthropic\.com/.test(h)) return 'adaptive \u2014 the model decides';
+    if (/kimi|moonshot/.test(m) || /moonshot/.test(h)) return 'on \u2014 always-thinking model';
+    if (/deepseek/.test(m)) return 'on \u2014 reasoner model';
+    if (/(^|[\/_-])o[1-9](-|$)/.test(m) || /gpt-5/.test(m)) return 'medium';
+    if (/grok/.test(m)) return 'on';
+    return '';
+  }
+
   // Shared control builder (widget line + ring-modal most-recent row + sessions-in-memory
   // controls row): '🎛️ Think: [level] 👁 [display]'. (v4.366) opts.selMaxWidth / selMaxWidthDisp
   // widen the selects on roomy surfaces (the hovercard passes 285px/255px).
@@ -6539,7 +6683,16 @@
       // (v4.366) Concrete-first readout: lead with the ACTUAL native value (Dan: 'a reference to
       // a default I have no idea about is useless'). The ↩ prefix + non-active styling carry the
       // 'TypingMind native, not an override' meaning; the tooltip keeps the full explanation.
-      var inheritLbl = natLvl ? ('\u21a9 ' + escapeHtml(natLvl)) : '\u21a9 inherit (awaiting a stamped turn)';
+      // (v4.372) When TypingMind sends NO explicit level (or the scanner cannot reduce one to a
+      // word), name the provider's KNOWN default rather than a bare 'provider default' / '?'.
+      var inheritLbl;
+      if (!eff) inheritLbl = '\u21a9 inherit (awaiting a stamped turn)';
+      else if (natLvl && natLvl !== '?' && !(nat && nat.none)) inheritLbl = '\u21a9 ' + escapeHtml(natLvl);
+      else {
+        var kdParts = String(idKey).split('::');
+        var kdWord = tmKnownProviderDefault(kdParts[1] || '', kdParts[2] || '');
+        inheritLbl = '\u21a9 provider default' + (kdWord ? (' (' + escapeHtml(kdWord) + ')') : ' (nothing sent)');
+      }
       var levelOpts = opt('inherit', inheritLbl, curSel) +
         opt('off', S.OFF.g + ' off' + tagL('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low'), curSel) +
         opt('medium', S.MED.g + ' medium' + tagL('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max'), curSel) +
@@ -6679,6 +6832,12 @@
   function tmReplaySupportFor(model, protocol, host) {
     var p = String(protocol || '');
     var proto = /anthropic/i.test(p) ? 'anthropic' : /responses/i.test(p) ? 'responses' : /gemini/i.test(p) ? 'gemini' : 'chat';
+    // (v4.372) HOST fallback when no protocol string is available (origin-table lookups).
+    if (!p) {
+      var hh = String(host || '');
+      if (/generativelanguage/i.test(hh)) proto = 'gemini';
+      else if (/api\.anthropic\.com/i.test(hh)) proto = 'anthropic';
+    }
     if (/openrouter/i.test(String(host || ''))) proto = 'openrouter';
     var m = String(model || '');
     for (var i = 0; i < TM_REPLAY_SUPPORT.length; i++) {
@@ -6803,30 +6962,47 @@
       if (!level) return null;
       return { v: 1, level: level, sid: sidStr, model: model, host: host, protocol: protocol, routeOk: routeOk,
         support: { fam: support.fam, replay: support.replay, note: support.note },
-        out: { rawBlocks: counts.rawBlocks, rawChars: counts.rawChars, encBlocks: counts.encBlocks, encChars: counts.encChars },
+        out: { rawBlocks: counts.rawBlocks, rawChars: counts.rawChars, encBlocks: counts.encBlocks, encChars: counts.encChars, rawTurns: counts.rawTurns, encTurns: counts.encTurns },
         origins: origins, ts: Date.now() };
     } catch (e) { return null; }
   }
 
   // Shared triangle renderer: rides the OBS label zone of the think badge (card + ring + widget).
+  // (v4.372) Tooltip rewritten per Dan: headline, then the per-origin included / not-included
+  // ledger at a glance, then ONE route-verdict line, then a replay-support list for every model
+  // in this conversation. The old wall of prose is gone.
   function tmReplayWarnHtml(w, fs) {
     try {
       if (!w || !w.level) return '';
-      var lines = [];
-      if (w.level === 'red') {
-        lines.push('REASONING HISTORY LOST ON THIS ROUTE: this conversation already received reasoning from ' + w.model + ' @ ' + w.host + ' (a route that SUPPORTS replay), but THIS outbound payload carries ZERO reasoning blocks -- TypingMind almost certainly dropped the history converting across a model switch. Fork conversations instead of switching models inline.');
-      } else {
-        lines.push('Cross-model reasoning not in this payload: this conversation received reasoning from OTHER model/endpoint origin(s) that cannot be replayed to ' + w.model + ' @ ' + w.host + ' (foreign encrypted blobs are sealed to their origin; foreign raw reasoning is typically dropped in conversion). Context from those turns is missing on this route.');
-      }
-      var sup = w.support || { fam: '?', replay: (w.routeOk ? 'raw?' : 'unknown'), note: '' };
-      lines.push('');
-      lines.push('Replay support on THIS route -- ' + sup.fam + ': ' + String(sup.replay || '?').toUpperCase() + (sup.note ? (' -- ' + sup.note) : ''));
-      if (sup.replay === 'none' || sup.replay === 'none?') lines.push('NOTE: this route does NOT accept reasoning replay -- 0 outbound reasoning turns is EXPECTED, not history loss.');
-      lines.push('');
-      lines.push('Received per origin (this conversation):');
-      (w.origins || []).forEach(function(o) { lines.push('- ' + o.model + ' @ ' + o.host + ': ' + o.rawBlocks + ' raw (' + tmThinkFmtK(o.rawChars) + 'c) + ' + o.encBlocks + ' encrypted (' + tmThinkFmtK(o.encChars) + 'c) over ' + o.turns + ' turn(s)' + (o.own ? '  <- THIS origin' : '')); });
-      lines.push('Outbound THIS payload: ' + w.out.rawBlocks + ' raw (' + tmThinkFmtK(w.out.rawChars) + 'c) + ' + w.out.encBlocks + ' encrypted (' + tmThinkFmtK(w.out.encChars) + 'c)');
-      var tip = lines.join('\n');
+      var sup = w.support || { fam: '?', replay: 'unknown', note: '' };
+      var L = [];
+      L.push(w.level === 'red'
+        ? 'REASONING HISTORY LOST \u2014 this route accepts reasoning replay, but this payload carries none.'
+        : 'Model switch does not include reasoning blocks from other models in this conversation.');
+      L.push('');
+      var others = [];
+      (w.origins || []).forEach(function(o) { if (!o.own) others.push(o); });
+      var outT = (Number(w.out && w.out.rawTurns) || 0) + (Number(w.out && w.out.encTurns) || 0);
+      L.push('\u2705 ' + w.model + ': ' + outT + ' turn' + (outT === 1 ? '' : 's') + ' included');
+      others.forEach(function(o) {
+        var form = (o.encBlocks && !o.rawBlocks) ? ' (encrypted)' : (o.rawBlocks && !o.encBlocks) ? ' (raw)' : '';
+        L.push('\u274c ' + o.model + ': ' + o.turns + ' turn' + (o.turns === 1 ? '' : 's') + form + ' not included');
+      });
+      L.push('');
+      L.push(w.model + ' accepts ' + String(sup.replay || '?').toUpperCase() + ' reasoning replay.');
+      if (sup.replay === 'none' || sup.replay === 'none?') L.push('0 turns is EXPECTED on this route \u2014 not history loss.');
+      if (w.level === 'red') L.push('Fork the conversation instead of switching models inline.');
+      L.push('');
+      L.push('Replay support \u2014 models in this conversation:');
+      var seenM = {}, allM = [{ m: w.model, h: w.host, p: w.protocol }];
+      (w.origins || []).forEach(function(o) { allM.push({ m: o.model, h: o.host, p: '' }); });
+      allM.forEach(function(x) {
+        var kx = x.m + '@' + x.h;
+        if (seenM[kx]) return;
+        seenM[kx] = 1;
+        L.push('\u00b7 ' + x.m + ': ' + String(tmReplaySupportFor(x.m, x.p, x.h).replay || '?').toUpperCase());
+      });
+      var tip = L.join('\n');
       if (w.level === 'red') return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + (parseInt(fs, 10) + 5 || 15) + 'px;font-weight:900;color:#ff4d4d;text-shadow:0 0 7px rgba(255,60,60,0.85);margin:0 3px 0 1px;">\u26a0\ufe0f\u26a0\ufe0f</span>';
       return '<span title="' + escapeHtml(tip) + '" style="cursor:help;font-size:' + fs + ';color:#ffd166;margin:0 3px 0 1px;">\u26a0\ufe0f</span>';
     } catch (e) { return ''; }
