@@ -1,6 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.363
+// Version: 4.364
 // Issues Fixed:
+//   - v4.364: FIX 24 PHASE 2 -- OpenRouter ⚠️ warning REWRITTEN + RELOCATED + ENLARGED. Dan will use
+//     Anthropic DIRECT by default with OpenRouter as the fallback, so the triangle's job is to remind
+//     him what he gives up on the fallback route. For OpenRouter + Claude the hover now carries the
+//     verified cache findings: Anthropic renders the thinking config / effort INTO the prompt, so any
+//     top-level level change restarts the cache prefix (one full cache WRITE of the whole context on that
+//     turn, then hits again -- a per-change cost, not a per-turn tax); OpenRouter only exposes the
+//     top-level form, so EVERY level change there is that kind; on DIRECT api.anthropic.com Fable 5.1 /
+//     Mythos 5.1 / Opus 5 the extension uses the per-message effort beta instead, which keeps the prefix
+//     intact (changes essentially free); display (👁) is not on Anthropic's invalidation list and is
+//     expected to be cache-neutral on both routes (confirm by watching HIT on the next row); plus the
+//     standing note that OpenRouter's per-model translation is undocumented -- experiment, read the
+//     glyphs, file 📝 Thinking Notes. Non-Claude OpenRouter identities keep the shorter generic text.
+//     The triangle now sits BETWEEN the level and display selects at 15px (was 10px, trailing).
 //   - v4.363: FIX 24 PHASE 2 -- THE DROPDOWNS NOW TELL YOU WHAT IS CURRENTLY IN EFFECT (Dan: 'inherit
 //     TypingMind's -- I don't know what that is'). The app DOES know: every stamped ring row carries
 //     _think_req. NEW tmThinkNativeFromReq(req, obs) reduces a row's request glyphs to a plain level word
@@ -1787,7 +1800,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.363';
+  const EXT_VERSION = '4.364';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6352,7 +6365,14 @@
   function tmThinkIdentityIsOpenRouter(idKey) {
     try { var parts = String(idKey || '').split('::'); return /openrouter/i.test(parts[2] || ''); } catch (e) { return false; }
   }
-  var TM_THINK_OR_WARN = 'OpenRouter route: how OpenRouter translates reasoning.effort / max_tokens / exclude for THIS model is not documented per model and has bitten us repeatedly (budget math vs effort passthrough, mandatory-reasoning rejections, exclude vs display). Treat every level here as an EXPERIMENT: after the next turn read the \ud83c\udf9b\ufe0f glyph (what was sent) and the OBS glyphs (what came back), and record what you learn in a \ud83d\udcdd Thinking Note so the finding is kept per model/provider.';
+  var TM_THINK_OR_WARN = 'OPENROUTER ROUTE -- how OpenRouter translates reasoning.effort / max_tokens / exclude for THIS model is not documented per model and has bitten us repeatedly (budget math vs effort passthrough, mandatory-reasoning rejections, exclude vs display). Treat every level here as an EXPERIMENT: after the next turn read the \ud83c\udf9b\ufe0f glyph (what was sent) and the OBS glyphs (what came back), and record what you learn in a \ud83d\udcdd Thinking Note so the finding is kept per model/provider.';
+  // (v4.364) OpenRouter + Claude: the fallback-route reminder, with the verified cache findings.
+  var TM_THINK_OR_CLAUDE_WARN = '\u26a0\ufe0f OPENROUTER + CLAUDE (your FALLBACK route; Anthropic direct is the default)\n\n'
+    + 'CACHE COST OF CHANGING THE LEVEL HERE -- verified against Anthropic\'s docs (Thinking > "Thinking and prompt caching"): the thinking configuration and the resolved effort are RENDERED INTO THE PROMPT, so changing thinking type / budget_tokens / effort starts a NEW cache prefix. On the turn you change the level you pay a full cache WRITE of the whole context (~ one cold turn); the next turn is a HIT again at the new level. A per-CHANGE cost, not a per-turn tax -- change it 2-3 times a session and you can see the cost; flip it every turn and it is ruinous.\n\n'
+    + 'WHY OPENROUTER IS WORSE: OpenRouter only exposes the TOP-LEVEL form (reasoning.effort / reasoning.max_tokens -> Anthropic top-level fields), so EVERY level change on this route is the paying kind. Setting a level ONCE near the start of a session is fine (TypingMind sends no reasoning param via OpenRouter, so the first set is a decision, not a change).\n\n'
+    + 'ON ANTHROPIC DIRECT (api.anthropic.com) THIS IS NOT AN ISSUE: for Fable 5.1 / Mythos 5.1 / Opus 5 the extension uses Anthropic\'s per-message effort beta (an effort-only system message inserted inside messages at a stable anchor; beta mid-conversation-output-config-2026-07-01), which leaves the cached prefix intact -- level changes are essentially free there. (Confirm on your own rows: change the level on a direct session and the next row should still be a HIT.)\n\n'
+    + 'DISPLAY (\ud83d\udc41 show/hide) is NOT on Anthropic\'s invalidation list and is expected to be cache-neutral on BOTH routes (here it is reasoning.exclude; direct it is thinking.display). Confirm by watching HIT on the row after a flip.\n\n'
+    + 'AND THE STANDING CAVEAT: OpenRouter\'s per-model translation of these fields is undocumented and has bitten us before. Treat every level here as an EXPERIMENT -- read the \ud83c\udf9b\ufe0f glyph (what was sent) and the OBS glyphs (what came back) on the next row, and record what you learn in a \ud83d\udcdd Thinking Note.';
 
   // Which identities get the control. v4.362: every protocol with a writer (anthropic-messages, chat-
   // completions incl. OpenRouter/DeepInfra, Responses, Gemini native). Data-driven from the newest
@@ -6396,13 +6416,20 @@
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
       var dispOpts = opt('inherit', '\u21a9 inherit \u2192 TypingMind sends: ' + (natDisp ? escapeHtml(natDisp) : '(no row yet)'), disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
       var readout = eff ? ('\n\nREADOUT (newest row' + (eff.ts ? (' ' + eff.ts) : '') + '): TypingMind natively sends level "' + natLvl + '", display "' + natDisp + '"' + (eff.overridden ? ('; last wire (after override): level "' + (sent && sent.level) + '", display "' + (sent && sent.display) + '"') : '') + (nat && nat.raw && nat.raw.length ? ('\nraw: ' + nat.raw.slice(0, 6).join(' ; ')) : '')) : '\n\n(no stamped row for this identity yet -- send one turn and the readout appears)';
-      var orWarn = tmThinkIdentityIsOpenRouter(idKey) ? ('<span title="' + escapeHtml(TM_THINK_OR_WARN) + '" style="font-size:10px;color:#ffd166;margin-left:4px;cursor:help;">\u26a0\ufe0f</span>') : '';
+      // (v4.364) OpenRouter warning: Claude gets the full cache-findings text; placed BETWEEN the two selects, 15px.
+      var orWarn = '';
+      if (tmThinkIdentityIsOpenRouter(idKey)) {
+        var orModel = String(idKey).split('::')[1] || '';
+        var orTxt = /claude|^anthropic\//i.test(orModel) ? TM_THINK_OR_CLAUDE_WARN : TM_THINK_OR_WARN;
+        orWarn = '<span title="' + escapeHtml(orTxt) + '" style="font-size:15px;line-height:1;color:#ffd166;margin:0 6px 0 7px;cursor:help;vertical-align:middle;text-shadow:0 0 4px rgba(255,209,102,0.55);">\u26a0\ufe0f</span>';
+      }
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
       var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace. Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts. Not controllable on OpenAI/xAI chat-completions or Kimi/DeepSeek/GLM/Qwen direct (reported as a note). Independent of the level.';
       return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control. \u25c2 last sent marks the option matching the newest wire; the inherit line shows what TypingMind sends natively." style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
         '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
-        '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:5px;">\ud83d\udc41</span>' +
-        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:170px;">' + dispOpts + '</select>' + orWarn + '</span>';
+        orWarn +
+        '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:' + (orWarn ? '0' : '5px') + ';">\ud83d\udc41</span>' +
+        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:170px;">' + dispOpts + '</select></span>';
     } catch (e) { return ''; }
   }
 
