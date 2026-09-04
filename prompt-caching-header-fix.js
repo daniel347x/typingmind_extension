@@ -1,6 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.367
+// Version: 4.368
 // Issues Fixed:
+//   - v4.368: FIX 26 VISIBILITY COMPLETION -- the _replay_warn stamp is now INSPECTABLE WITHOUT
+//     DEVTOOLS (Dan's standing workflow rule: 'PREFERRED (no DevTools needed)'): surfaced in the
+//     Thinking Report (badge click, as replay_warn) and in the ring-modal Summary copy. v4.367
+//     stamped it on every row but only the console debug paths could read it.
 //   - v4.367: FIX 26 -- REASONING-REPLAY LOSS TRACKER (Dan's #1 visibility goal: 'when I switch
 //     models mid-conversation, what reasoning did I just LOSE?'). Answers it empirically on the
 //     wire, no AssemblyDB spelunking: INBOUND accumulates per-conversation-x-origin
@@ -1859,7 +1863,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.367';
+  const EXT_VERSION = '4.368';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5101,6 +5105,8 @@
         requested_compact: tmThinkCompactReq(req), observed_compact: tmThinkCompactObs(obs, req),
         interpretation: tmThinkInterpret(req, obs),
         requested: req, observed: obs,
+        // (Fix 26, v4.368) Reasoning-replay loss check stamped on this row (null = healthy / nothing to lose).
+        replay_warn: cap._replay_warn || null,
         usage: cap.response_anthropic_usage || cap.response_usage || null
       };
       var txt = JSON.stringify(report, null, 2);
@@ -14477,6 +14483,8 @@
       // (Fix 24, v4.351) Thinking Observatory: requested vs observed thinking level for this turn.
       think_req: cap._think_req || null,
       think_obs: cap._think_obs || null,
+      // (Fix 26, v4.368) Reasoning-replay loss warning for this turn (null = healthy / nothing to lose).
+      replay_warn: cap._replay_warn || null,
       error: cap.error || null
     };
   }
