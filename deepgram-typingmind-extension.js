@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.363 Changes:
+ * - FIX (Markdown table renderer loss from an unescaped pipe inside inline code): a raw context
+ *   row containing `reasoning: {max_tokens|effort}` retained "effort injection would sit",
+ *   while TypingMind's rendered table treated the pipe as another cell boundary and discarded
+ *   that overflow cell. The chat norm was therefore exactly 23 characters shorter despite the
+ *   two texts otherwise aligning byte-for-byte after normalization.
+ * - The shared session↔turn predicate keeps exact bidirectional containment as its first path,
+ *   then permits ONE tightly bounded renderer-loss gap: both normalized strings must be long,
+ *   must share exact substantial prefix and suffix flanks, and the sole insertion/deletion must
+ *   be ≤256 characters and ≤10% of the longer string. This handles content discarded by the
+ *   Markdown renderer without introducing general fuzzy/edit-distance matching.
+ *
  * v3.362 Changes:
  * - ✨ Refine button now shows the CURRENT MODEL on a small second line in every mode: idle,
  *   in-flight split (Cancel + +30s), and cooldown completion. With the aux rows collapsed, the
@@ -1792,7 +1804,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.362',
+  VERSION: '3.363',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -5239,10 +5251,37 @@
     return 'done';
   };
 
-  /** The one shared session⇄turn match predicate (v3.289). Forward direction (turn contains the
-   *  entire session block) always qualifies. Reverse direction (session block contains the turn
-   *  norm) also qualifies — the v3.289 30% threshold was REVERTED in v3.290 in favor of
-   *  match-strength comparison in refineComputeMatches (strongest match wins, no arbitrary cutoff). */
+  /** Conservative fallback for text lost (or injected) by Markdown rendering between two exact
+   *  normalized flanks. Example (v3.363): inside a Markdown table, the pipe in inline code
+   *  `reasoning: {max_tokens|effort}` was parsed as an extra cell boundary; TypingMind discarded
+   *  the overflow cell, so the chat DOM omitted exactly "effort injection would sit" while the
+   *  raw context retained it. This is deliberately NOT fuzzy matching: after the longest common
+   *  prefix and suffix are removed, exactly ONE side must have one bounded contiguous gap and the
+   *  other side must have no unmatched middle at all. */
+  function isSingleRendererGapMatch(a, b) {
+    if (!a || !b || Math.min(a.length, b.length) < 160) return false;
+    var prefix = 0;
+    var minLen = Math.min(a.length, b.length);
+    while (prefix < minLen && a[prefix] === b[prefix]) prefix++;
+
+    var suffix = 0;
+    var suffixLimit = minLen - prefix;   // never overlap the established prefix
+    while (suffix < suffixLimit && a[a.length - 1 - suffix] === b[b.length - 1 - suffix]) suffix++;
+
+    var aGap = a.length - prefix - suffix;
+    var bGap = b.length - prefix - suffix;
+    var exactlyOneGap = (aGap === 0 && bGap > 0) || (bGap === 0 && aGap > 0);
+    if (!exactlyOneGap) return false;
+
+    var gap = Math.max(aGap, bGap);
+    var longer = Math.max(a.length, b.length);
+    return prefix >= 24 && suffix >= 24 && (prefix + suffix) >= 160
+      && gap <= 256 && (gap / longer) <= 0.10;
+  }
+
+  /** The one shared session⇄turn match predicate (v3.289). Exact containment in either direction
+   *  remains authoritative. v3.363 adds only the conservative single-renderer-gap fallback above
+   *  for otherwise identical long texts whose rendered DOM dropped one bounded interior span. */
   // @beacon[
   //   id=auto-beacon@__lambdao_1.isSessionTurnMatch-c24b,
   //   role=__lambdao_1.isSessionTurnMatch,
@@ -5252,7 +5291,8 @@
   // ]
   function isSessionTurnMatch(sessionNorm, turnNorm) {
     if (!sessionNorm || sessionNorm.length < 5 || !turnNorm) return false;
-    return turnNorm.includes(sessionNorm) || sessionNorm.includes(turnNorm);
+    return turnNorm.includes(sessionNorm) || sessionNorm.includes(turnNorm)
+      || isSingleRendererGapMatch(sessionNorm, turnNorm);
   }
 
   /** Pure scan: which sessions match any of the recent chat turns? No side effects.
