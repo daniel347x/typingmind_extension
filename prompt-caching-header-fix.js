@@ -1,6 +1,27 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.362
+// Version: 4.363
 // Issues Fixed:
+//   - v4.363: FIX 24 PHASE 2 -- THE DROPDOWNS NOW TELL YOU WHAT IS CURRENTLY IN EFFECT (Dan: 'inherit
+//     TypingMind's -- I don't know what that is'). The app DOES know: every stamped ring row carries
+//     _think_req. NEW tmThinkNativeFromReq(req, obs) reduces a row's request glyphs to a plain level word
+//     (off / low / medium / high / xhigh / max / adaptive[+effort] / budget N / on / provider default /
+//     implicit) and a display word (shown / hidden / default, falling back to what the response actually
+//     streamed). The writer now snapshots the NATIVE config BEFORE rewriting (rep.native, stamped on
+//     _think_req.override.native), so 'what TypingMind would send' stays known even while an override is
+//     active. tmThinkEffectiveForIdentity(idKey) reads the newest row per identity. The '↩ inherit'
+//     option is labelled '↩ inherit → TypingMind sends: high' (or 'provider default', orange), and the
+//     concrete option matching what was LAST SENT on the wire is tagged '◂ last sent' -- so the two
+//     selects double as a readout of the current/most-recent setting and as the control to change it.
+//     Tooltip shows the raw field=value line behind the word. OPENROUTER ⚠: a yellow triangle beside
+//     the control whenever the identity's host is openrouter.ai (direct or proxy) -- hover: OpenRouter's
+//     translation of these fields per model is undocumented and has bitten repeatedly; treat every
+//     level as an experiment, read the 🎛️/OBS glyphs on the next row, and record findings in the
+//     📝 Thinking Notes. SOL REASONING ⚠: the legacy global 'Sol Reasoning:' select in the ring-modal
+//     control row is marked DEPRECATED (yellow triangle + hover): it is a Sol-only, all-sessions knob
+//     that still injects reasoning.effort/summary/context as the DEFAULT for plain-Sol identities with
+//     no override, but the per-session 🎛️ Think / 👁 controls override it whenever set; slated for
+//     removal once a per-MODEL default exists (removing now would silently change un-overridden Sol
+//     sessions).
 //   - v4.362: FIX 24 PHASE 2 -- THINKING CONTROL for EVERY remaining wire shape (Dan is on OpenRouter
 //     chat-completions, so that one first). The v4.361 writer covered Anthropic Messages only; the
 //     same {level, display} override now translates into: (a) OPENROUTER chat-completions -- unified
@@ -1766,7 +1787,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.362';
+  const EXT_VERSION = '4.363';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6267,14 +6288,71 @@
       if (!tmThinkOverrideIsActive(ov)) return null;
       var headersNorm = {};
       try { headersNorm = tmNormalizeHeaders(options && options.headers) || {}; } catch (e) {}
+      // (v4.363) Snapshot what TypingMind (plus earlier universal injectors) put on the wire BEFORE we
+      // rewrite it, so the dropdown can keep saying 'TypingMind sends: X' while an override is active.
+      var native = null;
+      try { native = tmThinkNativeFromReq(tmThinkScanOutbound(url, headersNorm, body), null); } catch (eN) {}
       var rep = tmThinkApplyOverride(url, body, headersNorm, ov, { setHeader: function(name, token) { tmThinkAppendHeaderToken(options, name, token); } });
       rep.identity = idKey;
+      if (native) rep.native = native;
       if (rep.persist) tmSetThinkOverride(idKey, { steps: ov.steps || [] });
       if (rep.applied) console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override applied for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ' [' + (rep.mode || 'n/a') + ']: ' + rep.changes.join(' | ') + (rep.clamps.length ? (' \u26a0 clamps: ' + rep.clamps.join(' | ')) : ''));
       else console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override configured but nothing to change for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ': ' + (rep.notes.concat(rep.clamps).join(' | ') || 'already at the requested state'));
       return rep;
     } catch (e) { return null; }
   }
+
+  // (v4.363) Reduce a stamped request (+ optional observation) to plain words for the dropdown readout.
+  // level: off | low | medium | high | xhigh | max | adaptive[·effort] | budget N | on | provider default | implicit | ?
+  // display: shown | hidden | default (falls back to what the response actually streamed when the request
+  // carried no display field). `raw` carries the field=value lines behind the words (tooltip).
+  function tmThinkNativeFromReq(req, obs) {
+    var out = { level: '?', levelKey: null, display: 'default', displayKey: null, raw: [], none: false };
+    try {
+      if (!req) return out;
+      var R = tmThinkClassifyReq(req);
+      var has = {}; R.glyphs.forEach(function(g) { if (g.state !== 'OVR') { has[g.state] = g; g.raws.forEach(function(x) { out.raw.push(x); }); } });
+      function ctl(p) { return tmThinkCtl(req, p); }
+      var effRaw = ctl('messages[].output_config.effort'); if (effRaw === undefined) effRaw = ctl('output_config.effort'); if (effRaw === undefined) effRaw = ctl('reasoning_effort'); if (effRaw === undefined) effRaw = ctl('reasoning.effort');
+      if (effRaw === undefined) effRaw = ctl('generationConfig.thinkingConfig.thinkingLevel'); if (effRaw === undefined) effRaw = ctl('generationConfig.thinkingConfig.thinking_level');
+      var effWord = null;
+      if (has.OFF) effWord = 'off';
+      else if (has.LOW) effWord = (String(effRaw).toLowerCase() === 'minimal') ? 'minimal' : 'low';
+      else if (has.MED) effWord = 'medium';
+      else if (has.HIGH) effWord = 'high';
+      else if (has.MAX) effWord = (String(effRaw).toLowerCase() === 'xhigh') ? 'xhigh' : 'max';
+      if (has.BUDGET) { out.level = 'budget ' + (has.BUDGET.value || '?'); out.levelKey = 'budget'; }
+      else if (has.ADAPTIVE) { out.level = 'adaptive' + (effWord ? (' \u00b7 ' + effWord) : ''); out.levelKey = effWord || 'adaptive'; }
+      else if (effWord) { out.level = effWord; out.levelKey = effWord; }
+      else if (has.ON) { out.level = 'on (no level)'; out.levelKey = 'on'; }
+      else if (has.IMPLICIT) { out.level = 'implicit (model name)'; out.levelKey = null; }
+      else if (has.NONE || R.isNone) { out.level = 'provider default (nothing sent)'; out.levelKey = null; out.none = true; }
+      if (has.HIDE_REQ) { out.display = 'hidden'; out.displayKey = 'hide'; }
+      else if (has.SHOW_REQ) { out.display = 'shown'; out.displayKey = 'show'; }
+      else if (obs && obs.visibility) {
+        if (obs.visibility === 'raw' || obs.visibility === 'summary') { out.display = 'default (streamed ' + obs.visibility + ')'; out.displayKey = 'show'; }
+        else if (obs.visibility === 'hidden' || obs.visibility === 'none') { out.display = 'default (' + (obs.tokens && obs.tokens.reasoning > 0 ? 'nothing shown' : 'no thinking observed') + ')'; out.displayKey = (obs.tokens && obs.tokens.reasoning > 0) ? 'hide' : null; }
+        else if (obs.visibility === 'encrypted') { out.display = 'default (encrypted only)'; out.displayKey = 'hide'; }
+      }
+    } catch (e) {}
+    return out;
+  }
+  // What is in effect for an identity right now: the NATIVE config (pre-override) from the newest stamped
+  // row, plus what was actually LAST SENT (post-override) so the matching option can be tagged.
+  function tmThinkEffectiveForIdentity(idKey) {
+    try {
+      var cap = tmLatestThinkEntryForIdentity(idKey);
+      if (!cap || !cap._think_req) return null;
+      var sent = tmThinkNativeFromReq(cap._think_req, cap._think_obs);
+      var ovr = cap._think_req.override;
+      var native = (ovr && ovr.applied && ovr.native) ? ovr.native : sent;
+      return { native: native, sent: sent, overridden: !!(ovr && ovr.applied), ts: cap.ts_local || cap.ts || null };
+    } catch (e) { return null; }
+  }
+  function tmThinkIdentityIsOpenRouter(idKey) {
+    try { var parts = String(idKey || '').split('::'); return /openrouter/i.test(parts[2] || ''); } catch (e) { return false; }
+  }
+  var TM_THINK_OR_WARN = 'OpenRouter route: how OpenRouter translates reasoning.effort / max_tokens / exclude for THIS model is not documented per model and has bitten us repeatedly (budget math vs effort passthrough, mandatory-reasoning rejections, exclude vs display). Treat every level here as an EXPERIMENT: after the next turn read the \ud83c\udf9b\ufe0f glyph (what was sent) and the OBS glyphs (what came back), and record what you learn in a \ud83d\udcdd Thinking Note so the finding is kept per model/provider.';
 
   // Which identities get the control. v4.362: every protocol with a writer (anthropic-messages, chat-
   // completions incl. OpenRouter/DeepInfra, Responses, Gemini native). Data-driven from the newest
@@ -6299,21 +6377,32 @@
       var isBudget = /^budget:(\d+)$/.test(lvl);
       var nSteps = Array.isArray(ov.steps) ? ov.steps.length : 0;
       var S = TM_THINK_STATES;
-      var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : '#aab') + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;max-width:150px;';
+      // (v4.363) Readout: what TypingMind sends natively + what was LAST SENT on the wire for this identity.
+      var eff = tmThinkEffectiveForIdentity(idKey);
+      var nat = eff && eff.native, sent = eff && eff.sent;
+      var natLvl = nat ? nat.level : null, natDisp = nat ? nat.display : null;
+      var sentLvlKey = sent ? sent.levelKey : null, sentDispKey = sent ? sent.displayKey : null;
+      var LAST = ' \u25c2 last sent';
+      function tagL(v) { return sentLvlKey === v ? LAST : ''; }
+      function tagD(v) { return sentDispKey === v ? LAST : ''; }
+      var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;max-width:190px;';
       function opt(v, label, cur) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>'; }
       var curSel = isBudget ? '__budget' : lvl;
-      var levelOpts = opt('inherit', '\u21a9 inherit (TypingMind\'s)', curSel) +
-        opt('off', S.OFF.g + ' off', curSel) + opt('minimal', S.LOW.g + ' minimal', curSel) + opt('low', S.LOW.g + ' low', curSel) +
-        opt('medium', S.MED.g + ' medium', curSel) + opt('high', S.HIGH.g + ' high', curSel) + opt('xhigh', S.HIGH.g + ' xhigh', curSel) + opt('max', S.MAX.g + ' max', curSel) +
-        opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : ''), curSel) +
+      var inheritLbl = '\u21a9 inherit \u2192 TypingMind sends: ' + (natLvl ? escapeHtml(natLvl) : '(no row yet)');
+      var levelOpts = opt('inherit', inheritLbl, curSel) +
+        opt('off', S.OFF.g + ' off' + tagL('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low'), curSel) +
+        opt('medium', S.MED.g + ' medium' + tagL('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max'), curSel) +
+        opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : '') + tagL('budget'), curSel) +
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
-      var dispOpts = opt('inherit', '\u21a9 inherit', disp) + opt('show', S.SHOW_REQ.g + ' show reasoning', disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning', disp);
+      var dispOpts = opt('inherit', '\u21a9 inherit \u2192 TypingMind sends: ' + (natDisp ? escapeHtml(natDisp) : '(no row yet)'), disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
+      var readout = eff ? ('\n\nREADOUT (newest row' + (eff.ts ? (' ' + eff.ts) : '') + '): TypingMind natively sends level "' + natLvl + '", display "' + natDisp + '"' + (eff.overridden ? ('; last wire (after override): level "' + (sent && sent.level) + '", display "' + (sent && sent.display) + '"') : '') + (nat && nat.raw && nat.raw.length ? ('\nraw: ' + nat.raw.slice(0, 6).join(' ; ')) : '')) : '\n\n(no stamped row for this identity yet -- send one turn and the readout appears)';
+      var orWarn = tmThinkIdentityIsOpenRouter(idKey) ? ('<span title="' + escapeHtml(TM_THINK_OR_WARN) + '" style="font-size:10px;color:#ffd166;margin-left:4px;cursor:help;">\u26a0\ufe0f</span>') : '';
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
       var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace. Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts. Not controllable on OpenAI/xAI chat-completions or Kimi/DeepSeek/GLM/Qwen direct (reported as a note). Independent of the level.';
-      return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control" style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
-        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
+      return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control. \u25c2 last sent marks the option matching the newest wire; the inherit line shows what TypingMind sends natively." style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
+        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
         '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:5px;">\ud83d\udc41</span>' +
-        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle) + '" style="' + selStyle + 'max-width:120px;">' + dispOpts + '</select></span>';
+        '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:170px;">' + dispOpts + '</select>' + orWarn + '</span>';
     } catch (e) { return ''; }
   }
 
@@ -14763,7 +14852,9 @@
     // v4.162: Sol reasoning effort dropdown + v4.163: sort pills + filter dropdown — on one row.
     var solEffort = tmGetSolReasoningEffort();
     var solOpts = ['medium', 'high', 'xhigh', 'max'];
-    var solSelectHtml = '<span style="font-size:10px;opacity:0.85;">Sol Reasoning:&nbsp;</span>' +
+    // (v4.363) DEPRECATED marker: superseded by the per-session 🎛️ Think / 👁 controls (Fix 24 Phase 2).
+    var solDeprecTitle = 'DEPRECATED (v4.363): this is the legacy GLOBAL Sol-only knob (v4.161/4.162). It still injects reasoning.effort=<value> + summary:auto + context:all_turns on every request to a plain-Sol model (GPT-5.6 Sol, not Sol Pro) as the DEFAULT when that session has no override. The per-session \ud83c\udf9b\ufe0f Think / \ud83d\udc41 controls (widget + newest ring row per session) now supersede it: whenever they are set they override this value for that call. Kept for now so un-overridden Sol sessions do not silently change; slated for removal once a per-MODEL default exists.';
+    var solSelectHtml = '<span title="' + escapeHtml(solDeprecTitle) + '" style="font-size:10px;color:#ffd166;cursor:help;margin-right:2px;">\u26a0\ufe0f</span><span title="' + escapeHtml(solDeprecTitle) + '" style="font-size:10px;opacity:0.6;text-decoration:line-through;">Sol Reasoning:</span><span style="font-size:10px;opacity:0.85;">&nbsp;</span>' +
       '<select data-action="set-sol-reasoning-effort" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
     for (var si = 0; si < solOpts.length; si++) {
       var opt = solOpts[si];
