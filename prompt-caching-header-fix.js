@@ -1,6 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.370
+// Version: 4.371
 // Issues Fixed:
+//   - v4.371: FIX 24/25 GEMINI-NATIVE IDENTITY-KEY REPAIR (the 'high + show' dropdown that never
+//     reached the wire). ROOT CAUSE: tmComputeRoutingIdentityKey bailed with NULL whenever
+//     body.model was empty -- and Gemini NATIVE requests carry no body.model (it lives in the
+//     URL /models/<name> path; the v4.244 capture-side fix learned that derivation, but the
+//     REQUEST-time key builder never did). So for every Gemini-native request: the Fix 24
+//     override lookup was skipped entirely (the writer silently never ran -- Dan's
+//     gemini-3.8-flash stamp showed only TypingMind's native includeThoughts:false with no
+//     thinkingLevel and no OVR glyph even AFTER he set the dropdowns), and Fix 25 keep-alive
+//     wire snapshots never stored for Gemini identities. Same bug SHAPE as the v4.201 GLM
+//     host-mismatch (the request-time key must mirror the response-time key byte-for-byte).
+//     Fix: derive the model from the URL /models/<name> path (x-target-endpoint wins for proxy
+//     traffic) when body.model is empty, exactly mirroring the capture-side derivation.
+//     Verification: set Think:high + show on a Gemini-native identity; the next turn's
+//     think_req should stamp thinkingConfig.thinkingLevel='high' + includeThoughts=true + the
+//     OVR glyph, and OBS should show reasoning flowing back.
 //   - v4.370: FIX 26 REASONING-REPLAY SUPPORT MAP (TM_REPLAY_SUPPORT) + READ-ONLY VIEWER. Dan:
 //     'zero outbound reasoning turns means something completely different when the route CAN'T
 //     accept replay vs when it CAN.' New hard-coded table maps model family x protocol shape ->
@@ -1884,7 +1899,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.370';
+  const EXT_VERSION = '4.371';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -17564,11 +17579,27 @@
   // ]
   function tmComputeRoutingIdentityKey(body, url, options) {
     try {
-      if (!body || !body.model) return null;
-      var model = String(body.model); // RAW model -- byte-for-byte identical to the capture-side key
-      var sid = body.session_id || tmDeriveStableSessionId(body) || '';
+      if (!body) return null;
       var hdrs = {};
-      try { hdrs = tmNormalizeHeaders(options && options.headers); } catch (e) {}
+      try { hdrs = tmNormalizeHeaders(options && options.headers); } catch (eH) {}
+      var model = body.model ? String(body.model) : ''; // RAW model -- byte-for-byte identical to the capture-side key
+      // (v4.371) GEMINI-NATIVE MODEL-FROM-URL: Gemini native requests carry NO body.model (it
+      // lives in the URL /models/<name> path; the x-target-endpoint header wins for proxy
+      // traffic) -- mirror the v4.244 capture-side derivation. Without this the request-time
+      // identity key was NULL for EVERY Gemini-native request: Fix 24 thinking overrides NEVER
+      // matched their stored identity (the writer silently never ran), and Fix 25 keep-alive
+      // wire snapshots never stored for Gemini identities.
+      if (!model) {
+        try {
+          var modelUrl = String(url || '');
+          var tgtE = hdrs && (hdrs['x-target-endpoint'] || hdrs['X-Target-Endpoint']);
+          if (tgtE && /\/models\//i.test(String(tgtE))) modelUrl = String(tgtE);
+          var um = modelUrl.match(/\/models\/([^\/:?#]+)/i);
+          if (um && um[1]) model = decodeURIComponent(um[1]);
+        } catch (eMU) {}
+      }
+      if (!model) return null;
+      var sid = body.session_id || tmDeriveStableSessionId(body) || '';
       var capLike = { url: url, headers: hdrs };
       var host = '';
       try { host = tmExtractEndpointHost(capLike); } catch (e) {}
