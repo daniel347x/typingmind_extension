@@ -1,6 +1,32 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.359
+// Version: 4.360
 // Issues Fixed:
+//   - v4.360: FIX 25 -- PROMPT-CACHE KEEP-ALIVE. Fable 5.1's cache-read price dropped to $0.25/M,
+//     making it economical to keep a session's prompt cache WARM across breaks: a cache HIT RESETS
+//     the TTL (verified Anthropic/Bedrock/GCP) at read price, so one ping at ~50min on the 1h TTL
+//     costs ~$0.13 on a 500K session vs ~$10 to re-warm cold (~80h break-even). Per-identity
+//     (sid::model::host::proxy) toggle + configurable interval on the sessions-in-memory hovercard
+//     rows ('\u23f0 KA ON/off' + '[Nm]' interval button; prompt accepts '50' or '50,12' = cap at 12h;
+//     defaults 50m for claude/anthropic entries, 4m otherwise), persisted tm_keepalive_v1. WIRE
+//     SNAPSHOT: tmCaptureFetchCall keeps each identity's FINAL outbound {url, RAW headers, body}
+//     in MEMORY ONLY; the ping replays those exact bytes + ONE appended minimal user turn ('.',
+//     below min-cacheable so it cannot create an entry) + tiny max_tokens (32 when Anthropic
+//     thinking is enabled -- thinking config itself untouched, since changing it invalidates the
+//     message cache) + stream:false, carrying tm_passthrough=1 so our own hook ignores it (no
+//     capture row, no repairs, no retries, no continuity sensors, no ledger pollution); response
+//     DISCARDED (never enters TypingMind history, so the real prefix stays byte-stable). STATE
+//     MACHINE REUSE: a 30s sweeper fires only when QUIESCENT for the full interval -- no in-flight
+//     request for the identity (tmInFlightByIdentity), tmAgentManagementDisplayState.pendingToolCall
+//     FALSE (an INCOMPLETE turn belongs to the kick-along; mutually exclusive by construction),
+//     idle measured from the LATEST of last real turn / turn completion / last ping. VERIFICATION:
+//     every ping logs {ts, read, write, cost} to the entry (last 30 kept) + cumulative spend +
+//     'pings N \u00b7 $X \u00b7 HH:MM \u2713readK/0' status on the row; cost from the response cost field else
+//     the Set Costs table. HEALTH: cache_creation > 1024 tokens = PREFIX MISMATCH (we paid a
+//     write) -> '\ud83d\udea8 KA BROKEN -- wrote NK' red badge + AUTO-DISABLE so it cannot repeat.
+//     SAFETY: optional max_hours auto-off; instant off on toggle; a real turn resets the clock; a
+//     failed ping retries ONCE after 60s then waits (never routed to kick-along); after a page
+//     reload the entry stays enabled but arms only after the next real turn (no wire snapshot).
+//     Fresh JSON.parse per ping -- the stored snapshot is never mutated.
 //   - v4.359: FIX 24 BEACON CURATION (comment-only, zero behavior change). Removed the two UI-leaf
 //     beacons (Thinking Notes modal, Glyph Map modal -- reachable via badge/button wiring) and
 //     added ONE curated beacon on tmRecordThinkHistogram, the session thinking-histogram ledger
@@ -1682,7 +1708,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.359';
+  const EXT_VERSION = '4.360';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4161,6 +4187,287 @@
     tmWriteCaptureRing(ring);
   }
 
+  // ==================== FIX 25 — PROMPT-CACHE KEEP-ALIVE (v4.360) ====================
+  // Economics: Fable 5.1 cache-read dropped to $0.25/M; a read PING at ~50min on the 1h TTL RESETS
+  // the TTL at read price (verified: Anthropic/Bedrock/GCP docs -- a cache HIT refreshes the TTL,
+  // no write charge). ~$0.13/hr keeps a 500K session warm vs ~$10 to re-warm cold. Generic across
+  // TTL-cached providers; Anthropic 1h TTL is the target.
+  // DESIGN:
+  //  * Per (session x model) identity entry (the SAME sid::model::host::proxy key as cost/hue/
+  //    routing), persisted in tm_keepalive_v1: {enabled, interval_min, max_hours, ...log}.
+  //  * WIRE SNAPSHOT: tmCaptureFetchCall stores each identity's FINAL outbound {url, headers,
+  //    body} in tmKeepAliveLastWire (memory-only -- raw auth headers never touch localStorage).
+  //    The ping replays those EXACT bytes + ONE appended minimal user turn (below min-cacheable,
+  //    so it cannot create a cache entry) + tiny max_tokens + stream:false. Response DISCARDED.
+  //  * STATE MACHINE REUSE (critical): quiescence = tmAgentManagementDisplayState(sid).
+  //    pendingToolCall FALSE (else the turn is INCOMPLETE and the kick-along OWNS it -- mutually
+  //    exclusive by construction) AND no in-flight request for the identity AND idle >= interval.
+  //    Any real turn / each ping resets the idle clock. Ping failures NEVER enter the kick-along
+  //    path (one 60s retry, then wait for the next interval).
+  //  * The ping fetch carries tm_passthrough=1 so our own hook ignores it entirely: no capture
+  //    row, no repairs, no auto-retry, no continuity-tap sensors, no cache-outcome ledger writes.
+  //  * HEALTH: read-heavy usage = healthy; cache_creation > 1KB tokens = BROKEN (prefix mismatch
+  //    -- we PAID A WRITE): loud red badge + AUTO-DISABLE so it cannot repeat every interval.
+  var TM_KEEPALIVE_KEY = 'tm_keepalive_v1';
+  var TM_KA_BROKEN_WRITE_TOKENS = 1024;
+  var tmKeepAliveLastWire = {};   // identityKey -> { url, headers, body, ts, sid }
+  var tmKeepAliveSweepId = null;
+  var tmKeepAliveSkipLogged = {}; // key -> reason logged once
+
+  function tmGetKeepAliveStore() { try { var v = JSON.parse(localStorage.getItem(TM_KEEPALIVE_KEY) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; } }
+  function tmSaveKeepAliveStore(s) { try { localStorage.setItem(TM_KEEPALIVE_KEY, JSON.stringify(s)); } catch (e) {} }
+  function tmGetKeepAliveEntry(key) { var s = tmGetKeepAliveStore(); return s[key] || null; }
+  function tmSetKeepAliveEntry(key, entry) { var s = tmGetKeepAliveStore(); if (entry) { entry._ts = Date.now(); s[key] = entry; } else { delete s[key]; } tmSaveKeepAliveStore(s); }
+
+  // Wire snapshot at real-turn time (called from tmCaptureFetchCall with the FINAL outbound bytes).
+  function tmKeepAliveNoteRealTurn(key, url, headers, bodyStr, sid) {
+    try {
+      if (!key || typeof bodyStr !== 'string' || !bodyStr) return;
+      tmKeepAliveLastWire[key] = { url: String(url || ''), headers: headers || {}, body: bodyStr, ts: Date.now(), sid: sid || null };
+      delete tmKeepAliveSkipLogged[key];
+      var e = tmGetKeepAliveEntry(key);
+      if (e && e.retry_at) { e.retry_at = 0; tmSetKeepAliveEntry(key, e); }
+    } catch (eK) {}
+  }
+
+  // Build the ping request from the stored wire: EXACT prefix + one minimal appended user turn.
+  // Fresh JSON.parse per ping (never mutates the snapshot). Returns {url, headers, body} or {skip}.
+  function tmKeepAliveBuildPing(wire) {
+    try {
+      var body = JSON.parse(wire.body);
+      var proto = tmDetectProtocol(wire.url, body);
+      var url = wire.url;
+      if (proto === 'anthropic-messages') {
+        if (!Array.isArray(body.messages)) return { skip: 'no messages[]' };
+        body.messages.push({ role: 'user', content: '.' });
+        // Thinking config must NOT change (Anthropic: thinking changes invalidate message cache).
+        // With thinking enabled, max_tokens must stay above any thinking floor -- use 32; else 1.
+        body.max_tokens = (body.thinking && body.thinking.type && body.thinking.type !== 'disabled') ? 32 : 1;
+        body.stream = false;
+      } else if (proto === 'openai-chat-completions' || proto === 'deepinfra-chat-completions') {
+        if (!Array.isArray(body.messages)) return { skip: 'no messages[]' };
+        body.messages.push({ role: 'user', content: '.' });
+        if (body.max_completion_tokens !== undefined) body.max_completion_tokens = 16; else body.max_tokens = 16;
+        body.stream = false;
+        if (body.stream_options) delete body.stream_options;
+      } else if (proto === 'openai-responses') {
+        if (!Array.isArray(body.input)) return { skip: 'no input[]' };
+        body.input.push({ role: 'user', content: [{ type: 'input_text', text: '.' }] });
+        body.max_output_tokens = 16;
+        body.stream = false;
+      } else if (proto === 'gemini-generatecontent') {
+        if (!Array.isArray(body.contents)) return { skip: 'no contents[]' };
+        body.contents.push({ role: 'user', parts: [{ text: '.' }] });
+        if (!body.generationConfig || typeof body.generationConfig !== 'object') body.generationConfig = {};
+        body.generationConfig.maxOutputTokens = 16;
+        url = url.replace(':streamGenerateContent', ':generateContent').replace(/([?&])alt=sse(&?)/, function(m, p1, p2) { return p2 ? p1 : ''; });
+      } else {
+        return { skip: 'unsupported protocol ' + proto };
+      }
+      url += (url.indexOf('?') !== -1 ? '&' : '?') + 'tm_passthrough=1';
+      return { url: url, headers: wire.headers, body: JSON.stringify(body) };
+    } catch (e) { return { skip: 'build failed: ' + String(e && e.message || e) }; }
+  }
+
+  function tmKeepAliveFindPricing(model, host) {
+    try {
+      var costs = tmGetProviderCosts();
+      var m = String(model || '').toLowerCase();
+      if (costs[m + '::' + host]) return costs[m + '::' + host];
+      for (var k in costs) { if (costs.hasOwnProperty(k) && k.indexOf(m + '::') === 0) return costs[k]; }
+    } catch (e) {}
+    return null;
+  }
+
+  function tmKeepAliveUsageFromText(text) {
+    try { return tmExtractKnownUsageEvidence(JSON.parse(text)); } catch (e) {}
+    try {
+      var merged = null, lines = String(text || '').split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var ln = lines[i].trim(); if (ln.indexOf('data: ') !== 0) continue;
+        var js = ln.slice(6).trim(); if (js === '[DONE]') continue;
+        try { var u = tmExtractKnownUsageEvidence(JSON.parse(js)); if (u) merged = tmMergeUsageInto(merged, u); } catch (e2) {}
+      }
+      return merged;
+    } catch (e3) { return null; }
+  }
+
+  // @beacon[
+  //   id=fix25-keepalive-fire-ping,
+  //   role=__lambdao_1.tmKeepAliveFirePing,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 25 (v4.360): fires ONE cache keep-alive ping for an identity -- replays the exact last outbound prefix + one minimal user turn via tm_passthrough=1 (invisible to the hook), discards the response, extracts cache read/write evidence, computes cost (response cost else Set Costs table), logs to the per-entry ledger, and AUTO-DISABLES with a loud BROKEN flag when cache_creation exceeds the mismatch threshold (we paid a write). Errors retry once after 60s and never touch the kick-along path.,
+  // ]
+  function tmKeepAliveFirePing(key) {
+    var entry = tmGetKeepAliveEntry(key);
+    var wire = tmKeepAliveLastWire[key];
+    if (!entry || !entry.enabled || !wire) return;
+    var ping = tmKeepAliveBuildPing(wire);
+    if (ping.skip) {
+      if (!tmKeepAliveSkipLogged[key]) { tmKeepAliveSkipLogged[key] = 1; console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive skip (' + key + '): ' + ping.skip); }
+      return;
+    }
+    entry.last_ping_ts = Date.now();
+    entry.ping_count = Number(entry.ping_count || 0) + 1;
+    tmSetKeepAliveEntry(key, entry);
+    var t0 = Date.now();
+    fetch(ping.url, { method: 'POST', headers: ping.headers, body: ping.body }).then(function(resp) {
+      return resp.text().then(function(text) { return { ok: resp.ok, status: resp.status, text: text }; });
+    }).then(function(r) {
+      var e2 = tmGetKeepAliveEntry(key); if (!e2) return;
+      if (!r.ok) { tmKeepAliveHandlePingFailure(key, e2, 'HTTP ' + r.status); return; }
+      var usage = tmKeepAliveUsageFromText(r.text) || {};
+      var readTok = Number(usage.cache_read_input_tokens || usage.cached_tokens || (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0);
+      var writeTok = Number(usage.cache_creation_input_tokens || usage.cache_write_tokens || (usage.prompt_tokens_details && usage.prompt_tokens_details.cache_write_tokens) || 0);
+      var cost = null;
+      try { if (usage.cost != null && isFinite(Number(usage.cost))) cost = Number(usage.cost); } catch (eC) {}
+      if (cost == null) {
+        try { var pr = tmKeepAliveFindPricing(e2.model, e2.host); if (pr) { var cc = tmCalculateCostFromTable(usage, pr); if (cc && typeof cc.cost === 'number') cost = cc.cost; } } catch (eC2) {}
+      }
+      e2.read_last = readTok; e2.write_last = writeTok; e2.cost_last = cost;
+      e2.spend_total = Number(e2.spend_total || 0) + (cost || 0);
+      if (!Array.isArray(e2.log)) e2.log = [];
+      e2.log.push({ ts: Date.now(), ms: Date.now() - t0, read: readTok, write: writeTok, cost: cost });
+      if (e2.log.length > 30) e2.log = e2.log.slice(-30);
+      e2.retry_at = 0;
+      if (writeTok > TM_KA_BROKEN_WRITE_TOKENS) {
+        // Prefix mismatch: we just PAID A WRITE. Disable so it cannot repeat every interval.
+        e2.enabled = false;
+        e2.broken = { ts: Date.now(), write_tokens: writeTok, read_tokens: readTok, cost: cost };
+        console.error('\ud83d\udea8 [v' + EXT_VERSION + '] KEEP-ALIVE BROKEN for ' + (e2.model || key) + ': ping WROTE ' + tmThinkFmtK(writeTok) + ' cache tokens (prefix mismatch) \u2014 auto-disabled.');
+      } else {
+        console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping ' + (e2.model || '?') + ' @ ' + (e2.host || '?') + ': read ' + tmThinkFmtK(readTok) + ', write ' + tmThinkFmtK(writeTok) + (cost != null ? (', $' + cost.toFixed(4)) : '') + ' \u2014 TTL refreshed.');
+      }
+      tmSetKeepAliveEntry(key, e2);
+      tmKeepAliveRefreshUI();
+    }).catch(function(err) {
+      var e3 = tmGetKeepAliveEntry(key); if (!e3) return;
+      tmKeepAliveHandlePingFailure(key, e3, String(err && err.message || err));
+    });
+  }
+
+  function tmKeepAliveHandlePingFailure(key, entry, reason) {
+    // One retry after 60s; a second failure just waits for the next normal interval.
+    // NEVER routes into the kick-along/auto-resume path -- a failed ping is not a dead turn.
+    if (!entry.retry_at) {
+      entry.retry_at = Date.now() + 60 * 1000;
+      console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive ping failed (' + reason + ') \u2014 one retry in 60s.');
+    } else {
+      entry.retry_at = 0;
+      if (!Array.isArray(entry.log)) entry.log = [];
+      entry.log.push({ ts: Date.now(), error: reason });
+      if (entry.log.length > 30) entry.log = entry.log.slice(-30);
+      console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive retry also failed (' + reason + ') \u2014 waiting for the next interval.');
+    }
+    tmSetKeepAliveEntry(key, entry);
+    tmKeepAliveRefreshUI();
+  }
+
+  // @beacon[
+  //   id=fix25-keepalive-sweep,
+  //   role=__lambdao_1.tmKeepAliveSweep,
+  //   kind=ast,
+  //   slice_labels=tm-payload-overview,
+  //   comment=Fix 25 (v4.360): 30s sweeper deciding when a keep-alive ping may fire -- REUSES the existing state machine: skips when the identity has an in-flight request, when tmAgentManagementDisplayState says pendingToolCall (INCOMPLETE turn = kick-along territory, mutually exclusive), when no wire snapshot exists (fresh reload), or when idle < interval (idle measured from the LATEST of last real turn / turn completion / last ping). Enforces optional max_hours auto-off.,
+  // ]
+  function tmKeepAliveSweep() {
+    try {
+      var store = tmGetKeepAliveStore();
+      var now = Date.now();
+      for (var key in store) {
+        if (!store.hasOwnProperty(key)) continue;
+        var e = store[key];
+        if (!e || !e.enabled) continue;
+        if (e.max_hours && e.enabled_at && now - e.enabled_at > e.max_hours * 3600 * 1000) {
+          e.enabled = false; e.stopped_reason = 'max duration ' + e.max_hours + 'h reached';
+          tmSetKeepAliveEntry(key, e);
+          console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive auto-off (' + (e.model || key) + '): ' + e.stopped_reason);
+          continue;
+        }
+        if (e.retry_at) { if (now >= e.retry_at) tmKeepAliveFirePing(key); continue; }
+        var wire = tmKeepAliveLastWire[key];
+        if (!wire) {
+          if (!tmKeepAliveSkipLogged[key]) { tmKeepAliveSkipLogged[key] = 1; console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive (' + (e.model || key) + '): no wire snapshot yet (page reloaded?) \u2014 will arm after the next real turn.'); }
+          continue;
+        }
+        if (tmInFlightByIdentity[key]) continue;                       // assistant busy
+        var ds = tmAgentManagementDisplayState(e.sid || wire.sid);
+        if (ds && ds.pendingToolCall) continue;                        // INCOMPLETE turn: kick-along owns this state
+        var lastActivity = Math.max(wire.ts || 0, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, e.last_ping_ts || 0);
+        if (now - lastActivity >= Math.max(1, Number(e.interval_min || 50)) * 60 * 1000) tmKeepAliveFirePing(key);
+      }
+    } catch (eS) {}
+  }
+  function tmKeepAliveEnsureSweeper() { if (tmKeepAliveSweepId == null) tmKeepAliveSweepId = setInterval(tmKeepAliveSweep, 30 * 1000); }
+
+  function tmKeepAliveRefreshUI() {
+    try { renderGpt51UsageWidget(); } catch (e) {}
+    try {
+      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
+        var st = tmSessionCtxHoverContentEl.scrollTop;
+        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+        tmSessionCtxHoverContentEl.scrollTop = st;
+      }
+    } catch (e2) {}
+  }
+
+  // Hovercard row control: ⏰ toggle + [Nm] interval button + status/broken line.
+  function tmKeepAliveRowHtml(key, info) {
+    try {
+      var e = tmGetKeepAliveEntry(key);
+      var on = !!(e && e.enabled);
+      var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String((info && info.model) || '') + String((info && info.host) || '')) ? 50 : 4);
+      var btn = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a minimal cache-READ ping re-warms the prefix TTL at read price. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      btn += ' <span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
+      var status = '';
+      if (e && e.broken) {
+        status = ' <span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the replayed prefix no longer matched. Keep-alive auto-disabled. Click \u23f0 KA to re-enable after the next real turn." style="color:#ff6b6b;font-size:10px;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>';
+      } else if (e && e.ping_count) {
+        var lastT = e.log && e.log.length ? new Date(e.log[e.log.length - 1].ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
+        status = ' <span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">pings ' + e.ping_count + ' \u00b7 $' + Number(e.spend_total || 0).toFixed(3) + (lastT ? (' \u00b7 ' + lastT + ' \u2713' + tmThinkFmtK(e.read_last || 0) + (e.write_last ? ('/\u26a0' + tmThinkFmtK(e.write_last)) : '/0')) : '') + '</span>';
+      }
+      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">' + btn + status + '</span>';
+    } catch (e9) { return ''; }
+  }
+
+  function tmKeepAliveHandleToggle(key) {
+    var e = tmGetKeepAliveEntry(key) || {};
+    var info = tmSessionCtxHoverIdentities[key] || {};
+    if (e.enabled) { e.enabled = false; e.stopped_reason = 'toggled off'; }
+    else {
+      e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = Date.now(); e.retry_at = 0;
+      if (!e.interval_min) e.interval_min = /claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4;
+      e.sid = info.sid || e.sid || null; e.model = info.model || e.model || ''; e.host = info.host || e.host || ''; e.proxy = !!info.isProxy;
+      e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
+      console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm' + (tmKeepAliveLastWire[key] ? '' : ' (arms after the next real turn on this session)'));
+      tmKeepAliveEnsureSweeper();
+    }
+    tmSetKeepAliveEntry(key, e);
+    tmKeepAliveRefreshUI();
+  }
+
+  function tmKeepAliveHandleInterval(key) {
+    var e = tmGetKeepAliveEntry(key) || {};
+    var info = tmSessionCtxHoverIdentities[key] || {};
+    var cur = (e.interval_min || (/claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4)) + (e.max_hours ? (',' + e.max_hours) : '');
+    tmPromptActive = true;
+    var v = prompt('Keep-alive interval in MINUTES for\n' + (info.model || key) + ' @ ' + (info.host || '?') + '\n\n(Suggested: 50 for Anthropic 1h TTL; 4 for 5-min-TTL providers.\nOptional max duration: "50,12" = 50-min pings for at most 12 hours.)', String(cur));
+    tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+    setTimeout(function() { tmPromptActive = false; }, 100);
+    if (v == null) return;
+    var parts = String(v).split(',');
+    var mins = parseFloat(parts[0]);
+    if (isFinite(mins) && mins >= 1) e.interval_min = Math.round(mins);
+    var mh = parts.length > 1 ? parseFloat(parts[1]) : NaN;
+    e.max_hours = (isFinite(mh) && mh > 0) ? mh : 0;
+    e.sid = info.sid || e.sid || null; e.model = info.model || e.model || ''; e.host = info.host || e.host || '';
+    tmSetKeepAliveEntry(key, e);
+    tmKeepAliveRefreshUI();
+  }
+
+  tmKeepAliveEnsureSweeper();
+
   // ==================== FIX 24 — THINKING OBSERVATORY (v4.351) ====================
   // PHASE 1 (observe). Pure scanners + one accumulator; NOTHING here mutates the outbound request
   // or the response. Spec: Anchor Dock "🧠 Fix 24 — Thinking Observatory" [ap:167SG6].
@@ -5509,6 +5816,14 @@
         // FULL post-mutation body + headers are present (skeletonization would hide config fields);
         // underscore field survives rich->compact stripping.
         try { record._think_req = tmThinkScanOutbound(url, headersNorm, parsed); } catch (eTk) {}
+
+        // (Fix 25, v4.360) KEEP-ALIVE wire snapshot: store this identity's FINAL outbound bytes
+        // (RAW options.headers, never the redacted copy; memory-only) so a keep-alive ping can
+        // replay the exact prefix. Every real turn also resets the entry's idle clock implicitly.
+        try {
+          var kaKey = tmComputeRoutingIdentityKey(parsed, url, options);
+          if (kaKey) tmKeepAliveNoteRealTurn(kaKey, url, (options && options.headers) || {}, bodyRaw, record.session_id);
+        } catch (eKa) {}
 
         // (v4.317) USER-CANCEL LATCH clear: any outbound payload for a session means Dan is
         // driving again -- re-arm auto-resume for it (both id forms, tm- alias tolerant).
@@ -7608,6 +7923,9 @@
         var tkCapH = tmLatestThinkEntryForIdentity(key);
         if (tkCapH) hoverThinkHtml = '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:1px;">' + tmRenderThinkBadge(tkCapH, { fontSize: '11px', hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) }) + '</span>';
       } catch (eTkH) {}
+      // (Fix 25, v4.360) Keep-alive controls: ⏰ toggle + interval + ping status / BROKEN badge.
+      var hoverKaHtml = '';
+      try { hoverKaHtml = '<span style="display:inline-flex;align-items:center;gap:5px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>'; } catch (eKaH) {}
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
         '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
@@ -7618,6 +7936,7 @@
               '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
             '</span>' +
             hoverThinkHtml +
+            hoverKaHtml +
           '</span>' +
           '<span style="display:grid;grid-template-columns:16px 430px;align-items:center;column-gap:4px;width:450px;flex:none;">' +
             '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
@@ -7798,6 +8117,14 @@
         // on show and on pinned ticks, so handlers live on the persistent element only).
         tmSessionCtxHoverEl.addEventListener('click', function(ev) {
           try {
+            // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
+            var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"]') : null;
+            if (kaEl && kaEl.dataset) {
+              ev.stopPropagation();
+              if (kaEl.dataset.action === 'ka-toggle') tmKeepAliveHandleToggle(kaEl.dataset.key);
+              else tmKeepAliveHandleInterval(kaEl.dataset.key);
+              return;
+            }
             // (v4.354) Thinking Observatory badge / 📝 note on a hovercard row.
             var tkH = ev.target && ev.target.closest ? ev.target.closest('[data-action="think-report"],[data-action="think-note"]') : null;
             if (tkH && tkH.dataset) {
