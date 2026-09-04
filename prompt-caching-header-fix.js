@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.353
+// Version: 4.354
 // Issues Fixed:
+//   - v4.354: HOVERCARD THINKING ROW + SHARPER DIVIDERS. Each sessions-in-memory row gains a third
+//     line: the Fix 24 Thinking Observatory badge for that identity's newest stamped turn
+//     ('\ud83e\udde0 <requested> -> <observed>', orange on NONE; click -> Thinking Report) plus the
+//     \ud83d\udcdd quick-note button (context auto-attached) -- both routed through the card's ONE
+//     delegated click listener via closest(), ahead of the pin/close/width actions. Row dividers
+//     brightened (rgba alpha 0.06 -> 0.28) with more breathing room (padding 2px -> 6px/5px,
+//     +1px margin) per Dan.
 //   - v4.353: SESSION TIME TRIAD -- assistant / tool / total, everywhere. The per-turn timers already
 //     measured both halves exactly (v4.313 _rt_ms = payload OUT -> response body COMPLETE, stamped
 //     inside clone.text().then so it is never 'first byte'; v4.323 _tool_exec_ms = tool-call
@@ -1619,7 +1626,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.353';
+  const EXT_VERSION = '4.354';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7127,14 +7134,22 @@
       if (info.model && namePart.slice(-(info.model.length + 3)) === (' \u2014 ' + info.model)) {
         namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
       }
+      // (v4.354) Thinking Observatory line for this identity's newest stamped turn (badge + 📝).
+      var hoverThinkHtml = '';
+      try {
+        var tkCapH = tmLatestThinkEntryForIdentity(key);
+        if (tkCapH) hoverThinkHtml = '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:1px;">' + tmRenderThinkBadge(tkCapH, { fontSize: '11px' }) + '</span>';
+      } catch (eTkH) {}
       rows.push(
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0;border-top:1px solid rgba(255,255,255,0.06);">' +
+        // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
+        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
           '<span style="display:flex;flex-direction:column;min-width:0;flex:1 1 auto;">' +
             '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
             '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;">' +
               (info.model ? ('<span style="font-size:12px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
               '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
             '</span>' +
+            hoverThinkHtml +
           '</span>' +
           '<span style="display:grid;grid-template-columns:16px 430px;align-items:center;column-gap:4px;width:450px;flex:none;">' +
             '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
@@ -7315,6 +7330,15 @@
         // on show and on pinned ticks, so handlers live on the persistent element only).
         tmSessionCtxHoverEl.addEventListener('click', function(ev) {
           try {
+            // (v4.354) Thinking Observatory badge / 📝 note on a hovercard row.
+            var tkH = ev.target && ev.target.closest ? ev.target.closest('[data-action="think-report"],[data-action="think-note"]') : null;
+            if (tkH && tkH.dataset) {
+              ev.stopPropagation();
+              if (tkH.dataset.action === 'think-report') { tmShowThinkReport(tkH.dataset.captureId); return; }
+              var tkCtxH = tmThinkNoteContextFromCap(getCaptureById(tkH.dataset.captureId));
+              if (tkCtxH) tmShowThinkNoteEditor(tkCtxH, null, null);
+              return;
+            }
             var actEl = ev.target && ev.target.closest ? ev.target.closest('[data-hovercard-action]') : null;
             if (!actEl) return;
             var act = actEl.getAttribute('data-hovercard-action');
