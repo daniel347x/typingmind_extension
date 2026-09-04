@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.355
+// Version: 4.356
 // Issues Fixed:
+//   - v4.356: FIX 24 -- SESSION THINKING HISTOGRAM. The per-turn glyphs tell you what happened on
+//     ONE turn; the histogram tells you what a level is WORTH on a model. NEW ledger field
+//     _think_hist = { req: {STATE: turns}, obs: {STATE: turns}, turns } on the tm_session_costs_v2
+//     identity record (same row as cost / time; survives ring eviction), incremented once per
+//     turn at response time (each state at most once per turn per side) and snapshotted onto the
+//     ring row (_think_hist). Rendering, on every badge: 'REQ <current> | <req counts> || OBS
+//     <current> | <obs counts>' e.g. REQ \ud83c\udf9a\ufe0f\ud83d\udd36\ud83d\ude48 | \ud83c\udf9a\ufe0f41 \ud83d\udd3641 \ud83d\ude4841 || OBS \ud83d\udd387.1K\u2705\ud83d\ude48 | \ud83d\udca412 \ud83d\udd399 \ud83d\udd3814 \ud83d\udd366 \u270541
+//     -- read once: 41 turns all asked adaptive/high; the model thought heavily on 6, not at all
+//     on 12. Ring rows use the as-of-turn snapshot; widget + hovercard read the ledger live.
+//     Counts render as small gray numbers right after the glyph (no parentheses, per Dan); hover
+//     = 'STATE: n of N turns this session'. Pre-v4.356 rows show no history segment.
 //   - v4.355: FIX 24 -- THINKING GLYPHS (normalize, then draw). Raw provider field names are for
 //     hover/JSON, not for reading at a glance. NEW two-layer design: TM_THINK_MAP is a declarative
 //     table (field path + value pattern -> canonical state; first match wins) covering Anthropic
@@ -1646,7 +1657,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.355';
+  const EXT_VERSION = '4.356';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4793,7 +4804,8 @@
     return '<span title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
   }
   // REQ glyphs -> OBS glyphs, as ONE string. Used by the badge (rows / widget / hovercard).
-  function tmThinkGlyphRowHtml(cap, fs) {
+  // (v4.356) Optional hist: 'REQ <current> \u2502 <req counts> \u2016 OBS <current> \u2502 <obs counts>'.
+  function tmThinkGlyphRowHtml(cap, fs, hist) {
     try {
       var req = cap && cap._think_req, obs = cap && cap._think_obs;
       var R = tmThinkClassifyReq(req);
@@ -4801,8 +4813,63 @@
       var reqHtml = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
       var obsHtml = O.glyphs.length ? O.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('') : (cap && cap.response_status == null ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
       var lab = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;font-weight:700;letter-spacing:0.3px;';
-      return '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqHtml +
-             ' <span style="opacity:0.5;">\u2192</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsHtml;
+      var sep = '<span style="opacity:0.45;margin:0 3px;">\u2502</span>';
+      var hr = hist ? tmThinkHistHtml(hist, 'req', fs) : '';
+      var ho = hist ? tmThinkHistHtml(hist, 'obs', fs) : '';
+      var turnsTitle = hist && hist.turns ? (' title="' + hist.turns + ' stamped turns this session"') : '';
+      return '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqHtml + (hr ? (sep + hr) : '') +
+             ' <span style="opacity:0.5;"' + turnsTitle + '>' + (hist ? '\u2016' : '\u2192') + '</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsHtml + (ho ? (sep + ho) : '');
+    } catch (e) { return ''; }
+  }
+
+  // ---------- v4.356: SESSION THINKING HISTOGRAM -- per-glyph turn counts, ledger-backed ----------
+  // Lives on the SAME tm_session_costs_v2 identity record as cost / time (one identity, one row, one
+  // anti-leak lifecycle), so it survives ring eviction on long sessions. Incremented once per turn at
+  // response time; each state counted at most once per turn per side. Snapshotted onto the ring row
+  // (_think_hist) so rows read as-of-that-turn; widget + hovercard read the ledger live.
+  function tmRecordThinkHistogram(sessionId, model, endpointHost, isProxy, reqGlyphs, obsGlyphs) {
+    if (!sessionId || !model) return null;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
+      var entry = costs[key];
+      if (typeof entry !== 'object' || entry === null) entry = { _total: Number(entry) || 0 };
+      var h = (entry._think_hist && typeof entry._think_hist === 'object') ? entry._think_hist : { req: {}, obs: {}, turns: 0 };
+      if (!h.req) h.req = {}; if (!h.obs) h.obs = {};
+      h.turns = Number(h.turns || 0) + 1;
+      var seen = {};
+      (reqGlyphs || []).forEach(function(g) { if (g && g.state && g.state !== 'IGNORE' && !seen['r:' + g.state]) { seen['r:' + g.state] = 1; h.req[g.state] = Number(h.req[g.state] || 0) + 1; } });
+      (obsGlyphs || []).forEach(function(g) { if (g && g.state && !seen['o:' + g.state]) { seen['o:' + g.state] = 1; h.obs[g.state] = Number(h.obs[g.state] || 0) + 1; } });
+      entry._think_hist = h;
+      entry._session_id = String(sessionId);
+      entry._ts = Date.now();
+      costs[key] = entry;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return JSON.parse(JSON.stringify(h));
+    } catch (e) {}
+    return null;
+  }
+  function tmGetThinkHistogram(sessionId, model, endpointHost, isProxy) {
+    try {
+      if (!sessionId || !model) return null;
+      var rec = tmGetSessionCosts()[tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy)];
+      return (rec && typeof rec === 'object' && rec._think_hist && typeof rec._think_hist === 'object') ? rec._think_hist : null;
+    } catch (e) { return null; }
+  }
+  // One side of the histogram as glyph+count runs, sorted like the live glyphs (rank, then order).
+  function tmThinkHistHtml(hist, side, fs) {
+    try {
+      if (!hist || !hist[side]) return '';
+      var counts = hist[side];
+      var keys = Object.keys(counts).filter(function(k) { return TM_THINK_STATES[k] && k !== 'IGNORE' && Number(counts[k]) > 0; });
+      if (!keys.length) return '';
+      keys.sort(function(a, b) { var A = TM_THINK_STATES[a], B = TM_THINK_STATES[b]; return ((A.rank != null ? A.rank : A.order) - (B.rank != null ? B.rank : B.order)); });
+      var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
+      return keys.map(function(k) {
+        var st = TM_THINK_STATES[k];
+        var color = k === 'NONE' ? '#ffb84d' : k === 'UNMAPPED' ? '#ff9b9b' : k === 'CONTRA' ? '#ff6b6b' : 'inherit';
+        return '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span></span>';
+      }).join(' ');
     } catch (e) { return ''; }
   }
 
@@ -4899,7 +4966,7 @@
       var obsTxt = obs ? tmThinkCompactObs(obs, req) : (cap.response_status == null ? 'pending\u2026' : '?');
       var title = 'Thinking Observatory \u2014 requested: ' + reqTxt + ' [' + ((req && req.summary) || '?') + ']  |  observed: ' + obsTxt + ' [' + ((obs && obs.summary) || '?') + ']  \u2014 hover each glyph for its meaning + raw field; click for the full report';
       var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' +
-        '\ud83e\udde0 ' + tmThinkGlyphRowHtml(cap, fs) + '</span>';
+        '\ud83e\udde0 ' + tmThinkGlyphRowHtml(cap, fs, (opts.hist !== undefined ? opts.hist : (cap._think_hist || null))) + '</span>';
       if (!opts.noNote) {
         var ctx = tmThinkNoteContextFromCap(cap);
         var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
@@ -6541,6 +6608,17 @@
                 }
                 tmUpdateCaptureRecord(captureId, rtStamp);
               }
+              // (v4.356) THINKING HISTOGRAM: count this turn's REQ/OBS glyph states into the
+              // session ledger and snapshot the running histogram onto the row.
+              try {
+                var thRec = getCaptureById(captureId);
+                if (idSid && thRec && thRec._think_req) {
+                  var thR = tmThinkClassifyReq(thRec._think_req);
+                  var thO = thRec._think_obs ? tmThinkClassifyObs(thRec._think_obs, thR.glyphs) : { glyphs: [] };
+                  var thHist = tmRecordThinkHistogram(idSid, idModel, idHost, idIsProxy, thR.glyphs, thO.glyphs);
+                  if (thHist) tmUpdateCaptureRecord(captureId, { _think_hist: thHist });
+                }
+              } catch (eTH) {}
               try { tmClearInFlightByCapture(captureId); } catch (eIF) {}
             } catch (eRt) {}
             if (capWidgetFeed) renderGpt51UsageWidget();
@@ -7458,7 +7536,7 @@
       var hoverThinkHtml = '';
       try {
         var tkCapH = tmLatestThinkEntryForIdentity(key);
-        if (tkCapH) hoverThinkHtml = '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:1px;">' + tmRenderThinkBadge(tkCapH, { fontSize: '11px' }) + '</span>';
+        if (tkCapH) hoverThinkHtml = '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:1px;">' + tmRenderThinkBadge(tkCapH, { fontSize: '11px', hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) }) + '</span>';
       } catch (eTkH) {}
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
@@ -8731,7 +8809,7 @@
       // (identity-matched like the ctx dial; never leaks a parallel conversation). Click -> report.
       try {
         var tkCapW = tmLatestThinkEntryForIdentity(widgetIdentity && widgetIdentity.key);
-        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px' }) + '</div>');
+        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px', hist: tmGetThinkHistogram(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy) }) + '</div>');
       } catch (eTkW) {}
     } else {
       tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
