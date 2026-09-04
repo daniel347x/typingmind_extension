@@ -1,6 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.352
+// Version: 4.353
 // Issues Fixed:
+//   - v4.353: SESSION TIME TRIAD -- assistant / tool / total, everywhere. The per-turn timers already
+//     measured both halves exactly (v4.313 _rt_ms = payload OUT -> response body COMPLETE, stamped
+//     inside clone.text().then so it is never 'first byte'; v4.323 _tool_exec_ms = tool-call
+//     response end -> tool-result payload out), but only assistant time was summed per session
+//     (_rt_total_ms). NEW: tmRecordToolExec accumulates _tool_total_ms/_tool_count onto the SAME
+//     tm_session_costs_v2 identity record; tmGetSessionTimeTotals reads {rt, tool, total};
+//     tmRenderSessionTimeTotals is ONE shared renderer: Σ⏱ assistant (blue) · Σ🧰 tool (red) ·
+//     Σ total (gold); idle time is deliberately excluded. Mounted in (1) the sessions-in-memory
+//     hovercard as a new 4th gauge column, live from the ledger; (2) every ring row, snapshotted
+//     at response time (_rt_total_ms + new _tool_total_ms) so rows read as-of-that-turn; (3) the
+//     persistent widget session row (identity-matched). Hovercard right block TIGHTENED per Dan:
+//     dial column 68->46px and numbers 124->92px removed the inch of dead space between the gauge
+//     and its total/max; the freed room plus +150px hosts the triad between the token numbers and
+//     the aggregate cost (grid 46|92|214|60, right block 430px; header [-]/[+] still resizes the
+//     card). Forward-only: no backfill of pre-v4.353 rows (older rows show Σ⏱ with a 0s tool total).
 //   - v4.352: FIX 24 -- THINKING OBSERVATORY, PHASE 1C + THINKING NOTES. (a) req<->obs JOIN layer:
 //     tmThinkCompactReq ('adaptive\u00b7high\u00b7omitted', 'high', 'budget 10K', 'level high', 'NONE'),
 //     tmThinkCompactObs (join-aware: 'omitted' when thinking.display=omitted / reasoning.exclude,
@@ -1604,7 +1619,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.352';
+  const EXT_VERSION = '4.353';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2931,6 +2946,61 @@
       return entry._rt_total_ms;
     } catch (e) {}
     return 0;
+  }
+
+  // (v4.353) Event-sourced per-session TOOL-EXECUTION ledger: accumulates client-side tool run
+  // durations (tool-call response end -> tool-result payload out) onto the SAME session record as
+  // cost / round-trip. Same identity, same anti-leak lifecycle.
+  function tmRecordToolExec(sessionId, model, endpointHost, isProxy, ms) {
+    if (!sessionId || !model || !(ms > 0)) return 0;
+    try {
+      var costs = tmGetSessionCosts();
+      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
+      var entry = costs[key];
+      if (typeof entry !== 'object' || entry === null) entry = { _total: Number(entry) || 0 };
+      entry._tool_total_ms = Number(entry._tool_total_ms || 0) + ms;
+      entry._tool_count = Number(entry._tool_count || 0) + 1;
+      entry._session_id = String(sessionId);
+      entry._ts = Date.now();
+      costs[key] = entry;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return entry._tool_total_ms;
+    } catch (e) {}
+    return 0;
+  }
+
+  // (v4.353) Session time totals from the ledger: { rt: assistant ms, tool: tool ms, total: sum }.
+  function tmGetSessionTimeTotals(sessionId, model, endpointHost, isProxy) {
+    var out = { rt: 0, tool: 0, total: 0 };
+    try {
+      if (!sessionId || !model) return out;
+      var rec = tmGetSessionCosts()[tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy)];
+      if (rec && typeof rec === 'object') {
+        out.rt = Number(rec._rt_total_ms || 0);
+        out.tool = Number(rec._tool_total_ms || 0);
+        out.total = out.rt + out.tool;
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  // (v4.353) ONE shared renderer for the session time triad -- used by the sessions-in-memory
+  // hovercard, every ring row, and the persistent widget. Assistant (blue) = cumulative request->
+  // response-end; Tool (red) = cumulative client-side tool execution; Total (gold) = sum. Idle time
+  // (nothing in flight, no tool running) is deliberately NOT counted anywhere.
+  function tmRenderSessionTimeTotals(rtMs, toolMs, opts) {
+    try {
+      opts = opts || {};
+      rtMs = Number(rtMs || 0); toolMs = Number(toolMs || 0);
+      if (!(rtMs > 0) && !(toolMs > 0)) return '';
+      var fs = opts.fontSize || '10px';
+      var gap = opts.gap || '6px';
+      var parts = [];
+      parts.push('<span title="assistant time: cumulative request -> response-end for this session" style="color:#7ec8e3;font-size:' + fs + ';font-weight:600;white-space:nowrap;">\u03a3\u23f1 ' + tmFmtDuration(rtMs) + '</span>');
+      parts.push('<span title="tool time: cumulative client-side tool execution for this session" style="color:#d08b8b;font-size:' + fs + ';font-weight:600;white-space:nowrap;">\u03a3\ud83e\uddf0 ' + tmFmtDuration(toolMs) + '</span>');
+      parts.push('<span title="total working time: assistant + tool (idle excluded)" style="color:#e6c46a;font-size:' + fs + ';font-weight:700;white-space:nowrap;">\u03a3 ' + tmFmtDuration(rtMs + toolMs) + '</span>');
+      return '<span style="display:inline-flex;align-items:center;gap:' + gap + ';white-space:nowrap;">' + parts.join('') + '</span>';
+    } catch (e) { return ''; }
   }
 
   // (v4.315) Live in-flight round-trip ticker. tmInFlightTurn is set at capture time and
@@ -6138,6 +6208,9 @@
                 if (idSid) {
                   var rtTotal = tmRecordRoundTrip(idSid, idModel, idHost, idIsProxy, rtMs);
                   if (rtTotal > 0) rtStamp._rt_total_ms = rtTotal;
+                  // (v4.353) Snapshot the session's cumulative TOOL time too, so every ring row
+                  // carries the full time triad (assistant / tool / total) as of this turn.
+                  try { var ttSnap = tmGetSessionTimeTotals(idSid, idModel, idHost, idIsProxy); if (ttSnap.tool > 0) rtStamp._tool_total_ms = ttSnap.tool; } catch (eTT) {}
                 }
                 tmUpdateCaptureRecord(captureId, rtStamp);
               }
@@ -7029,12 +7102,21 @@
           ctxCostHtml = '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
         }
       } catch (eCost) {}
+      // (v4.353) Session time triad (assistant / tool / total) from the ledger, live at render.
+      var ctxTimeHtml = '';
+      try {
+        var hoverTT = tmGetSessionTimeTotals(info.sid || '', info.model || '', info.host, info.isProxy);
+        if (hoverTT.total > 0) ctxTimeHtml = tmRenderSessionTimeTotals(hoverTT.rt, hoverTT.tool, { fontSize: '11px', gap: '5px' });
+      } catch (eTT) {}
       // (v4.347) Fixed dashboard gauge columns. Every row reserves identical widths for
-      // spinner | context dial+percent | total/max | aggregate cost, so changing digit
+      // spinner | context dial+percent | total/max | time triad | aggregate cost, so changing digit
       // counts and spinner appearance cannot make columns jump or overlap neighboring rows.
-      var right = '<span style="display:grid;grid-template-columns:68px 124px 76px;align-items:center;column-gap:6px;width:280px;flex:none;">' +
+      // (v4.353) Columns TIGHTENED (dial 68->46, nums 124->92: the old widths left ~an inch of
+      // dead space between the gauge and its numbers) and a 4th column added for the time triad.
+      var right = '<span style="display:grid;grid-template-columns:46px 92px 214px 60px;align-items:center;column-gap:6px;width:430px;flex:none;">' +
         '<span style="display:inline-flex;align-items:center;justify-content:flex-start;min-width:0;">' + ctxDialHtml + '</span>' +
         '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxNumsHtml + '</span>' +
+        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxTimeHtml + '</span>' +
         '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxCostHtml + '</span>' +
       '</span>';
       // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second
@@ -7054,7 +7136,7 @@
               '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
             '</span>' +
           '</span>' +
-          '<span style="display:grid;grid-template-columns:16px 280px;align-items:center;column-gap:4px;width:300px;flex:none;">' +
+          '<span style="display:grid;grid-template-columns:16px 430px;align-items:center;column-gap:4px;width:450px;flex:none;">' +
             '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
             right +
           '</span>' +
@@ -8246,10 +8328,9 @@
       // second via the tm-rt-live-value span; the moment the v4.313 stamp lands it reverts
       // to the latest completed turn's value.)
       if (widgetIdentity && widgetIdentity.sid) {
-        var rtKeyW = tmBuildSessionCostKey(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
-        var rtRecW = tmGetSessionCosts()[rtKeyW] || null;
-        var rtMsW = rtRecW && Number(rtRecW._rt_total_ms || 0);
-        if (rtMsW > 0) widgetRtHtml += ' <span title="cumulative round-trip time for this session (sum of request to response durations)" style="color:#9aa4b2;font-size:12px;white-space:nowrap;">Σ⏱ ' + tmFmtDuration(rtMsW) + '</span>';
+        // (v4.353) Full time triad from the ledger: Σ⏱ assistant · Σ🧰 tool · Σ total.
+        var ttW = tmGetSessionTimeTotals(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
+        if (ttW.total > 0) widgetRtHtml += ' ' + tmRenderSessionTimeTotals(ttW.rt, ttW.tool, { fontSize: '12px', gap: '6px' });
       }
       var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
       if (rtLiveMs > 0) {
@@ -10251,7 +10332,20 @@
     if (flipped && s.responseFinishedAt && captureId) {
       try {
         var execMs = Date.now() - Number(s.responseFinishedAt);
-        if (execMs > 0 && execMs < 30 * 60 * 1000) tmUpdateCaptureRecord(captureId, { _tool_exec_ms: execMs });
+        if (execMs > 0 && execMs < 30 * 60 * 1000) {
+          tmUpdateCaptureRecord(captureId, { _tool_exec_ms: execMs });
+          // (v4.353) Accumulate into the per-session TOOL ledger (same identity key as cost/rt).
+          try {
+            var tcap = getCaptureById(captureId);
+            if (tcap && tcap.session_id) {
+              var tModel = '', tHost = '', tProxy = false;
+              try { tModel = tmCaptureModel(tcap); } catch (e1) {}
+              try { tHost = tmExtractEndpointHost(tcap); } catch (e2) {}
+              try { tProxy = tmIsProxyCapture(tcap); } catch (e3) {}
+              tmRecordToolExec(tcap.session_id, tModel, tHost, tProxy, execMs);
+            }
+          } catch (eTL) {}
+        }
       } catch (eToolMs) {}
     }
     s.pendingToolCall = false;
@@ -13652,8 +13746,11 @@
         if (cap._tool_exec_ms != null && Number(cap._tool_exec_ms) > 0) {
           rtRowParts.push('<span title="client-side tool execution time feeding this payload" style="color:#d08b8b;font-size:10px;font-weight:600;">🧰 ' + tmFmtDuration(cap._tool_exec_ms) + '</span>');
         }
-        if (cap._rt_total_ms != null && Number(cap._rt_total_ms) > 0) {
-          rtRowParts.push('<span title="cumulative round-trip time for this session, snapshotted at this turn" style="color:#9aa4b2;font-size:10px;">Σ⏱ ' + tmFmtDuration(cap._rt_total_ms) + '</span>');
+        // (v4.353) Session time TRIAD (assistant / tool / total) snapshotted at this turn, via the
+        // shared renderer (same look as the hovercard + widget). Rows before v4.353 carry only
+        // _rt_total_ms, so they render Σ⏱ plus a zero tool total.
+        if ((cap._rt_total_ms != null && Number(cap._rt_total_ms) > 0) || (cap._tool_total_ms != null && Number(cap._tool_total_ms) > 0)) {
+          rtRowParts.push(tmRenderSessionTimeTotals(cap._rt_total_ms, cap._tool_total_ms, { fontSize: '10px', gap: '5px' }));
         }
         if (rtRowParts.length) rtRowHtml = ' <span style="opacity:0.4;">·</span> ' + rtRowParts.join(' ');
       } catch (eRtRow) { rtRowHtml = ''; }
