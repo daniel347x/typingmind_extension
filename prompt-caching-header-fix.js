@@ -1,6 +1,33 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.361
+// Version: 4.362
 // Issues Fixed:
+//   - v4.362: FIX 24 PHASE 2 -- THINKING CONTROL for EVERY remaining wire shape (Dan is on OpenRouter
+//     chat-completions, so that one first). The v4.361 writer covered Anthropic Messages only; the
+//     same {level, display} override now translates into: (a) OPENROUTER chat-completions -- unified
+//     `reasoning` object per openrouter.ai docs: level -> reasoning.effort (max/xhigh/high/medium/low/
+//     minimal/none; OpenRouter converts to Anthropic budget_tokens / Gemini thinkingLevel itself),
+//     budget:N -> reasoning.max_tokens (min 1024; body.max_tokens raised to stay strictly above it),
+//     conflicting legacy include_reasoning / OpenAI-style reasoning_effort removed; display ->
+//     reasoning.exclude false/true (OpenRouter already defaults Claude to thinking.display=summarized,
+//     so exclude IS the display axis there). 'off' on always-on models (Fable/Mythos 5.x, o-series,
+//     Gemini 3) clamps to the lowest level instead of effort:none (which those models reject).
+//     (b) DIRECT OpenAI-compat chat-completions: OpenAI/Azure -> reasoning_effort (none..xhigh; max
+//     clamps to xhigh); xAI Grok -> reasoning_effort low|high only (nearest); Moonshot/Kimi, DeepSeek,
+//     GLM -> thinking:{type:enabled|disabled} (hosts expose on/off only; a level is recorded as ON);
+//     Qwen/DashScope -> enable_thinking + thinking_budget; Gemini's OpenAI-compat endpoint ->
+//     reasoning_effort + extra_body.google.thinking_config.include_thoughts; DeepInfra/unknown ->
+//     reasoning_effort passthrough with an 'unverified' note. Chat-completions returns no reasoning
+//     text on OpenAI/xAI, so display there is a reported no-op. (c) OPENAI RESPONSES -> reasoning.effort
+//     (o-series cannot be off -> low) + display via reasoning.summary ('auto' / removed); runs AFTER
+//     the plain-Sol injector, so the dropdown wins over the legacy Sol Reasoning select. (d) GEMINI
+//     NATIVE -> generationConfig.thinkingConfig: Gemini 3.x uses thinkingLevel (Flash: minimal/low/
+//     medium/high; Pro: low/high, medium clamps up, minimal clamps to low; cannot disable -> lowest),
+//     Gemini 2.5 uses thinkingBudget (Flash 0=off .. 24576; Pro cannot disable -> 128 .. 32768),
+//     budget:N -> thinkingBudget N; display -> includeThoughts. Whichever of thinkingLevel /
+//     thinkingBudget is not written is deleted (they conflict). The 🎛️ Think / 👁 controls now
+//     render for every identity whose protocol is known (not just Anthropic-shaped). None of these
+//     routes has a cache-preserving per-message form: a level change re-renders the prompt once
+//     (one cache miss), stated in the override notes. Anthropic Messages writer unchanged.
 //   - v4.361: FIX 24 PHASE 2 -- THINKING CONTROL (first increment: Anthropic Messages shape). Phase 1
 //     only OBSERVED the thinking level; TypingMind cannot change it call-by-call. NEW per-identity
 //     (sid::model::host::proxy) override store tm_think_overrides_v1 {level, display, steps[]}, READ
@@ -1739,7 +1766,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.361';
+  const EXT_VERSION = '4.362';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5922,8 +5949,16 @@
       rep.route = r.label;
       var proto = 'unknown';
       try { proto = tmDetectProtocol(r.target || url, body); } catch (e) {}
+      // (v4.362) Any '/chat/completions' path is the OpenAI-compat shape even when the shared detector's
+      // '/v1/chat/completions' substring misses (e.g. Gemini's /v1beta/openai/chat/completions), which
+      // would otherwise fall through to anthropic-messages on the bare messages[] heuristic.
+      if (proto === 'anthropic-messages' && /\/chat\/completions/i.test(String(r.target || url || ''))) proto = 'openai-chat-completions';
       rep.protocol = proto;
-      if (proto !== 'anthropic-messages') { rep.notes.push('v4.361 writer covers the Anthropic Messages shape only; ' + proto + ' left unchanged (next increment)'); return rep; }
+      // (v4.362) Non-Anthropic shapes dispatch to their own writers; Anthropic Messages continues below.
+      if (proto === 'openai-chat-completions' || proto === 'deepinfra-chat-completions') { tmThinkWriteChatCompletions(r, body, ov, rep); tmThinkFinishReport(rep); return rep; }
+      if (proto === 'openai-responses') { tmThinkWriteResponses(r, body, ov, rep); tmThinkFinishReport(rep); return rep; }
+      if (proto === 'gemini-generatecontent') { tmThinkWriteGemini(r, url, body, ov, rep); tmThinkFinishReport(rep); return rep; }
+      if (proto !== 'anthropic-messages') { rep.notes.push('no thinking writer for protocol "' + proto + '" -- body left unchanged'); return rep; }
       var model = String(body.model || ''); rep.model = model;
       var caps = tmThinkAnthropicCaps(model); rep.caps = caps.family;
       var lvl = String(rep.level).toLowerCase(), disp = String(rep.display).toLowerCase();
@@ -6013,9 +6048,211 @@
           if (th && th.display !== want) { var wasD = th.display; th.display = want; change('thinking.display ' + (wasD || '(default)') + ' \u2192 ' + want + (want === 'summarized' ? ' (thinking words stream back; TypingMind will replay the signed blocks)' : '')); }
         }
       }
-      rep.summary = (rep.applied ? 'applied' : 'no-op') + (rep.mode ? (' \u00b7 ' + rep.mode) : '') + ' \u00b7 level=' + rep.level + ' \u00b7 display=' + rep.display + (rep.clamps.length ? (' \u00b7 ' + rep.clamps.length + ' clamp' + (rep.clamps.length === 1 ? '' : 's')) : '');
+      tmThinkFinishReport(rep);
     } catch (e) { rep.error = String(e && e.message || e); }
     return rep;
+  }
+  function tmThinkFinishReport(rep) {
+    rep.summary = (rep.applied ? 'applied' : 'no-op') + (rep.mode ? (' \u00b7 ' + rep.mode) : '') + ' \u00b7 level=' + rep.level + ' \u00b7 display=' + rep.display + (rep.clamps.length ? (' \u00b7 ' + rep.clamps.length + ' clamp' + (rep.clamps.length === 1 ? '' : 's')) : '');
+  }
+
+  // ---------- v4.362: writers for the other wire shapes (all TOP-LEVEL; none has a cache-preserving per-message form) ----------
+  // Shared level normalization for effort-style APIs: returns { eff, budget, off } after generic parsing;
+  // protocol writers then clamp to their own vocabularies.
+  function tmThinkParseLevel(lvl, rep) {
+    var out = { eff: null, budget: null, off: false, set: false };
+    lvl = String(lvl || 'inherit').toLowerCase();
+    if (!lvl || lvl === 'inherit') return out;
+    out.set = true;
+    var mb = /^budget:(\d+)$/.exec(lvl);
+    if (lvl === 'off') out.off = true;
+    else if (mb) out.budget = Math.max(1024, parseInt(mb[1], 10) || 1024);
+    else if (TM_THINK_LEVELS.indexOf(lvl) > 0) out.eff = lvl;
+    else rep.notes.push('unknown level "' + lvl + '" ignored');
+    return out;
+  }
+  // Model family for chat-completions bodies (model string + host).
+  function tmThinkChatFamily(model, host) {
+    var m = String(model || '').toLowerCase(), h = String(host || '').toLowerCase();
+    if (/claude|^anthropic\//.test(m)) return 'claude';
+    if (/gemini|^google\//.test(m) || /generativelanguage/.test(h)) return 'gemini';
+    if (/grok|^x-ai\//.test(m) || /api\.x\.ai/.test(h)) return 'grok';
+    if (/kimi|moonshot/.test(m) || /moonshot/.test(h)) return 'kimi';
+    if (/deepseek/.test(m) || /deepseek/.test(h)) return 'deepseek';
+    if (/glm|^z-ai\/|zhipu/.test(m) || /bigmodel/.test(h)) return 'glm';
+    if (/qwen/.test(m) || /dashscope|aliyun/.test(h)) return 'qwen';
+    if (/^(openai\/)?(gpt|o[1-9]|chatgpt)/.test(m) || /api\.openai\.com|openai\.azure\.com/.test(h)) return 'openai';
+    return 'other';
+  }
+  function tmThinkIsAlwaysOn(fam, model) {
+    var m = String(model || '').toLowerCase();
+    if (fam === 'claude') return !tmThinkAnthropicCaps(model).disable;
+    if (fam === 'openai') return /(^|[\/_-])(o1|o3|o4)(-|$)/.test(m);
+    if (fam === 'gemini') return /gemini-3|gemini-2\.5-pro|gemini-.*-pro/.test(m);
+    return false;
+  }
+
+  // (a) OpenRouter unified `reasoning` + (b) direct OpenAI-compat chat-completions hosts.
+  function tmThinkWriteChatCompletions(r, body, ov, rep) {
+    var model = String(body.model || ''); rep.model = model;
+    var fam = tmThinkChatFamily(model, r.host); rep.caps = fam;
+    var L = tmThinkParseLevel(rep.level, rep);
+    var disp = String(rep.display || 'inherit').toLowerCase();
+    function change(s) { rep.changes.push(s); rep.applied = true; }
+    function clamp(s) { rep.clamps.push(s); }
+    var isOR = r.kind === 'openrouter';
+    rep.mode = 'top-level';
+    if (isOR) {
+      // ---- OpenRouter: ONE unified object. effort XOR max_tokens; exclude = display axis.
+      var R = (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) ? body.reasoning : null;
+      var eff = L.eff, budget = L.budget;
+      if (L.off) {
+        if (tmThinkIsAlwaysOn(fam, model)) { eff = (fam === 'gemini' && /flash/.test(model.toLowerCase())) ? 'minimal' : 'low'; clamp('off \u2192 ' + eff + ': ' + model + ' cannot disable thinking (mandatory reasoning); OpenRouter rejects effort:none there'); }
+        else eff = 'none';
+      }
+      if (L.set && (eff || budget != null)) {
+        if (!R) R = body.reasoning = {};
+        if (budget != null) {
+          if (R.max_tokens !== budget || R.effort !== undefined) { R.max_tokens = budget; delete R.effort; change('reasoning.max_tokens = ' + budget + (fam === 'claude' ? ' (Anthropic budget_tokens via OpenRouter)' : ' (OpenRouter converts to an effort level for this family)')); }
+          var mt = Number(body.max_tokens) || 0;
+          if (!mt || mt <= budget) { var nm = budget + 8192; body.max_tokens = nm; change('max_tokens ' + (mt || '(absent)') + ' \u2192 ' + nm + ' (OpenRouter requires max_tokens strictly above reasoning.max_tokens)'); }
+        } else {
+          if (R.effort !== eff || R.max_tokens !== undefined) { var wasE = R.effort; R.effort = eff; delete R.max_tokens; change('reasoning.effort ' + (wasE || '(none)') + ' \u2192 ' + eff + (fam === 'claude' ? ' (OpenRouter translates for Claude)' : '')); }
+        }
+        if (R.enabled === false) { delete R.enabled; change('reasoning.enabled=false removed (conflicts with the requested level)'); }
+        if (body.include_reasoning !== undefined) { delete body.include_reasoning; change('legacy include_reasoning removed (superseded by reasoning.*)'); }
+        if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('OpenAI-style reasoning_effort removed (OpenRouter unified reasoning.effort wins)'); }
+        rep.notes.push('OpenRouter has no per-message effort: the prompt re-renders once at this change (one cache miss), then stays stable');
+      }
+      if (disp === 'show' || disp === 'hide') {
+        if (!R) R = body.reasoning = {};
+        var wantEx = disp === 'hide';
+        if (R.exclude !== wantEx) { R.exclude = wantEx; change('reasoning.exclude \u2192 ' + wantEx + (wantEx ? ' (reasoning trace withheld; tokens still billed)' : ' (reasoning trace returned' + (fam === 'claude' ? '; OpenRouter defaults Claude to thinking.display=summarized' : '') + ')')); }
+        if (body.include_reasoning !== undefined) { delete body.include_reasoning; change('legacy include_reasoning removed'); }
+        if (fam === 'openai') rep.notes.push('OpenAI models return no reasoning text via chat-completions regardless of exclude');
+      }
+      return;
+    }
+    // ---- Direct OpenAI-compat hosts
+    if (fam === 'kimi' || fam === 'deepseek' || fam === 'glm') {
+      if (L.set) {
+        var th = (body.thinking && typeof body.thinking === 'object') ? body.thinking : null;
+        var wantT = L.off ? 'disabled' : 'enabled';
+        if (!th || th.type !== wantT) { body.thinking = { type: wantT }; change('thinking = {type:"' + wantT + '"}'); }
+        if (!L.off && (L.eff || L.budget != null)) clamp((L.eff || ('budget:' + L.budget)) + ' \u2192 ON: ' + fam + ' direct API exposes thinking on/off only (no effort levels)');
+        if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (not part of the ' + fam + ' thinking contract)'); }
+      }
+      if (disp === 'show' || disp === 'hide') rep.notes.push(fam + ' always streams reasoning_content when thinking is enabled; display is not controllable on this route');
+      return;
+    }
+    if (fam === 'qwen') {
+      if (L.set) {
+        if (L.off) { if (body.enable_thinking !== false) { body.enable_thinking = false; change('enable_thinking = false'); } }
+        else {
+          if (body.enable_thinking !== true) { body.enable_thinking = true; change('enable_thinking = true'); }
+          var qb = L.budget != null ? L.budget : tmThinkEffortToBudget(L.eff);
+          if (L.eff) clamp('effort ' + L.eff + ' \u2192 thinking_budget ' + qb + ': Qwen has no effort levels');
+          if (body.thinking_budget !== qb) { body.thinking_budget = qb; change('thinking_budget = ' + qb); }
+        }
+      }
+      if (disp === 'show' || disp === 'hide') rep.notes.push('Qwen streams reasoning_content whenever thinking is enabled; display is not controllable');
+      return;
+    }
+    // gemini via OpenAI-compat, openai, grok, deepinfra, other -> reasoning_effort vocabulary
+    if (L.set) {
+      var e2 = L.eff;
+      if (L.budget != null) { e2 = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + e2 + ': chat-completions has no token budget for ' + fam); }
+      if (L.off) { if (tmThinkIsAlwaysOn(fam, model)) { e2 = 'low'; clamp('off \u2192 low: ' + model + ' always reasons'); } else e2 = 'none'; }
+      if (fam === 'grok') { var g0 = e2; e2 = (/^(none|minimal|low)$/.test(e2)) ? 'low' : 'high'; if (g0 !== e2) clamp(g0 + ' \u2192 ' + e2 + ': xAI reasoning_effort accepts low | high only'); }
+      else if (fam === 'gemini') { var gg = e2; if (e2 === 'max' || e2 === 'xhigh') e2 = 'high'; if (e2 === 'minimal' && !/flash/.test(model.toLowerCase())) e2 = 'low'; if (gg !== e2) clamp(gg + ' \u2192 ' + e2 + ': Gemini OpenAI-compat reasoning_effort range'); }
+      else if (e2 === 'max') { e2 = 'xhigh'; clamp('max \u2192 xhigh: OpenAI-style reasoning_effort has no max'); }
+      if (body.reasoning_effort !== e2) { var wasRE = body.reasoning_effort; body.reasoning_effort = e2; change('reasoning_effort ' + (wasRE || '(none)') + ' \u2192 ' + e2 + (fam === 'other' || r.kind === 'aggregator' ? ' (OpenAI-compat passthrough on ' + r.host + '; unverified for this host)' : '')); }
+      if (body.reasoning !== undefined && typeof body.reasoning === 'object') { delete body.reasoning; change('unified reasoning object removed (direct host uses reasoning_effort)'); }
+      if (fam === 'openai' && Number(body.max_completion_tokens) && Number(body.max_completion_tokens) < 16000 && /^(high|xhigh)$/.test(e2)) { var mct = body.max_completion_tokens; body.max_completion_tokens = 32000; change('max_completion_tokens ' + mct + ' \u2192 32000 (room for reasoning at ' + e2 + ')'); }
+    }
+    if (disp === 'show' || disp === 'hide') {
+      if (fam === 'gemini') {
+        if (!body.extra_body || typeof body.extra_body !== 'object') body.extra_body = {};
+        if (!body.extra_body.google || typeof body.extra_body.google !== 'object') body.extra_body.google = {};
+        var tcg = body.extra_body.google.thinking_config || body.extra_body.google.thinkingConfig || {};
+        var wantIT = disp === 'show';
+        if (tcg.include_thoughts !== wantIT) { tcg.include_thoughts = wantIT; delete tcg.includeThoughts; body.extra_body.google.thinking_config = tcg; delete body.extra_body.google.thinkingConfig; change('extra_body.google.thinking_config.include_thoughts = ' + wantIT); }
+      } else rep.notes.push('display not controllable on ' + fam + ' chat-completions (OpenAI/xAI return no reasoning text; use the Responses API for summaries)');
+    }
+  }
+
+  // (c) OpenAI Responses API: reasoning.effort + reasoning.summary (display).
+  function tmThinkWriteResponses(r, body, ov, rep) {
+    var model = String(body.model || ''); rep.model = model; rep.caps = 'openai-responses'; rep.mode = 'top-level';
+    var L = tmThinkParseLevel(rep.level, rep);
+    var disp = String(rep.display || 'inherit').toLowerCase();
+    function change(s) { rep.changes.push(s); rep.applied = true; }
+    function clamp(s) { rep.clamps.push(s); }
+    var R = (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) ? body.reasoning : null;
+    if (L.set) {
+      var eff = L.eff;
+      if (L.budget != null) { eff = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + eff + ': the Responses API has no reasoning token budget'); }
+      if (L.off) { if (tmThinkIsAlwaysOn('openai', model)) { eff = 'low'; clamp('off \u2192 low: o-series models always reason'); } else eff = 'none'; }
+      if (eff === 'max') { eff = 'xhigh'; clamp('max \u2192 xhigh: OpenAI reasoning.effort has no max'); }
+      if (!R) R = body.reasoning = {};
+      if (R.effort !== eff) { var was = R.effort; R.effort = eff; change('reasoning.effort ' + (was || '(none)') + ' \u2192 ' + eff + ((typeof tmIsPlainSolModel === 'function' && tmIsPlainSolModel(model)) ? ' (overrides the legacy Sol Reasoning select for this call)' : '')); }
+      if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('top-level reasoning_effort removed (Responses uses reasoning.effort)'); }
+      if (/^(high|xhigh)$/.test(eff) && Number(body.max_output_tokens) && Number(body.max_output_tokens) < 16000) { var mo = body.max_output_tokens; body.max_output_tokens = 32000; change('max_output_tokens ' + mo + ' \u2192 32000 (room for reasoning at ' + eff + ')'); }
+      rep.notes.push('Responses API: a top-level effort change re-renders the prompt once (one cache miss)');
+    }
+    if (disp === 'show' || disp === 'hide') {
+      if (!R) R = body.reasoning = {};
+      if (disp === 'show') { if (!/^(auto|concise|detailed)$/.test(String(R.summary || ''))) { var wasS = R.summary; R.summary = 'auto'; change('reasoning.summary ' + (wasS || '(none)') + ' \u2192 auto (reasoning summaries stream back; OpenAI never returns raw reasoning)'); } }
+      else if (R.summary !== undefined) { delete R.summary; change('reasoning.summary removed (no summaries returned; encrypted replay unaffected)'); }
+    }
+  }
+
+  // (d) Gemini native generateContent: generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget, includeThoughts}.
+  function tmThinkWriteGemini(r, url, body, ov, rep) {
+    var model = String(body.model || '');
+    if (!model) { try { var mm = String(r.target || url || '').match(/\/models\/([^\/:?#]+)/i); if (mm) model = decodeURIComponent(mm[1]); } catch (e) {} }
+    rep.model = model; rep.mode = 'top-level';
+    var ml = model.toLowerCase(), gen3 = /gemini-3/.test(ml), flash = /flash/.test(ml), pro = /pro/.test(ml);
+    rep.caps = gen3 ? 'gemini-3 (thinkingLevel)' : 'gemini-2.5 (thinkingBudget)';
+    var L = tmThinkParseLevel(rep.level, rep);
+    var disp = String(rep.display || 'inherit').toLowerCase();
+    function change(s) { rep.changes.push(s); rep.applied = true; }
+    function clamp(s) { rep.clamps.push(s); }
+    var gcKey = body.generationConfig ? 'generationConfig' : (body.generation_config ? 'generation_config' : 'generationConfig');
+    var gc = (body[gcKey] && typeof body[gcKey] === 'object') ? body[gcKey] : null;
+    var tc = gc ? (gc.thinkingConfig || gc.thinking_config || null) : null;
+    function ensure() { if (!gc) gc = body[gcKey] = {}; if (!tc) tc = {}; gc.thinkingConfig = tc; delete gc.thinking_config; return tc; }
+    if (L.set) {
+      ensure();
+      if (gen3) {
+        var lvl3 = null;
+        if (L.budget != null) { if (tc.thinkingBudget !== L.budget || tc.thinkingLevel !== undefined) { tc.thinkingBudget = L.budget; delete tc.thinkingLevel; delete tc.thinking_level; delete tc.thinking_budget; change('thinkingConfig.thinkingBudget = ' + L.budget + ' (Gemini 3 maps a budget to a thinkingLevel internally)'); } }
+        else {
+          var e3 = L.eff;
+          if (L.off) { e3 = flash ? 'minimal' : 'low'; clamp('off \u2192 ' + e3 + ': Gemini 3 cannot disable thinking'); }
+          if (e3 === 'xhigh' || e3 === 'max') { clamp(e3 + ' \u2192 high: Gemini 3 tops out at high'); e3 = 'high'; }
+          if (!flash && e3 === 'minimal') { clamp('minimal \u2192 low: only Gemini 3 Flash has minimal'); e3 = 'low'; }
+          if (pro && !flash && e3 === 'medium') { clamp('medium \u2192 high: Gemini 3 Pro exposes low | high'); e3 = 'high'; }
+          lvl3 = e3;
+          if (tc.thinkingLevel !== lvl3 || tc.thinkingBudget !== undefined) { var was3 = tc.thinkingLevel; tc.thinkingLevel = lvl3; delete tc.thinkingBudget; delete tc.thinking_budget; delete tc.thinking_level; change('thinkingConfig.thinkingLevel ' + (was3 || '(none)') + ' \u2192 ' + lvl3 + (tc.thinkingBudget === undefined ? '' : '') + ' (thinkingBudget removed: the two conflict)'); }
+        }
+      } else {
+        var maxB = flash ? 24576 : 32768;
+        var nb;
+        if (L.budget != null) nb = Math.min(L.budget, maxB);
+        else if (L.off) { nb = flash ? 0 : 128; if (!flash) clamp('off \u2192 thinkingBudget 128: Gemini 2.5 Pro cannot disable thinking'); }
+        else nb = ({ minimal: 512, low: 2048, medium: 8192, high: 16384, xhigh: maxB, max: maxB })[L.eff];
+        if (nb == null) nb = 8192;
+        if (L.eff) clamp('effort ' + L.eff + ' \u2192 thinkingBudget ' + nb + ': Gemini 2.5 uses a token budget, not levels');
+        if (tc.thinkingBudget !== nb || tc.thinkingLevel !== undefined) { var wasB = tc.thinkingBudget; tc.thinkingBudget = nb; delete tc.thinkingLevel; delete tc.thinking_level; delete tc.thinking_budget; change('thinkingConfig.thinkingBudget ' + (wasB === undefined ? '(none)' : wasB) + ' \u2192 ' + nb); }
+      }
+      rep.notes.push('Gemini native: a thinkingConfig change re-renders the request once (implicit cache may miss on that turn)');
+    }
+    if (disp === 'show' || disp === 'hide') {
+      ensure();
+      var wantIT = disp === 'show';
+      if (tc.includeThoughts !== wantIT) { tc.includeThoughts = wantIT; delete tc.include_thoughts; change('thinkingConfig.includeThoughts = ' + wantIT + (wantIT ? ' (thought summaries stream back as thought:true parts)' : '')); }
+    }
   }
 
   // Request-time entry point (universal outbound pass): resolve the identity, load its override, run
@@ -6039,15 +6276,17 @@
     } catch (e) { return null; }
   }
 
-  // Which identities get the control (v4.361: Anthropic-shaped routes). Data-driven from the newest
-  // stamped ring row for the identity, with the host as a fallback before any row exists.
+  // Which identities get the control. v4.362: every protocol with a writer (anthropic-messages, chat-
+  // completions incl. OpenRouter/DeepInfra, Responses, Gemini native). Data-driven from the newest
+  // stamped ring row for the identity, with a known-host fallback before any row exists.
+  var TM_THINK_WRITER_PROTOCOLS = { 'anthropic-messages': 1, 'openai-chat-completions': 1, 'deepinfra-chat-completions': 1, 'openai-responses': 1, 'gemini-generatecontent': 1 };
   function tmThinkControlSupportedForIdentity(idKey) {
     try {
       if (!idKey) return false;
       var cap = tmLatestThinkEntryForIdentity(idKey);
-      if (cap && cap._think_req && cap._think_req.protocol) return cap._think_req.protocol === 'anthropic-messages';
+      if (cap && cap._think_req && cap._think_req.protocol) return !!TM_THINK_WRITER_PROTOCOLS[cap._think_req.protocol];
       var host = String(idKey).split('::')[2] || '';
-      return host.indexOf('api.anthropic.com') !== -1;
+      return /anthropic\.com|openrouter\.ai|openai\.com|x\.ai|moonshot|deepseek|deepinfra|generativelanguage|bigmodel|dashscope/.test(host);
     } catch (e) { return false; }
   }
 
@@ -6068,9 +6307,9 @@
         opt('medium', S.MED.g + ' medium', curSel) + opt('high', S.HIGH.g + ' high', curSel) + opt('xhigh', S.HIGH.g + ' xhigh', curSel) + opt('max', S.MAX.g + ' max', curSel) +
         opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : ''), curSel) +
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
-      var dispOpts = opt('inherit', '\u21a9 inherit', disp) + opt('show', S.SHOW_REQ.g + ' show words (summarized)', disp) + opt('hide', S.HIDE_REQ.g + ' hide (omitted)', disp);
-      var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Anthropic: output_config.effort. Direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta; other models/routes set the top-level value (one cache miss at the change). Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
-      var dispTitle = 'Thinking DISPLAY for the NEXT call: show = thinking.display=summarized (the thinking words stream back and enter history), hide = omitted (signature only). Independent of the level.';
+      var dispOpts = opt('inherit', '\u21a9 inherit', disp) + opt('show', S.SHOW_REQ.g + ' show reasoning', disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning', disp);
+      var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
+      var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace. Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts. Not controllable on OpenAI/xAI chat-completions or Kimi/DeepSeek/GLM/Qwen direct (reported as a note). Independent of the level.';
       return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control" style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
         '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle) + '" style="' + selStyle + '">' + levelOpts + '</select>' +
         '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:5px;">\ud83d\udc41</span>' +
