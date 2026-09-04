@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.356
+// Version: 4.357
 // Issues Fixed:
+//   - v4.357: THINKING BADGE -- TWO-ROW LAYOUT + AMOUNT PARENTHESES + SIGNATURE BYTES. (a) The
+//     badge is now TWO ROWS wherever there is space (ring rows + sessions-in-memory hovercard):
+//     REQ on the first line, OBS on the second, with a 12px-separated '│' gap between the
+//     leading-edge and aggregate sub-blocks -- kills the rollover and the emoji run-on wall. The
+//     widget keeps a compact single inline line (layout:'inline'). (b) PARENTHESIZED THINKING
+//     AMOUNTS on OBS: the leading-edge amount glyph shows this turn's '(tokens, sealed KB)'; each
+//     aggregate amount glyph shows '(sum tokens, sum sealed KB)' for every turn that landed in
+//     that band. Non-parenthesized counts stay turn counts; parentheses = token amounts -- the
+//     semantics are visually distinct per Dan. Tracking added: _think_hist.obsTok / obsEnc per
+//     band (sealed bytes = encrypted base64 chars x 3/4), incremented in tmRecordThinkHistogram
+//     (new obsRec arg); ring snapshot carries them. (c) SIGNATURE BYTES: Anthropic thinking
+//     signatures + Gemini thoughtSignature are now measured (signature_chars), not just detected
+//     -- previously presence-only. They ride in obs/report; the paren shows only sealed reasoning
+//     bytes (signatures are seals over raw text, which already counts as words).
 //   - v4.356: FIX 24 -- SESSION THINKING HISTOGRAM. The per-turn glyphs tell you what happened on
 //     ONE turn; the histogram tells you what a level is WORTH on a model. NEW ledger field
 //     _think_hist = { req: {STATE: turns}, obs: {STATE: turns}, turns } on the tm_session_costs_v2
@@ -1657,7 +1671,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.356';
+  const EXT_VERSION = '4.357';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4309,7 +4323,7 @@
   }
 
   function tmThinkNewObsAccumulator() {
-    return { raw_chars: 0, summary_chars: 0, encrypted_chars: 0, visible_chars: 0,
+    return { raw_chars: 0, summary_chars: 0, encrypted_chars: 0, visible_chars: 0, signature_chars: 0,
              blocks: { thinking: 0, redacted: 0, reasoning_text: 0, reasoning_summary: 0, reasoning_encrypted: 0, reasoning_content: 0, reasoning_str: 0, responses_reasoning_items: 0, gemini_thought_parts: 0 },
              signature: false, events: 0, channels: {} };
   }
@@ -4323,7 +4337,7 @@
     try {
       for (var i = 0; i < blocks.length; i++) {
         var bl = blocks[i]; if (!bl) continue;
-        if (bl.type === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', bl.thinking); if (bl.signature) acc.signature = true; }
+        if (bl.type === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', bl.thinking); if (typeof bl.signature === 'string' && bl.signature.length) { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', bl.signature); } else if (bl.signature) acc.signature = true; }
         else if (bl.type === 'redacted_thinking') { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', bl.data); }
         else if (bl.type === 'text') tmThinkAddChars(acc, 'visible_chars', bl.text);
       }
@@ -4361,7 +4375,7 @@
       if (ev.type === 'content_block_delta' && ev.delta) {
         var dt = ev.delta.type;
         if (dt === 'thinking_delta') { tmThinkAddChars(acc, 'raw_chars', ev.delta.thinking); acc.channels.anthropic_thinking = 1; }
-        else if (dt === 'signature_delta') { acc.signature = true; }
+        else if (dt === 'signature_delta') { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', ev.delta && ev.delta.signature); }
         else if (dt === 'text_delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta.text); }
       }
       // ---- Anthropic non-streaming message body (type:'message' with content[])
@@ -4411,7 +4425,7 @@
             var pt = parts[pi]; if (!pt) continue;
             if (pt.thought === true) { acc.blocks.gemini_thought_parts++; acc.channels.gemini_thought = 1; tmThinkAddChars(acc, 'raw_chars', pt.text); }
             else if (typeof pt.text === 'string') tmThinkAddChars(acc, 'visible_chars', pt.text);
-            if (pt.thoughtSignature || pt.thought_signature) { acc.signature = true; acc.channels.gemini_thought_signature = 1; }
+            if (pt.thoughtSignature || pt.thought_signature) { acc.signature = true; acc.channels.gemini_thought_signature = 1; tmThinkAddChars(acc, 'signature_chars', pt.thoughtSignature || pt.thought_signature); }
           }
         }
       }
@@ -4435,7 +4449,7 @@
                 completion_tokens: null, ratio: null, channels: [], summary: '' };
     try {
       acc = acc || tmThinkNewObsAccumulator();
-      obs.raw_chars = acc.raw_chars; obs.summary_chars = acc.summary_chars; obs.encrypted_chars = acc.encrypted_chars; obs.visible_chars = acc.visible_chars;
+      obs.raw_chars = acc.raw_chars; obs.summary_chars = acc.summary_chars; obs.encrypted_chars = acc.encrypted_chars; obs.visible_chars = acc.visible_chars; obs.signature_chars = acc.signature_chars;
       obs.blocks = acc.blocks; obs.signature = !!acc.signature;
       for (var chk in acc.channels) { if (acc.channels[chk] && !/_delta$/.test(chk)) obs.channels.push(chk); }
       var u = usage || {}; var au = anthropicUsage || {};
@@ -4803,22 +4817,53 @@
     var color = gl.state === 'NONE' ? '#ffb84d' : gl.state === 'UNMAPPED' ? '#ff9b9b' : gl.state === 'CONTRA' ? '#ff6b6b' : 'inherit';
     return '<span title="' + escapeHtml(tmThinkGlyphTitle(gl)) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + gl.g + val + '</span>';
   }
-  // REQ glyphs -> OBS glyphs, as ONE string. Used by the badge (rows / widget / hovercard).
-  // (v4.356) Optional hist: 'REQ <current> \u2502 <req counts> \u2016 OBS <current> \u2502 <obs counts>'.
-  function tmThinkGlyphRowHtml(cap, fs, hist) {
+  // (v4.357) Thinking amounts helpers: sealed-bytes conversion + parenthesized 'tokens[, bytes]'.
+  function tmThinkObsBytes(obs) { try { return obs && obs.encrypted_chars ? Math.round(Number(obs.encrypted_chars) * 3 / 4) : 0; } catch (e) { return 0; } }
+  function tmThinkFmtBytes(n) { n = Number(n) || 0; if (n >= 1048576) return (n / 1048576).toFixed(1) + 'MB'; if (n >= 1024) return (n / 1024).toFixed(1) + 'KB'; return n + 'B'; }
+  function tmThinkAmtParen(tokens, bytes) {
+    var parts = [];
+    if (typeof tokens === 'number') parts.push(tmThinkFmtK(tokens));
+    if (bytes > 0) parts.push(tmThinkFmtBytes(bytes));
+    return parts.length ? ('(' + parts.join(', ') + ')') : '';
+  }
+  // REQ glyphs -> OBS glyphs. (v4.357) TWO layouts: 'stacked' (ring rows + hovercard: REQ on one
+  // row, OBS on the next; wider margin between the leading-edge and aggregate sub-blocks; the old
+  // \u2016 run-on wall is gone) and 'inline' (widget: one compact line). OBS amount glyphs carry
+  // parenthesized thinking amounts: leading edge = this turn's tokens (, sealed bytes); aggregate =
+  // the session sum for that band.
+  function tmThinkGlyphRowHtml(cap, fs, hist, layout) {
     try {
       var req = cap && cap._think_req, obs = cap && cap._think_obs;
       var R = tmThinkClassifyReq(req);
       var O = obs ? tmThinkClassifyObs(obs, R.glyphs) : { glyphs: [] };
-      var reqHtml = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
-      var obsHtml = O.glyphs.length ? O.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('') : (cap && cap.response_status == null ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
       var lab = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;font-weight:700;letter-spacing:0.3px;';
-      var sep = '<span style="opacity:0.45;margin:0 3px;">\u2502</span>';
-      var hr = hist ? tmThinkHistHtml(hist, 'req', fs) : '';
-      var ho = hist ? tmThinkHistHtml(hist, 'obs', fs) : '';
-      var turnsTitle = hist && hist.turns ? (' title="' + hist.turns + ' stamped turns this session"') : '';
-      return '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqHtml + (hr ? (sep + hr) : '') +
-             ' <span style="opacity:0.5;"' + turnsTitle + '>' + (hist ? '\u2016' : '\u2192') + '</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsHtml + (ho ? (sep + ho) : '');
+      var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
+      var obsPending = cap && cap.response_status == null;
+      if (layout === 'inline') {
+        var reqInline = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('');
+        var obsInline = O.glyphs.length ? O.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join('') : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
+        return '<span style="white-space:nowrap;">' +
+          '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqInline +
+          ' <span style="opacity:0.5;">\u2192</span> <span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsInline + '</span>';
+      }
+      function obsLeadGlyph(g) {
+        if (g && /^AMT/.test(g.state)) {
+          var g2 = g;
+          if (g.value) { g2 = {}; for (var kk in g) if (g.hasOwnProperty(kk)) g2[kk] = g[kk]; g2.value = null; }
+          var paren = tmThinkAmtParen(obs && obs.tokens ? obs.tokens.reasoning : null, tmThinkObsBytes(obs));
+          return '<span style="white-space:nowrap;">' + tmThinkGlyphHtml(g2, fs) + (paren ? ('<span style="' + small + '">' + escapeHtml(paren) + '</span>') : '') + '</span>';
+        }
+        return tmThinkGlyphHtml(g, fs);
+      }
+      var reqLead = R.glyphs.map(function(g) { return tmThinkGlyphHtml(g, fs); }).join(' ');
+      var obsLead = O.glyphs.length ? O.glyphs.map(obsLeadGlyph).join(' ') : (obsPending ? '<span style="opacity:0.6;">pending\u2026</span>' : '<span style="opacity:0.6;">?</span>');
+      var line1 = '<div style="white-space:nowrap;">' +
+        '<span style="' + lab + 'color:' + (R.isNone ? '#ffb84d' : '#9aa4b2') + ';">REQ</span> ' + reqLead +
+        (hist ? tmThinkHistHtml(hist, 'req', fs) : '') + '</div>';
+      var line2 = '<div style="white-space:nowrap;margin-top:3px;">' +
+        '<span style="' + lab + 'color:#9aa4b2;">OBS</span> ' + obsLead +
+        (hist ? tmThinkHistHtml(hist, 'obs', fs) : '') + '</div>';
+      return '<div style="display:flex;flex-direction:column;min-width:0;">' + line1 + line2 + '</div>';
     } catch (e) { return ''; }
   }
 
@@ -4827,7 +4872,7 @@
   // anti-leak lifecycle), so it survives ring eviction on long sessions. Incremented once per turn at
   // response time; each state counted at most once per turn per side. Snapshotted onto the ring row
   // (_think_hist) so rows read as-of-that-turn; widget + hovercard read the ledger live.
-  function tmRecordThinkHistogram(sessionId, model, endpointHost, isProxy, reqGlyphs, obsGlyphs) {
+  function tmRecordThinkHistogram(sessionId, model, endpointHost, isProxy, reqGlyphs, obsGlyphs, obsRec) {
     if (!sessionId || !model) return null;
     try {
       var costs = tmGetSessionCosts();
@@ -4840,6 +4885,17 @@
       var seen = {};
       (reqGlyphs || []).forEach(function(g) { if (g && g.state && g.state !== 'IGNORE' && !seen['r:' + g.state]) { seen['r:' + g.state] = 1; h.req[g.state] = Number(h.req[g.state] || 0) + 1; } });
       (obsGlyphs || []).forEach(function(g) { if (g && g.state && !seen['o:' + g.state]) { seen['o:' + g.state] = 1; h.obs[g.state] = Number(h.obs[g.state] || 0) + 1; } });
+      // (v4.357) THINKING AMOUNTS per amount band: word tokens + sealed bytes (base64 chars -> bytes).
+      // Attributed to the turn's AMT band glyph; powers the parenthesized (tokens, KB) aggregates.
+      var amtState = null;
+      (obsGlyphs || []).forEach(function(g) { if (!amtState && g && /^AMT/.test(g.state)) amtState = g.state; });
+      if (amtState) {
+        if (!h.obsTok) h.obsTok = {}; if (!h.obsEnc) h.obsEnc = {};
+        var tt = (obsRec && obsRec.tokens && typeof obsRec.tokens.reasoning === 'number') ? obsRec.tokens.reasoning : 0;
+        var eb = (obsRec && obsRec.encrypted_chars) ? Math.round(Number(obsRec.encrypted_chars) * 3 / 4) : 0;
+        if (tt > 0) h.obsTok[amtState] = Number(h.obsTok[amtState] || 0) + tt;
+        if (eb > 0) h.obsEnc[amtState] = Number(h.obsEnc[amtState] || 0) + eb;
+      }
       entry._think_hist = h;
       entry._session_id = String(sessionId);
       entry._ts = Date.now();
@@ -4865,11 +4921,20 @@
       if (!keys.length) return '';
       keys.sort(function(a, b) { var A = TM_THINK_STATES[a], B = TM_THINK_STATES[b]; return ((A.rank != null ? A.rank : A.order) - (B.rank != null ? B.rank : B.order)); });
       var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
-      return keys.map(function(k) {
+      var runs = keys.map(function(k) {
         var st = TM_THINK_STATES[k];
         var color = k === 'NONE' ? '#ffb84d' : k === 'UNMAPPED' ? '#ff9b9b' : k === 'CONTRA' ? '#ff6b6b' : 'inherit';
-        return '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span></span>';
-      }).join(' ');
+        // (v4.357) Amount bands carry parenthesized totals: sum of word tokens (, sealed KB) for
+        // every turn that landed in this band.
+        var paren = '';
+        if (/^AMT/.test(k)) {
+          var tokSum = hist.obsTok && typeof hist.obsTok[k] === 'number' ? hist.obsTok[k] : 0;
+          var encSum = hist.obsEnc && typeof hist.obsEnc[k] === 'number' ? hist.obsEnc[k] : 0;
+          paren = tmThinkAmtParen(tokSum || null, encSum);
+        }
+        return '<span title="' + escapeHtml(st.label + ': ' + counts[k] + ' of ' + (hist.turns || '?') + ' turns this session' + (paren ? (' \u2014 total ' + paren) : '') + ' \u2014 ' + st.desc) + '" style="cursor:help;color:' + color + ';white-space:nowrap;">' + st.g + '<span style="' + small + '">' + counts[k] + '</span>' + (paren ? ('<span style="' + small + '">' + escapeHtml(paren) + '</span>') : '') + '</span>';
+      });
+      return '<span style="opacity:0.45;margin:0 12px;">\u2502</span>' + runs.join(' ');
     } catch (e) { return ''; }
   }
 
@@ -4965,8 +5030,9 @@
       var reqTxt = tmThinkCompactReq(req);
       var obsTxt = obs ? tmThinkCompactObs(obs, req) : (cap.response_status == null ? 'pending\u2026' : '?');
       var title = 'Thinking Observatory \u2014 requested: ' + reqTxt + ' [' + ((req && req.summary) || '?') + ']  |  observed: ' + obsTxt + ' [' + ((obs && obs.summary) || '?') + ']  \u2014 hover each glyph for its meaning + raw field; click for the full report';
-      var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' +
-        '\ud83e\udde0 ' + tmThinkGlyphRowHtml(cap, fs, (opts.hist !== undefined ? opts.hist : (cap._think_hist || null))) + '</span>';
+      var histVal = (opts.hist !== undefined ? opts.hist : (cap._think_hist || null));
+      var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;display:inline-flex;align-items:flex-start;gap:4px;">' +
+        '<span>\ud83e\udde0</span><span style="display:inline-block;min-width:0;">' + tmThinkGlyphRowHtml(cap, fs, histVal, opts.layout || 'stacked') + '</span></span>';
       if (!opts.noNote) {
         var ctx = tmThinkNoteContextFromCap(cap);
         var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
@@ -6615,7 +6681,7 @@
                 if (idSid && thRec && thRec._think_req) {
                   var thR = tmThinkClassifyReq(thRec._think_req);
                   var thO = thRec._think_obs ? tmThinkClassifyObs(thRec._think_obs, thR.glyphs) : { glyphs: [] };
-                  var thHist = tmRecordThinkHistogram(idSid, idModel, idHost, idIsProxy, thR.glyphs, thO.glyphs);
+                  var thHist = tmRecordThinkHistogram(idSid, idModel, idHost, idIsProxy, thR.glyphs, thO.glyphs, thRec._think_obs || null);
                   if (thHist) tmUpdateCaptureRecord(captureId, { _think_hist: thHist });
                 }
               } catch (eTH) {}
@@ -8809,7 +8875,7 @@
       // (identity-matched like the ctx dial; never leaks a parallel conversation). Click -> report.
       try {
         var tkCapW = tmLatestThinkEntryForIdentity(widgetIdentity && widgetIdentity.key);
-        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px', hist: tmGetThinkHistogram(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy) }) + '</div>');
+        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px', layout: 'inline' }) + '</div>');
       } catch (eTkW) {}
     } else {
       tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
