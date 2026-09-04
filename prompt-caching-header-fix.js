@@ -1,6 +1,26 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.351
+// Version: 4.352
 // Issues Fixed:
+//   - v4.352: FIX 24 -- THINKING OBSERVATORY, PHASE 1C + THINKING NOTES. (a) req<->obs JOIN layer:
+//     tmThinkCompactReq ('adaptive\u00b7high\u00b7omitted', 'high', 'budget 10K', 'level high', 'NONE'),
+//     tmThinkCompactObs (join-aware: 'omitted' when thinking.display=omitted / reasoning.exclude,
+//     'none this turn' for adaptive+0), tmThinkInterpret (plain-English interpretation lines).
+//     Motivated by LIVE FINDING 1: Fable 5.1 direct sends thinking.type=adaptive +
+//     thinking.display=omitted + output_config.effort=high, so direct-Fable can NEVER show raw
+//     thinking -- the only evidence is the reported thinking_tokens count; bare 'visibility:none'
+//     was misleading. (b) ONE shared badge (tmRenderThinkBadge) on every v4.351+ ring row AND the
+//     persistent widget (identity-matched): '\ud83e\udde0 <req> -> <obs>', ORANGE when verdict NONE
+//     (provider default -- Dan's call); click -> Thinking Report (requested + observed + usage +
+//     interpretation) in the JSON viewer, copied to clipboard. (c) THINKING NOTES
+//     (tm_think_notes_v1): \ud83d\udcdd beside every badge opens a nested editor with the row's
+//     model/provider/route + req->obs snapshot pre-attached (Ctrl+Enter saves); the new
+//     '\ud83e\udde0 Thinking Notes' button (beside Rate Providers / Set Costs) opens a modal that
+//     projects notes through the SHARED 4-level provider catalog tree (tmBuildProviderCatalogTree)
+//     with an 'All notes' root -- click ANY node to see every note in its subtree newest-first
+//     (Claude -> everything Claude; Claude -> OpenRouter -> just that branch), edit/delete per
+//     note, 'Add note here' on a leaf, Copy-all JSON. Selection/expansion persist. Modal rules
+//     honored: self-uninstalling capture-phase Escape guards, tmPromptActive while open,
+//     suppress-Escape window on close, nested editor owns Escape. Still pure observation.
 //   - v4.351: FIX 24 -- THINKING OBSERVATORY, PHASE 1 (observe). Thinking level is the highest-
 //     leverage cost+quality knob, yet it was set by an opaque stack (TypingMind per-model setting ->
 //     route direct/OpenRouter/proxy->OpenRouter -> API type Messages/Chat/Responses/Gemini ->
@@ -1584,7 +1604,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.351';
+  const EXT_VERSION = '4.352';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4359,6 +4379,456 @@
     } catch (e) { return '?'; }
   }
 
+  // ---------- v4.352: compact formatters + the req<->obs JOIN layer (the badge/report brain) ----------
+  function tmThinkCtl(req, path) {
+    try { var C = (req && req.controls) || []; for (var i = 0; i < C.length; i++) if (C[i].path === path) return C[i].value; } catch (e) {}
+    return undefined;
+  }
+  function tmThinkFmtBudget(v) { var n = Number(v); if (!isFinite(n)) return String(v); if (n < 0) return 'dynamic'; if (n === 0) return 'off'; return tmThinkFmtK(n); }
+
+  // Compact REQUESTED descriptor for badges: 'adaptive·high·omitted', 'high', 'budget 10K', 'level high·thoughts', 'off', 'implicit', 'NONE'.
+  function tmThinkCompactReq(req) {
+    try {
+      if (!req) return '?';
+      if (req.verdict === 'NONE') return 'NONE';
+      if (req.verdict === 'implicit-only') return 'implicit';
+      var p = [];
+      var tType = tmThinkCtl(req, 'thinking.type'), tBudget = tmThinkCtl(req, 'thinking.budget_tokens'), tDisplay = tmThinkCtl(req, 'thinking.display');
+      var effort = tmThinkCtl(req, 'output_config.effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning_effort'); if (effort === undefined) effort = tmThinkCtl(req, 'reasoning.effort');
+      var rMax = tmThinkCtl(req, 'reasoning.max_tokens'), rEnabled = tmThinkCtl(req, 'reasoning.enabled'), rExclude = tmThinkCtl(req, 'reasoning.exclude');
+      var gLevel = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinkingLevel'); if (gLevel === undefined) gLevel = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinking_level');
+      var gBudget = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinkingBudget'); if (gBudget === undefined) gBudget = tmThinkCtl(req, 'generationConfig.thinkingConfig.thinking_budget');
+      var gThoughts = tmThinkCtl(req, 'generationConfig.thinkingConfig.includeThoughts'); if (gThoughts === undefined) gThoughts = tmThinkCtl(req, 'generationConfig.thinkingConfig.include_thoughts');
+      var qEnable = tmThinkCtl(req, 'enable_thinking'), qBudget = tmThinkCtl(req, 'thinking_budget');
+      if (tType !== undefined) p.push(String(tType));
+      if (rEnabled === false || rEnabled === 'false') p.push('off');
+      if (qEnable !== undefined) p.push((qEnable === true || qEnable === 'true') ? 'on' : 'off');
+      if (effort !== undefined) p.push(String(effort));
+      if (tBudget !== undefined) p.push('budget ' + tmThinkFmtBudget(tBudget));
+      if (rMax !== undefined) p.push('budget ' + tmThinkFmtBudget(rMax));
+      if (gLevel !== undefined) p.push('level ' + String(gLevel));
+      if (gBudget !== undefined) p.push('budget ' + tmThinkFmtBudget(gBudget));
+      if (qBudget !== undefined) p.push('budget ' + tmThinkFmtBudget(qBudget));
+      if (gThoughts === true || gThoughts === 'true') p.push('thoughts');
+      if (tDisplay !== undefined) p.push(String(tDisplay));
+      if (rExclude === true || rExclude === 'true') p.push('excluded');
+      if (!p.length && req.controls && req.controls.length) { var c0 = req.controls[0]; p.push(String(c0.path).split('.').pop() + '=' + String(c0.value)); }
+      return p.join('\u00b7') || '?';
+    } catch (e) { return '?'; }
+  }
+
+  // Interpretation lines from the req<->obs JOIN.
+  function tmThinkInterpret(req, obs) {
+    var out = [];
+    try {
+      var tType = tmThinkCtl(req, 'thinking.type'), tDisplay = tmThinkCtl(req, 'thinking.display'), rExclude = tmThinkCtl(req, 'reasoning.exclude');
+      var tok = (obs && obs.tokens) ? obs.tokens.reasoning : null;
+      var src = (obs && obs.tokens) ? obs.tokens.source : 'none';
+      if (req && req.verdict === 'NONE') out.push('No thinking control was sent: behavior is the provider/model DEFAULT for this route.');
+      if (req && req.verdict === 'implicit-only') out.push('No explicit control; thinking implied only by the model name (' + req.implicit.join('; ') + ').');
+      if (tDisplay === 'omitted') out.push('thinking.display=omitted: the provider streams NO thinking content; the only evidence is the reported thinking_tokens count.');
+      if (rExclude === true || rExclude === 'true') out.push('reasoning.exclude=true: reasoning content withheld from the response; only token counts are observable.');
+      if (tType === 'adaptive' && tok === 0 && src === 'reported') out.push('adaptive thinking with 0 thinking tokens: the model chose not to think this turn (expected on trivial turns).');
+      if (tType === 'adaptive' && tok > 0) out.push('adaptive thinking engaged: ' + tmThinkFmtK(tok) + ' thinking tokens this turn.');
+      if (tType === 'disabled' && tok > 0) out.push('thinking.type=disabled yet ' + tmThinkFmtK(tok) + ' thinking tokens were reported -- the provider did not honor the request.');
+      if (src === 'bytes-estimate') out.push('Provider reported no thinking count; tokens ESTIMATED from ' + tmThinkFmtK(obs.raw_chars) + ' raw reasoning chars / 4.');
+      if (src === 'heuristic') out.push('No thinking count and no reasoning content; tokens INFERRED as completion minus visible text / 4 (low confidence).');
+      if (obs && obs.visibility === 'hidden') out.push('Reasoning tokens reported but no reasoning content of any kind was streamed (hidden reasoning).');
+      if (obs && obs.visibility === 'encrypted') out.push('Only encrypted/redacted reasoning blocks returned; content is sealed to the origin model.');
+      if (req && req.unrecognized && req.unrecognized.length) out.push('UNRECOGNIZED thinking-ish field(s): ' + req.unrecognized.map(function(u) { return u.path; }).join(', ') + ' -- extend the scanner.');
+      if (req && req.verdict === 'explicit' && (tok == null || src === 'none') && !(obs && obs.raw_chars)) out.push('Explicit control sent but NO thinking evidence came back: either the model did not think, or this provider reports nothing.');
+    } catch (e) {}
+    return out;
+  }
+
+  // Compact OBSERVED descriptor for badges (join-aware): '7.1K tok rep · omitted · 73%', '0 tok rep · none this turn'.
+  function tmThinkCompactObs(obs, req) {
+    try {
+      if (!obs) return '?';
+      var tDisplay = tmThinkCtl(req, 'thinking.display'), rExclude = tmThinkCtl(req, 'reasoning.exclude'), tType = tmThinkCtl(req, 'thinking.type');
+      var tok = obs.tokens ? obs.tokens.reasoning : null;
+      var src = obs.tokens ? obs.tokens.source : 'none';
+      var abbr = ({ reported: 'rep', 'bytes-estimate': 'est', heuristic: 'heur', none: '' })[src]; if (abbr === undefined) abbr = src;
+      var p = [];
+      if (tok != null) p.push(tmThinkFmtK(tok) + ' tok' + (abbr ? (' ' + abbr) : ''));
+      else if (obs.visibility === 'encrypted') p.push('encrypted only');
+      else p.push('0 tok');
+      var vis = obs.visibility;
+      if ((vis === 'none' || vis === 'hidden') && (tDisplay === 'omitted' || rExclude === true || rExclude === 'true')) vis = 'omitted';
+      if (vis === 'none' && tType === 'adaptive' && tok === 0) vis = 'none this turn';
+      if (vis && vis !== 'none') p.push(vis + (obs.also && obs.also.length ? ('+' + obs.also.join('+')) : ''));
+      if (obs.ratio != null && tok) p.push(Math.round(obs.ratio * 100) + '%');
+      return p.join(' \u00b7 ');
+    } catch (e) { return '?'; }
+  }
+
+  // Full Thinking Report for one capture -> JSON viewer (copied to clipboard too, like every viewer open).
+  function tmShowThinkReport(captureId) {
+    try {
+      var cap = getCaptureById(captureId);
+      if (!cap) return;
+      var req = cap._think_req || null, obs = cap._think_obs || null;
+      var report = {
+        captured: cap.ts_local || cap.ts, model: tmCaptureModel(cap), url: cap.url,
+        route: req && req.route, protocol: (req && req.protocol) || cap.protocol,
+        serving_provider: (typeof cap._provider_label === 'string' && cap._provider_label) || cap.response_provider || null,
+        requested_compact: tmThinkCompactReq(req), observed_compact: tmThinkCompactObs(obs, req),
+        interpretation: tmThinkInterpret(req, obs),
+        requested: req, observed: obs,
+        usage: cap.response_anthropic_usage || cap.response_usage || null
+      };
+      var txt = JSON.stringify(report, null, 2);
+      try { copyTextToClipboard(txt, 'Thinking Report'); } catch (e) {}
+      tmShowJsonViewerModal(txt, '\ud83e\udde0 Thinking Report \u2014 ' + (report.model || '?') + ' via ' + (report.route || '?'));
+    } catch (e) {}
+  }
+
+  // @beacon[
+  //   id=fix24-render-think-badge,
+  //   role=__lambdao_1.tmRenderThinkBadge,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.352): ONE shared badge for ring rows AND the widget -- '🧠 <compact req> -> <compact obs>' (orange when verdict NONE = provider default), data-action=think-report opens the Thinking Report; optional 📝 quick-note button (with existing-note count) opens the Thinking Note editor with request/observation context pre-attached.,
+  // ]
+  function tmRenderThinkBadge(cap, opts) {
+    try {
+      opts = opts || {};
+      if (!cap || (!cap._think_req && !cap._think_obs)) return '';
+      var req = cap._think_req, obs = cap._think_obs;
+      var none = !req || req.verdict === 'NONE';
+      var color = none ? '#ffb84d' : '#c8b4ff';
+      var fs = opts.fontSize || '10px';
+      var reqTxt = tmThinkCompactReq(req);
+      var obsTxt = obs ? tmThinkCompactObs(obs, req) : (cap.response_status == null ? 'pending\u2026' : '?');
+      var title = 'Thinking Observatory \u2014 requested: ' + ((req && req.summary) || '?') + '  |  observed: ' + ((obs && obs.summary) || '?') + '  \u2014 click for the full report';
+      var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' +
+        '\ud83e\udde0 ' + escapeHtml(reqTxt) + ' \u2192 ' + escapeHtml(obsTxt) + '</span>';
+      if (!opts.noNote) {
+        var ctx = tmThinkNoteContextFromCap(cap);
+        var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
+        html += ' <button data-action="think-note" data-capture-id="' + escapeHtml(cap.id) + '" title="Add a Thinking Note for ' + escapeHtml((ctx && ctx.model) || '?') + ' @ ' + escapeHtml((ctx && ctx.provider) || '?') + ' (request/observation context attached automatically)' + (n ? (' \u2014 ' + n + ' existing note' + (n === 1 ? '' : 's')) : '') + '" style="font-size:9px;background:' + (n ? '#4a4a1a' : '#2a2a33') + ';color:' + (n ? '#ffe0a0' : '#ccc') + ';border:1px solid ' + (n ? '#6a6a2a' : '#444') + ';border-radius:3px;padding:0 5px;height:16px;line-height:1;cursor:pointer;flex-shrink:0;">\ud83d\udcdd' + (n ? (' ' + n) : '') + '</button>';
+      }
+      return html;
+    } catch (e) { return ''; }
+  }
+
+  // Newest ring entry carrying a thinking stamp for this identity (widget mount; identity-guarded like the ctx dial).
+  function tmLatestThinkEntryForIdentity(idKey) {
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var cap = ring[i];
+        if (!cap || !cap._think_req) continue;
+        if (!idKey || (cap._identity && cap._identity.key === idKey)) return cap;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // ---------- v4.352: THINKING NOTES (tm_think_notes_v1) ----------
+  // Append-only notes about your experience with thinking levels, keyed to the SAME catalog tree as
+  // Rate Providers / Set Costs (family -> model -> route endpoint -> serving provider). Each note
+  // auto-carries the request/observation snapshot from the ring row it was written on.
+  var TM_THINK_NOTES_KEY = 'tm_think_notes_v1';
+  var TM_THINK_NOTES_TREE_PATH_KEY = 'tm_think_notes_tree_path_v1';
+  var tmThinkNotesTreeExpanded = {};
+  var tmThinkNotesSelectedPath = null;   // [] = all notes
+
+  function tmGetThinkNotes() { try { var v = JSON.parse(localStorage.getItem(TM_THINK_NOTES_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+  function tmSaveThinkNotes(list) { try { localStorage.setItem(TM_THINK_NOTES_KEY, JSON.stringify(list)); } catch (e) {} }
+  function tmThinkNormModel(m) { return String(m || '').toLowerCase().replace(/:(nitro|floor|free)$/i, ''); }
+  function tmThinkNoteContextFromCap(cap) {
+    try {
+      if (!cap) return null;
+      var model = tmThinkNormModel(tmCaptureModel(cap));
+      if (!model) return null;
+      var provider = tmObservedProviderKey(cap) || '';
+      var host = '', proxy = false;
+      try { host = tmExtractEndpointHost(cap) || ''; } catch (e) {}
+      try { proxy = tmIsProxyCapture(cap); } catch (e) {}
+      if (!provider) provider = host || 'unknown';
+      var req = cap._think_req, obs = cap._think_obs;
+      return { model: model, provider: provider, host: host, proxy: proxy,
+               session_id: cap.session_id || cap.pasted_session_id || null, capture_id: cap.id,
+               req_summary: tmThinkCompactReq(req), req_full: (req && req.summary) || null, req_verdict: (req && req.verdict) || null,
+               obs_summary: obs ? tmThinkCompactObs(obs, req) : null, obs_full: (obs && obs.summary) || null };
+    } catch (e) { return null; }
+  }
+  function tmThinkNotesCount(model, provider) {
+    try { var n = 0, L = tmGetThinkNotes(); for (var i = 0; i < L.length; i++) if (L[i] && L[i].model === model && L[i].provider === provider) n++; return n; } catch (e) { return 0; }
+  }
+  function tmAddThinkNote(ctx, text) {
+    var L = tmGetThinkNotes();
+    var note = { id: 'tn_' + Date.now() + '_' + Math.random().toString(16).slice(2, 8), ts: Date.now(),
+      ts_local: new Date().toLocaleString('en-US', { hour12: false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' }),
+      model: ctx.model, provider: ctx.provider, host: ctx.host || '', proxy: !!ctx.proxy, session_id: ctx.session_id || null,
+      req_summary: ctx.req_summary || null, req_full: ctx.req_full || null, req_verdict: ctx.req_verdict || null,
+      obs_summary: ctx.obs_summary || null, obs_full: ctx.obs_full || null, text: String(text || '') };
+    L.push(note); tmSaveThinkNotes(L); return note;
+  }
+  function tmUpdateThinkNote(id, text) { var L = tmGetThinkNotes(); for (var i = 0; i < L.length; i++) if (L[i] && L[i].id === id) { L[i].text = String(text || ''); L[i].edited_ts = Date.now(); break; } tmSaveThinkNotes(L); }
+  function tmDeleteThinkNote(id) { tmSaveThinkNotes(tmGetThinkNotes().filter(function(n) { return n && n.id !== id; })); }
+
+  // Nested editor (z 2147483648): read-only context header + textarea. Ctrl+Enter saves, Escape cancels.
+  // Follows the file's modal rules: capture-phase keydown that SELF-UNINSTALLS, tmPromptActive while
+  // open (ring modal ignores Escape), suppress-Escape window on close.
+  function tmShowThinkNoteEditor(ctx, existing, onSaved) {
+    if (typeof document === 'undefined' || !ctx) return;
+    var old = document.getElementById('tm-think-note-overlay'); if (old) old.parentNode.removeChild(old);
+    var src = existing || ctx;
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-think-note-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:62vw;max-width:680px;background:#1a1a22;border:1px solid #555;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.7);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;font-size:13px;color:#c8b4ff;margin-bottom:6px;';
+    hdr.textContent = existing ? '\u270f\ufe0f Edit Thinking Note' : '\ud83e\udde0\ud83d\udcdd New Thinking Note';
+    box.appendChild(hdr);
+    var ctxBox = document.createElement('div');
+    ctxBox.style.cssText = 'background:#0d0d11;border:1px solid #333;border-radius:4px;padding:6px 8px;margin-bottom:8px;font-family:monospace;font-size:11px;line-height:1.5;color:#9aa4b2;';
+    ctxBox.innerHTML =
+      '<div><span style="color:#8ef0a0;">' + escapeHtml(src.model || '?') + '</span> @ <span style="color:#8fc4ff;">' + escapeHtml(src.provider || '?') + '</span>' + (src.proxy ? ' <span style="color:#c8a8ff;">via proxy</span>' : '') + '</div>' +
+      '<div>\ud83e\udde0 req: <span style="color:' + (src.req_verdict === 'NONE' ? '#ffb84d' : '#e0d0ff') + ';">' + escapeHtml(src.req_summary || '?') + '</span> \u2192 obs: <span style="color:#e0d0ff;">' + escapeHtml(src.obs_summary || '?') + '</span></div>' +
+      (src.session_id ? '<div style="opacity:0.7;">session ' + escapeHtml(String(src.session_id)) + (existing && existing.ts_local ? (' \u00b7 ' + escapeHtml(existing.ts_local)) : '') + '</div>' : '');
+    box.appendChild(ctxBox);
+    var ta = document.createElement('textarea');
+    ta.style.cssText = 'width:100%;height:110px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:system-ui,sans-serif;padding:8px;box-sizing:border-box;resize:vertical;';
+    ta.value = existing ? (existing.text || '') : '';
+    ta.placeholder = 'Your experience with this thinking level\u2026  (Ctrl+Enter saves, Esc cancels)';
+    box.appendChild(ta);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;';
+    var cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background:#333;color:#ccc;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;';
+    var save = document.createElement('button'); save.textContent = existing ? 'Save' : 'Add note';
+    save.style.cssText = 'background:#4a3a7a;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:bold;';
+    row.appendChild(cancel); row.appendChild(save); box.appendChild(row); overlay.appendChild(box);
+    var wasPromptActive = tmPromptActive;
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = wasPromptActive; }, 100);
+    }
+    function doSave() {
+      var txt = ta.value.trim();
+      if (existing) tmUpdateThinkNote(existing.id, txt);
+      else if (txt) tmAddThinkNote(ctx, txt);
+      close();
+      try { if (onSaved) onSaved(); } catch (e) {}
+    }
+    function onKey(ev) {
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); return; }
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'Enter' || ev.keyCode === 13)) { ev.stopPropagation(); ev.preventDefault(); doSave(); }
+    }
+    overlay.addEventListener('click', function(ev) { if (ev.target === overlay) close(); });
+    cancel.addEventListener('click', function(ev) { ev.stopPropagation(); close(); });
+    save.addEventListener('click', function(ev) { ev.stopPropagation(); doSave(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+    setTimeout(function() { try { ta.focus(); } catch (e) {} }, 30);
+  }
+
+  function tmThinkNotesBuildTree(notes) {
+    var byLeaf = {};
+    for (var i = 0; i < notes.length; i++) {
+      var n = notes[i]; if (!n || !n.model) continue;
+      var k = n.model + '::' + (n.provider || 'unknown');
+      if (!byLeaf[k]) byLeaf[k] = { storageModel: n.model, provider: n.provider || 'unknown', value: { notes: [] } };
+      byLeaf[k].value.notes.push(n);
+    }
+    var records = []; for (var k2 in byLeaf) if (byLeaf.hasOwnProperty(k2)) records.push(byLeaf[k2]);
+    var routeCatalog = tmBuildProviderRouteCatalog();
+    return tmBuildProviderCatalogTree(records, routeCatalog, false);
+  }
+  // Every note under a tree path ([] = all), newest first. Path = [broad, variant, endpoint, leafKey].
+  function tmThinkNotesUnderPath(tree, path) {
+    var out = [];
+    path = path || [];
+    for (var bk in tree) { if (!tree.hasOwnProperty(bk) || (path.length >= 1 && path[0] !== bk)) continue; var broad = tree[bk];
+      for (var vk in broad.variants) { if (!broad.variants.hasOwnProperty(vk) || (path.length >= 2 && path[1] !== vk)) continue; var variant = broad.variants[vk];
+        for (var ek in variant.endpoints) { if (!variant.endpoints.hasOwnProperty(ek) || (path.length >= 3 && path[2] !== ek)) continue; var ep = variant.endpoints[ek];
+          for (var lk in ep.leaves) { if (!ep.leaves.hasOwnProperty(lk) || (path.length >= 4 && path[3] !== lk)) continue;
+            var v = ep.leaves[lk] && ep.leaves[lk].value; if (v && Array.isArray(v.notes)) for (var i = 0; i < v.notes.length; i++) out.push(v.notes[i]); } } } }
+    out.sort(function(a, b) { return (b.ts || 0) - (a.ts || 0); });
+    return out;
+  }
+  function tmThinkTreeGet(tree, path) { try { var b = tree[path[0]]; if (path.length === 1) return b; var v = b.variants[path[1]]; if (path.length === 2) return v; var e = v.endpoints[path[2]]; if (path.length === 3) return e; return e.leaves[path[3]]; } catch (err) { return null; } }
+
+  // @beacon[
+  //   id=fix24-think-notes-modal,
+  //   role=__lambdao_1.tmShowThinkNotesModal,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.352): Thinking Notes modal -- left: the SHARED 4-level provider catalog tree (tmBuildProviderCatalogTree, same as Rate Providers / Set Costs) with an 'All notes' root; click ANY node to select it (auto-expands) and the right pane shows every note in that subtree newest-first with req->obs context, edit/delete, and 'Add note here' on a leaf. Selection + expansion persist (tm_think_notes_tree_path_v1). Self-uninstalling Escape guard; tmPromptActive while open.,
+  // ]
+  function tmShowThinkNotesModal(_isRerender) {
+    if (typeof document === 'undefined') return;
+    var notes = tmGetThinkNotes();
+    if (!_isRerender) { var remembered = tmReadTreePath(TM_THINK_NOTES_TREE_PATH_KEY); tmThinkNotesTreeExpanded = tmSeedTreeExpanded(remembered); tmThinkNotesSelectedPath = remembered.length ? remembered : []; }
+    if (!tmThinkNotesSelectedPath) tmThinkNotesSelectedPath = [];
+    var existing = document.getElementById('tm-think-notes-overlay'); if (existing) existing.parentNode.removeChild(existing);
+    var tree = tmThinkNotesBuildTree(notes);
+    var overlay = document.createElement('div'); overlay.id = 'tm-think-notes-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:86vw;max-width:1200px;height:84vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;';
+    hdr.innerHTML = '<span style="font-weight:bold;font-size:13px;color:#c8b4ff;">\ud83e\udde0 Thinking Notes <span style="color:#8b93a3;font-weight:normal;font-size:11px;">(' + notes.length + ' total)</span></span>' +
+      '<span><button data-action="think-notes-export" title="Copy ALL notes as JSON to the clipboard" style="background:#2a3a4a;color:#a0c8ff;border:1px solid #3a5a7a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy all JSON</button>' +
+      '<button data-action="close-think-notes" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span>';
+    box.appendChild(hdr);
+    var sub = document.createElement('div');
+    sub.style.cssText = 'color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;';
+    sub.textContent = 'Click ANY tree node to see every note in its subtree (right pane, newest first). Same hierarchy as Rate Providers / Set Costs: broad family \u2192 model \u2192 route endpoint \u2192 serving provider. Add notes from the \ud83d\udcdd button beside any \ud83e\udde0 badge in the ring buffer (context auto-attached) or from a selected leaf here.';
+    box.appendChild(sub);
+    var body = document.createElement('div');
+    body.style.cssText = 'flex:1;display:flex;gap:10px;min-height:0;';
+    var left = document.createElement('div'); left.style.cssText = 'flex:0 0 42%;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:4px;';
+    var right = document.createElement('div'); right.style.cssText = 'flex:1 1 auto;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;min-width:0;';
+    body.appendChild(left); body.appendChild(right); box.appendChild(body);
+
+    var selId = tmTreePathId(tmThinkNotesSelectedPath);
+    function header(parent, path, label, count, level, viaProxy, isLeaf) {
+      var palette = [
+        { color:'#8ef0a0', bg:'rgba(30,80,45,0.28)', border:'#326040', pad:4, size:14 },
+        { color:'#8fc4ff', bg:'rgba(30,55,85,0.28)', border:'#31536f', pad:18, size:13 },
+        { color:'#ffd166', bg:'rgba(85,65,25,0.25)', border:'#665126', pad:34, size:12 },
+        { color:'#e6e6ee', bg:'rgba(60,60,75,0.25)', border:'#55556a', pad:50, size:12 }
+      ][level];
+      var id = tmTreePathId(path);
+      var isOpen = !!tmThinkNotesTreeExpanded[id];
+      var isSel = (id === selId);
+      var h = document.createElement('div');
+      h.dataset.action = 'think-tree-node'; h.dataset.path = JSON.stringify(path);
+      h.style.cssText = 'display:flex;align-items:center;gap:6px;margin-top:' + (level === 0 ? 6 : 2) + 'px;padding:5px 6px 5px ' + palette.pad + 'px;background:' + (isSel ? 'rgba(120,90,200,0.35)' : palette.bg) + ';border-left:3px solid ' + (isSel ? '#c8b4ff' : palette.border) + ';color:' + palette.color + ';font-size:' + palette.size + 'px;font-weight:700;cursor:pointer;user-select:none;min-width:0;';
+      var arrow = document.createElement('span'); arrow.style.cssText = 'display:inline-block;width:12px;flex-shrink:0;'; arrow.textContent = isLeaf ? '\u2022' : (isOpen ? '\u25be' : '\u25b8'); h.appendChild(arrow);
+      var text = document.createElement('span'); text.textContent = label; text.title = label; text.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;'; h.appendChild(text);
+      if (viaProxy) { var px = document.createElement('span'); px.style.cssText = 'color:#c8a8ff;font-size:9px;font-weight:600;border:1px solid #684b88;border-radius:8px;padding:0 5px;flex-shrink:0;'; px.textContent = 'via TypingMind proxy'; h.appendChild(px); }
+      var cnt = document.createElement('span'); cnt.style.cssText = 'color:#8b93a3;font-size:10px;font-weight:normal;margin-left:auto;flex-shrink:0;'; cnt.textContent = count + ' note' + (count === 1 ? '' : 's'); h.appendChild(cnt);
+      parent.appendChild(h);
+      return isLeaf ? true : isOpen;
+    }
+    var allRow = document.createElement('div');
+    allRow.dataset.action = 'think-tree-node'; allRow.dataset.path = '[]';
+    var allSel = (selId === '');
+    allRow.style.cssText = 'padding:5px 6px;background:' + (allSel ? 'rgba(120,90,200,0.35)' : 'rgba(80,80,95,0.25)') + ';border-left:3px solid ' + (allSel ? '#c8b4ff' : '#666') + ';color:#e6e6ee;font-size:13px;font-weight:700;cursor:pointer;user-select:none;display:flex;align-items:center;gap:6px;';
+    allRow.innerHTML = '<span style="width:12px;display:inline-block;">\u2605</span><span>All notes</span><span style="color:#8b93a3;font-size:10px;font-weight:normal;margin-left:auto;">' + notes.length + ' note' + (notes.length === 1 ? '' : 's') + '</span>';
+    left.appendChild(allRow);
+    var broadKeys = Object.keys(tree).sort(function(a, b) { return tree[a].label.localeCompare(tree[b].label); });
+    if (!broadKeys.length) { var empty = document.createElement('div'); empty.style.cssText = 'color:#777;font-size:12px;text-align:center;padding:40px 10px;line-height:1.5;'; empty.textContent = 'No Thinking Notes yet. Click \ud83d\udcdd beside any \ud83e\udde0 badge in the ring buffer to add your first one.'; left.appendChild(empty); }
+    broadKeys.forEach(function(bk) {
+      var broad = tree[bk]; var bPath = [bk];
+      if (!header(left, bPath, broad.label, tmThinkNotesUnderPath(tree, bPath).length, 0, false, false)) return;
+      Object.keys(broad.variants).sort().forEach(function(vk) {
+        var variant = broad.variants[vk]; var vPath = [bk, vk];
+        if (!header(left, vPath, variant.label, tmThinkNotesUnderPath(tree, vPath).length, 1, false, false)) return;
+        Object.keys(variant.endpoints).sort(function(a, b) { return variant.endpoints[a].label.localeCompare(variant.endpoints[b].label); }).forEach(function(ek) {
+          var ep = variant.endpoints[ek]; var ePath = [bk, vk, ek];
+          if (!header(left, ePath, ep.label, tmThinkNotesUnderPath(tree, ePath).length, 2, ep.viaProxy, false)) return;
+          Object.keys(ep.leaves).sort().forEach(function(lk) {
+            var leaf = ep.leaves[lk]; var lPath = [bk, vk, ek, lk];
+            header(left, lPath, leaf.leafDisplay + '  \u00b7  ' + leaf.storageModel, (leaf.value && leaf.value.notes) ? leaf.value.notes.length : 0, 3, false, true);
+          });
+        });
+      });
+    });
+
+    var sel = tmThinkNotesSelectedPath;
+    var selNotes = tmThinkNotesUnderPath(tree, sel);
+    var selLabel = 'All notes';
+    if (sel.length) {
+      var segs = [];
+      for (var si = 1; si <= sel.length; si++) { var node = tmThinkTreeGet(tree, sel.slice(0, si)); segs.push(node ? (node.leafDisplay || node.label || sel[si - 1]) : sel[si - 1]); }
+      selLabel = segs.join(' \u203a ');
+    }
+    var rh = document.createElement('div');
+    rh.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
+    rh.innerHTML = '<span style="font-weight:bold;font-size:13px;color:#c8b4ff;">' + escapeHtml(selLabel) + '</span><span style="color:#8b93a3;font-size:11px;">' + selNotes.length + ' note' + (selNotes.length === 1 ? '' : 's') + '</span>';
+    var lfSel = (sel.length === 4) ? tmThinkTreeGet(tree, sel) : null;
+    if (lfSel) {
+      var addBtn = document.createElement('button'); addBtn.textContent = '\ud83d\udcdd Add note here'; addBtn.dataset.action = 'think-notes-add-here';
+      addBtn.dataset.model = lfSel.storageModel; addBtn.dataset.provider = lfSel.provider;
+      addBtn.style.cssText = 'margin-left:auto;background:#4a3a7a;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:11px;cursor:pointer;font-weight:bold;';
+      rh.appendChild(addBtn);
+    } else {
+      var hint = document.createElement('span'); hint.style.cssText = 'margin-left:auto;color:#6f7a8a;font-size:10px;'; hint.textContent = 'select a provider leaf to add a note here, or use \ud83d\udcdd on a ring row'; rh.appendChild(hint);
+    }
+    right.appendChild(rh);
+    if (!selNotes.length) { var none = document.createElement('div'); none.style.cssText = 'color:#777;text-align:center;padding:30px 0;'; none.textContent = 'No notes in this subtree.'; right.appendChild(none); }
+    selNotes.forEach(function(n) {
+      var card = document.createElement('div');
+      card.style.cssText = 'border:1px solid #2e2e3a;border-left:3px solid ' + (n.req_verdict === 'NONE' ? '#ffb84d' : '#8a70d0') + ';border-radius:5px;padding:7px 9px;margin-bottom:8px;background:rgba(30,30,40,0.6);';
+      var meta = document.createElement('div');
+      meta.style.cssText = 'display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-family:monospace;font-size:10px;color:#9aa4b2;margin-bottom:4px;';
+      meta.innerHTML = '<span style="color:#8cf;">' + escapeHtml(n.ts_local || '') + '</span>' +
+        '<span><span style="color:#8ef0a0;">' + escapeHtml(n.model) + '</span> @ <span style="color:#8fc4ff;">' + escapeHtml(n.provider) + '</span>' + (n.proxy ? ' <span style="color:#c8a8ff;">via proxy</span>' : '') + '</span>' +
+        '<span>\ud83e\udde0 <span style="color:' + (n.req_verdict === 'NONE' ? '#ffb84d' : '#e0d0ff') + ';">' + escapeHtml(n.req_summary || '?') + '</span> \u2192 <span style="color:#e0d0ff;">' + escapeHtml(n.obs_summary || '?') + '</span></span>' +
+        (n.session_id ? '<span style="opacity:0.7;">' + escapeHtml(String(n.session_id)) + '</span>' : '') +
+        '<span style="margin-left:auto;display:inline-flex;gap:4px;">' +
+        '<button data-action="think-note-edit" data-note-id="' + escapeHtml(n.id) + '" title="Edit" style="background:#333;color:#ddd;border:1px solid #555;border-radius:3px;padding:0 6px;height:18px;font-size:11px;cursor:pointer;">\u270f\ufe0f</button>' +
+        '<button data-action="think-note-delete" data-note-id="' + escapeHtml(n.id) + '" title="Delete this note" style="background:#3a1a1a;color:#ff9b9b;border:1px solid #5a2a2a;border-radius:3px;padding:0 6px;height:18px;font-size:11px;cursor:pointer;">\ud83d\uddd1</button></span>';
+      card.appendChild(meta);
+      var txt = document.createElement('div');
+      txt.style.cssText = 'white-space:pre-wrap;word-break:break-word;color:#e6e6ee;font-size:12px;line-height:1.45;';
+      txt.textContent = n.text || '';
+      card.appendChild(txt);
+      right.appendChild(card);
+    });
+
+    overlay.appendChild(box);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function() { tmPromptActive = false; }, 100);
+    }
+    function onKey(ev) {
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (document.getElementById('tm-think-note-overlay')) return; // the nested editor owns Escape while open
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); }
+    }
+    overlay.addEventListener('click', function(ev) {
+      var t = ev.target; if (!t) return;
+      if (t === overlay || (t.dataset && t.dataset.action === 'close-think-notes')) { close(); return; }
+      var act = (t.closest) ? t.closest('[data-action]') : t; if (!act || !act.dataset) return;
+      var a = act.dataset.action;
+      if (a === 'think-notes-export') { ev.stopPropagation(); try { copyTextToClipboard(JSON.stringify(tmGetThinkNotes(), null, 2), 'Thinking Notes JSON'); } catch (e) {} return; }
+      if (a === 'think-tree-node') {
+        ev.stopPropagation();
+        var p = []; try { p = JSON.parse(act.dataset.path || '[]'); } catch (e) {}
+        var pid = tmTreePathId(p);
+        if (pid === tmTreePathId(tmThinkNotesSelectedPath) && p.length && p.length < 4) {
+          tmToggleTreePath(tmThinkNotesTreeExpanded, p, TM_THINK_NOTES_TREE_PATH_KEY); // 2nd click on the selected branch toggles it
+        } else {
+          tmThinkNotesSelectedPath = p;
+          if (p.length && p.length < 4 && !tmThinkNotesTreeExpanded[pid]) tmToggleTreePath(tmThinkNotesTreeExpanded, p, TM_THINK_NOTES_TREE_PATH_KEY);
+          else tmWriteTreePath(TM_THINK_NOTES_TREE_PATH_KEY, p);
+        }
+        tmShowThinkNotesModal(true); return;
+      }
+      if (a === 'think-notes-add-here') {
+        ev.stopPropagation();
+        tmShowThinkNoteEditor({ model: act.dataset.model, provider: act.dataset.provider, host: '', proxy: false, session_id: null, req_summary: null, req_verdict: null, obs_summary: null }, null, function() { tmShowThinkNotesModal(true); });
+        return;
+      }
+      if (a === 'think-note-edit') {
+        ev.stopPropagation();
+        var L = tmGetThinkNotes(), n = null; for (var i = 0; i < L.length; i++) if (L[i] && L[i].id === act.dataset.noteId) { n = L[i]; break; }
+        if (n) tmShowThinkNoteEditor(n, n, function() { tmShowThinkNotesModal(true); });
+        return;
+      }
+      if (a === 'think-note-delete') { ev.stopPropagation(); tmDeleteThinkNote(act.dataset.noteId); tmShowThinkNotesModal(true); return; }
+    });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
@@ -7067,6 +7537,11 @@
             ev.stopPropagation();
             return;
           }
+          // (Fix 24, v4.352) Thinking Observatory badge in the widget -> full report.
+          try {
+            var tkW = (target && target.closest) ? target.closest('[data-action="think-report"]') : null;
+            if (tkW && tkW.dataset) { tmShowThinkReport(tkW.dataset.captureId); ev.stopPropagation(); ev.preventDefault(); return; }
+          } catch (eTkW) {}
           // (v4.297) Context dial: set/clear the per-model max-context override.
           if (target.dataset.action === 'ctx-dial-set') {
             tmCtxDialPromptSet(target.dataset.model || '', target.dataset.provider || '');
@@ -7827,6 +8302,12 @@
       } else {
         lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + widgetToolHtml + '</div>');
       }
+      // (Fix 24, v4.352) Thinking Observatory line for THIS identity's newest stamped turn
+      // (identity-matched like the ctx dial; never leaks a parallel conversation). Click -> report.
+      try {
+        var tkCapW = tmLatestThinkEntryForIdentity(widgetIdentity && widgetIdentity.key);
+        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px' }) + '</div>');
+      } catch (eTkW) {}
     } else {
       tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
       // (v4.330) data-hover added: the hovercard must work in the blank post-refresh state
@@ -9007,6 +9488,22 @@
       }
 
       // (v4.226) Model→Provider map dropdown handlers are handled in the change listener below.
+
+      // (Fix 24, v4.352) Thinking Observatory: report / quick note / notes modal. Resolved via
+      // closest() because the badge span and buttons carry inner text nodes.
+      try {
+        var tkEl = (t && t.closest) ? t.closest('[data-action="think-report"],[data-action="think-note"],[data-action="show-think-notes"]') : null;
+        if (tkEl && tkEl.dataset) {
+          ev.stopPropagation();
+          if (tkEl.dataset.action === 'show-think-notes') { tmShowThinkNotesModal(); return; }
+          if (tkEl.dataset.action === 'think-report') { tmShowThinkReport(tkEl.dataset.captureId); return; }
+          if (tkEl.dataset.action === 'think-note') {
+            var tkCtx = tmThinkNoteContextFromCap(getCaptureById(tkEl.dataset.captureId));
+            if (tkCtx) tmShowThinkNoteEditor(tkCtx, null, function() { try { renderPayloadCaptureModal(); } catch (e) {} });
+            return;
+          }
+        }
+      } catch (eTk) {}
 
       if (t.dataset && t.dataset.action === 'copy-payload-capture') {
         const capId = t.dataset.captureId;
@@ -12834,6 +13331,8 @@
     initRowHtml += '</select>';
     initRowHtml += '<button data-action="show-provider-ratings" title="Rate and track providers per model" style="font-size:10px;background:#3a3a1a;color:#ffe0a0;border:1px solid #5a5a2a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">📊 Rate Providers</button>';
     initRowHtml += '<button data-action="show-cost-editor" title="Set per-million pricing for client-side cost calculation" style="font-size:10px;background:#1a2a3a;color:#a0c0ff;border:1px solid #2a4a5a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">💲 Set Costs</button>';
+    // (Fix 24, v4.352) Thinking Notes modal (same catalog tree as Rate Providers / Set Costs).
+    initRowHtml += '<button data-action="show-think-notes" title="Thinking Notes: your experience with thinking levels, by model / route / serving provider (subtree aggregation)" style="font-size:10px;background:#2a1a3a;color:#c8b4ff;border:1px solid #4a3a6a;border-radius:3px;padding:1px 8px;cursor:pointer;margin-left:4px;">\ud83e\udde0 Thinking Notes</button>';
     initRowHtml += '</div>';
 
     // (v4.224) Time-window filter dropdown — applies to ALL sort modes.
@@ -13183,6 +13682,13 @@
         ? (' <span style="opacity:0.4;">·</span> <span title="serving provider" style="color:#8ef0a0;font-size:11px;font-weight:600;">' + escapeHtml(capProvider) + '</span>')
         : '';
       html += '<div style="font-size:10px;margin-top:1px;letter-spacing:0.3px;">' + costHtml + tmRenderRepairBlocks(cap.repair_tally) + ' <span style="opacity:0.4;">·</span> ' + tmRenderCacheReport(cap.response_anthropic_usage, cap.response_usage, '14px') + providerHtml + ctxDialHtml + rtRowHtml + '</div>';
+
+      // (Fix 24, v4.352) THINKING OBSERVATORY row: '\ud83e\udde0 requested -> observed' (orange when NONE =
+      // provider default) + \ud83d\udcdd quick Thinking Note. Only on rows that carry a stamp (v4.351+).
+      try {
+        var tkRowHtml = tmRenderThinkBadge(cap, { fontSize: '10px' });
+        if (tkRowHtml) html += '<div style="font-size:10px;margin-top:2px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;">' + tkRowHtml + '</div>';
+      } catch (eTkRow) {}
 
 
 
