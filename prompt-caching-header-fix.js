@@ -1,6 +1,28 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.364
+// Version: 4.365
 // Issues Fixed:
+//   - v4.365: SESSIONS-IN-MEMORY ENTRY REDESIGN + VANISHING-PIN ROOT-CAUSE FIX. (1) ROOT CAUSE of
+//     the vanishing pinned dashboard: the hovercard's window-level Escape listener closed AND
+//     unpinned the card on ANY Escape anywhere (closing the ring modal, JSON viewer, note editor,
+//     or a native TypingMind dialog) -- the only unguarded Escape consumer in the file, which is
+//     why the card vanished mid-session without ever catching Dan's eye (his attention was on the
+//     thing he had just closed). Escape no longer touches the pinned card at all: pinned means
+//     pinned -- only the header X (or re-clicking the pin) closes it. (2) ROW REDESIGN (per Dan):
+//     the fixed 450px right-cluster grid is GONE -- it vertically floated half-a-row off the left
+//     column, the thinking-badge line's nowrap children overflowed INTO it before flex-wrap
+//     engaged (the overlap + rollover bug), and the keep-alive controls sat orphaned on their own
+//     bottom row. Every entry is now full-width stacked rows, all left-justified:
+//     1) busy spinner + session NAME carrying the new FULLNESS BULGE (box-shadow border tiers +
+//     hue glow ramp by context fullness, ported from the Transcription Control v3.364 contract;
+//     pct comes from the ctx dial's OWN denominator chain so the bulge never disagrees with the
+//     dial); 2) model + live timers/badges (unchanged); 3+4) REQ/OBS thinking glyph rows at 13px
+//     (was 11px; the note button moves off the badge); 5) GAUGES row -- context dial (16px),
+//     total/max, time triad (12px), aggregate session cost -- inline with tight 12px gaps,
+//     left-justified; 6) CONTROLS row -- the shared Think level + display dropdowns
+//     (tmBuildThinkControlHtml, including the OpenRouter warning triangle), the thinking-note
+//     button, and the keep-alive toggle + interval + status, all on one row. (3) Guards: the
+//     pinned 3s rebuild now SKIPS while a dropdown inside the card is open or a prompt is active
+//     (the v4.227 flash-close pattern), and changing a Think control re-renders the card too.
 //   - v4.364: FIX 24 PHASE 2 -- OpenRouter ⚠️ warning REWRITTEN + RELOCATED + ENLARGED. Dan will use
 //     Anthropic DIRECT by default with OpenRouter as the fallback, so the triangle's job is to remind
 //     him what he gives up on the fallback route. For OpenRouter + Claude the hover now carries the
@@ -1800,7 +1822,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.364';
+  const EXT_VERSION = '4.365';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5474,6 +5496,16 @@
   //   kind=ast,
   //   comment=Fix 24 (v4.352): ONE shared badge for ring rows AND the widget -- '🧠 <compact req> -> <compact obs>' (orange when verdict NONE = provider default), data-action=think-report opens the Thinking Report; optional 📝 quick-note button (with existing-note count) opens the Thinking Note editor with request/observation context pre-attached.,
   // ]
+  // (v4.365) ONE shared thinking-note button: the badge appends it; the sessions-in-memory
+  // controls row mounts it beside the Think dropdowns.
+  function tmThinkNoteButtonHtml(cap) {
+    try {
+      var ctx = tmThinkNoteContextFromCap(cap);
+      var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
+      return '<button data-action="think-note" data-capture-id="' + escapeHtml(cap.id) + '" title="Add a Thinking Note for ' + escapeHtml((ctx && ctx.model) || '?') + ' @ ' + escapeHtml((ctx && ctx.provider) || '?') + ' (request/observation context attached automatically)' + (n ? (' \u2014 ' + n + ' existing note' + (n === 1 ? '' : 's')) : '') + '" style="font-size:9px;background:' + (n ? '#4a4a1a' : '#2a2a33') + ';color:' + (n ? '#ffe0a0' : '#ccc') + ';border:1px solid ' + (n ? '#6a6a2a' : '#444') + ';border-radius:3px;padding:0 5px;height:16px;line-height:1;cursor:pointer;flex-shrink:0;">\ud83d\udcdd' + (n ? (' ' + n) : '') + '</button>';
+    } catch (e) { return ''; }
+  }
+
   function tmRenderThinkBadge(cap, opts) {
     try {
       opts = opts || {};
@@ -5488,11 +5520,7 @@
       var histVal = (opts.hist !== undefined ? opts.hist : (cap._think_hist || null));
       var html = '<span data-action="think-report" data-capture-id="' + escapeHtml(cap.id) + '" title="' + escapeHtml(title) + '" style="cursor:pointer;color:' + color + ';font-size:' + fs + ';font-weight:600;display:inline-flex;align-items:flex-start;gap:4px;">' +
         '<span>\ud83e\udde0</span><span style="display:inline-block;min-width:0;">' + tmThinkGlyphRowHtml(cap, fs, histVal, opts.layout || 'stacked') + '</span></span>';
-      if (!opts.noNote) {
-        var ctx = tmThinkNoteContextFromCap(cap);
-        var n = ctx ? tmThinkNotesCount(ctx.model, ctx.provider) : 0;
-        html += ' <button data-action="think-note" data-capture-id="' + escapeHtml(cap.id) + '" title="Add a Thinking Note for ' + escapeHtml((ctx && ctx.model) || '?') + ' @ ' + escapeHtml((ctx && ctx.provider) || '?') + ' (request/observation context attached automatically)' + (n ? (' \u2014 ' + n + ' existing note' + (n === 1 ? '' : 's')) : '') + '" style="font-size:9px;background:' + (n ? '#4a4a1a' : '#2a2a33') + ';color:' + (n ? '#ffe0a0' : '#ccc') + ';border:1px solid ' + (n ? '#6a6a2a' : '#444') + ';border-radius:3px;padding:0 5px;height:16px;line-height:1;cursor:pointer;flex-shrink:0;">\ud83d\udcdd' + (n ? (' ' + n) : '') + '</button>';
-      }
+      if (!opts.noNote) html += ' ' + tmThinkNoteButtonHtml(cap);
       return html;
     } catch (e) { return ''; }
   }
@@ -6444,6 +6472,8 @@
     function rerender() {
       try { renderGpt51UsageWidget(); } catch (e) {}
       try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+      // (v4.365) The Think controls also live on the sessions-in-memory card now.
+      try { if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') { var stR = tmSessionCtxHoverContentEl.scrollTop; tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml(); tmSessionCtxHoverContentEl.scrollTop = stR; } } catch (e) {}
     }
     if (act === 'set-think-display') {
       tmSetThinkOverride(idKey, { display: v });
@@ -8472,6 +8502,35 @@
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
 
+  // (v4.365) SESSION-NAME FULLNESS BULGE + BORDER TIERS -- ported from the Transcription Control
+  // sibling's v3.364 contract (applySessionFullnessBulge): box-shadow-only borders, symmetric 4px
+  // side padding, 5px radius -> ZERO layout geometry impact (safe under the card's 3s rebuilds).
+  // pct = context fullness 0-150+ (null/<25 = plain). hueNum = the identity's numeric session hue
+  // (30-329) for the glow; null -> white glow. Returns an inline style fragment for the name span.
+  function tmSessionFullnessBulgeStyle(pct, hueNum) {
+    try {
+      var clamped = (typeof pct === 'number' && isFinite(pct)) ? Math.min(pct, 150) : null;
+      if (clamped === null || clamped < 25) return '';
+      var glowBase = (typeof hueNum === 'number') ? ('hsla(' + hueNum + ',60%,70%,') : 'hsla(255,255,255,';
+      var pad = 'padding-left:4px;padding-right:4px;border-radius:5px;';
+      if (clamped < 40) return pad + 'font-weight:600;background:rgba(255,255,255,0.03);box-shadow:0 0 0 1px hsla(85,85%,58%,0.90);';
+      if (clamped < 50) return pad + 'font-weight:700;background:rgba(255,255,255,0.03);box-shadow:0 0 0 2px hsla(95,90%,54%,0.95), 0 0 5px ' + glowBase + '0.30);';
+      if (clamped < 60) return pad + 'font-weight:700;background:rgba(255,200,0,0.04);box-shadow:0 0 0 2px hsla(42,95%,52%,0.95), 0 0 7px ' + glowBase + '0.40);';
+      if (clamped < 75) return pad + 'font-weight:800;background:rgba(255,145,0,0.05);text-shadow:0 0 6px ' + glowBase + '0.55);box-shadow:0 0 0 3px hsla(25,96%,50%,0.98), 0 0 9px ' + glowBase + '0.55);';
+      return pad + 'font-weight:800;background:rgba(255,55,0,0.06);text-shadow:0 0 10px ' + glowBase + '0.85), 0 0 3px ' + glowBase + '0.9);box-shadow:0 0 0 4px hsla(8,96%,54%,1), 0 0 13px ' + glowBase + '0.75);';
+    } catch (e) { return ''; }
+  }
+  // Numeric hue for the glow (tmModelEndpointColor returns the hsl() STRING; the bulge needs N).
+  function tmSessionHueNumber(model, endpointHost, isProxy, sessionId) {
+    try {
+      tmModelEndpointColor(model, endpointHost, isProxy, sessionId); // ensures assignment
+      var cache = tmLoadSessionHueCache();
+      var entry = cache[tmBuildIdentityKey(sessionId, model, endpointHost, isProxy)];
+      var hue = (entry && typeof entry === 'object') ? entry._hue : entry;
+      return (typeof hue === 'number') ? hue : null;
+    } catch (e) { return null; }
+  }
+
   // (v4.349) Resolve which IDENTITY a sid-keyed tool-suspicion state actually belongs to.
   // After a model/endpoint switch one session has several dashboard rows (Kimi direct, Kimi
   // OpenRouter, Sol OpenRouter...); the tool executing belongs to the LAST response's identity
@@ -8607,9 +8666,18 @@
         // (v4.336) Rebuild cadence 5s -> 3s: the rebuild re-enumerates the ring newest-first,
         // so rows re-sort by most-recent activity this often when pinned.
         if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 3 === 0)) {
-          var st = tmSessionCtxHoverContentEl ? tmSessionCtxHoverContentEl.scrollTop : 0;
-          if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-          if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.scrollTop = st;
+          // (v4.365) Never rebuild while a dropdown inside the card is open (a rebuild would
+          // destroy it mid-open -- the v4.227 flash-close pattern) or while a prompt is up.
+          var aeSkip = false;
+          try {
+            var aeEl = document.activeElement;
+            aeSkip = !!(aeEl && aeEl.tagName === 'SELECT' && tmSessionCtxHoverEl && tmSessionCtxHoverEl.contains(aeEl)) || !!tmPromptActive;
+          } catch (eAE) {}
+          if (!aeSkip) {
+            var st = tmSessionCtxHoverContentEl ? tmSessionCtxHoverContentEl.scrollTop : 0;
+            if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+            if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.scrollTop = st;
+          }
           return;
         }
         var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
@@ -8681,7 +8749,7 @@
       var ctxCap = null;
       try { ctxCap = tmLatestCtxSnapshotEntryForIdentity(key); } catch (eC) {}
       if (ctxCap && ctxCap._ctx_snapshot) {
-        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 14, noClick: true, cap: ctxCap });
+        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 16, noClick: true, cap: ctxCap });
         ctxNumsHtml = '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
       } else {
         ctxNumsHtml = '<span style="font-size:12px;color:#6a7280;white-space:nowrap;">no ctx snapshot</span>';
@@ -8699,52 +8767,69 @@
       var ctxTimeHtml = '';
       try {
         var hoverTT = tmGetSessionTimeTotals(info.sid || '', info.model || '', info.host, info.isProxy);
-        if (hoverTT.total > 0) ctxTimeHtml = tmRenderSessionTimeTotals(hoverTT.rt, hoverTT.tool, { fontSize: '11px', gap: '5px' });
+        if (hoverTT.total > 0) ctxTimeHtml = tmRenderSessionTimeTotals(hoverTT.rt, hoverTT.tool, { fontSize: '12px', gap: '6px' });
       } catch (eTT) {}
-      // (v4.347) Fixed dashboard gauge columns. Every row reserves identical widths for
-      // spinner | context dial+percent | total/max | time triad | aggregate cost, so changing digit
-      // counts and spinner appearance cannot make columns jump or overlap neighboring rows.
-      // (v4.353) Columns TIGHTENED (dial 68->46, nums 124->92: the old widths left ~an inch of
-      // dead space between the gauge and its numbers) and a 4th column added for the time triad.
-      var right = '<span style="display:grid;grid-template-columns:46px 92px 214px 60px;align-items:center;column-gap:6px;width:430px;flex:none;">' +
-        '<span style="display:inline-flex;align-items:center;justify-content:flex-start;min-width:0;">' + ctxDialHtml + '</span>' +
-        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxNumsHtml + '</span>' +
-        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxTimeHtml + '</span>' +
-        '<span style="display:inline-flex;align-items:center;justify-content:flex-end;min-width:0;">' + ctxCostHtml + '</span>' +
-      '</span>';
-      // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second
-      // line (the model identity is operationally critical and was still being
-      // ellipsis-cropped on long session names); the live badge/timers sit to its right on
-      // the same line, and the dial/numbers/cost stay anchored at the row's right end.
+      // (v4.365) FULL-WIDTH STACKED ROWS: the fixed right-cluster grid is GONE. It floated
+      // half-a-row off vertically vs the left column, the thinking-badge line's nowrap children
+      // overflowed INTO it before flex-wrap engaged (Dan's overlap + rollover bug), and the
+      // keep-alive controls sat orphaned on their own bottom row. Every row is now full-width
+      // and left-justified; nothing can overlap, and any wrap wraps cleanly across the whole
+      // card width. Rows: 1) spinner + name (fullness bulge)  2) model + live  3+4) REQ/OBS
+      // thinking glyphs (13px)  5) gauges (dial + total/max + time triad + cost)  6) controls
+      // (Think dropdowns + note + keep-alive).
+      var ctxPct = null;
+      if (ctxCap && ctxCap._ctx_snapshot) {
+        try {
+          var pctModel = ctxCap._ctx_snapshot.model || info.model || '';
+          var pctMr = tmResolveModelMaxCtxCached(pctModel, ctxCap || null);
+          var pctMax = (pctMr && pctMr.max != null) ? pctMr.max : ((ctxCap._ctx_snapshot.max_ctx != null) ? ctxCap._ctx_snapshot.max_ctx : null);
+          if (pctMax > 0) ctxPct = (Number(ctxCap._ctx_snapshot.total) / pctMax) * 100;
+        } catch (ePct) {}
+      }
+      var hueNum = null;
+      try { hueNum = tmSessionHueNumber(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eHN) {}
+      // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second line.
       var namePart = String(info.label || key);
       if (info.model && namePart.slice(-(info.model.length + 3)) === (' \u2014 ' + info.model)) {
         namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
       }
-      // (v4.354) Thinking Observatory line for this identity's newest stamped turn (badge + 📝).
-      var hoverThinkHtml = '';
+      var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;">' +
+        '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
+        '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
+      '</div>';
+      var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' +
+        (info.model ? ('<span style="font-size:12px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
+        '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+      '</div>';
+      // (v4.354/v4.365) Thinking Observatory rows: REQ/OBS stacked at 13px (was 11px); the
+      // note button moves off the badge and onto the controls row.
+      var thinkRow = '';
+      var tkCapH = null;
       try {
-        var tkCapH = tmLatestThinkEntryForIdentity(key);
-        if (tkCapH) hoverThinkHtml = '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:1px;">' + tmRenderThinkBadge(tkCapH, { fontSize: '11px', hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) }) + '</span>';
+        tkCapH = tmLatestThinkEntryForIdentity(key);
+        if (tkCapH) {
+          var thinkBadge = tmRenderThinkBadge(tkCapH, { fontSize: '13px', noNote: true, hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) });
+          if (thinkBadge) thinkRow = '<div style="margin-top:3px;">' + thinkBadge + '</div>';
+        }
       } catch (eTkH) {}
-      // (Fix 25, v4.360) Keep-alive controls: ⏰ toggle + interval + ping status / BROKEN badge.
-      var hoverKaHtml = '';
-      try { hoverKaHtml = '<span style="display:inline-flex;align-items:center;gap:5px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>'; } catch (eKaH) {}
+      // Gauges row: dial + total/max + time triad + aggregate session cost, tight inline gaps.
+      var gaugesRow = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:17px;margin-top:3px;">' +
+        '<span style="display:inline-flex;align-items:center;flex:none;">' + ctxDialHtml + '</span>' +
+        ctxNumsHtml +
+        ctxTimeHtml +
+        ctxCostHtml +
+      '</div>';
+      // Controls row: Think level/display dropdowns (shared builder, incl. the OpenRouter
+      // warning triangle) + thinking-note button + keep-alive toggle/interval/status.
+      var ctlParts = [];
+      try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key)); } catch (eCtl) {}
+      if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
+      try { ctlParts.push(tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key])); } catch (eKaH) {}
+      var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
-        '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
-          '<span style="display:flex;flex-direction:column;min-width:0;flex:1 1 auto;">' +
-            '<span style="font-size:12px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
-            '<span style="display:inline-flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;">' +
-              (info.model ? ('<span style="font-size:12px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
-              '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
-            '</span>' +
-            hoverThinkHtml +
-            hoverKaHtml +
-          '</span>' +
-          '<span style="display:grid;grid-template-columns:16px 430px;align-items:center;column-gap:4px;width:450px;flex:none;">' +
-            '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
-            right +
-          '</span>' +
+        '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
+          nameRow + modelLiveRow + thinkRow + gaugesRow + ctlRow +
         '</div>'
       );
     }
@@ -8955,14 +9040,12 @@
             tmStartSessionCtxHoverDrag(ev);
           } catch (eDrag) {}
         });
-        // (v4.335) Escape closes a pinned card (bound once; no-ops for hover mode/other UI).
-        window.addEventListener('keydown', function(ev) {
-          try {
-            if (ev.key !== 'Escape') return;
-            if (!tmSessionCtxHoverPinned || !tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
-            tmClosePinnedSessionCtxHover();
-          } catch (eEsc) {}
-        });
+        // (v4.365) REMOVED: the window Escape handler closed AND unpinned the pinned card on ANY
+        // Escape anywhere in the window (ring modal, JSON viewer, note editor, native TypingMind
+        // dialogs) -- Dan's vanishing-pin bug (~5x/day, never caught in the act because his eyes
+        // were on the thing he had just closed). Every other Escape consumer in this file is
+        // guarded/coordinated; this one was not. Pinned now means pinned: only the header X (or
+        // re-clicking the pin) closes the card.
         document.body.appendChild(tmSessionCtxHoverEl);
       }
       if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
