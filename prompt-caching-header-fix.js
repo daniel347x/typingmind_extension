@@ -1,6 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.368
+// Version: 4.369
 // Issues Fixed:
+//   - v4.369: FIX 26 OUTBOUND REASONING CENSUS (_replay_out stamped on EVERY capture, warning or
+//     not): the headline confirmation Dan asked for -- 'how many chat turns in THIS outbound
+//     payload actually carried reasoning?' -- split non-encrypted vs encrypted (raw_turns /
+//     enc_turns), with per-turn char min/max/avg, block totals and char totals alongside. Zero
+//     extra body walks: the Fix 26 counter computes everything in the same pass and _replay_warn
+//     now consumes the shared result. Surfaced as replay_outbound in the Thinking Report and the
+//     ring-modal Summary copy. (Queued: show the census on the sessions-in-memory OBS row once
+//     validated live.)
 //   - v4.368: FIX 26 VISIBILITY COMPLETION -- the _replay_warn stamp is now INSPECTABLE WITHOUT
 //     DEVTOOLS (Dan's standing workflow rule: 'PREFERRED (no DevTools needed)'): surfaced in the
 //     Thinking Report (badge click, as replay_warn) and in the ring-modal Summary copy. v4.367
@@ -1863,7 +1871,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.368';
+  const EXT_VERSION = '4.369';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5107,6 +5115,9 @@
         requested: req, observed: obs,
         // (Fix 26, v4.368) Reasoning-replay loss check stamped on this row (null = healthy / nothing to lose).
         replay_warn: cap._replay_warn || null,
+        // (v4.369) Outbound reasoning census: how many chat turns in THIS payload carried reasoning
+        // (raw vs encrypted) + per-turn char min/max/avg -- the headline history-preserved check.
+        replay_outbound: cap._replay_out || null,
         usage: cap.response_anthropic_usage || cap.response_usage || null
       };
       var txt = JSON.stringify(report, null, 2);
@@ -6616,30 +6627,41 @@
 
   // Count reasoning content in the FINAL outbound body, all four wire shapes. Runs after every
   // repair INCLUDING Fix 19's foreign-blob strip, so surviving encrypted blobs are origin-kept.
+  // (v4.369) Also the TURN CENSUS: how many chat turns carry reasoning (raw vs encrypted) plus
+  // per-turn char min/max/avg -- Dan's headline 'is the reasoning history actually in this
+  // payload?' confirmation.
   function tmCountOutboundReasoning(body) {
-    var out = { rawBlocks: 0, rawChars: 0, encBlocks: 0, encChars: 0, totalBlocks: 0 };
+    var out = { rawBlocks: 0, rawChars: 0, encBlocks: 0, encChars: 0, totalBlocks: 0,
+                rawTurns: 0, encTurns: 0, rawMin: 0, rawMax: 0, rawAvg: 0, encMin: 0, encMax: 0, encAvg: 0 };
+    var rawPer = [], encPer = [];
     try {
       if (!body) return out;
       var i, j;
+      function bumpTurn(hasRaw, rawC, hasEnc, encC) {
+        if (hasRaw) { out.rawTurns++; rawPer.push(rawC); }
+        if (hasEnc) { out.encTurns++; encPer.push(encC); }
+      }
       if (Array.isArray(body.messages)) {
         for (i = 0; i < body.messages.length; i++) {
           var msg = body.messages[i]; if (!msg) continue;
+          var mRaw = false, mEnc = false, mRawC = 0, mEncC = 0;
           if (Array.isArray(msg.content)) {
             for (j = 0; j < msg.content.length; j++) {
               var blk = msg.content[j]; if (!blk || typeof blk !== 'object') continue;
-              if (blk.type === 'thinking') { out.rawBlocks++; out.rawChars += String(blk.thinking || '').length; }
-              else if (blk.type === 'redacted_thinking') { out.encBlocks++; out.encChars += String(blk.data || '').length; }
+              if (blk.type === 'thinking') { out.rawBlocks++; var cl = String(blk.thinking || '').length; out.rawChars += cl; mRaw = true; mRawC += cl; }
+              else if (blk.type === 'redacted_thinking') { out.encBlocks++; var dl = String(blk.data || '').length; out.encChars += dl; mEnc = true; mEncC += dl; }
             }
           }
-          if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) { out.rawBlocks++; out.rawChars += msg.reasoning_content.length; }
-          if (typeof msg.reasoning === 'string' && msg.reasoning) { out.rawBlocks++; out.rawChars += msg.reasoning.length; }
+          if (typeof msg.reasoning_content === 'string' && msg.reasoning_content) { out.rawBlocks++; out.rawChars += msg.reasoning_content.length; mRaw = true; mRawC += msg.reasoning_content.length; }
+          if (typeof msg.reasoning === 'string' && msg.reasoning) { out.rawBlocks++; out.rawChars += msg.reasoning.length; mRaw = true; mRawC += msg.reasoning.length; }
           if (Array.isArray(msg.reasoning_details)) {
             for (j = 0; j < msg.reasoning_details.length; j++) {
               var rd = msg.reasoning_details[j]; if (!rd) continue;
-              if (rd.type === 'reasoning.encrypted') { out.encBlocks++; out.encChars += String(rd.data || '').length; }
-              else if (/^reasoning\.(text|summary)/.test(String(rd.type || ''))) { out.rawBlocks++; out.rawChars += String(rd.text || rd.summary || '').length; }
+              if (rd.type === 'reasoning.encrypted') { out.encBlocks++; var rl = String(rd.data || '').length; out.encChars += rl; mEnc = true; mEncC += rl; }
+              else if (/^reasoning\.(text|summary)/.test(String(rd.type || ''))) { out.rawBlocks++; var tl = String(rd.text || rd.summary || '').length; out.rawChars += tl; mRaw = true; mRawC += tl; }
             }
           }
+          bumpTurn(mRaw, mRawC, mEnc, mEncC);
         }
       }
       if (Array.isArray(body.input)) {
@@ -6647,28 +6669,38 @@
           var it = body.input[i]; if (!it || typeof it !== 'object') continue;
           if (it.type === 'reasoning') {
             out.rawBlocks++;
-            if (Array.isArray(it.summary)) for (j = 0; j < it.summary.length; j++) out.rawChars += String((it.summary[j] && it.summary[j].text) || '').length;
-            if (it.encrypted_content) { out.encBlocks++; out.encChars += String(it.encrypted_content).length; }
+            var iRawC = 0;
+            if (Array.isArray(it.summary)) for (j = 0; j < it.summary.length; j++) iRawC += String((it.summary[j] && it.summary[j].text) || '').length;
+            out.rawChars += iRawC;
+            var iEnc = false, iEncC = 0;
+            if (it.encrypted_content) { out.encBlocks++; iEncC = String(it.encrypted_content).length; out.encChars += iEncC; iEnc = true; }
+            bumpTurn(true, iRawC, iEnc, iEncC);
           }
         }
       }
       if (Array.isArray(body.contents)) {
         for (i = 0; i < body.contents.length; i++) {
           var parts = body.contents[i] && body.contents[i].parts; if (!Array.isArray(parts)) continue;
+          var gRaw = false, gEnc = false, gRawC = 0, gEncC = 0;
           for (j = 0; j < parts.length; j++) {
             var p2 = parts[j]; if (!p2 || typeof p2 !== 'object') continue;
-            if (p2.thought === true || p2.thought === 'true') { out.rawBlocks++; out.rawChars += String(p2.text || '').length; }
-            if (p2.thoughtSignature) { out.encBlocks++; out.encChars += String(p2.thoughtSignature).length; }
+            if (p2.thought === true || p2.thought === 'true') { out.rawBlocks++; var pl = String(p2.text || '').length; out.rawChars += pl; gRaw = true; gRawC += pl; }
+            if (p2.thoughtSignature) { out.encBlocks++; var sl = String(p2.thoughtSignature).length; out.encChars += sl; gEnc = true; gEncC += sl; }
           }
+          bumpTurn(gRaw, gRawC, gEnc, gEncC);
         }
       }
     } catch (e) {}
     out.totalBlocks = out.rawBlocks + out.encBlocks;
+    function mma(arr) { if (!arr.length) return { min: 0, max: 0, avg: 0 }; var mn = arr[0], mx = arr[0], sm = 0; for (var k = 0; k < arr.length; k++) { if (arr[k] < mn) mn = arr[k]; if (arr[k] > mx) mx = arr[k]; sm += arr[k]; } return { min: mn, max: mx, avg: Math.round(sm / arr.length) }; }
+    var rS = mma(rawPer), eS = mma(encPer);
+    out.rawMin = rS.min; out.rawMax = rS.max; out.rawAvg = rS.avg;
+    out.encMin = eS.min; out.encMax = eS.max; out.encAvg = eS.avg;
     return out;
   }
 
   // The comparison + warning, computed at capture time (post-mutation body) and stamped on the row.
-  function tmComputeReplayWarning(url, headersNorm, body, record) {
+  function tmComputeReplayWarning(url, headersNorm, body, record, countsIn) {
     try {
       if (!record) return null;
       var sid = record.pasted_session_id || record.session_id; if (!sid) return null;
@@ -6676,7 +6708,7 @@
       var host = tmExtractEndpointHost({ url: url, headers: headersNorm || {} });
       var protocol = (record._think_req && record._think_req.protocol) || '';
       var routeOk = tmReplayRouteSupports(protocol, model, host);
-      var counts = tmCountOutboundReasoning(body);
+      var counts = countsIn || tmCountOutboundReasoning(body);
       var ledger = tmReplayLedgerRead();
       var sidStr = String(sid), ownKey = sidStr + '::' + model + '::' + host;
       var origins = [], ownInBlocks = 0, otherInBlocks = 0;
@@ -6868,9 +6900,18 @@
         // (Fix 24 Phase 2, v4.361) The universal outbound pass leaves its writer report on the request
         // init object; stamp it beside the scan so the badge/report show WHAT the extension rewrote.
         try { if (record._think_req && options && options._tm_think_ovr) record._think_req.override = options._tm_think_ovr; } catch (eOv) {}
-        // (Fix 26, v4.367) REASONING-REPLAY LOSS check: compare this FINAL body's reasoning content
-        // against everything this conversation has received per origin; stamp the warning tier.
-        try { record._replay_warn = tmComputeReplayWarning(url, headersNorm, parsed, record); } catch (eRW) {}
+        // (Fix 26, v4.367/v4.369) REASONING-REPLAY LOSS check + OUTBOUND CENSUS: ONE pass over
+        // the FINAL body yields both the warning comparison AND the 'how many turns carried
+        // reasoning' headline stamp (_replay_out; Thinking Report + Summary surface it).
+        try {
+          var rpCounts = tmCountOutboundReasoning(parsed);
+          record._replay_out = { v: 1, raw_turns: rpCounts.rawTurns, enc_turns: rpCounts.encTurns,
+            raw_blocks: rpCounts.rawBlocks, enc_blocks: rpCounts.encBlocks,
+            raw_chars: rpCounts.rawChars, enc_chars: rpCounts.encChars,
+            raw_per_turn: { min: rpCounts.rawMin, max: rpCounts.rawMax, avg: rpCounts.rawAvg },
+            enc_per_turn: { min: rpCounts.encMin, max: rpCounts.encMax, avg: rpCounts.encAvg } };
+          record._replay_warn = tmComputeReplayWarning(url, headersNorm, parsed, record, rpCounts);
+        } catch (eRW) {}
 
         // (Fix 25, v4.360) KEEP-ALIVE wire snapshot: store this identity's FINAL outbound bytes
         // (RAW options.headers, never the redacted copy; memory-only) so a keep-alive ping can
@@ -14485,6 +14526,8 @@
       think_obs: cap._think_obs || null,
       // (Fix 26, v4.368) Reasoning-replay loss warning for this turn (null = healthy / nothing to lose).
       replay_warn: cap._replay_warn || null,
+      // (v4.369) Outbound reasoning census: turns carrying reasoning (raw/enc) + per-turn char stats.
+      replay_outbound: cap._replay_out || null,
       error: cap.error || null
     };
   }
