@@ -11,6 +11,22 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.364 Changes:
+ * - FIX (sidebar fullness bulge missing on some sessions — e.g. 16f8006b Payload Redux at 51%
+ *   with zero styling): tmCtxFullnessForHash's denominator resolution drifted from the Payload
+ *   store key formats. (1) tm_model_ctx_overrides_v1 keys are composites 'model::host' (e.g.
+ *   'claude-fable-5-1::api.anthropic.com'), but the lookup tried only the bare model — always
+ *   a miss. (2) tm_provider_live_v2 keys are provider-prefixed ('anthropic/claude-fable-5.1')
+ *   while Anthropic-direct snapshots carry the bare ID with separator drift
+ *   ('claude-fable-5-1') — exact-key miss; and direct-API captures also have no stamped
+ *   max_ctx fallback. Result: null -> no border/weight despite a real 51% fill.
+ * - Fix: override lookup now tries bare model -> bare short name -> host-exact composite
+ *   ('model::host', host parsed from the capture's _identity.key) -> prefix scan of all
+ *   'model::' keys (max value wins). The live-store lookup falls back to a normalized
+ *   short-name scan (non-alphanumerics stripped, so 'claude-fable-5-1' == 'claude-fable-5.1')
+ *   under the same 12h TTL. Seeds and stamped-max_ctx fallbacks unchanged; the widget remains
+ *   a read-only, fail-safe consumer of the Payload contract.
+ *
  * v3.363 Changes:
  * - FIX (Markdown table renderer loss from an unescaped pipe inside inline code): a raw context
  *   row containing `reasoning: {max_tokens|effort}` retained "effort injection would sit",
@@ -1804,7 +1820,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.363',
+  VERSION: '3.364',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10902,8 +10918,39 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
         var maxCtx = null;
         var hit = (m && ov[m] != null) ? ov[m] : ov[(m.split('/').pop())];
         if (isFinite(Number(hit)) && Number(hit) > 0) maxCtx = Number(hit);
+        // (v3.364) Override keys are composites '<model>::<host>' (e.g.
+        // 'claude-fable-5-1::api.anthropic.com'); the bare-model lookup above can never hit
+        // them. Try host-exact (host parsed from the capture's identity key), then any
+        // 'model::' key (max value wins) before falling through to the live store.
+        if (maxCtx == null && m) {
+          var idKey = cap._identity && cap._identity.key;
+          var hostPart = idKey ? (String(idKey).split('::')[2] || '') : '';
+          if (hostPart) {
+            var hostHit = ov[m + '::' + hostPart];
+            if (hostHit != null && isFinite(Number(hostHit)) && Number(hostHit) > 0) maxCtx = Number(hostHit);
+          }
+          if (maxCtx == null) {
+            var ovPrefix = m + '::';
+            for (var ok in ov) {
+              if (String(ok).toLowerCase().indexOf(ovPrefix) !== 0) continue;
+              var ovVal = ov[ok];
+              if (ovVal != null && isFinite(Number(ovVal)) && Number(ovVal) > 0
+                  && (maxCtx == null || Number(ovVal) > maxCtx)) maxCtx = Number(ovVal);
+            }
+          }
+        }
         if (maxCtx == null && m) {
           var rec = live[m];
+          // (v3.364) Live keys are provider-prefixed ('anthropic/claude-fable-5.1') while
+          // Anthropic-direct snapshots carry bare IDs with separator drift ('claude-fable-5-1').
+          // Scan by normalized short name (non-alphanumerics stripped) under the same 12h TTL.
+          if (!rec) {
+            var mNorm = m.replace(/[^a-z0-9]/g, '');
+            for (var lk in live) {
+              var shortLk = String(lk).split('/').pop().replace(/[^a-z0-9]/g, '');
+              if (shortLk === mNorm) { rec = live[lk]; break; }
+            }
+          }
           if (rec && Array.isArray(rec.entries) && (Date.now() - Number(rec.ts || 0)) <= 12 * 3600 * 1000) {
             for (var ei = 0; ei < rec.entries.length; ei++) {
               var e = rec.entries[ei];
