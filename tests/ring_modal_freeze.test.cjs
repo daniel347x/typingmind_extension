@@ -28,7 +28,7 @@ function harness(initial=[capture('one')]){
   querySelector(q){if(q==='[data-role="capture-snapshot-status"]')return label;if(q==='[data-role="capture-window-status"]')return rangeLabel;if(q==='[data-action="set-capture-row-height"]')return heightInput;return null;}
  }
 
- const label={textContent:''},rangeLabel={textContent:''},heightInput={value:'320',disabled:false};const document={body:new Element('body'),head:new Element('head'),createElement:t=>new Element(t),getElementById:id=>elems[id]||null};const listeners={};const win={addEventListener(k,f){(listeners[k]||(listeners[k]=[])).push(f);},removeEventListener(k,f){listeners[k]=(listeners[k]||[]).filter(x=>x!==f);}};
+ const label={textContent:''},rangeLabel={textContent:''},heightInput={value:'240',disabled:false};const document={body:new Element('body'),head:new Element('head'),createElement:t=>new Element(t),getElementById:id=>elems[id]||null};const listeners={};const win={addEventListener(k,f){(listeners[k]||(listeners[k]=[])).push(f);},removeEventListener(k,f){listeners[k]=(listeners[k]||[]).filter(x=>x!==f);}};
  win.getSelection=()=>selection;
  const c={console,Date:class extends Date{static now(){return clock;}},document,window:win,TM_CAPTURE_ROW_HEIGHT_KEY:'tm_payload_ring_row_height_v1',tmPayloadCaptureVirtual:null,tmPayloadCaptureDetailId:null,tmPayloadCaptureReturnAnchor:null,requestAnimationFrame:fn=>{const id=++frameId;frames.set(id,fn);return id;},cancelAnimationFrame:id=>frames.delete(id),payloadCaptureModalEl:null,payloadCaptureModalInnerEl:null,tmPayloadCaptureSnapshot:null,tmPayloadCaptureModalEscapeKeydownSnapshotter:null,tmPayloadCaptureModalEscapeHandler:null,tmEscapeGuardSnapshot:null,tmPayloadCaptureSuppressEscapeUntil:0,tmPromptActive:false,
  tmModalFilterListboxOpen:false,tmModalFilterIdentity:null,tmModalSortMode:'chronological',tmModalTimeFilter:'all',
@@ -66,33 +66,33 @@ test('explicit setting callbacks still request a view render',()=>{for(const n o
 function manyRows(){return Array.from({length:500},(_,i)=>capture('capture'+i));}
 test('only visible fixed-height slots mount; full scrollbar extent stays 500 rows',()=>{
  const h=harness(manyRows());h.c.openPayloadCaptureModal();const v=h.c.tmPayloadCaptureVirtual;
- assert.equal(v.height,320);assert.equal(v.list.style.height,'160000px');assert.ok(Object.keys(v.slots).length<=9);
- for(const [index,slot] of Object.entries(v.slots)){assert.equal(slot.style.top,Number(index)*320+'px');assert.equal(slot.style.height,'320px');assert.equal(slot._tmCaptureContent.style.overflow,'hidden');assert.match(slot.innerHTML,/Open full entry/);}
+ assert.equal(v.height,240);assert.equal(v.list.style.height,'120000px');assert.ok(Object.keys(v.slots).length<=9);
+ for(const [index,slot] of Object.entries(v.slots)){assert.equal(slot.style.top,Number(index)*240+'px');assert.equal(slot.style.height,'240px');assert.equal(slot._tmCaptureContent.style.overflow,'hidden');assert.match(slot.innerHTML,/Open full entry/);}
  assert.match(h.rangeLabel.textContent,/of 500/);
 });
 test('trackball scroll handling is passive and coalesced into one animation-frame update',()=>{
  const h=harness(manyRows());h.c.openPayloadCaptureModal();const body=h.c.payloadCaptureModalInnerEl;const before=h.counts();
  assert.equal(body.eventOptions.scroll.passive,true);assert.equal(body.handlers.wheel,undefined);
- body.scrollTop=100+400*320;for(let i=0;i<100;i++)for(const f of body.handlers.scroll)f();
+ body.scrollTop=100+400*240;for(let i=0;i<100;i++)for(const f of body.handlers.scroll)f();
  assert.equal(h.frames.size,1);h.flushFrames();assert.equal(h.frames.size,0);
  const v=h.c.tmPayloadCaptureVirtual;assert.ok(v.slots[400]);assert.ok(Object.keys(v.slots).length<=9);assert.equal(v.slots[0],undefined);
  assert.equal(h.counts().reads,before.reads);assert.equal(h.counts().hashCalls,before.hashCalls);assert.equal(h.counts().domWrites,before.domWrites);
 });
 test('overlapping mounted nodes are retained and remain in index order while scrolling both ways',()=>{
  const h=harness(manyRows());h.c.openPayloadCaptureModal();const keep=h.c.tmPayloadCaptureVirtual.slots[2];
- h.c.payloadCaptureModalInnerEl.scrollTop=100+320;h.c.tmUpdateCaptureVirtualList();assert.equal(h.c.tmPayloadCaptureVirtual.slots[2],keep);
- h.c.payloadCaptureModalInnerEl.scrollTop=100+40*320;h.c.tmUpdateCaptureVirtualList();
- h.c.payloadCaptureModalInnerEl.scrollTop=100+39*320;h.c.tmUpdateCaptureVirtualList();
+ h.c.payloadCaptureModalInnerEl.scrollTop=100+240;h.c.tmUpdateCaptureVirtualList();assert.equal(h.c.tmPayloadCaptureVirtual.slots[2],keep);
+ h.c.payloadCaptureModalInnerEl.scrollTop=100+40*240;h.c.tmUpdateCaptureVirtualList();
+ h.c.payloadCaptureModalInnerEl.scrollTop=100+39*240;h.c.tmUpdateCaptureVirtualList();
  const indices=h.c.tmPayloadCaptureVirtual.list.children.map(n=>Number(n.getAttribute('data-capture-slot')));assert.deepEqual(indices,[...indices].sort((a,b)=>a-b));
 });
 test('a focused or selected slot is not unmounted until focus/selection leaves it',()=>{
  const h=harness(manyRows());h.c.openPayloadCaptureModal();let v=h.c.tmPayloadCaptureVirtual;const kept=v.slots[2];
- h.document.activeElement=kept._tmCaptureContent;h.c.payloadCaptureModalInnerEl.scrollTop=100+100*320;h.c.tmUpdateCaptureVirtualList();assert.equal(v.slots[2],kept);
+ h.document.activeElement=kept._tmCaptureContent;h.c.payloadCaptureModalInnerEl.scrollTop=100+100*240;h.c.tmUpdateCaptureVirtualList();assert.equal(v.slots[2],kept);
  h.document.activeElement=null;h.setSelection({isCollapsed:false,anchorNode:{nodeType:3,parentElement:kept._tmCaptureContent},focusNode:kept._tmCaptureContent});h.c.tmUpdateCaptureVirtualList();assert.equal(v.slots[2],kept);
  h.setSelection(null);h.c.tmUpdateCaptureVirtualList();assert.equal(v.slots[2],undefined);
 });
 test('row-height control persists and retains the same top entry and fractional position',()=>{
- const h=harness(manyRows());h.c.openPayloadCaptureModal();h.c.payloadCaptureModalInnerEl.scrollTop=100+50.5*320;h.c.tmUpdateCaptureVirtualList();
+ const h=harness(manyRows());h.c.openPayloadCaptureModal();h.c.payloadCaptureModalInnerEl.scrollTop=100+50.5*240;h.c.tmUpdateCaptureVirtualList();
  const before=h.counts();h.action('set-capture-row-height','change',{value:'400'});const v=h.c.tmPayloadCaptureVirtual;
  assert.equal(v.height,400);assert.equal(v.list.style.height,'200000px');assert.equal(h.c.payloadCaptureModalInnerEl.scrollTop,100+50.5*400);assert.equal(h.heightInput.value,'400');assert.equal(h.storage.tm_payload_ring_row_height_v1,'400');assert.equal(h.counts().reads,before.reads);
  h.c.closePayloadCaptureModal();h.c.openPayloadCaptureModal();assert.equal(h.c.tmPayloadCaptureVirtual.height,400);
@@ -102,7 +102,7 @@ test('row-height values are bounded and invalid input cannot create broken geome
 });
 test('full entry is uncut, its copy buttons work, and Back restores list position',()=>{
  const rows=manyRows();rows[449].error={message:'LONG '.repeat(2000)+'END_OF_ERROR',status:500};
- const h=harness(rows);h.c.openPayloadCaptureModal();h.c.payloadCaptureModalInnerEl.scrollTop=100+50.25*320;h.c.tmUpdateCaptureVirtualList();
+ const h=harness(rows);h.c.openPayloadCaptureModal();h.c.payloadCaptureModalInnerEl.scrollTop=100+50.25*240;h.c.tmUpdateCaptureVirtualList();
  const id=h.c.tmPayloadCaptureSnapshot.rows[50].id,position=h.c.payloadCaptureModalInnerEl.scrollTop,before=h.counts();
  h.action('open-capture-full-entry','click',{dataset:{captureId:id}});assert.equal(h.c.tmPayloadCaptureVirtual,null);assert.equal(h.heightInput.disabled,true);assert.match(h.c.payloadCaptureModalInnerEl.innerHTML,/END_OF_ERROR/);assert.match(h.c.payloadCaptureModalInnerEl.innerHTML,/back-capture-list/);
  h.action('copy-payload-capture','click',{dataset:{captureId:id,part:'error'}});assert.match(JSON.parse(h.copies.at(-1).txt).message,/END_OF_ERROR/);
@@ -118,8 +118,15 @@ test('closing cancels pending animation frames and repeated opens do not add scr
  assert.equal(h.c.payloadCaptureModalInnerEl.handlers.scroll.length,1);assert.equal(h.listeners.resize.length,1);
 });
 test('range arithmetic handles first/middle/last entries and empty lists without gaps',()=>{
- const h=harness();let r=h.c.tmCaptureVisibleRange(500,320,100+498*320,640,100);assert.equal(r.first,498);assert.equal(r.last,500);assert.equal(r.end,500);assert.ok(r.start<=498);
- r=h.c.tmCaptureVisibleRange(0,320,0,640,100);assert.equal(r.first,0);assert.equal(r.last,0);assert.equal(r.end,0);
+ const h=harness();let r=h.c.tmCaptureVisibleRange(500,240,100+498*240,640,100);assert.equal(r.first,498);assert.equal(r.last,500);assert.equal(r.end,500);assert.ok(r.start<=498);
+ r=h.c.tmCaptureVisibleRange(0,240,0,640,100);assert.equal(r.first,0);assert.equal(r.last,0);assert.equal(r.end,0);
 });
 
+test('compact slots use natural content height and an in-flow full-entry button',()=>{
+ const h=harness();h.c.openPayloadCaptureModal();const slot=h.c.tmPayloadCaptureVirtual.slots[0];
+ assert.match(slot.style.cssText,/display:flex;flex-direction:column/);assert.equal(slot._tmCaptureContent.style.height,undefined);assert.equal(slot._tmCaptureContent.style.maxHeight,'210px');assert.doesNotMatch(slot.children[1].style.cssText,/position:absolute|bottom:/);assert.match(slot.children[1].style.cssText,/flex:0 0 auto/);
+});
+test('a deliberately saved row height is preserved over the smaller default',()=>{
+ const h=harness();h.storage.tm_payload_ring_row_height_v1='320';h.c.openPayloadCaptureModal();assert.equal(h.c.tmPayloadCaptureVirtual.height,320);
+});
 console.log(`\n${passed} passed; ${failed} failed`);process.exitCode=failed?1:0;

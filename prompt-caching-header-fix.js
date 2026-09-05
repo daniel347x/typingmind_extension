@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.380
+// Version: 4.381
 // Issues Fixed:
+//   - v4.381: RING SPACING POLISH (Dan confirmed v4.380 scrolling/thumb dragging is excellent).
+//     Default fixed slot height 320 -> 240px (25% less); explicit saved height overrides remain.
+//     Open full entry now follows the content instead of sitting at the bottom of unused space.
+//     A flex column with natural content height and a max-height cap keeps the button accessible
+//     on unusually tall entries while leaving spare space BELOW it. Virtual row geometry,
+//     native scrolling, index labels and full-entry/back behavior are unchanged.
 //   - v4.380: FIXED-HEIGHT WINDOWED RING ROWS (per Dan: uniform spacing is preferred). v4.379
 //     stopped rebuilds but still mounted all 500 rich rows; filtering to ~30 made trackball
 //     scrolling much smoother. Now only the visible slots plus 3 neighbors on each side are
@@ -2026,7 +2032,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.380';
+  const EXT_VERSION = '4.381';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12380,7 +12386,7 @@
       var n = Number(localStorage.getItem(TM_CAPTURE_ROW_HEIGHT_KEY));
       if (isFinite(n) && n > 0) return Math.max(180, Math.min(800, Math.round(n / 20) * 20));
     } catch (e) {}
-    return 320;
+    return 240;
   }
 
   function tmCaptureVisibleRange(count, height, scrollTop, viewportHeight, listTop) {
@@ -12415,9 +12421,11 @@
   function tmCreateCaptureVirtualSlot(entry, index, height) {
     var slot = document.createElement('div');
     slot.setAttribute('data-capture-slot', String(index));
-    slot.style.cssText = 'position:absolute;left:0;right:0;box-sizing:border-box;overflow:hidden;border-bottom:6px solid transparent;border-radius:6px;background:rgba(30,30,36,0.85);';
+    slot.style.cssText = 'position:absolute;left:0;right:0;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden;border-bottom:6px solid transparent;border-radius:6px;background:rgba(30,30,36,0.85);';
     var content = document.createElement('div');
     content.style.overflow = 'hidden';
+    content.style.flex = '0 1 auto';
+    content.style.minHeight = '0';
     content.innerHTML = entry.html;
     var full = document.createElement('button');
     full.type = 'button';
@@ -12425,7 +12433,7 @@
     full.setAttribute('data-capture-id', entry.id);
     full.textContent = '#' + entry.ordinal + ' · Open full entry';
     full.title = 'List entries have a fixed height. Open this entry to see all its content without clipping.';
-    full.style.cssText = 'position:absolute;bottom:3px;left:8px;font-size:10px;line-height:18px;padding:0 7px;background:#293343;color:#a9d4ef;border:1px solid #48546a;border-radius:3px;cursor:pointer;';
+    full.style.cssText = 'flex:0 0 auto;align-self:flex-start;margin:0 8px 3px;font-size:10px;line-height:18px;padding:0 7px;background:#293343;color:#a9d4ef;border:1px solid #48546a;border-radius:3px;cursor:pointer;';
     slot.appendChild(content);
     slot.appendChild(full);
     slot._tmCaptureContent = content;
@@ -12477,7 +12485,9 @@
       if (slot._tmCaptureHeight !== v.height) {
         slot.style.top = (index * v.height) + 'px';
         slot.style.height = v.height + 'px';
-        slot._tmCaptureContent.style.height = (v.height - 30) + 'px';
+        // (v4.381) Natural content height, capped only to keep the button accessible.
+        // The button follows content in normal flow; spare slot space stays BELOW it.
+        slot._tmCaptureContent.style.maxHeight = (v.height - 30) + 'px';
         slot._tmCaptureHeight = v.height;
       }
     });
