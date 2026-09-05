@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.381
+// Version: 4.382
 // Issues Fixed:
+//   - v4.382: BEACON CURATION ONLY (comments; zero runtime change). Fix 24 / Fix 26 entry points that
+//     future agents target but no parent snippet reveals now carry beacons: tmKnownProviderDefault
+//     (tm-thinking-control + observatory), tmThinkControlSupportedForIdentity (tm-thinking-control),
+//     and the declarative tables TM_THINK_MAP / TM_THINK_STATES / TM_REPLAY_SUPPORT (tm-thinking-observatory).
+//     tmEnsurePlainSolReasoningHigh's beacon comment now states its v4.363 DEPRECATED status. Also noted:
+//     the Workflowy map had drifted from disk (F12+1 reconciled it; a ghost node for the removed
+//     tmKeepAliveBuildPing survived the refresh).
 //   - v4.381: RING SPACING POLISH (Dan confirmed v4.380 scrolling/thumb dragging is excellent).
 //     Default fixed slot height 320 -> 240px (25% less); explicit saved height overrides remain.
 //     Open full entry now follows the content instead of sitting at the bottom of unused space.
@@ -2032,7 +2039,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.381';
+  const EXT_VERSION = '4.382';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5613,6 +5620,13 @@
   // TM_THINK_STATES, the small glyph vocabulary Dan learns once. Anything the scanner finds that matches no
   // row -> 🧩 UNMAPPED (hover shows the raw field) AND it is listed in the Glyph Map modal's gap section.
   // Rendering: same intensity scale on both sides (🔹🔸🔶🔴): REQ = level asked for, OBS = absolute thinking-token band.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.TM_THINK_STATES@1-ugxy,
+  //   role=__lambdao_1.TM_THINK_STATES@1,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=v4.355 Layer 2 of the thinking glyphs: the fixed vocabulary every surface draws from (REQ level / mode / visibility states incl. 🎛️ OVERRIDDEN; OBS evidence / visibility / contradiction states). One glyph per state; also the legend source for the Glyph Map modal.,
+  // ]
   var TM_THINK_STATES = {
     OFF:      { g: '\ud83d\udeab', label: 'OFF',       side: 'req', kind: 'level', order: 0,  desc: 'thinking explicitly disabled' },
     LOW:      { g: '\ud83d\udd39', label: 'LOW',       side: 'req', kind: 'level', order: 1,  desc: 'low / minimal effort requested' },
@@ -5652,6 +5666,13 @@
   var TM_THINK_GEMINI_LEVEL = ['generationConfig.thinkingConfig.thinkingLevel', 'generationConfig.thinkingConfig.thinking_level'];
   var TM_THINK_GEMINI_BUDGET = ['generationConfig.thinkingConfig.thinkingBudget', 'generationConfig.thinkingConfig.thinking_budget'];
   var TM_THINK_GEMINI_THOUGHTS = ['generationConfig.thinkingConfig.includeThoughts', 'generationConfig.thinkingConfig.include_thoughts'];
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.TM_THINK_MAP@1-hfcg,
+  //   role=__lambdao_1.TM_THINK_MAP@1,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=v4.355 Layer 1 of the thinking glyphs: declarative rows {fam, path, val, state} mapping a request field path + value pattern to ONE canonical REQ state; matched in order, first match wins; per-message output_config.effort rows added v4.361. A scanned field that matches no row renders 🧩 UNMAPPED and is listed in the Glyph Map gap section -- extend HERE when a new provider field appears.,
+  // ]
   var TM_THINK_MAP = [
     { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.type', val: 'adaptive', state: 'ADAPTIVE' },
     { fam: 'Anthropic Messages (also Moonshot / DeepSeek / GLM `thinking`)', path: 'thinking.type', val: 'enabled',  state: 'ON' },
@@ -7162,6 +7183,13 @@
   // completions incl. OpenRouter/DeepInfra, Responses, Gemini native). Data-driven from the newest
   // stamped ring row for the identity, with a known-host fallback before any row exists.
   var TM_THINK_WRITER_PROTOCOLS = { 'anthropic-messages': 1, 'openai-chat-completions': 1, 'deepinfra-chat-completions': 1, 'openai-responses': 1, 'gemini-generatecontent': 1 };
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkControlSupportedForIdentity-z915,
+  //   role=__lambdao_1.tmThinkControlSupportedForIdentity,
+  //   slice_labels=tm-payload-overview,tm-thinking-control,
+  //   kind=ast,
+  //   comment=Gate for rendering the 🎛️ Think / 👁 controls on a surface: admits every identity whose protocol has a Phase 2 writer (newest stamped row's protocol; host-regex fallback before any row exists). Anthropic-only in v4.361, every wire shape since v4.362.,
+  // ]
   function tmThinkControlSupportedForIdentity(idKey) {
     try {
       if (!idKey) return false;
@@ -7174,6 +7202,13 @@
 
   // (v4.372) Documented provider DEFAULT thinking levels -- what you actually GET when nothing is
   // sent on the wire. Heuristic table (verify live via the next row's glyphs); '' = truly unknown.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKnownProviderDefault-is96,
+  //   role=__lambdao_1.tmKnownProviderDefault,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  //   comment=(v4.372) Heuristic table of DOCUMENTED provider-default thinking levels -- what the model actually does when NOTHING is sent on the wire; feeds the dropdown's 'provider default (...)' readout. Verify live via the next row's glyphs. Candidate for replacement by OpenRouter /api/v1/models reasoning.supported_efforts / mandatory (open follow-up).,
+  // ]
   function tmKnownProviderDefault(model, host) {
     var m = String(model || '').toLowerCase(), h = String(host || '').toLowerCase();
     if (/gemini-3/.test(m)) return 'dynamic \u2248 medium';
@@ -7346,6 +7381,13 @@
   // (v4.370) REASONING-REPLAY SUPPORT MAP: which models/routes accept reasoning replay, and in
   // which form. Verdicts: 'raw' | 'enc' | 'both' | 'none' ('?' = documentation heuristic, verify
   // live -- the Fix 26 tracker is the empirical truth over time). First matching row wins.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.TM_REPLAY_SUPPORT@1-pyc2,
+  //   role=__lambdao_1.TM_REPLAY_SUPPORT@1,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.370) Fix 26 support map: which model families x protocols accept replayed reasoning and in which form (raw | enc | both | none; trailing '?' = documentation heuristic, verify live). First matching row wins; the red total-loss warning consults it so a route that CANNOT replay never false-alarms.,
+  // ]
   var TM_REPLAY_SUPPORT = [
     { fam: 'Anthropic Claude (Messages API, direct or proxied)', match: /claude|anthropic/i, proto: 'anthropic', replay: 'both',
       note: 'thinking blocks replayed verbatim (REQUIRED on tool-use turns); redacted_thinking = sealed encrypted thinking that must be replayed verbatim; block signatures must be preserved.' },
@@ -18899,7 +18941,7 @@
   //   role=__lambdao_1.tmEnsurePlainSolReasoningHigh,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=v4.161/4.162: plain-Sol requests carry reasoning.effort=high + summary=auto (restores streaming thinking).,
+  //   comment=v4.161/4.162: plain-Sol requests carry reasoning.effort=high + summary=auto + context=all_turns (restores streaming thinking). DEPRECATED since v4.363: still the default for un-overridden Sol sessions, but the per-identity 🎛️ Think / 👁 controls (tmThinkWriteResponses) run after it and override it whenever set; retire once a per-MODEL default exists.,
   // ]
   function tmEnsurePlainSolReasoningHigh(body) {
     if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
