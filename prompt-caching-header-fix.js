@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.385
+// Version: 4.386
 // Issues Fixed:
+//   - v4.386: Fix 24 -- ⚖ THINK AUDIT button on the persistent widget (top row, right-justified, largish). One
+//     place to go: opens a modal listing EVERY discrepancy between what OpenRouter's catalogue reports and what
+//     the 🎛️ Think dropdown offers, for every model Dan has actually used (session ledger + think overrides,
+//     deduped by model + route): OpenRouter identities -> options that would clamp ('xhigh -> high, not offered' /
+//     'off -> low, mandatory'); direct identities -> the v4.385 cross-check (agree / DISAGREE with the exact
+//     differences / not in catalogue). No colorization scheme, no priority logic -- disagreements simply sort
+//     first. Below it, a VENDOR DOCUMENTATION table (Anthropic, OpenAI, Moonshot first; then Gemini, xAI,
+//     OpenRouter) with the best-known URLs as of Sept 2026, each clickable (new tab) AND copyable; if a link
+//     looks stale, tell the agent -- the table is TM_THINK_VENDOR_DOCS, one edit. A 'Copy report' button emits
+//     the whole thing as plain text for pasting to an agent. Pure builder tmBuildThinkAuditReport (tested) +
+//     modal tmShowThinkAuditModal (Glyph Map pattern: capture-phase Escape, click-away, tmPromptActive).
 //   - v4.385: Fix 24 -- OPENROUTER CROSS-CHECK for DIRECT identities (advisory; changes nothing on the wire).
 //     The direct-route capability tables (tmThinkAnthropicCaps, tmThinkIsAlwaysOn, the Gemini level table,
 //     xAI low|high, Kimi/DeepSeek/GLM on/off) are agent-written from vendor docs and rot the day a model ships;
@@ -2075,7 +2086,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.385';
+  const EXT_VERSION = '4.386';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6922,6 +6933,180 @@
     } catch (e) { return ''; }
   }
 
+  // ---------- v4.386: ⚖ THINK AUDIT -- one place to see every OpenRouter-vs-us discrepancy + the vendor docs ----------
+  // Best-known vendor documentation URLs (as of 2026-09). Dan clicks these now and again; if one looks stale he
+  // tells the agent and THIS table is the one edit. Order matters: Anthropic, OpenAI, Moonshot first (his ask).
+  var TM_THINK_VENDOR_DOCS = [
+    { vendor: 'Anthropic', links: [
+      { label: 'Extended thinking (effort, adaptive, display, per-message effort beta)', url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking' },
+      { label: 'Models overview (which generation supports what)', url: 'https://platform.claude.com/docs/en/about-claude/models/overview' },
+      { label: 'Legacy docs host (same page, older URL)', url: 'https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking' } ] },
+    { vendor: 'OpenAI', links: [
+      { label: 'Reasoning models guide (reasoning_effort / reasoning.effort, summaries)', url: 'https://platform.openai.com/docs/guides/reasoning' },
+      { label: 'Models catalogue', url: 'https://platform.openai.com/docs/models' } ] },
+    { vendor: 'Moonshot (Kimi)', links: [
+      { label: 'Chat completions API (thinking.type, reasoning_content)', url: 'https://platform.moonshot.ai/docs/api/chat' },
+      { label: 'Docs root (guides for the current Kimi thinking models)', url: 'https://platform.moonshot.ai/docs' } ] },
+    { vendor: 'Google Gemini', links: [
+      { label: 'Thinking (thinkingLevel / thinkingBudget / includeThoughts)', url: 'https://ai.google.dev/gemini-api/docs/thinking' } ] },
+    { vendor: 'xAI Grok', links: [
+      { label: 'Reasoning guide (reasoning_effort low | high)', url: 'https://docs.x.ai/docs/guides/reasoning' } ] },
+    { vendor: 'OpenRouter', links: [
+      { label: 'Reasoning tokens (unified reasoning object, effort->budget ratios, exclude)', url: 'https://openrouter.ai/docs/use-cases/reasoning-tokens' },
+      { label: 'Live models catalogue JSON (the source of the cross-check)', url: 'https://openrouter.ai/api/v1/models' } ] }
+  ];
+  // Every model Dan has actually used: session ledger identities + think-override identities, deduped by
+  // model + host + proxy (the session id is irrelevant to capabilities).
+  function tmThinkAuditCollectModels() {
+    var seen = {}, out = [];
+    function add(key) {
+      try {
+        var p = String(key || '').split('::');
+        if (p.length < 3 || !p[1]) return;
+        var model = p[1], host = p[2] || '', proxy = p[3] === 'proxy';
+        var k = model.toLowerCase() + '::' + host.toLowerCase() + '::' + (proxy ? 'proxy' : 'direct');
+        if (seen[k]) return; seen[k] = 1;
+        out.push({ model: model, host: host, proxy: proxy });
+      } catch (e) {}
+    }
+    try { var costs = tmGetSessionCosts(); for (var k1 in costs) if (Object.prototype.hasOwnProperty.call(costs, k1) && k1.indexOf('::') > 0) add(k1); } catch (e1) {}
+    try { var ovs = tmGetThinkOverrides(); for (var k2 in ovs) if (Object.prototype.hasOwnProperty.call(ovs, k2)) add(k2); } catch (e2) {}
+    out.sort(function(a, b) { return (a.model + a.host).localeCompare(b.model + b.host); });
+    return out;
+  }
+  // Pure report builder (tested in the harness). rows: [{model, host, proxy, route, status, lines[]}];
+  // status: 'disagree' | 'agree' | 'not-in-catalogue' | 'not-loaded' | 'no-vocabulary' | 'unknown-family'.
+  // @beacon[
+  //   id=fix24-think-audit-report,
+  //   slice_labels=tm-thinking-control,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.386) Pure builder behind the ⚖ Think Audit modal: for every model actually used (session ledger + think overrides) lists OpenRouter-vs-dropdown discrepancies -- OR identities: options that would clamp; direct identities: the v4.385 cross-check -- plus the catalogue state and a plain-text rendering for pasting to an agent. Disagreements sort first; no other prioritization.,
+  // ]
+  function tmBuildThinkAuditReport() {
+    var st = tmReadOrReasoningCaps();
+    var cat = { loaded: !!(st && st.models && Object.keys(st.models).length), failed: !!(st && st.failed), fetched: (st && st.ts_local) || null, count: (st && st.count) || 0, fresh: tmOrReasoningCapsIsFresh(st), reason: (st && st.reason) || null };
+    var rows = [];
+    var models = tmThinkAuditCollectModels();
+    var levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    for (var i = 0; i < models.length; i++) {
+      var m = models[i];
+      var isOR = /openrouter/i.test(m.host);
+      var row = { model: m.model, host: m.host, proxy: m.proxy, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'), status: 'unknown-family', lines: [], orId: null };
+      if (isOR) {
+        var caps = tmOrReasoningCapsFor(m.model);
+        row.orId = m.model;
+        if (!caps) { row.status = cat.loaded ? 'not-in-catalogue' : 'not-loaded'; row.lines.push(cat.loaded ? 'not in OpenRouter\'s catalogue -- the dropdown falls back to the local heuristics' : 'OpenRouter catalogue not loaded'); }
+        else if (!caps.efforts.length) { row.status = 'no-vocabulary'; row.lines.push('OpenRouter publishes no effort vocabulary for this model (mandatory=' + caps.mandatory + (caps.defaultEffort ? (', default ' + caps.defaultEffort) : '') + ') -- every dropdown level is sent as-is; OpenRouter translates by its own ratios'); }
+        else {
+          for (var li = 0; li < levels.length; li++) {
+            var lv = levels[li];
+            if (lv === 'off') { if (caps.mandatory) { var lo = tmOrCapsLowestEffort(caps.efforts); row.lines.push('off \u2192 ' + (lo || '?') + ' (OpenRouter: mandatory reasoning)'); } continue; }
+            if (caps.efforts.indexOf(lv) >= 0) continue;
+            var nr = tmOrCapsNearestEffort(lv, caps.efforts);
+            if (nr && nr !== lv) row.lines.push(lv + ' \u2192 ' + nr + ' (OpenRouter does not list ' + lv + ')');
+          }
+          row.status = row.lines.length ? 'disagree' : 'agree';
+          if (!row.lines.length) row.lines.push('every dropdown level is accepted as-is: [' + caps.efforts.join(', ') + ']' + (caps.mandatory ? ' \u00b7 mandatory' : ''));
+          if (caps.defaultEffort) row.lines.push('OpenRouter-reported default: ' + caps.defaultEffort);
+        }
+      } else {
+        var x = tmOrCapsCrossCheck(m.model, m.host);
+        if (!x) { row.status = 'unknown-family'; row.lines.push('no local capability table for this model family -- nothing to compare'); }
+        else {
+          row.orId = x.orId;
+          row.status = x.status;
+          if (x.status === 'not-loaded') row.lines.push('OpenRouter catalogue not loaded');
+          else if (x.status === 'not-in-catalogue') row.lines.push('no OpenRouter entry matched (tried ' + (x.candidates || []).join(', ') + ')');
+          else {
+            if (x.disagreements.length) x.disagreements.forEach(function(d) { row.lines.push(d); });
+            else row.lines.push('agrees: ' + x.agreements.join(' \u00b7 '));
+            if (x.caps && x.caps.defaultEffort) row.lines.push('vendor default per OpenRouter: ' + x.caps.defaultEffort);
+            row.lines.push('local source: ' + x.local.source);
+          }
+        }
+      }
+      rows.push(row);
+    }
+    var rank = { disagree: 0, 'not-in-catalogue': 1, 'not-loaded': 2, 'no-vocabulary': 3, 'unknown-family': 4, agree: 5 };
+    rows.sort(function(a, b) { var ra = Object.prototype.hasOwnProperty.call(rank, a.status) ? rank[a.status] : 9, rb = Object.prototype.hasOwnProperty.call(rank, b.status) ? rank[b.status] : 9; var d = ra - rb; return d || (a.model + a.host).localeCompare(b.model + b.host); });
+    var nDis = rows.filter(function(r) { return r.status === 'disagree'; }).length;
+    // Plain text for pasting to an agent.
+    var T = [];
+    T.push('THINK AUDIT -- OpenRouter catalogue vs the 🎛️ Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
+    T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
+    T.push(rows.length + ' model/route identities from the session ledger + think overrides; ' + nDis + ' with discrepancies.');
+    T.push('');
+    rows.forEach(function(r) {
+      T.push('[' + r.status.toUpperCase() + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : ''));
+      r.lines.forEach(function(l) { T.push('   - ' + l); });
+    });
+    T.push('');
+    T.push('VENDOR DOCUMENTATION (best-known URLs as of 2026-09; if stale, tell the agent -- TM_THINK_VENDOR_DOCS):');
+    TM_THINK_VENDOR_DOCS.forEach(function(v) { v.links.forEach(function(l) { T.push('   ' + v.vendor + ' -- ' + l.label + ': ' + l.url); }); });
+    return { catalogue: cat, rows: rows, disagreements: nDis, text: T.join('\n') };
+  }
+  function tmShowThinkAuditModal() {
+    if (typeof document === 'undefined') return;
+    try { tmMaybeFetchOrReasoningCaps(); } catch (e0) {}
+    var old = document.getElementById('tm-think-audit-overlay'); if (old) old.parentNode.removeChild(old);
+    var R = tmBuildThinkAuditReport();
+    var overlay = document.createElement('div'); overlay.id = 'tm-think-audit-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:80vw;max-width:1100px;height:84vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var cat = R.catalogue;
+    var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 OpenRouter catalogue vs what the \ud83c\udf9b\ufe0f Think dropdown offers \u00b7 ' + R.rows.length + ' identities \u00b7 ' + R.disagreements + ' with discrepancies \u00b7 catalogue: ' + catTxt + '</span></span>' +
+      '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;">Every model you have actually used (session ledger + think overrides). OpenRouter identities: dropdown levels that would be CLAMPED by the writer. Direct identities: the local capability table diffed against OpenRouter\'s entry for the same model \u2014 advisory only, the direct route sends what the local table says. Discrepancies sort first; nothing else is prioritized. Links below are best-known as of 2026-09 \u2014 click one now and again; if it looks stale, tell the agent.</div>';
+    var body = '<div style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
+    function section(title) { return '<div style="font-weight:700;font-size:12px;color:#8ef0a0;margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
+    body += section('DISCREPANCIES \u2014 ' + R.disagreements + ' of ' + R.rows.length + ' identities');
+    if (!R.rows.length) body += '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
+    else {
+      body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+      R.rows.forEach(function(r) {
+        var stColor = r.status === 'disagree' ? '#ffd166' : r.status === 'agree' ? '#8ef0a0' : '#9aa4b2';
+        body += '<tr style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;"><td style="padding:4px 8px;white-space:nowrap;color:' + stColor + ';font-weight:700;">' + escapeHtml(r.status.toUpperCase()) + '</td>' +
+          '<td style="padding:4px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '</span></td>' +
+          '<td style="padding:4px 8px;color:#d0d0d8;">' + r.lines.map(function(l) { return '<div>\u2022 ' + escapeHtml(l) + '</div>'; }).join('') + '</td></tr>';
+      });
+      body += '</table>';
+    }
+    body += section('VENDOR DOCUMENTATION \u2014 best-known URLs as of 2026-09 (click = new tab; \u2398 = copy)');
+    body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+    TM_THINK_VENDOR_DOCS.forEach(function(v) {
+      v.links.forEach(function(l, i) {
+        body += '<tr style="border-top:1px solid rgba(255,255,255,0.06);"><td style="padding:3px 8px;white-space:nowrap;color:#8fc4ff;font-weight:' + (i === 0 ? '700' : '400') + ';">' + (i === 0 ? escapeHtml(v.vendor) : '') + '</td>' +
+          '<td style="padding:3px 8px;color:#d0d0d8;">' + escapeHtml(l.label) + '</td>' +
+          '<td style="padding:3px 8px;"><a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;text-decoration:underline;word-break:break-all;">' + escapeHtml(l.url) + '</a></td>' +
+          '<td style="padding:3px 8px;white-space:nowrap;"><button data-action="think-audit-copy-link" data-url="' + escapeHtml(l.url) + '" title="Copy URL" style="background:#2a2a33;color:#ccc;border:1px solid #444;border-radius:3px;padding:0 6px;font-size:11px;cursor:pointer;">\u2398</button></td></tr>';
+      });
+    });
+    body += '</table></div>';
+    box.innerHTML = h + body;
+    overlay.appendChild(box);
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); }
+    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
+    function flash(btn, txt) { try { var o = btn.textContent; btn.textContent = txt; setTimeout(function() { btn.textContent = o; }, 900); } catch (e) {} }
+    overlay.addEventListener('click', function(ev) {
+      var t = ev.target;
+      if (t === overlay) { close(); return; }
+      var b = t && t.closest ? t.closest('[data-action]') : null;
+      if (!b) return;
+      var a = b.dataset.action;
+      if (a === 'close-think-audit') close();
+      else if (a === 'think-audit-copy') { try { navigator.clipboard.writeText(R.text).then(function() { flash(b, '\u2705 copied'); }); } catch (e) {} }
+      else if (a === 'think-audit-copy-link') { try { navigator.clipboard.writeText(b.dataset.url || '').then(function() { flash(b, '\u2705'); }); } catch (e) {} }
+      else if (a === 'think-audit-refresh') {
+        try { var s = tmReadOrReasoningCaps(); if (s) { s.ts = 0; tmOrReasoningCapsMemo = s; localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(s)); } tmMaybeFetchOrReasoningCaps(); flash(b, '\u23f3 fetching\u2026'); setTimeout(function() { if (overlay.parentNode) tmShowThinkAuditModal(); }, 2500); } catch (e) {}
+      }
+    });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+  }
+
   // Stable content key for a user message (anchor for per-message effort steps): hash of its text, or
   // its tool_use_ids for tool_result turns. Content-based (not positional) so our own later repairs /
   // stubs that insert or rewrite OTHER messages cannot shift it.
@@ -10773,6 +10958,8 @@
         try { tmHideSessionCtxHover(); } catch (eHideHov) {}
         const target = ev.target;
         if (target && target.dataset) {
+          // (v4.386) ⚖ Think Audit -- one place for every OpenRouter-vs-us discrepancy + the vendor docs.
+          try { if (target.closest && target.closest('[data-action="show-think-audit"]')) { ev.stopPropagation(); tmShowThinkAuditModal(); return; } } catch (eTA) {}
           // Toggle entire widget collapsed/expanded
           if (target.dataset.action === 'toggle-widget') {
             const widget = ensureGpt51UsageWidget();
@@ -11597,7 +11784,11 @@
     lines.push(
       '<div data-action="copy-session-id" title="Click to copy Session ID to clipboard" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
         '<span style="font-weight:normal;line-height:1.5;">' + tmBuildWidgetStatusLine() + '</span>' +
-        '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;margin-left:6px;font-weight:bold;">' + toggleIcon + '</span>' +
+        '<span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;">' +
+          // (v4.386) ⚖ Think Audit: prominent, right-justified on the top row (Dan: "so prominent that it is in the persistent widget itself").
+          '<button type="button" data-action="show-think-audit" title="Think Audit: every discrepancy between what OpenRouter\'s catalogue reports and what the \ud83c\udf9b\ufe0f Think dropdown offers, for every model you have used -- plus the vendor documentation links (Anthropic, OpenAI, Moonshot, Gemini, xAI, OpenRouter). One place to go." style="font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#3a2f0f;color:#ffd166;border:1px solid #8a6d1a;border-radius:5px;cursor:pointer;text-shadow:0 0 3px rgba(255,209,102,0.35);">\u2696 Think Audit</button>' +
+          '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;font-weight:bold;">' + toggleIcon + '</span>' +
+        '</span>' +
       '</div>'
     );
 
