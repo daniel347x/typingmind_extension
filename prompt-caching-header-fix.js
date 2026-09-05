@@ -1,6 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.384
+// Version: 4.385
 // Issues Fixed:
+//   - v4.385: Fix 24 -- OPENROUTER CROSS-CHECK for DIRECT identities (advisory; changes nothing on the wire).
+//     The direct-route capability tables (tmThinkAnthropicCaps, tmThinkIsAlwaysOn, the Gemini level table,
+//     xAI low|high, Kimi/DeepSeek/GLM on/off) are agent-written from vendor docs and rot the day a model ships;
+//     the vendors' own /v1/models endpoints publish no thinking metadata. OpenRouter's catalogue (v4.384) does,
+//     so tmOrCapsCrossCheck maps a direct model id to its OpenRouter id (claude-fable-5-1 @ api.anthropic.com ->
+//     anthropic/claude-fable-5.1; date suffixes stripped; openai/ moonshotai/ google/ deepseek/ x-ai/ z-ai/
+//     qwen/) and diffs the LOCAL expectation (mandatory + effort vocabulary the writer would send unclamped)
+//     against OpenRouter's `mandatory` + `supported_efforts`. Surfaces: a cross-check block in the Think select
+//     hover on every direct identity (agree / DISAGREE / not in catalogue / not loaded), an amber ⚖ glyph between
+//     the selects ONLY when there is a disagreement (hover = the exact differences), per-option '⚖ OR: not listed'
+//     / '⚖ OR: mandatory' tags, the vendor default per OpenRouter as advisory text, and rep.or_xcheck on the
+//     override report (Thinking Report / 🎛️ hover). The direct writers keep sending exactly what they sent before
+//     -- OpenRouter describes ITS translation layer, so it is a tripwire for table rot, not an authority for the
+//     direct route. The catalogue fetch is now also triggered from direct identities so it loads for a
+//     direct-Anthropic user who never touches OpenRouter.
 //   - v4.384: Fix 24 -- OPENROUTER REASONING CAPABILITIES from the live /api/v1/models catalogue. OpenRouter
 //     publishes per model `reasoning: { mandatory, default_enabled, supported_efforts[], default_effort }` --
 //     OpenRouter itself stating what ITS translation layer accepts. New module (tmMaybeFetchOrReasoningCaps /
@@ -2060,7 +2075,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.384';
+  const EXT_VERSION = '4.385';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6818,6 +6833,95 @@
     } catch (e) { tmOrReasoningCapsInFlight = false; }
   }
 
+  // ---------- v4.385: OPENROUTER CROSS-CHECK for DIRECT identities (advisory -- never changes the wire) ----------
+  // The direct-route tables are docs-derived and rot; the vendors' /v1/models publish no thinking metadata;
+  // OpenRouter's catalogue does. So: map the direct model id to its OpenRouter id, build the LOCAL expectation
+  // (what our writer would send unclamped + whether it believes thinking can be disabled) and diff it against
+  // OpenRouter's mandatory + supported_efforts. OpenRouter describes ITS translation layer, so a difference is a
+  // TRIPWIRE for table rot to be checked against vendor docs, not an authority for the direct route.
+  function tmOrIdCandidatesForDirect(model, host) {
+    try {
+      var m = tmOrNormalizeModelId(model);
+      if (!m) return [];
+      if (m.indexOf('/') >= 0) return [m];
+      var h = String(host || '').toLowerCase();
+      var vendor = /anthropic\.com/.test(h) ? 'anthropic' : /api\.openai\.com|openai\.azure\.com/.test(h) ? 'openai' : /moonshot/.test(h) ? 'moonshotai' : /generativelanguage|googleapis/.test(h) ? 'google' : /deepseek/.test(h) ? 'deepseek' : /api\.x\.ai/.test(h) ? 'x-ai' : /bigmodel/.test(h) ? 'z-ai' : /dashscope|aliyun/.test(h) ? 'qwen' : null;
+      if (!vendor) return [];
+      var base = m.replace(/-\d{8}$/, '').replace(/-\d{4}-\d{2}-\d{2}$/, '');
+      var dotted = base.replace(/(\d)-(\d)/g, '$1.$2');
+      var out = [];
+      [dotted, base, dotted.replace(/-preview$/, ''), dotted.replace(/-latest$/, ''), base.replace(/-preview$/, '')].forEach(function(c) { var id = vendor + '/' + c; if (c && out.indexOf(id) < 0) out.push(id); });
+      return out;
+    } catch (e) { return []; }
+  }
+  function tmOrCapsForDirect(model, host) {
+    var cands = tmOrIdCandidatesForDirect(model, host);
+    for (var i = 0; i < cands.length; i++) { var c = tmOrReasoningCapsFor(cands[i]); if (c) return { orId: cands[i], caps: c, candidates: cands }; }
+    return { orId: null, caps: null, candidates: cands };
+  }
+  // What the LOCAL tables believe about a direct identity: can thinking be disabled, and which effort words
+  // the writer would put on the wire unclamped. [] = budget / on-off only (no level vocabulary).
+  function tmThinkLocalCapsForDirect(model, host) {
+    try {
+      var fam = tmThinkChatFamily(model, host), m = String(model || '').toLowerCase();
+      var loc = { fam: fam, mandatory: null, efforts: [], source: '' };
+      if (fam === 'claude') { var c = tmThinkAnthropicCaps(model); loc.mandatory = !c.disable; loc.efforts = c.effort ? ['low', 'medium', 'high'].concat(c.xhigh ? ['xhigh'] : []).concat(['max']) : []; loc.source = 'tmThinkAnthropicCaps (' + c.family + ')'; }
+      else if (fam === 'openai') { loc.mandatory = tmThinkIsAlwaysOn('openai', model); loc.efforts = ['minimal', 'low', 'medium', 'high', 'xhigh']; loc.source = 'tmThinkIsAlwaysOn + OpenAI reasoning_effort vocabulary (max clamps to xhigh)'; }
+      else if (fam === 'gemini') { loc.mandatory = tmThinkIsAlwaysOn('gemini', model); loc.efforts = /gemini-3/.test(m) ? (/flash/.test(m) ? ['minimal', 'low', 'medium', 'high'] : ['low', 'high']) : []; loc.source = 'tmThinkIsAlwaysOn + tmThinkWriteGemini level table' + (/gemini-3/.test(m) ? '' : ' (2.5: token budget, no levels)'); }
+      else if (fam === 'kimi' || fam === 'deepseek' || fam === 'glm') { loc.mandatory = false; loc.efforts = []; loc.source = fam + ' direct: thinking on/off only'; }
+      else if (fam === 'grok') { loc.mandatory = false; loc.efforts = ['low', 'high']; loc.source = 'xAI reasoning_effort low|high'; }
+      else if (fam === 'qwen') { loc.mandatory = false; loc.efforts = []; loc.source = 'Qwen enable_thinking + thinking_budget'; }
+      else return null;
+      return loc;
+    } catch (e) { return null; }
+  }
+  // @beacon[
+  //   id=fix24-or-caps-cross-check,
+  //   slice_labels=tm-thinking-control,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.385) ADVISORY cross-check of a DIRECT identity's local capability table against OpenRouter's catalogue for the same model: {orId, status agree|disagree|not-in-catalogue|not-loaded, disagreements[], agreements[], local, caps}. Never alters the wire; feeds the ⚖ glyph, option tags, hover block and rep.or_xcheck.,
+  // ]
+  function tmOrCapsCrossCheck(model, host) {
+    try {
+      var loc = tmThinkLocalCapsForDirect(model, host);
+      if (!loc) return null;
+      var f = tmOrCapsForDirect(model, host);
+      var out = { orId: f.orId, candidates: f.candidates, caps: f.caps, local: loc, disagreements: [], agreements: [], status: 'unknown', localOnly: [], orOnly: [] };
+      if (!f.caps) { var st = tmReadOrReasoningCaps(); out.status = (st && st.models && !st.failed) ? 'not-in-catalogue' : 'not-loaded'; return out; }
+      var caps = f.caps;
+      if (loc.mandatory !== null) {
+        if (!!caps.mandatory !== !!loc.mandatory) out.disagreements.push('MANDATORY: the local table says thinking ' + (loc.mandatory ? 'CANNOT be disabled' : 'CAN be disabled') + ' on this model; OpenRouter says mandatory=' + caps.mandatory + (caps.mandatory ? ' (off may be rejected on the direct host too)' : ' (off may actually be possible)'));
+        else out.agreements.push('mandatory=' + caps.mandatory);
+      }
+      if (caps.efforts.length) {
+        var orE = caps.efforts.filter(function(e) { return e !== 'none'; });
+        if (loc.efforts.length) {
+          out.localOnly = loc.efforts.filter(function(e) { return orE.indexOf(e) < 0; });
+          out.orOnly = orE.filter(function(e) { return loc.efforts.indexOf(e) < 0; });
+          if (out.localOnly.length) out.disagreements.push('LEVELS the local table would send but OpenRouter does not list for ' + f.orId + ': ' + out.localOnly.join(', ') + ' -- the direct host may reject or silently remap them; check the vendor docs');
+          if (out.orOnly.length) out.disagreements.push('LEVELS OpenRouter lists that the local table does not offer (or clamps away): ' + out.orOnly.join(', ') + ' -- the local table may be stale');
+          if (!out.localOnly.length && !out.orOnly.length) out.agreements.push('effort vocabulary [' + orE.join(', ') + ']');
+        } else out.disagreements.push('the local table treats this route as budget / on-off only, but OpenRouter lists effort levels [' + orE.join(', ') + '] -- the direct host may accept a level now');
+      } else out.agreements.push('OpenRouter publishes no effort vocabulary for ' + f.orId + ' (nothing to compare on levels)');
+      out.status = out.disagreements.length ? 'disagree' : 'agree';
+      return out;
+    } catch (e) { return null; }
+  }
+  function tmOrCrossCheckText(x, model) {
+    try {
+      if (!x) return '';
+      var head = 'OPENROUTER CROSS-CHECK (advisory -- OpenRouter describes its OWN translation layer; the direct route sends exactly what the local table says): ';
+      if (x.status === 'not-loaded') return head + 'OpenRouter catalogue not loaded yet (fetch pending or failed; retried within 30 min).';
+      if (x.status === 'not-in-catalogue') return head + 'no OpenRouter entry matched ' + String(model || '?') + ' (tried ' + (x.candidates || []).join(', ') + ').';
+      var st = tmReadOrReasoningCaps();
+      var s = head + '\ncompared ' + String(model || '?') + ' \u2194 ' + x.orId + ' (catalogue fetched ' + ((st && st.ts_local) || '?') + ')\nlocal source: ' + x.local.source + '\n';
+      if (x.status === 'agree') s += '\u2705 AGREES: ' + x.agreements.join(' \u00b7 ');
+      else { s += '\u2696 DISAGREEMENT' + (x.disagreements.length === 1 ? '' : 'S') + ':\n- ' + x.disagreements.join('\n- ') + (x.agreements.length ? ('\n(agrees on: ' + x.agreements.join(' \u00b7 ') + ')') : ''); }
+      if (x.caps && x.caps.defaultEffort) s += '\nvendor default per OpenRouter: ' + x.caps.defaultEffort + ' (advisory; the direct route sends TypingMind\'s own setting unless overridden)';
+      return s;
+    } catch (e) { return ''; }
+  }
+
   // Stable content key for a user message (anchor for per-message effort steps): hash of its text, or
   // its tool_use_ids for tool_result turns. Content-based (not positional) so our own later repairs /
   // stubs that insert or rewrite OTHER messages cannot shift it.
@@ -7294,6 +7398,15 @@
       var rep = tmThinkApplyOverride(url, body, headersNorm, ov, { setHeader: function(name, token) { tmThinkAppendHeaderToken(options, name, token); } });
       rep.identity = idKey;
       if (native) rep.native = native;
+      // (v4.385) Direct identities: stamp the advisory OpenRouter cross-check (never alters the wire).
+      try {
+        var xHostR = String(idKey).split('::')[2] || '';
+        if (!/openrouter/i.test(xHostR)) {
+          tmMaybeFetchOrReasoningCaps();
+          var xR = tmOrCapsCrossCheck(rep.model || body.model || '', xHostR);
+          if (xR && xR.status !== 'unknown') rep.or_xcheck = { or_id: xR.orId, status: xR.status, disagreements: xR.disagreements, agreements: xR.agreements, vendor_default_per_openrouter: xR.caps ? xR.caps.defaultEffort : null };
+        }
+      } catch (eXR) {}
       if (rep.persist) tmSetThinkOverride(idKey, { steps: ov.steps || [] });
       if (rep.applied) console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override applied for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ' [' + (rep.mode || 'n/a') + ']: ' + rep.changes.join(' | ') + (rep.clamps.length ? (' \u26a0 clamps: ' + rep.clamps.join(' | ')) : ''));
       else console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Thinking override configured but nothing to change for ' + (rep.model || '?') + ' via ' + (rep.route || '?') + ': ' + (rep.notes.concat(rep.clamps).join(' | ') || 'already at the requested state'));
@@ -7466,6 +7579,24 @@
           return (nr && nr !== v) ? (' \u21e2 ' + nr + ' (OR: not offered)') : '';
         } catch (e) { return ''; }
       }
+      // (v4.385) DIRECT identities: advisory cross-check of the local capability table against OpenRouter's
+      // catalogue for the same model. Never changes the wire; tags options the local table would send but
+      // OpenRouter does not list ('\u2696 OR: not listed'), and 'off' when OpenRouter says mandatory.
+      var xck = null, xModel = '', xHost = '';
+      if (!isORid) {
+        try {
+          var xParts = String(idKey).split('::'); xModel = xParts[1] || ''; xHost = xParts[2] || '';
+          tmMaybeFetchOrReasoningCaps();
+          xck = tmOrCapsCrossCheck(xModel, xHost);
+        } catch (eX) { xck = null; }
+      }
+      function tagX(v) {
+        try {
+          if (!xck || xck.status !== 'disagree') return '';
+          if (v === 'off') return (xck.caps && xck.caps.mandatory && xck.local && xck.local.mandatory === false) ? ' \u2696 OR: mandatory' : '';
+          return (xck.localOnly && xck.localOnly.indexOf(v) >= 0) ? ' \u2696 OR: not listed' : '';
+        } catch (e) { return ''; }
+      }
       var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;';
       function opt(v, label, cur) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>'; }
       var curSel = isBudget ? '__budget' : lvl;
@@ -7483,8 +7614,8 @@
         inheritLbl = '\u21a9 provider default' + (kdWord ? (' (' + escapeHtml(kdWord) + ')') : ' (nothing sent)');
       }
       var levelOpts = opt('inherit', inheritLbl, curSel) +
-        opt('off', S.OFF.g + ' off' + tagL('off') + tagOR('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal') + tagOR('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low') + tagOR('low'), curSel) +
-        opt('medium', S.MED.g + ' medium' + tagL('medium') + tagOR('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high') + tagOR('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh') + tagOR('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max') + tagOR('max'), curSel) +
+        opt('off', S.OFF.g + ' off' + tagL('off') + tagOR('off') + tagX('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal') + tagOR('minimal') + tagX('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low') + tagOR('low') + tagX('low'), curSel) +
+        opt('medium', S.MED.g + ' medium' + tagL('medium') + tagOR('medium') + tagX('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high') + tagOR('high') + tagX('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh') + tagOR('xhigh') + tagX('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max') + tagOR('max') + tagX('max'), curSel) +
         opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : '') + tagL('budget'), curSel) +
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
       var dispOpts = opt('inherit', natDisp ? ('\u21a9 ' + escapeHtml(natDisp)) : '\u21a9 inherit (awaiting a stamped turn)', disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
@@ -7492,6 +7623,9 @@
       // (v4.384) OpenRouter capabilities provenance block (what OpenRouter says it accepts for this model).
       var orCapsBlock = isORid ? ('\n\n' + tmOrReasoningCapsText(orcModel, orc)) : '';
       readout += orCapsBlock;
+      // (v4.385) Direct identities: the advisory cross-check block.
+      var xckText = (!isORid && xck) ? tmOrCrossCheckText(xck, xModel) : '';
+      if (xckText) readout += '\n\n' + xckText;
       // (v4.364) OpenRouter warning: Claude gets the full cache-findings text; placed BETWEEN the two selects, 15px.
       var orWarn = '';
       if (tmThinkIdentityIsOpenRouter(idKey)) {
@@ -7500,6 +7634,11 @@
         // (v4.384) Lead the warning with what OpenRouter itself publishes for this model when we have it.
         if (orc) orTxt = 'LIVE FROM OPENROUTER (/api/v1/models): ' + orModel + ' \u2014 mandatory reasoning ' + (orc.mandatory ? 'YES' : 'no') + (orc.efforts.length ? (' \u00b7 efforts [' + orc.efforts.join(', ') + ']') : ' \u00b7 no effort vocabulary published') + (orc.defaultEffort ? (' \u00b7 default ' + orc.defaultEffort) : '') + '. That narrows the guesswork below but does not show the upstream request OpenRouter builds.\n\n' + orTxt;
         orWarn = '<span title="' + escapeHtml(orTxt) + '" style="font-size:15px;line-height:1;color:#ffd166;margin:0 6px 0 7px;cursor:help;vertical-align:middle;text-shadow:0 0 4px rgba(255,209,102,0.55);">\u26a0\ufe0f</span>';
+      } else if (xck && xck.status === 'disagree') {
+        // (v4.385) Direct identity whose local table DISAGREES with OpenRouter's catalogue: amber \u2696 between the
+        // selects, hover = the exact differences. Silent when they agree, when the model is not in the
+        // catalogue, or before the catalogue has loaded.
+        orWarn = '<span title="' + escapeHtml(xckText) + '" style="font-size:13px;line-height:1;color:#ffd166;margin:0 6px 0 7px;vertical-align:middle;text-shadow:0 0 4px rgba(255,209,102,0.45);">\u2696</span>';
       }
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
       var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace. Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts. Not controllable on OpenAI/xAI chat-completions or Kimi/DeepSeek/GLM/Qwen direct (reported as a note). Independent of the level.';
