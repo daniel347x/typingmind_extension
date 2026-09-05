@@ -1,6 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.376
+// Version: 4.377
 // Issues Fixed:
+//   - v4.377: REMOVE KEEP-ALIVE OUTPUT-BUDGET OVERRIDE. After the sidebar fix, Dan's sentinel
+//     reached the conversation, but TypingMind showed 'maximum output tokens or context limit'
+//     without a visible reply (context gauge ~31%). v4.374-v4.376 reduced output limits to 64
+//     tokens on Responses/Gemini and 256 on reasoning chat/adaptive Anthropic: reasoning can
+//     exhaust that allowance before a single visible character. Remove tmKeepAliveClampOutput.
+//     The KA hook now ONLY marks extension metadata via tmKeepAliveMarkRequest, preserving
+//     normal output limits, thinking effort, display, tools and stream settings. The sentinel
+//     still requests a brief reply; no keep-alive response rewriting is added. Cache HIT and
+//     one billed output token were NEVER guaranteed (the v4.374 claims below are superseded).
+//     Regression: tests/fix25_keepalive_output_budget.test.cjs executes the real request-hook
+//     block for all four shapes and checks that provider request bytes are untouched by KA.
 //   - v4.376: KEEP-ALIVE SIDEBAR-ID ALIAS FIX. Dan's countdown fired, but navigation reported
 //     'sidebar conversation not found' even while '9b771fe5 - [Payload REDUX - 004]' was visible.
 //     Root cause: the KA entry carried 'tm-9b771fe5'; the existing actuator checks the literal
@@ -1974,7 +1985,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.376';
+  const EXT_VERSION = '4.377';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4478,8 +4489,10 @@
   //    NOTHING to replay, so a page refresh cannot disarm it (the v4.360 design kept a memory-only
   //    multi-MB copy of the last outbound body and died on every refresh -- do not rebuild it).
   //  * The hook recognizes the sentinel as the LAST user message (tmKeepAliveBodyIsPing) and
-  //    clamps the output budget on THAT request only (tmKeepAliveClampOutput). max_tokens is not
-  //    part of the cached prefix, so the read is a guaranteed HIT and the reply costs ~1 token.
+  //    marks options._tm_ka_ping for accounting ONLY (tmKeepAliveMarkRequest, v4.377). It leaves
+  //    output-token limits, reasoning effort and display settings alone. The sentinel requests
+  //    one visible character; this is NOT a promise of one billed token. Cache hits are measured,
+  //    not guaranteed: they depend on an available matching prefix at the serving provider.
   //  * The ping's response comes back through tmCaptureResponse like any turn; the row is stamped
   //    _ka_ping and tmKeepAliveRecordPingResult logs read/write/cost into the entry ledger.
   //  * Per identity entry (sid::model::host::proxy, the same key the Sessions-in-Memory row uses),
@@ -4588,7 +4601,7 @@
   //   role=__lambdao_1.tmKeepAliveBodyIsPing,
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   comment=Fix 25 (v4.374): detects a keep-alive ping request -- the LAST user message (messages[] / input[] / contents[]) starts with the signposted sentinel prefix. Drives the output-token clamp and the _ka_ping row stamp.,
+  //   comment=Fix 25 (v4.374; v4.377 metadata only): detects a keep-alive ping request -- the LAST user message (messages[] / input[] / contents[]) starts with the signposted sentinel prefix. Drives the _ka_ping accounting stamp, not an output-token override.,
   // ]
   function tmKeepAliveBodyIsPing(body) {
     try {
@@ -4598,44 +4611,23 @@
     } catch (e) { return false; }
   }
 
-  // Clamp the OUTPUT budget of a ping request, per wire shape. Only fields OUTSIDE the cached
-  // prefix are touched (max_tokens & co.), so the cache read is unaffected. With Anthropic
-  // extended thinking (type 'enabled' + budget_tokens) max_tokens must stay ABOVE the budget;
-  // adaptive thinking has no floor but is given headroom so a 400 is impossible. Returns true if
-  // anything changed.
+  // Keep-alive recognition is METADATA ONLY. A request's normal output/reasoning settings
+  // must survive unchanged: reasoning can consume a tiny completion budget before any text
+  // is emitted (the v4.374-v4.376 limit-warning regression). Brevity belongs in the sentinel.
   // @beacon[
-  //   id=auto-beacon@__lambdao_1.tmKeepAliveClampOutput-cl4m,
-  //   role=__lambdao_1.tmKeepAliveClampOutput,
+  //   id=fix25-keepalive-mark-request,
+  //   role=__lambdao_1.tmKeepAliveMarkRequest,
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   comment=Fix 25 (v4.374): clamps the output-token budget on a keep-alive ping request only (max_tokens / max_completion_tokens / max_output_tokens / generationConfig.maxOutputTokens) -- never touches the cached prefix; respects Anthropic's max_tokens > budget_tokens rule.,
+  //   comment=Fix 25 (v4.377): marks extension-local options._tm_ka_ping for capture accounting without changing any provider request field. Preserves normal max-token limits and thinking/display settings; clears a stale ping flag on an ordinary request.,
   // ]
-  function tmKeepAliveClampOutput(url, body) {
-    try {
-      var proto = tmDetectProtocol(url, body);
-      var changed = false;
-      if (proto === 'anthropic-messages' || (body.system !== undefined && Array.isArray(body.messages) && !Array.isArray(body.input))) {
-        var target = 64;
-        try {
-          var th = body.thinking;
-          if (th && th.type === 'enabled' && Number(th.budget_tokens) > 0) target = Number(th.budget_tokens) + 128;
-          else if (th && th.type && th.type !== 'disabled') target = 256; // adaptive: room for a brief thought + one token
-        } catch (eT) {}
-        if (body.max_tokens === undefined || Number(body.max_tokens) > target) { body.max_tokens = target; changed = true; }
-      } else if (proto === 'openai-responses' || Array.isArray(body.input)) {
-        if (body.max_output_tokens === undefined || Number(body.max_output_tokens) > 64) { body.max_output_tokens = 64; changed = true; }
-      } else if (proto === 'gemini-generatecontent' || Array.isArray(body.contents)) {
-        if (!body.generationConfig || typeof body.generationConfig !== 'object') body.generationConfig = {};
-        if (body.generationConfig.maxOutputTokens === undefined || Number(body.generationConfig.maxOutputTokens) > 64) { body.generationConfig.maxOutputTokens = 64; changed = true; }
-      } else {
-        // OpenAI-compatible chat-completions (OpenRouter, Moonshot, DeepInfra, ...). Reasoning
-        // models count thinking against the completion budget, so leave modest headroom.
-        var cap = 256;
-        if (body.max_completion_tokens !== undefined) { if (Number(body.max_completion_tokens) > cap) { body.max_completion_tokens = cap; changed = true; } }
-        else if (body.max_tokens === undefined || Number(body.max_tokens) > cap) { body.max_tokens = cap; changed = true; }
-      }
-      return changed;
-    } catch (e) { return false; }
+  function tmKeepAliveMarkRequest(options, body) {
+    var isPing = tmKeepAliveBodyIsPing(body);
+    if (options && typeof options === 'object') {
+      if (isPing) options._tm_ka_ping = true;
+      else delete options._tm_ka_ping;
+    }
+    return isPing;
   }
 
   function tmKeepAliveFindPricing(model, host) {
@@ -18964,17 +18956,14 @@
             if (tmThinkOvrRep.applied) tmUniversalChanged = true;
           }
         } catch (eThinkOvr) {}
-        // (Fix 25, v4.374) KEEP-ALIVE SENTINEL: when the LAST user message is our signposted ping,
-        // clamp the output budget on THIS request only. Output-budget fields are not part of the
-        // cached prefix, so the read stays a guaranteed HIT and the reply costs ~1 token. The flag
-        // rides options so tmCaptureFetchCall can stamp the row (_ka_ping) for result pairing.
+        // (Fix 25, v4.377) KEEP-ALIVE SENTINEL: recognition is extension metadata ONLY.
+        // Do not lower max-token limits or change thinking/display settings for a ping.
+        // A one-character request can still need reasoning tokens before its visible answer.
         try {
-          if (tmKeepAliveBodyIsPing(tmUniversalBody)) {
-            options._tm_ka_ping = true;
-            if (tmKeepAliveClampOutput(url, tmUniversalBody)) tmUniversalChanged = true;
-            console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping request detected \u2014 output budget clamped; the cached prefix is untouched.');
+          if (tmKeepAliveMarkRequest(options, tmUniversalBody)) {
+            console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping request detected \u2014 normal output budget and thinking settings preserved.');
           }
-        } catch (eKaClamp) {}
+        } catch (eKaMark) {}
         if (tmUniversalChanged) {
           options.body = JSON.stringify(tmUniversalBody);
           console.log('✅ [v' + EXT_VERSION + '] Universal outbound pass: tools canonicalized and/or Sol reasoning injected before endpoint-specific handling.');
