@@ -1,6 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.378
+// Version: 4.379
 // Issues Fixed:
+//   - v4.379: RING-BUFFER MODAL FROZEN AFTER OPEN. The public renderer now requires explicit
+//     'fresh' (open/Refresh) or 'view' (filter/sort/settings) intent. Bare capture/error/tool-badge
+//     notifications are no-ops before any reads or DOM work, even while the modal is open.
+//     A header Refresh button takes a new in-memory capture/cost snapshot; view controls reuse
+//     the existing one. Copy/error/Thinking Report actions use the displayed capture, even if
+//     the live ring has updated or evicted it. Close releases the snapshot; reopen loads latest.
+//     Capture, accounting, retry and the live Sessions-in-Memory dashboard remain unchanged.
+//     Row labels no longer build full diagnostic summaries (deep cache scans + tool-schema
+//     canonicalization) merely to show a model and hash; those two values are memoized per view.
+//     Full Summary generation remains on-demand. Tests: tests/ring_modal_freeze.test.cjs uses
+//     the actual renderer and event handlers, including 500 rows, background updates, Refresh,
+//     filters/sorts, snapshot-consistent copy/report, Escape and close/reopen lifecycle.
 //   - v4.378: SESSIONS-IN-MEMORY SCROLL PERFORMANCE + GROUPED KEEP-ALIVE MESSAGES. The dashboard
 //     now rebuilds its full pinned content at a 30s wall-clock cadence (was every 3s), deferring
 //     while scrolling, selecting text, dragging, using a dropdown or viewing a child modal.
@@ -1999,7 +2011,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.378';
+  const EXT_VERSION = '4.379';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2668,11 +2680,11 @@
   }
 
   // Collect all unique model names from the ring buffer entries.
-  function tmCollectRingModels() {
+  function tmCollectRingModels(ringOverride) {
     var models = [];
     var seen = {};
     try {
-      var ring = tmReadCaptureRing();
+      var ring = Array.isArray(ringOverride) ? ringOverride : tmReadCaptureRing();
       for (var i = ring.length - 1; i >= 0; i--) {
         var cap = ring[i];
         if (!cap) continue;
@@ -5547,9 +5559,9 @@
   }
 
   // Full Thinking Report for one capture -> JSON viewer (copied to clipboard too, like every viewer open).
-  function tmShowThinkReport(captureId) {
+  function tmShowThinkReport(captureId, viewRecord) {
     try {
-      var cap = getCaptureById(captureId);
+      var cap = arguments.length > 1 ? viewRecord : getCaptureById(captureId);
       if (!cap) return;
       var req = cap._think_req || null, obs = cap._think_obs || null;
       var Rg = tmThinkClassifyReq(req), Og = obs ? tmThinkClassifyObs(obs, Rg.glyphs) : { glyphs: [] };
@@ -7237,7 +7249,7 @@
     var ov = tmGetThinkOverride(idKey) || {};
     function rerender() {
       try { renderGpt51UsageWidget(); } catch (e) {}
-      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal('view'); } catch (e) {}
       // (v4.365) The Think controls also live on the sessions-in-memory card now.
       try { if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') { var stR = tmSessionCtxHoverContentEl.scrollTop; tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml(); tmSessionCtxHoverContentEl.scrollTop = stR; } } catch (e) {}
     }
@@ -10974,7 +10986,7 @@
       tmSaveModelCtxOverrides(ov);
       tmCtxResolveMemo = { ts: 0, map: {} };
       try { renderGpt51UsageWidget(); } catch (e1) {}
-      try { renderPayloadCaptureModal(); } catch (e2) {}
+      try { renderPayloadCaptureModal('view'); } catch (e2) {}
       alert('Cleared ' + delCount + ' override(s) for ' + model + '. Auto-detection resumed.');
       return;
     }
@@ -10988,7 +11000,7 @@
     tmSaveModelCtxOverrides(ov);
     tmCtxResolveMemo = { ts: 0, map: {} }; // bust the memo so the re-render re-scales immediately
     try { renderGpt51UsageWidget(); } catch (e1) {}
-    try { renderPayloadCaptureModal(); } catch (e2) {}
+    try { renderPayloadCaptureModal('view'); } catch (e2) {}
   }
 
   // @carto-group id=client-group-5 label="Client group 5"
@@ -12337,6 +12349,58 @@
   let payloadCaptureModalEl = null;
   let payloadCaptureModalInnerEl = null;
 
+  // (v4.379) One in-memory snapshot per OPEN modal, released on close. Capturing is unaffected.
+  // Bare renderPayloadCaptureModal() calls are background notifications and do no work.
+  var tmPayloadCaptureSnapshot = null;
+
+  function tmCreatePayloadCaptureSnapshot() {
+    // Catalog discovery belongs to explicit opening/Refresh, not every filter click or response.
+    try { tmDiscoverAndMergeProviderRatings(); } catch (e) {}
+    try { tmDiscoverAndMergeProviderCosts(); } catch (e) {}
+    var snapshot = { ring: tmReadCaptureRing(), costs: {}, byId: Object.create(null), latestCtx: Object.create(null), metadata: new WeakMap(), at: Date.now() };
+    try { snapshot.costs = tmGetSessionCosts() || {}; } catch (eC) {}
+    for (var i = snapshot.ring.length - 1; i >= 0; i--) {
+      var cap = snapshot.ring[i]; if (!cap) continue;
+      if (cap.id && !snapshot.byId[cap.id]) snapshot.byId[cap.id] = cap;
+      var key = cap._identity && cap._identity.key;
+      if (key && cap._ctx_snapshot && !snapshot.latestCtx[key]) snapshot.latestCtx[key] = cap;
+    }
+    return snapshot;
+  }
+
+  function tmPreparePayloadCaptureRender(intent) {
+    // Only deliberate open/Refresh ('fresh') or UI action ('view') may rebuild the DOM.
+    if (!payloadCaptureModalEl || payloadCaptureModalEl.style.display === 'none' || !payloadCaptureModalInnerEl) return null;
+    if (intent !== 'fresh' && intent !== 'view') return null;
+    if (intent === 'fresh' || !tmPayloadCaptureSnapshot) tmPayloadCaptureSnapshot = tmCreatePayloadCaptureSnapshot();
+    return tmPayloadCaptureSnapshot;
+  }
+
+  function tmGetPayloadCaptureViewRecord(captureId) {
+    if (tmPayloadCaptureSnapshot && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') {
+      // No live fallback for an open snapshot: never silently substitute newer/compacted bytes.
+      return tmPayloadCaptureSnapshot.byId[captureId] || null;
+    }
+    return getCaptureById(captureId);
+  }
+
+  function tmPayloadCaptureViewCost(snapshot, sid, model, host, proxy) {
+    if (!sid || !model) return 0;
+    var row = snapshot.costs[tmBuildSessionCostKey(sid, model, host, proxy)];
+    return row && typeof row === 'object' ? Number(row._total || 0) : Number(row || 0);
+  }
+
+  function tmPayloadCaptureRowMetadata(cap, snapshot) {
+    var cached = snapshot.metadata.get(cap);
+    if (cached) return cached;
+    var body = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
+    var meta = { model: tmCaptureModel(cap) || '', prefixHash: '' };
+    if (body && typeof body === 'object') meta.prefixHash = tmComputeSystemToolsPrefixHash(body) || '';
+    snapshot.metadata.set(cap, meta);
+    return meta;
+  }
+
+
   function escapeHtml(s) {
     return String(s || '')
       .replace(/&/g, '&amp;')
@@ -12391,8 +12455,9 @@
     header.innerHTML =
       '<div style="font-weight:600;">Payload Capture Ring Buffer</div>' +
       '<div style="font-size:11px;opacity:0.8;">' +
-      'Most recent first. Copy outbound/request + inbound/response pieces for debugging.' +
+      '<span data-role="capture-snapshot-status">Frozen snapshot. Captures continue in the background.</span>' +
       '</div>' +
+      '<button data-action="refresh-payload-capture-modal" title="Take a new snapshot of the latest captures" style="margin-left:8px;background:#245f36;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Refresh</button>' +
       '<button data-action="close-payload-capture-modal" ' +
       'style="margin-left:8px;background:#444;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Close</button>';
 
@@ -12420,6 +12485,13 @@
         return;
       }
 
+      // (v4.379) Explicit refresh is the ONLY way (besides reopen) to acquire newer captures.
+      if (t.dataset && t.dataset.action === 'refresh-payload-capture-modal') {
+        renderPayloadCaptureModal('fresh');
+        ev.stopPropagation();
+        return;
+      }
+
       // (v4.271) Custom session-Filter listbox: trigger toggle, option selection, click-away.
       // Resolved via closest() because listbox rows contain child <span>s -- deliberately does
       // NOT fight the modal's own delegated data-action click handling. Selection writes
@@ -12429,14 +12501,14 @@
         if (lbEl && lbEl.dataset) {
           if (lbEl.dataset.action === 'toggle-modal-filter-listbox') {
             tmModalFilterListboxOpen = !tmModalFilterListboxOpen;
-            renderPayloadCaptureModal();
+            renderPayloadCaptureModal('view');
             ev.stopPropagation();
             return;
           }
           if (lbEl.dataset.action === 'set-modal-filter-listbox') {
             tmModalFilterIdentity = lbEl.dataset.identityKey || null;
             tmModalFilterListboxOpen = false;
-            renderPayloadCaptureModal();
+            renderPayloadCaptureModal('view');
             ev.stopPropagation();
             return;
           }
@@ -12445,7 +12517,7 @@
         if (tmModalFilterListboxOpen &&
             !t.closest('[data-role="modal-filter-listbox"], [data-action="toggle-modal-filter-listbox"]')) {
           tmModalFilterListboxOpen = false;
-          renderPayloadCaptureModal();
+          renderPayloadCaptureModal('view');
           ev.stopPropagation();
           return;
         }
@@ -12459,7 +12531,7 @@
       // (v4.210) Toggle retry/429 row visibility and re-render.
       if (t.dataset && t.dataset.action === 'toggle-hide-retries') {
         tmSetHideRetries(!tmGetHideRetries());
-        renderPayloadCaptureModal();
+        renderPayloadCaptureModal('view');
         ev.stopPropagation();
         return;
       }
@@ -12472,7 +12544,7 @@
           localStorage.setItem(TM_BLOCK_OR_GEMINI_KEY, nextOn ? 'true' : 'false');
           console.log('\uD83D\uDEAB [v' + EXT_VERSION + '] OpenRouter→Gemini hard block: ' + (nextOn ? 'ON (blocked)' : 'OFF (allowed -- testing only)'));
         } catch (eT) {}
-        renderPayloadCaptureModal();
+        renderPayloadCaptureModal('view');
         ev.stopPropagation();
         return;
       }
@@ -12488,10 +12560,10 @@
           if (tkEl.dataset.action === 'show-think-map') { tmShowThinkGlyphMapModal(); return; }
           if (tkEl.dataset.action === 'show-replay-support') { tmShowReplaySupportModal(); return; }
           if (tkEl.dataset.action === 'show-think-notes') { tmShowThinkNotesModal(); return; }
-          if (tkEl.dataset.action === 'think-report') { tmShowThinkReport(tkEl.dataset.captureId); return; }
+          if (tkEl.dataset.action === 'think-report') { tmShowThinkReport(tkEl.dataset.captureId, tmGetPayloadCaptureViewRecord(tkEl.dataset.captureId)); return; }
           if (tkEl.dataset.action === 'think-note') {
-            var tkCtx = tmThinkNoteContextFromCap(getCaptureById(tkEl.dataset.captureId));
-            if (tkCtx) tmShowThinkNoteEditor(tkCtx, null, function() { try { renderPayloadCaptureModal(); } catch (e) {} });
+            var tkCtx = tmThinkNoteContextFromCap(tmGetPayloadCaptureViewRecord(tkEl.dataset.captureId));
+            if (tkCtx) tmShowThinkNoteEditor(tkCtx, null, function() { try { renderPayloadCaptureModal('view'); } catch (e) {} });
             return;
           }
         }
@@ -12534,7 +12606,7 @@
           setTimeout(function() { tmPromptActive = false; }, 100);
           if (newName !== null) {
             tmSetSessionName(sid, newName);
-            renderPayloadCaptureModal();
+            renderPayloadCaptureModal('view');
             renderGpt51UsageWidget();
           }
         }
@@ -12575,7 +12647,7 @@
       // (v4.224) Time-window filter dropdown
       if (t && t.dataset && t.dataset.action === 'set-modal-time-filter') {
         tmModalTimeFilter = t.value || 'all';
-        renderPayloadCaptureModal();
+        renderPayloadCaptureModal('view');
         ev.stopPropagation();
       }
       // (v4.226) Model→Provider map: model dropdown changed — populate provider dropdown.
@@ -12611,7 +12683,7 @@
           tmSetModelProvider(mpmNormModel, mpmSlug);
           console.log('🌱 [v' + EXT_VERSION + '] Model→Provider map saved: ' + mpmNormModel + ' -> ' + mpmSlug);
           // Re-render to reflect the updated mapping in the model dropdown labels.
-          renderPayloadCaptureModal();
+          renderPayloadCaptureModal('view');
         }
         ev.stopPropagation();
       }
@@ -12622,7 +12694,7 @@
       var t = ev.target;
       if (t && t.dataset && t.dataset.action === 'set-modal-sort') {
         tmModalSortMode = t.dataset.sortMode || 'chronological';
-        renderPayloadCaptureModal();
+        renderPayloadCaptureModal('view');
         ev.stopPropagation();
       }
     });
@@ -14694,7 +14766,7 @@
     }
     if (changed) {
       try { renderGpt51UsageWidget(); } catch (e) {}
-      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal(); } catch (e) {}
+      try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal('view'); } catch (e) {}
     }
     return changed;
   }
@@ -15658,7 +15730,7 @@
   //   comment=Per-part copy logic behind the modal buttons: Summary, Outbound/Response Headers/Body/Skeleton, Raw Seg.,
   // ]
   function copyPayloadCapturePart(captureId, part) {
-    const cap = getCaptureById(captureId);
+    const cap = tmGetPayloadCaptureViewRecord(captureId);
     if (!cap) return;
 
     const reqBody = cap.stored_as_skeleton ? cap.body_skeleton : cap.body;
@@ -16156,18 +16228,31 @@
   //   role=__lambdao_1.renderPayloadCaptureModal,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,tm-ring-modal,
   //   kind=ast,
-  //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
+  //   comment=v4.379: ring-modal render gate. Only explicit fresh (open/Refresh) or view (filter/sort/settings) intents render; bare background notifications are no-ops. Frozen captures and cost ledger are held in memory until close; row copy/report reads the same snapshot.,
   // ]
-  function renderPayloadCaptureModal() {
-    if (!payloadCaptureModalInnerEl) return;
+  function renderPayloadCaptureModal(intent) {
+    var snapshot = tmPreparePayloadCaptureRender(intent);
+    if (!snapshot) return false;
+    var scrollTop = intent === 'fresh' ? 0 : payloadCaptureModalInnerEl.scrollTop;
+    tmRenderPayloadCaptureModalSnapshot(snapshot);
+    payloadCaptureModalInnerEl.scrollTop = scrollTop;
+    var label = payloadCaptureModalEl.querySelector('[data-role="capture-snapshot-status"]');
+    if (label) label.textContent = 'Frozen at ' + new Date(snapshot.at).toLocaleTimeString() + ' — captures continue; Refresh for latest';
+    return true;
+  }
 
-    const ring = tmReadCaptureRing();
+  // @beacon[
+  //   id=payload-ring-snapshot-body,
+  //   role=__lambdao_1.tmRenderPayloadCaptureModalSnapshot,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
+  //   kind=ast,
+  //   comment=v4.379: renders the explicitly acquired ring/cost snapshot. Filters and sorting reuse it; row display metadata is memoized without generating full diagnostic summaries. Provider/capture background events never invoke this body through the guarded public renderer.,
+  // ]
+  function tmRenderPayloadCaptureModalSnapshot(snapshot) {
+    const ring = snapshot.ring;
     var items = ring.slice().reverse(); // most recent first
 
-    // (v4.229) Discover and merge any new model→provider combos from the ring buffer into the ratings store.
-    try { tmDiscoverAndMergeProviderRatings(); } catch (e) {}
-    // (v4.233) Discover and merge any new model→provider combos into the cost table.
-    try { tmDiscoverAndMergeProviderCosts(); } catch (e) {}
+    // Provider catalogs are discovered once by the explicit snapshot acquisition.
 
     // (v4.210) Apply identity filter + retry-visibility filter BEFORE building any HTML, so
     // hiddenRetryCount is available to the toggle button in the control row below. (Moved ahead
@@ -16236,8 +16321,9 @@
     // renders per-word spans: the label + ($total) + (misses / hits) all inherit the session hue,
     // EXCEPT the miss number which is #ff6b6b -- the system's one reserved red, matching the
     // persistent widget's v4.269 treatment. Open state is a module flag (tmModalFilterListboxOpen)
-    // so the whole-modal re-render (every captured turn) SURVIVES an open listbox; Escape and
-    // click-away dismiss it; it resets on modal close. Selection still writes tmModalFilterIdentity
+    // so explicit filter/sort redraws preserve an open listbox; background captures no longer
+    // redraw the modal (v4.379). Escape and click-away dismiss it; it resets on modal close.
+    // Selection still writes tmModalFilterIdentity
     // then re-renders (identical semantics to the old change handler).
     var filterHtml = '<span style="font-size:10px;opacity:0.85;margin-left:8px;">Filter:&nbsp;</span>' +
       '<span style="position:relative;display:inline-block;vertical-align:top;">';
@@ -16257,8 +16343,7 @@
     }
     // (v4.267) Hoist session-ledger read for the identity loop so labels carry the cumulative
     // cache ratio without a localStorage re-parse per identity.
-    var idFilterCosts = {};
-    try { idFilterCosts = tmGetSessionCosts() || {}; } catch (e) {}
+    var idFilterCosts = snapshot.costs;
     // Disambiguation: duplicate sid+model labels need a (proxy|direct @ host) suffix.
     var labelCounts = {};
     for (var ei = 0; ei < idEntries.length; ei++) { var lbl = idEntries[ei].label; labelCounts[lbl] = (labelCounts[lbl] || 0) + 1; }
@@ -16271,7 +16356,7 @@
         displayLabel += ' (' + (entry.isProxy ? 'proxy' : 'direct') + ' @ ' + (entry.host || 'unknown') + ')';
       }
       // v4.167: total session cost for this identity.
-      var totalCost = tmGetSessionCost(entry.sid || '', entry.model || '', entry.host, entry.isProxy);
+      var totalCost = tmPayloadCaptureViewCost(snapshot, entry.sid || '', entry.model || '', entry.host, entry.isProxy);
       entry.costLabel = (totalCost > 0) ? '($' + totalCost.toFixed(2) + ')' : '(—)';
       // v4.267: cumulative session cache ratio (misses / hits).
       var idfStats = idFilterCosts[entry.key];
@@ -16324,7 +16409,7 @@
         // selects the filter; the gauge is display-only here).
         var fltDialHtml = '';
         try {
-          var fltCtxCap = tmLatestCtxSnapshotEntryForIdentity(e2.key);
+          var fltCtxCap = snapshot.latestCtx[e2.key];
           if (fltCtxCap) fltDialHtml = tmRenderCtxDial(fltCtxCap._ctx_snapshot, { size: 14, cap: fltCtxCap, noClick: true });
         } catch (eFltDial) { fltDialHtml = ''; }
         filterHtml += '<div class="tm-flt-row" data-action="set-modal-filter-listbox" data-identity-key="' + escapeHtml(e2.key) + '" title="' + escapeHtml(e2.key) + '" style="padding:3px 6px;border-radius:3px;cursor:pointer;font-size:10px;white-space:nowrap;color:' + e2.color + ';display:flex;align-items:center;gap:4px;' + (sel ? 'background:rgba(90,58,142,0.5);' : '') + '">' +
@@ -16356,7 +16441,7 @@
     // (v4.226) Model→Provider map row: two dropdowns. Left = model (aggregated from ring
     // buffer entries). Right = provider (dynamically populated from tmGetProviderEntries for the
     // selected model). Saving writes to localStorage[tm_model_provider_map_v1] = {model: slug}.
-    var ringModels = tmCollectRingModels();
+    var ringModels = tmCollectRingModels(ring);
     var modelProviderMap = tmGetModelProviderMap();
     var initRowHtml = '<div style="margin-bottom:8px;padding:4px 8px;border-radius:4px;background:rgba(24,34,28,0.7);border:1px solid #2a3a2a;display:flex;align-items:center;flex-wrap:wrap;gap:4px;font-size:10px;">' +
       '<span style="opacity:0.85;">🌱 Model→Provider:</span>' +
@@ -16428,7 +16513,7 @@
                 'Enable it with the command above, then send a message to capture one.' +
                 '</div>';
       } else {
-        html += '<div style="opacity:0.85;">No captured payloads yet \u2014 send a message to record one.</div>';
+        html += '<div style="opacity:0.85;">No captured payloads in this snapshot \u2014 use Refresh after a new turn.</div>';
       }
       payloadCaptureModalInnerEl.innerHTML = html;
       return;
@@ -16447,8 +16532,7 @@
     tmSortModalItems(items);
 
     // (v4.265) Hoist session costs store read outside the row loop so we don't JSON.parse localStorage per row.
-    var modalCostsStore = null;
-    try { modalCostsStore = tmGetSessionCosts() || {}; } catch (e) { modalCostsStore = {}; }
+    var modalCostsStore = snapshot.costs;
 
     // (v4.145) Session costs are stamped onto each capture row at response receipt.
     // No live recomputation from ring entries here; avoids double-counting and preserves history.
@@ -16480,9 +16564,9 @@
       let model = '';
       let prefixHash = '';
       try {
-        const sum = tmBuildCaptureSummary(cap);
-        model = (sum && sum.model) ? String(sum.model) : '';
-        prefixHash = (sum && sum.system_tools_prefix_hash) ? String(sum.system_tools_prefix_hash) : '';
+        const meta = tmPayloadCaptureRowMetadata(cap, snapshot);
+        model = String(meta.model || '');
+        prefixHash = String(meta.prefixHash || '');
       } catch (e) {}
       model = escapeHtml(model);
       prefixHash = escapeHtml(prefixHash);
@@ -16652,7 +16736,7 @@
       var capHost = capIdentity ? (capIdentity.host || '') : '';
       if (!capIdentity) { try { capHost = tmExtractEndpointHost(cap); } catch (e) {} }
       var capIsProxy = capIdentity ? !!capIdentity.proxy : tmIsProxyCapture(cap);
-      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : (capIdKey && modalCostsStore && modalCostsStore[capIdKey] && typeof modalCostsStore[capIdKey]._total === 'number' ? modalCostsStore[capIdKey]._total : tmGetSessionCost(capSessionId, capModel, capHost, capIsProxy));
+      var sessionCost = (cap.session_cost_total != null) ? cap.session_cost_total : (capIdKey && modalCostsStore && modalCostsStore[capIdKey] && typeof modalCostsStore[capIdKey]._total === 'number' ? modalCostsStore[capIdKey]._total : tmPayloadCaptureViewCost(snapshot, capSessionId, capModel, capHost, capIsProxy));
       // (v4.248) A '(T)' tag disambiguates the row's two pink dollar amounts: THIS one is the
       // running SESSION total for the identity (smaller font, info row); the larger unlabeled one on
       // the cost row below is this single payload's own inference cost. Labeling one of the pair is
@@ -16859,7 +16943,7 @@
     if (typeof document === 'undefined') return;
     const overlay = ensurePayloadCaptureModal();
     overlay.style.display = 'block';
-    renderPayloadCaptureModal();
+    renderPayloadCaptureModal('fresh');
     // Register escape handlers on every open (removed on close).
     // (v4.246) TWO listeners, both on window CAPTURE so they run before ANY document-level
     // listener -- crucially including listeners LEAKED by a child modal that re-rendered itself
@@ -16907,7 +16991,7 @@
         // DOM-authoritative keyup guard; no new per-render keydown listener is added.
         if (tmModalFilterListboxOpen) {
           tmModalFilterListboxOpen = false;
-          renderPayloadCaptureModal();
+          renderPayloadCaptureModal('view');
           ev.stopPropagation();
           if (ev.preventDefault) ev.preventDefault();
           return;
@@ -16921,6 +17005,7 @@
   function closePayloadCaptureModal() {
     if (!payloadCaptureModalEl) return;
     payloadCaptureModalEl.style.display = 'none';
+    tmPayloadCaptureSnapshot = null; // release the temporary read view; live capture storage is untouched
     if (tmPayloadCaptureModalEscapeHandler) {
       window.removeEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
       tmPayloadCaptureModalEscapeHandler = null;
