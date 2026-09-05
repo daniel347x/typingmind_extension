@@ -1,6 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.379
+// Version: 4.380
 // Issues Fixed:
+//   - v4.380: FIXED-HEIGHT WINDOWED RING ROWS (per Dan: uniform spacing is preferred). v4.379
+//     stopped rebuilds but still mounted all 500 rich rows; filtering to ~30 made trackball
+//     scrolling much smoother. Now only the visible slots plus 3 neighbors on each side are
+//     mounted; overlapping DOM nodes are retained, with focused/selected slots protected.
+//     Native scrolling is untouched (passive scroll listener, one requestAnimationFrame update;
+//     no wheel interception). Full scrollbar height = entry count x uniform slot height, default
+//     320px; header Row height control persists 180-800px in 20px steps and preserves the top
+//     entry while changing height. A fixed-width visible-index counter avoids header reflow as
+//     digits grow. Each slot offers Open full entry (unclipped content, same working controls),
+//     with Back restoring the prior list position; no nested per-row scrollbars. Frozen snapshot,
+//     explicit Refresh, copy/report consistency and all 500 capture records remain intact.
+//     Browser Find can only search mounted entries; filtering still covers the whole snapshot.
+//     Tests extend tests/ring_modal_freeze.test.cjs with viewport bounds, scroll coalescing,
+//     row-height persistence, full-entry/back navigation and lifecycle; native headless-Chrome
+//     fixture also verifies real geometry, scrollbar extent and return position for 500 entries.
 //   - v4.379: RING-BUFFER MODAL FROZEN AFTER OPEN. The public renderer now requires explicit
 //     'fresh' (open/Refresh) or 'view' (filter/sort/settings) intent. Bare capture/error/tool-badge
 //     notifications are no-ops before any reads or DOM work, even while the modal is open.
@@ -2011,7 +2026,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.379';
+  const EXT_VERSION = '4.380';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12353,6 +12368,193 @@
   // Bare renderPayloadCaptureModal() calls are background notifications and do no work.
   var tmPayloadCaptureSnapshot = null;
 
+  // (v4.380) Uniform-height viewport rendering. Scroll stays native; only visible rows
+  // plus three neighbors on either side are mounted. Frozen capture data/HTML remain available.
+  var TM_CAPTURE_ROW_HEIGHT_KEY = 'tm_payload_ring_row_height_v1';
+  var tmPayloadCaptureVirtual = null;
+  var tmPayloadCaptureDetailId = null;
+  var tmPayloadCaptureReturnAnchor = null;
+
+  function tmCaptureRowHeight() {
+    try {
+      var n = Number(localStorage.getItem(TM_CAPTURE_ROW_HEIGHT_KEY));
+      if (isFinite(n) && n > 0) return Math.max(180, Math.min(800, Math.round(n / 20) * 20));
+    } catch (e) {}
+    return 320;
+  }
+
+  function tmCaptureVisibleRange(count, height, scrollTop, viewportHeight, listTop) {
+    var startY = Math.max(0, scrollTop - listTop);
+    var endY = Math.max(0, scrollTop + viewportHeight - listTop);
+    var first = Math.min(count, Math.floor(startY / height));
+    var last = Math.min(count, Math.max(first, Math.ceil(endY / height)));
+    return { first: first, last: last, start: Math.max(0, first - 3), end: Math.min(count, last + 3) };
+  }
+
+  function tmReleaseCaptureVirtualList() {
+    if (tmPayloadCaptureVirtual && tmPayloadCaptureVirtual.raf != null) cancelAnimationFrame(tmPayloadCaptureVirtual.raf);
+    tmPayloadCaptureVirtual = null;
+  }
+
+  function tmCaptureListAnchor() {
+    var v = tmPayloadCaptureVirtual;
+    if (!v || !payloadCaptureModalInnerEl) return null;
+    var top = payloadCaptureModalInnerEl.scrollTop;
+    var y = Math.max(0, top - v.list.offsetTop);
+    return { index: Math.floor(y / v.height), fraction: (y % v.height) / v.height, controlsTop: top < v.list.offsetTop ? top : null };
+  }
+
+  function tmRestoreCaptureListAnchor(anchor) {
+    var v = tmPayloadCaptureVirtual;
+    if (!v || !anchor || !payloadCaptureModalInnerEl) return;
+    var index = Math.min(Math.max(0, v.rows.length - 1), anchor.index);
+    payloadCaptureModalInnerEl.scrollTop = anchor.controlsTop != null ? anchor.controlsTop : v.list.offsetTop + (index + anchor.fraction) * v.height;
+    tmUpdateCaptureVirtualList();
+  }
+
+  function tmCreateCaptureVirtualSlot(entry, index, height) {
+    var slot = document.createElement('div');
+    slot.setAttribute('data-capture-slot', String(index));
+    slot.style.cssText = 'position:absolute;left:0;right:0;box-sizing:border-box;overflow:hidden;border-bottom:6px solid transparent;border-radius:6px;background:rgba(30,30,36,0.85);';
+    var content = document.createElement('div');
+    content.style.overflow = 'hidden';
+    content.innerHTML = entry.html;
+    var full = document.createElement('button');
+    full.type = 'button';
+    full.setAttribute('data-action', 'open-capture-full-entry');
+    full.setAttribute('data-capture-id', entry.id);
+    full.textContent = '#' + entry.ordinal + ' · Open full entry';
+    full.title = 'List entries have a fixed height. Open this entry to see all its content without clipping.';
+    full.style.cssText = 'position:absolute;bottom:3px;left:8px;font-size:10px;line-height:18px;padding:0 7px;background:#293343;color:#a9d4ef;border:1px solid #48546a;border-radius:3px;cursor:pointer;';
+    slot.appendChild(content);
+    slot.appendChild(full);
+    slot._tmCaptureContent = content;
+    return slot;
+  }
+
+  // @beacon[
+  //   id=payload-ring-virtual-window,
+  //   role=__lambdao_1.tmUpdateCaptureVirtualList,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
+  //   kind=ast,
+  //   comment=v4.380: native-scroll fixed-height windowing. Calculates visible indices arithmetically, retains overlapping DOM slots, mounts only the visible window plus overscan, and preserves focused/selected slots. No wheel interception or per-row height measurement; full scrollbar extent is rows times chosen height.,
+  // ]
+  function tmUpdateCaptureVirtualList() {
+    var v = tmPayloadCaptureVirtual;
+    if (!v || !payloadCaptureModalEl || payloadCaptureModalEl.style.display === 'none') return;
+    var body = payloadCaptureModalInnerEl;
+    var range = tmCaptureVisibleRange(v.rows.length, v.height, body.scrollTop, body.clientHeight, v.list.offsetTop);
+    var wanted = Object.create(null);
+    for (var i = range.start; i < range.end; i++) wanted[i] = true;
+    // Do not destroy a focused dropdown/button or the endpoints of a text selection on scroll.
+    function retain(node) {
+      var el = node && (node.nodeType === 3 ? node.parentElement : node);
+      var slot = el && el.closest ? el.closest('[data-capture-slot]') : null;
+      if (slot && slot.parentNode === v.list) wanted[slot.getAttribute('data-capture-slot')] = true;
+    }
+    try {
+      retain(document.activeElement);
+      var sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed) { retain(sel.anchorNode); retain(sel.focusNode); }
+    } catch (eF) {}
+    var indices = Object.keys(wanted).map(Number).filter(function(n) { return n >= 0 && n < v.rows.length; }).sort(function(a, b) { return a - b; });
+    var signature = indices.join(',') + ':' + v.height + ':' + range.first + ':' + range.last;
+    if (v.signature === signature) return;
+    v.signature = signature;
+    Object.keys(v.slots).forEach(function(k) {
+      if (!wanted[k]) { var old = v.slots[k]; if (old.parentNode) old.parentNode.removeChild(old); delete v.slots[k]; }
+    });
+    indices.forEach(function(index) {
+      var slot = v.slots[index];
+      if (!slot) {
+        slot = tmCreateCaptureVirtualSlot(v.rows[index], index, v.height); v.slots[index] = slot;
+        var before = null;
+        for (var child = 0; child < v.list.children.length; child++) {
+          if (Number(v.list.children[child].getAttribute('data-capture-slot')) > index) { before = v.list.children[child]; break; }
+        }
+        v.list.insertBefore(slot, before);
+      }
+      if (slot._tmCaptureHeight !== v.height) {
+        slot.style.top = (index * v.height) + 'px';
+        slot.style.height = v.height + 'px';
+        slot._tmCaptureContent.style.height = (v.height - 30) + 'px';
+        slot._tmCaptureHeight = v.height;
+      }
+    });
+    var label = payloadCaptureModalEl.querySelector('[data-role="capture-window-status"]');
+    if (label) label.textContent = range.last > range.first ? ('Visible #' + (range.first + 1) + '–' + range.last + ' of ' + v.rows.length) : ('0 visible of ' + v.rows.length);
+  }
+
+  function tmScheduleCaptureVirtualUpdate() {
+    var v = tmPayloadCaptureVirtual;
+    if (!v || v.raf != null) return;
+    v.raf = requestAnimationFrame(function() {
+      v.raf = null;
+      if (v === tmPayloadCaptureVirtual) tmUpdateCaptureVirtualList();
+    });
+  }
+
+  function tmMountCaptureRows(snapshot, controlsHtml) {
+    tmReleaseCaptureVirtualList();
+    snapshot.controlsHtml = controlsHtml;
+    var detail = tmPayloadCaptureDetailId && snapshot.rowById[tmPayloadCaptureDetailId];
+    var heightInput = payloadCaptureModalEl.querySelector('[data-action="set-capture-row-height"]');
+    if (heightInput) { heightInput.value = String(tmCaptureRowHeight()); heightInput.disabled = !!detail; }
+    if (detail) {
+      payloadCaptureModalInnerEl.innerHTML = '<button type="button" data-action="back-capture-list" style="margin-bottom:8px;background:#293343;color:#a9d4ef;border:1px solid #48546a;border-radius:3px;padding:4px 8px;cursor:pointer;">← Back to list</button>' + detail.html;
+      var label = payloadCaptureModalEl.querySelector('[data-role="capture-window-status"]');
+      if (label) label.textContent = 'Full entry #' + detail.ordinal + ' of ' + snapshot.rows.length;
+      return;
+    }
+    tmPayloadCaptureDetailId = null;
+    payloadCaptureModalInnerEl.innerHTML = controlsHtml;
+    var list = document.createElement('div');
+    list.setAttribute('data-role', 'capture-virtual-list');
+    list.style.position = 'relative';
+    var height = tmCaptureRowHeight();
+    list.style.height = (snapshot.rows.length * height) + 'px';
+    payloadCaptureModalInnerEl.appendChild(list);
+    tmPayloadCaptureVirtual = { list: list, rows: snapshot.rows, height: height, slots: Object.create(null), signature: null, raf: null };
+    tmUpdateCaptureVirtualList();
+  }
+
+  function tmOpenCaptureFullEntry(id) {
+    var snap = tmPayloadCaptureSnapshot;
+    if (!snap || !snap.rowById || !snap.rowById[id]) return;
+    tmPayloadCaptureReturnAnchor = tmCaptureListAnchor();
+    tmPayloadCaptureDetailId = id;
+    tmMountCaptureRows(snap, snap.controlsHtml);
+    payloadCaptureModalInnerEl.scrollTop = 0;
+  }
+
+  function tmBackToCaptureList() {
+    var snap = tmPayloadCaptureSnapshot;
+    if (!snap) return;
+    tmPayloadCaptureDetailId = null;
+    tmMountCaptureRows(snap, snap.controlsHtml);
+    tmRestoreCaptureListAnchor(tmPayloadCaptureReturnAnchor);
+    tmPayloadCaptureReturnAnchor = null;
+  }
+
+  function tmSetCaptureRowHeight(value) {
+    var anchor = tmCaptureListAnchor();
+    var n = Number(value);
+    if (isFinite(n) && n > 0) {
+      n = Math.max(180, Math.min(800, Math.round(n / 20) * 20));
+      try { localStorage.setItem(TM_CAPTURE_ROW_HEIGHT_KEY, String(n)); } catch (e) {}
+    }
+    var height = tmCaptureRowHeight();
+    var input = payloadCaptureModalEl.querySelector('[data-action="set-capture-row-height"]');
+    if (input) input.value = String(height);
+    var v = tmPayloadCaptureVirtual;
+    if (!v) return;
+    v.height = height;
+    v.list.style.height = (v.rows.length * height) + 'px';
+    v.signature = null;
+    tmRestoreCaptureListAnchor(anchor);
+  }
+
+
   function tmCreatePayloadCaptureSnapshot() {
     // Catalog discovery belongs to explicit opening/Refresh, not every filter click or response.
     try { tmDiscoverAndMergeProviderRatings(); } catch (e) {}
@@ -12452,11 +12654,15 @@
     header.style.alignItems = 'center';
     header.style.justifyContent = 'space-between';
     header.style.marginBottom = '6px';
+    header.style.flexWrap = 'wrap';
+    header.style.gap = '4px';
     header.innerHTML =
       '<div style="font-weight:600;">Payload Capture Ring Buffer</div>' +
       '<div style="font-size:11px;opacity:0.8;">' +
       '<span data-role="capture-snapshot-status">Frozen snapshot. Captures continue in the background.</span>' +
       '</div>' +
+      '<label style="font-size:11px;white-space:nowrap;">Row height <input type="number" data-action="set-capture-row-height" min="180" max="800" step="20" value="' + tmCaptureRowHeight() + '" title="Uniform list slot height in pixels; use Open full entry for uncut content" style="width:55px;background:#222;color:#ddd;border:1px solid #555;border-radius:3px;"> px</label>' +
+      '<span data-role="capture-window-status" style="font-size:11px;color:#9ecce6;white-space:nowrap;flex:0 0 190px;font-variant-numeric:tabular-nums;"></span>' +
       '<button data-action="refresh-payload-capture-modal" title="Take a new snapshot of the latest captures" style="margin-left:8px;background:#245f36;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Refresh</button>' +
       '<button data-action="close-payload-capture-modal" ' +
       'style="margin-left:8px;background:#444;color:#fff;border:none;border-radius:3px;padding:2px 6px;font-size:11px;cursor:pointer;">Close</button>';
@@ -12465,6 +12671,10 @@
     body.id = 'tm-payload-capture-modal-body';
     body.style.flex = '1';
     body.style.overflow = 'auto';
+    body.style.position = 'relative';
+    body.style.minHeight = '0';
+    body.addEventListener('scroll', tmScheduleCaptureVirtualUpdate, { passive: true });
+    window.addEventListener('resize', tmScheduleCaptureVirtualUpdate);
     body.style.marginTop = '4px';
 
     panel.appendChild(header);
@@ -12483,6 +12693,13 @@
       if (t === overlay) {
         closePayloadCaptureModal();
         return;
+      }
+
+      if (t.dataset && t.dataset.action === 'open-capture-full-entry') {
+        tmOpenCaptureFullEntry(t.dataset.captureId); ev.stopPropagation(); return;
+      }
+      if (t.dataset && t.dataset.action === 'back-capture-list') {
+        tmBackToCaptureList(); ev.stopPropagation(); return;
       }
 
       // (v4.379) Explicit refresh is the ONLY way (besides reopen) to acquire newer captures.
@@ -12630,6 +12847,9 @@
     // v4.162: Change handler for Sol reasoning effort dropdown + v4.163: identity filter dropdown.
     overlay.addEventListener('change', function(ev) {
       var t = ev.target;
+      if (t && t.dataset && t.dataset.action === 'set-capture-row-height') {
+        tmSetCaptureRowHeight(t.value); ev.stopPropagation(); return;
+      }
       // (v4.206) Provider-routing dropdowns now live in the ring modal too (shared handler).
       if (t && t.dataset && t.dataset.action === 'set-provider-routing') {
         tmHandleProviderRoutingChange(t);
@@ -16233,9 +16453,11 @@
   function renderPayloadCaptureModal(intent) {
     var snapshot = tmPreparePayloadCaptureRender(intent);
     if (!snapshot) return false;
+    if (intent === 'fresh') { tmPayloadCaptureDetailId = null; tmPayloadCaptureReturnAnchor = null; }
     var scrollTop = intent === 'fresh' ? 0 : payloadCaptureModalInnerEl.scrollTop;
     tmRenderPayloadCaptureModalSnapshot(snapshot);
     payloadCaptureModalInnerEl.scrollTop = scrollTop;
+    tmUpdateCaptureVirtualList();
     var label = payloadCaptureModalEl.querySelector('[data-role="capture-snapshot-status"]');
     if (label) label.textContent = 'Frozen at ' + new Date(snapshot.at).toLocaleTimeString() + ' — captures continue; Refresh for latest';
     return true;
@@ -16250,6 +16472,8 @@
   // ]
   function tmRenderPayloadCaptureModalSnapshot(snapshot) {
     const ring = snapshot.ring;
+    snapshot.rows = [];
+    snapshot.rowById = Object.create(null);
     var items = ring.slice().reverse(); // most recent first
 
     // Provider catalogs are discovered once by the explicit snapshot acquisition.
@@ -16515,7 +16739,7 @@
       } else {
         html += '<div style="opacity:0.85;">No captured payloads in this snapshot \u2014 use Refresh after a new turn.</div>';
       }
-      payloadCaptureModalInnerEl.innerHTML = html;
+      tmMountCaptureRows(snapshot, html);
       return;
     }
 
@@ -16545,6 +16769,8 @@
 
     items.forEach((cap, idx) => {
       if (!cap) return;
+      // (v4.380) Build a reusable row string, not 500 simultaneously mounted DOM trees.
+      let html = '';
 
       // (v4.223) Timeline separator — only in chronological sort mode.
       if (tmModalSortMode === 'chronological' && idx > 0) {
@@ -16934,9 +17160,12 @@
       }
 
       html += '</div>';
+      var entry = { id: String(cap.id || ''), ordinal: idx + 1, html: html };
+      snapshot.rows.push(entry);
+      if (entry.id) snapshot.rowById[entry.id] = entry;
     });
 
-    payloadCaptureModalInnerEl.innerHTML = html;
+    tmMountCaptureRows(snapshot, html);
   }
 
   function openPayloadCaptureModal() {
@@ -17005,6 +17234,9 @@
   function closePayloadCaptureModal() {
     if (!payloadCaptureModalEl) return;
     payloadCaptureModalEl.style.display = 'none';
+    tmReleaseCaptureVirtualList();
+    tmPayloadCaptureDetailId = null;
+    tmPayloadCaptureReturnAnchor = null;
     tmPayloadCaptureSnapshot = null; // release the temporary read view; live capture storage is untouched
     if (tmPayloadCaptureModalEscapeHandler) {
       window.removeEventListener('keyup', tmPayloadCaptureModalEscapeHandler, true);
