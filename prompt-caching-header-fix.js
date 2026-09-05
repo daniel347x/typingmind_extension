@@ -1,6 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.377
+// Version: 4.378
 // Issues Fixed:
+//   - v4.378: SESSIONS-IN-MEMORY SCROLL PERFORMANCE + GROUPED KEEP-ALIVE MESSAGES. The dashboard
+//     now rebuilds its full pinned content at a 30s wall-clock cadence (was every 3s), deferring
+//     while scrolling, selecting text, dragging, using a dropdown or viewing a child modal.
+//     Live timers remain 1s: one shared ring/cost/KA snapshot per tick and writes only to zones
+//     whose HTML changed. Idle rows do not churn; unchanged spinner nodes keep their animation.
+//     KA refreshes patch only their own control zones, never rebuild the dashboard or widget.
+//     A small right-side ▤ button opens a STATIC, copyable keep-alive message-pattern report:
+//     numeric values/times/dollars -> □, blue occurrence counts, last-seen age. Counts increase
+//     on state entries or distinct ping-result events, never countdown ticks or UI repaints.
+//     Store tm_keepalive_messages_v1: raw session ID (tm- alias tolerant), max 16 patterns/session,
+//     40 sessions and 64Ki characters total; standard session touch/prune lifecycle. No payload
+//     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
+//     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
+//     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
 //   - v4.377: REMOVE KEEP-ALIVE OUTPUT-BUDGET OVERRIDE. After the sidebar fix, Dan's sentinel
 //     reached the conversation, but TypingMind showed 'maximum output tokens or context limit'
 //     without a visible reply (context gauge ~31%). v4.374-v4.376 reduced output limits to 64
@@ -1985,7 +1999,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.377';
+  const EXT_VERSION = '4.378';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2084,6 +2098,7 @@
     pruneMap(TM_PROVIDER_LOCKS_KEY, false);
     pruneMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361) per-identity thinking overrides
     pruneMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367) per-origin reasoning-replay ledger
+    pruneMap('tm_keepalive_messages_v1', false); // v4.378 bounded message patterns
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -3535,6 +3550,7 @@
     touchMap(TM_PROVIDER_LOCKS_KEY, false);
     touchMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361)
     touchMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367)
+    touchMap('tm_keepalive_messages_v1', false); // v4.378 raw/tm- alias tolerant history touch
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -4516,6 +4532,110 @@
   var tmKeepAliveSkipLogged = {}; // key -> reason logged once
   var tmKeepAliveStatus = {};     // key -> { text, tone } -- the visible skip/next reason, rebuilt every sweep
 
+  // (v4.378) Bounded per-CONVERSATION message patterns, separate from the ping accounting
+  // store so a sweeper snapshot cannot overwrite history. No raw payloads and no render ticks.
+  var TM_KA_MESSAGES_KEY = 'tm_keepalive_messages_v1';
+
+  function tmKeepAliveMessageTemplate(text) {
+    return String(text || '').slice(0, 400)
+      .replace(/\b\d{1,2}:\d{2}(?::\d{2})?\b/g, '□')
+      .replace(/\b\d+(?:\.\d+)?\s*(?:milliseconds?|seconds?|minutes?|hours?|days?|ms|s|m|h|d)\b/gi, '□')
+      .replace(/([$€£])\s*[+-]?\d+(?:,\d{3})*(?:\.\d+)?/g, '$1□')
+      .replace(/\d+(?:,\d{3})*(?:\.\d+)?(?:[kKmMgGtT](?![A-Za-z]))?/g, '□')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  function tmReadKeepAliveMessages() {
+    try {
+      var data = JSON.parse(localStorage.getItem(TM_KA_MESSAGES_KEY) || '{}');
+      return data && typeof data === 'object' && !Array.isArray(data) ? Object.assign(Object.create(null), data) : Object.create(null);
+    } catch (e) { return Object.create(null); }
+  }
+
+  // @beacon[
+  //   id=keepalive-message-patterns,
+  //   role=__lambdao_1.tmKeepAliveRememberMessage,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  //   comment=v4.378: records a normalized status pattern once per state transition or explicit result event. Numeric countdown/price/token differences and repaint ticks do not increment counts. Persisted by raw session ID: max 16 patterns/session, 40 sessions and 64Ki characters total; last-seen timestamps plus counts, not a stream of raw messages.,
+  // ]
+  function tmKeepAliveRememberMessage(key, text, eventId) {
+    try {
+      var sid = tmKeepAliveNormSid(String(key || '').split('::')[0]);
+      var template = tmKeepAliveMessageTemplate(text);
+      if (!sid || !template) return;
+      var all = tmReadKeepAliveMessages();
+      var entry = all[sid];
+      if (!entry || !Array.isArray(entry.rows)) entry = { _session_id: sid, rows: [], last_by_identity: Object.create(null) };
+      var last = Object.assign(Object.create(null), entry.last_by_identity || {});
+      var ident = String(key).slice(0, 512);
+      var row = entry.rows.find(function(r) { return r && r.template === template; });
+      // Explicit result IDs count repeated real events, but not the same capture twice.
+      if (eventId) { if (row && row.last_event === String(eventId)) return; }
+      else {
+        if (last[ident] === template) return;
+        last[ident] = template;
+        var identities = Object.keys(last);
+        while (identities.length > 8) delete last[identities.shift()];
+        entry.last_by_identity = last;
+      }
+      var now = Date.now();
+      if (!row) {
+        if (entry.rows.length >= 16) {
+          var oldest = 0;
+          for (var i = 1; i < entry.rows.length; i++) if (Number(entry.rows[i].last_at || 0) < Number(entry.rows[oldest].last_at || 0)) oldest = i;
+          entry.rows.splice(oldest, 1);
+        }
+        row = { template: template, count: 0, last_at: 0 };
+        entry.rows.push(row);
+      }
+      row.count = Number(row.count || 0) + 1;
+      row.last_at = now;
+      if (eventId) row.last_event = String(eventId).slice(0, 128);
+      entry._ts = now;
+      all[sid] = entry;
+      var keys = Object.keys(all).sort(function(a, b) { return Number(all[a]._ts || 0) - Number(all[b]._ts || 0); });
+      while (keys.length > 40) { var expired = keys.shift(); if (expired !== sid) delete all[expired]; }
+      var json = JSON.stringify(all);
+      while (json.length > 65536 && keys.length > 1) {
+        var drop = keys.shift(); if (drop === sid) continue;
+        delete all[drop]; json = JSON.stringify(all);
+      }
+      localStorage.setItem(TM_KA_MESSAGES_KEY, json);
+    } catch (e) { console.warn('[Payload] Could not record keep-alive message pattern:', e); }
+  }
+
+  function tmKeepAliveSetStatus(key, status, eventId) {
+    tmKeepAliveStatus[key] = status;
+    tmKeepAliveRememberMessage(key, status && status.text, eventId);
+  }
+
+  function tmKeepAliveSummaryText(entry) {
+    var lastT = entry.log && entry.log.length ? new Date(entry.log[entry.log.length - 1].ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
+    return 'pings ' + Number(entry.ping_count || 0) + ' · $' + Number(entry.spend_total || 0).toFixed(3) +
+      (lastT ? (' · ' + lastT + ' ✓' + tmThinkFmtK(entry.read_last || 0) + (entry.write_last ? ('/⚠' + tmThinkFmtK(entry.write_last)) : '/0')) : '');
+  }
+
+  // Static snapshot: it stays still for reading/copying. Count blue, age muted, values omitted.
+  function tmShowKeepAliveMessages(key) {
+    var sid = tmKeepAliveNormSid(String(key || '').split('::')[0]);
+    var all = tmReadKeepAliveMessages();
+    var rows = all[sid] && Array.isArray(all[sid].rows) ? all[sid].rows : [];
+    var now = Date.now(), html = [], copy = ['Keep-alive message patterns — ' + sid, '□ = changing numeric value; counts are events/state entries, not screen refreshes.', ''];
+    html.push('<div style="color:#9aa4b2;margin-bottom:12px;">□ = changing numeric value. Counts record events or entry into a status, not countdown ticks. Up to 16 patterns; snapshot at opening.</div>');
+    rows.forEach(function(r) {
+      var age = tmFmtDuration(Math.max(0, now - Number(r.last_at || now))) + ' ago';
+      copy.push(r.template + ' (' + r.count + ') — last seen ' + age);
+      html.push('<div style="padding:7px 0;border-top:1px solid #30303a;line-height:1.5;">' +
+        '<span style="color:#d0d0d8;">' + escapeHtml(r.template) + '</span> ' +
+        '<span style="color:#7ec8e3;font-weight:700;">(' + Number(r.count || 0) + ')</span> ' +
+        '<span style="color:#92929e;">— last seen ' + escapeHtml(age) + '</span></div>');
+    });
+    if (!rows.length) { html.push('<div>No messages recorded yet. Recording starts with v4.378; old overwritten status lines cannot be recovered.</div>'); copy.push('No messages recorded yet.'); }
+    tmShowJsonViewerModal(copy.join('\n'), 'Keep-alive messages — ' + sid, { contentHtml: html.join(''), copyText: copy.join('\n') });
+  }
+
+
   function tmGetKeepAliveStore() { try { var v = JSON.parse(localStorage.getItem(TM_KEEPALIVE_KEY) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; } }
   function tmSaveKeepAliveStore(s) { try { localStorage.setItem(TM_KEEPALIVE_KEY, JSON.stringify(s)); } catch (e) {} }
   function tmGetKeepAliveEntry(key) { var s = tmGetKeepAliveStore(); return s[key] || null; }
@@ -4656,7 +4776,7 @@
     // This also gives verification and the return-trip bookmark the same raw ID as lookup.
     var sid = tmKeepAliveNormSid(entry.sid || (String(key).split('::')[0] || ''));
     if (!sid) {
-      tmKeepAliveStatus[key] = { text: 'no Session ID for this row \u2014 cannot target the conversation', tone: 'warn' };
+      tmKeepAliveSetStatus(key, { text: 'no Session ID for this row \u2014 cannot target the conversation', tone: 'warn' });
       if (!tmKeepAliveSkipLogged[key]) { tmKeepAliveSkipLogged[key] = 1; console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive (' + key + '): no session id; cannot fire.'); }
       return;
     }
@@ -4677,7 +4797,7 @@
       }
       tmSaveKeepAliveStore(store);
     } catch (eM) {}
-    tmKeepAliveStatus[key] = { text: 'ping queued \u2014 switching to the conversation\u2026', tone: 'active' };
+    tmKeepAliveSetStatus(key, { text: 'ping queued \u2014 switching to the conversation\u2026', tone: 'active' });
     tmKeepAliveRefreshUI();
     var queued = false;
     try {
@@ -4686,7 +4806,7 @@
         if (!e2) return;
         if (ok) {
           console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping SUBMITTED for ' + (e2.model || key) + ' @ ' + (e2.host || '?') + ' \u2014 awaiting the response row.');
-          tmKeepAliveStatus[key] = { text: 'ping sent \u2014 awaiting response', tone: 'active' };
+          tmKeepAliveSetStatus(key, { text: 'ping sent \u2014 awaiting response', tone: 'active' });
           tmKeepAliveRefreshUI();
         } else {
           // (v4.375) 'Skip this ping' = PAUSE until Dan's next real message. A skip happens at
@@ -4695,7 +4815,7 @@
           if (/skipped by user/i.test(String(err || ''))) {
             e2.pending_ping = null; e2.retry_at = 0; e2.paused_until_turn = true;
             tmSetKeepAliveEntry(key, e2);
-            tmKeepAliveStatus[key] = { text: 'paused until your next message (ping skipped)', tone: 'muted' };
+            tmKeepAliveSetStatus(key, { text: 'paused until your next message (ping skipped)', tone: 'muted' });
             console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping skipped by user \u2014 paused for ' + (e2.model || key) + ' until the next real turn.');
             tmKeepAliveRefreshUI();
             return;
@@ -4762,15 +4882,16 @@
         // Prefix mismatch: we just PAID A WRITE. Disable so it cannot repeat every interval.
         e2.enabled = false;
         e2.broken = { ts: now, write_tokens: writeTok, read_tokens: readTok, cost: cost };
-        tmKeepAliveStatus[key] = { text: 'BROKEN \u2014 the ping paid a cache write', tone: 'warn' };
+        tmKeepAliveSetStatus(key, { text: 'BROKEN \u2014 the ping paid a cache write', tone: 'warn' }, 'result:' + (cap.id || now));
         console.error('\ud83d\udea8 [v' + EXT_VERSION + '] KEEP-ALIVE BROKEN for ' + (e2.model || key) + ': ping WROTE ' + tmThinkFmtK(writeTok) + ' cache tokens (prefix mismatch) \u2014 auto-disabled.');
       } else {
-        tmKeepAliveStatus[key] = { text: 'TTL refreshed \u2713 read ' + tmThinkFmtK(readTok), tone: 'ok' };
+        tmKeepAliveSetStatus(key, { text: 'TTL refreshed \u2713 read ' + tmThinkFmtK(readTok), tone: 'ok' }, 'result:' + (cap.id || now));
         console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping ' + (e2.model || '?') + ' @ ' + (e2.host || '?') + ': read ' + tmThinkFmtK(readTok) + ', write ' + tmThinkFmtK(writeTok) + (cost != null ? (', $' + cost.toFixed(4)) : '') + ' \u2014 TTL refreshed.');
       }
       e2._ts = now;
       store[key] = e2;
       tmSaveKeepAliveStore(store);
+      tmKeepAliveRememberMessage(key, tmKeepAliveSummaryText(e2), 'summary:' + (cap.id || now));
       tmKeepAliveRefreshUI();
     } catch (eR) {}
   }
@@ -4782,14 +4903,14 @@
     entry.pending_ping = null;
     if (!entry.retry_at) {
       entry.retry_at = Date.now() + 60 * 1000;
-      tmKeepAliveStatus[key] = { text: 'ping failed (' + reason + ') \u2014 retry in 60s', tone: 'warn' };
+      tmKeepAliveSetStatus(key, { text: 'ping failed (' + reason + ') \u2014 retry in 60s', tone: 'warn' });
       console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive ping failed (' + reason + ') \u2014 one retry in 60s.');
     } else {
       entry.retry_at = 0;
       if (!Array.isArray(entry.log)) entry.log = [];
       entry.log.push({ ts: Date.now(), error: reason });
       if (entry.log.length > 30) entry.log = entry.log.slice(-30);
-      tmKeepAliveStatus[key] = { text: 'retry failed (' + reason + ') \u2014 waiting for the next interval', tone: 'warn' };
+      tmKeepAliveSetStatus(key, { text: 'retry failed (' + reason + ') \u2014 waiting for the next interval', tone: 'warn' });
       console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive retry also failed (' + reason + ') \u2014 waiting for the next interval.');
     }
     tmSetKeepAliveEntry(key, entry);
@@ -4818,27 +4939,27 @@
         if (!e.enabled) { delete tmKeepAliveStatus[key]; continue; }
         if (e.max_hours && e.enabled_at && now - e.enabled_at > e.max_hours * 3600 * 1000) {
           e.enabled = false; e.stopped_reason = 'max duration ' + e.max_hours + 'h reached'; e._ts = now; dirty = true;
-          tmKeepAliveStatus[key] = { text: 'auto-off: ' + e.stopped_reason, tone: 'muted' };
+          tmKeepAliveSetStatus(key, { text: 'auto-off: ' + e.stopped_reason, tone: 'muted' });
           console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive auto-off (' + (e.model || key) + '): ' + e.stopped_reason);
           continue;
         }
         var sidNorm = tmKeepAliveNormSid(e.sid || String(key).split('::')[0]);
         // (v4.375) Skipped a ping -> paused until the next real turn on this session.
-        if (e.paused_until_turn) { tmKeepAliveStatus[key] = { text: 'paused until your next message (ping skipped)', tone: 'muted' }; continue; }
+        if (e.paused_until_turn) { tmKeepAliveSetStatus(key, { text: 'paused until your next message (ping skipped)', tone: 'muted' }); continue; }
         // A ping is queued/sent and its response has not arrived yet.
         if (e.pending_ping && e.pending_ping.ts) {
           if (now - e.pending_ping.ts > TM_KA_PENDING_TIMEOUT_MS) {
             e.pending_ping = null; e._ts = now; dirty = true;
-            tmKeepAliveStatus[key] = { text: 'ping produced no response in 10 min \u2014 abandoned; next interval', tone: 'warn' };
+            tmKeepAliveSetStatus(key, { text: 'ping produced no response in 10 min \u2014 abandoned; next interval', tone: 'warn' });
             console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive (' + (e.model || key) + '): pending ping abandoned after 10 min without a response row.');
           } else {
-            tmKeepAliveStatus[key] = { text: 'ping in progress (' + Math.round((now - e.pending_ping.ts) / 1000) + 's)', tone: 'active' };
+            tmKeepAliveSetStatus(key, { text: 'ping in progress (' + Math.round((now - e.pending_ping.ts) / 1000) + 's)', tone: 'active' });
           }
           continue;
         }
         if (e.retry_at) {
           if (now >= e.retry_at) { if (!firedSids[sidNorm]) { firedSids[sidNorm] = 1; tmKeepAliveFirePing(key); } }
-          else tmKeepAliveStatus[key] = { text: 'retry in ' + Math.max(1, Math.round((e.retry_at - now) / 1000)) + 's', tone: 'warn' };
+          else tmKeepAliveSetStatus(key, { text: 'retry in ' + Math.max(1, Math.round((e.retry_at - now) / 1000)) + 's', tone: 'warn' });
           continue;
         }
         // --- the state-machine gates (each with a visible reason) ---
@@ -4849,21 +4970,21 @@
             if (ifk === key || tmKeepAliveNormSid(String(ifk).split('::')[0]) === sidNorm) { inFlight = true; break; }
           }
         } catch (eIF) {}
-        if (inFlight) { tmKeepAliveStatus[key] = { text: 'waiting: request in flight', tone: 'muted' }; continue; }
+        if (inFlight) { tmKeepAliveSetStatus(key, { text: 'waiting: request in flight', tone: 'muted' }); continue; }
         var ds = null;
         try { ds = tmAgentManagementDisplayState(e.sid || String(key).split('::')[0]); } catch (eDS) {}
-        if (ds && ds.pendingToolCall) { tmKeepAliveStatus[key] = { text: 'waiting: tool call pending (turn incomplete)', tone: 'muted' }; continue; }
-        if (actuatorBusy) { tmKeepAliveStatus[key] = { text: 'waiting: auto-resume actuator busy', tone: 'muted' }; continue; }
+        if (ds && ds.pendingToolCall) { tmKeepAliveSetStatus(key, { text: 'waiting: tool call pending (turn incomplete)', tone: 'muted' }); continue; }
+        if (actuatorBusy) { tmKeepAliveSetStatus(key, { text: 'waiting: auto-resume actuator busy', tone: 'muted' }); continue; }
         var baseline = Math.max(e.last_turn_ts || 0, e.enabled_at || 0);
         var lastActivity = Math.max(baseline, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, e.last_ping_ts || 0);
         var intervalMs = Math.max(1, Number(e.interval_min || 50)) * 60 * 1000;
         var remaining = intervalMs - (now - lastActivity);
         if (remaining > 0) {
           var mins = Math.ceil(remaining / 60000);
-          tmKeepAliveStatus[key] = { text: 'next ping in ' + (mins >= 2 ? (mins + 'm') : (Math.max(1, Math.round(remaining / 1000)) + 's')), tone: 'muted' };
+          tmKeepAliveSetStatus(key, { text: 'next ping in ' + (mins >= 2 ? (mins + 'm') : (Math.max(1, Math.round(remaining / 1000)) + 's')), tone: 'muted' });
           continue;
         }
-        if (firedSids[sidNorm]) { tmKeepAliveStatus[key] = { text: 'ping fired via sibling row', tone: 'active' }; continue; }
+        if (firedSids[sidNorm]) { tmKeepAliveSetStatus(key, { text: 'ping fired via sibling row', tone: 'active' }); continue; }
         firedSids[sidNorm] = 1;
         tmKeepAliveFirePing(key);
       }
@@ -4885,14 +5006,8 @@
   //   kind=ast,
   // ]
   function tmKeepAliveRefreshUI() {
-    try { renderGpt51UsageWidget(); } catch (e) {}
-    try {
-      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
-        var st = tmSessionCtxHoverContentEl.scrollTop;
-        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-        tmSessionCtxHoverContentEl.scrollTop = st;
-      }
-    } catch (e2) {}
+    // KA controls live on the dashboard: patch those zones, not the whole dashboard/widget.
+    try { tmRefreshSessionCtxKeepAlive(); } catch (e) {}
   }
 
   // Hovercard row control: ⏰ toggle + [Nm] interval button + status/broken line.
@@ -4902,9 +5017,9 @@
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
   // ]
-  function tmKeepAliveRowHtml(key, info) {
+  function tmKeepAliveRowHtml(key, info, store) {
     try {
-      var e = tmGetKeepAliveEntry(key);
+      var e = store ? store[key] : tmGetKeepAliveEntry(key);
       var on = !!(e && e.enabled);
       var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String((info && info.model) || '') + String((info && info.host) || '')) ? 50 : 4);
       var btn = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
@@ -4913,8 +5028,7 @@
       if (e && e.broken) {
         status = ' <span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-size:10px;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>';
       } else if (e && e.ping_count) {
-        var lastT = e.log && e.log.length ? new Date(e.log[e.log.length - 1].ts).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' }) : '';
-        status = ' <span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">pings ' + e.ping_count + ' \u00b7 $' + Number(e.spend_total || 0).toFixed(3) + (lastT ? (' \u00b7 ' + lastT + ' \u2713' + tmThinkFmtK(e.read_last || 0) + (e.write_last ? ('/\u26a0' + tmThinkFmtK(e.write_last)) : '/0')) : '') + '</span>';
+        status = ' <span title="keep-alive pings this session · cumulative ping spend · last ping: cache read / cache write" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>';
       }
       // (v4.374) THE REASON LINE: what the sweeper decided on its last pass -- never a silent skip.
       if (on) {
@@ -4923,7 +5037,8 @@
         var sttColor = (stt && stt.tone === 'warn') ? '#ffb84d' : ((stt && stt.tone === 'active') ? '#7fd8ff' : ((stt && stt.tone === 'ok') ? '#7dd67d' : '#8a94a2'));
         status += ' <span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';font-size:10px;white-space:nowrap;">\u00b7 ' + escapeHtml(sttText) + '</span>';
       }
-      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">' + btn + status + '</span>';
+      var historyButton = '<button type="button" data-action="ka-messages" data-key="' + escapeHtml(key) + '" title="Keep-alive messages: grouped patterns, counts and last seen (numeric values omitted)" style="font-size:11px;padding:0 4px;border:1px solid #44515e;border-radius:3px;background:#20252e;color:#9ecce6;cursor:pointer;">▤</button>';
+      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">' + btn + status + historyButton + '</span>';
     } catch (e9) { return ''; }
   }
 
@@ -4937,7 +5052,7 @@
       if (!e.interval_min) e.interval_min = /claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4;
       e.sid = info.sid || e.sid || null; e.model = info.model || e.model || ''; e.host = info.host || e.host || ''; e.proxy = !!info.isProxy;
       e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
-      tmKeepAliveStatus[key] = { text: 'armed \u2014 next ping in ' + e.interval_min + 'm', tone: 'muted' };
+      tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + e.interval_min + 'm', tone: 'muted' });
       console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm (session ' + (e.sid || '?') + '; a signposted ping turn will be typed into the conversation after ' + e.interval_min + 'm of quiescence).');
       tmKeepAliveEnsureSweeper();
     }
@@ -9435,7 +9550,8 @@
   var tmSessionCtxHoverEl = null;
   var tmSessionCtxHoverHideTimer = 0;
   var tmSessionCtxHoverTickerId = null;
-  var tmSessionCtxHoverTickCount = 0;
+  var tmSessionCtxHoverLastFullAt = 0;
+  var tmSessionCtxHoverLastScrollAt = 0;
   var tmSessionCtxHoverIdentities = {}; // identityKey -> { sid, model, host, isProxy } (rebuilt per card build)
   // (v4.335) PINNED DASHBOARD MODE: pinning converts the hover card into a persistent,
   // draggable gauge panel. Pinned state + position persist in localStorage and restore on
@@ -9502,11 +9618,11 @@
   // After a model/endpoint switch one session has several dashboard rows (Kimi direct, Kimi
   // OpenRouter, Sol OpenRouter...); the tool executing belongs to the LAST response's identity
   // only. Returns the identity key, or '' when unresolvable (callers fall back to sid-wide).
-  function tmToolStateIdentityKey(st) {
+  function tmToolStateIdentityKey(st, frame) {
     try {
       if (st && st.idKey) return String(st.idKey); // (v4.350) resolved at note time
       if (st && st.captureId) {
-        var cap = getCaptureById(st.captureId);
+        var cap = frame ? frame.byId[st.captureId] : getCaptureById(st.captureId);
         if (cap) return tmCapIdentityKey(cap) || '';
       }
     } catch (e) {}
@@ -9530,13 +9646,13 @@
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
   // ]
-  function tmSessionCtxIsBusy(key, info) {
+  function tmSessionCtxIsBusy(key, info, frame) {
     try {
       if (tmAgentManagementEnabled()) {
         var st = tmAgentManagementDisplayState(info && info.sid);
         if (st && st.pendingToolCall && st.responseFinishedAt) {
           // (v4.349) Identity-precise: only the responding provider/model row spins.
-          var stKey = tmToolStateIdentityKey(st);
+          var stKey = tmToolStateIdentityKey(st, frame);
           if (!stKey || stKey === key) return true;
         }
       }
@@ -9565,14 +9681,15 @@
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
   // ]
-  function tmSessionCtxLiveHtml(key, info) {
+  function tmSessionCtxLiveHtml(key, info, frame) {
+    var now = frame ? frame.now : Date.now();
     var parts = [];
     info = info || {};
     // 1) Cumulative session round-trip total FIRST (gray aggregate, matching the widget/
     //    ring-row canonical order: aggregate -> clear/timer -> badge -> tool timer).
     try {
       var rtKey = tmBuildSessionCostKey(info.sid || '', info.model || '', info.host || '', !!info.isProxy);
-      var rtRec = tmGetSessionCosts()[rtKey] || null;
+      var rtRec = (frame ? frame.costs : tmGetSessionCosts())[rtKey] || null;
       var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
       if (rtTot > 0) {
         parts.push('<span style="color:#9aa4b2;font-size:12px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
@@ -9587,17 +9704,17 @@
       var liveMs = 0;
       var liveRec = tmInFlightByIdentity[key];
       if (liveRec && Number(liveRec.ts) > 0) {
-        if (Date.now() - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eDel) {} }
-        else liveMs = Date.now() - Number(liveRec.ts);
+        if (now - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eDel) {} }
+        else liveMs = now - Number(liveRec.ts);
       }
       if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
-        var ifCap = getCaptureById(tmInFlightTurn.captureId);
-        if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = Date.now() - Number(tmInFlightTurn.ts);
+        var ifCap = frame ? frame.byId[tmInFlightTurn.captureId] : getCaptureById(tmInFlightTurn.captureId);
+        if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = now - Number(tmInFlightTurn.ts);
       }
       if (liveMs > 0) {
         parts.push('<span style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">\u23F1 ' + tmFmtDuration(liveMs) + '</span>');
       } else {
-        var rtCap = tmLatestRoundTripEntryForIdentity(key);
+        var rtCap = frame ? frame.rt[key] : tmLatestRoundTripEntryForIdentity(key);
         if (rtCap && rtCap._rt_ms != null && Number(rtCap._rt_ms) > 0) {
           parts.push('<span style="color:#7ec8e3;font-size:12px;white-space:nowrap;">\u23F1 ' + tmFmtDuration(Number(rtCap._rt_ms)) + '</span>');
         }
@@ -9612,7 +9729,7 @@
         // responding provider/model row shows the red tool state and count-up; every other
         // row of the session shows the clear badge. Fallback to sid-wide only when the
         // identity is genuinely unresolvable -- and that fallback logs once per capture.
-        var stKeyB = stPending ? tmToolStateIdentityKey(st) : '';
+        var stKeyB = stPending ? tmToolStateIdentityKey(st, frame) : '';
         if (stPending && !stKeyB) {
           try {
             var logK = String((st && st.captureId) || 'null');
@@ -9625,17 +9742,96 @@
         var showToolHere = stPending && (!stKeyB || stKeyB === key);
         parts.push(showToolHere ? tmAgentManagementBadge(info.sid) : tmAgentManagementClearBadge());
         if (showToolHere) {
-          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(Date.now() - Number(st.responseFinishedAt)) + '</span>');
+          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(now - Number(st.responseFinishedAt)) + '</span>');
         }
       }
     } catch (eTool) {}
     return parts.join(' ');
   }
 
-  // 1s ticker, alive only while the card is visible. UNPINNED (hover) mode rewrites ONLY
-  // the per-row live zones. PINNED (v4.335) additionally rebuilds ALL rows every ~5 ticks
-  // (scroll preserved) so dials, total/max numbers, costs, and newly-appearing sessions
-  // stay fresh -- the dashboard Dan watches all day.
+  // (v4.378) One short-lived read snapshot per dashboard pass, never one ring parse per row.
+  // No additional persisted data and no cache retained between ticks.
+  function tmBuildSessionCtxLiveFrame() {
+    var f = { now: Date.now(), ring: [], costs: {}, keepalive: {}, byId: Object.create(null), rt: Object.create(null), ctx: Object.create(null), think: Object.create(null) };
+    try { f.ring = tmReadCaptureRing() || []; } catch (e) {}
+    try { f.costs = tmGetSessionCosts() || {}; } catch (eC) {}
+    try { f.keepalive = tmGetKeepAliveStore() || {}; } catch (eK) {}
+    for (var i = f.ring.length - 1; i >= 0; i--) {
+      var c = f.ring[i]; if (!c) continue;
+      if (c.id && !f.byId[c.id]) f.byId[c.id] = c;
+      var k = c._identity && c._identity.key;
+      if (!k) continue;
+      if (c._rt_ms != null && !f.rt[k]) f.rt[k] = c;
+      if (c._ctx_snapshot && !f.ctx[k]) f.ctx[k] = c;
+      if (c._think_req && !f.think[k]) f.think[k] = c;
+    }
+    return f;
+  }
+
+  // Compare renderer output, not browser-reserialized innerHTML (attribute/emoji normalization).
+  // Unchanged spinners retain the same DOM node and therefore their CSS animation phase.
+  function tmSessionCtxPatchHtml(el, html) {
+    if (!el || el.__tmSessionCtxHtml === html) return false;
+    el.innerHTML = html;
+    el.__tmSessionCtxHtml = html;
+    return true;
+  }
+
+  function tmSessionCtxInteractionBusy() {
+    if (tmPromptActive || tmSessionCtxHoverDrag || Date.now() - tmSessionCtxHoverLastScrollAt < 350) return true;
+    try {
+      var ae = document.activeElement;
+      if (ae && ae.tagName === 'SELECT' && tmSessionCtxHoverEl.contains(ae)) return true;
+      var sel = window.getSelection && window.getSelection();
+      if (sel && !sel.isCollapsed && tmSessionCtxHoverEl.contains(sel.anchorNode)) return true;
+    } catch (e) {}
+    return false;
+  }
+
+  function tmRefreshSessionCtxKeepAlive(store) {
+    if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none' || tmSessionCtxInteractionBusy()) return;
+    store = store || tmGetKeepAliveStore();
+    var zones = tmSessionCtxHoverEl.querySelectorAll('[data-ka-key]');
+    for (var i = 0; i < zones.length; i++) {
+      var key = zones[i].getAttribute('data-ka-key');
+      tmSessionCtxPatchHtml(zones[i], tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], store));
+    }
+  }
+
+  // @beacon[
+  //   id=payload-session-dashboard-tick,
+  //   role=__lambdao_1.tmSessionCtxHoverTick,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  //   comment=v4.378: dashboard update authority. One ring/cost snapshot per 1s tick; writes only changed live/spinner/KA zones. Full pinned rebuild at 30s wall-clock cadence, deferred during scrolling, text selection, dragging, dropdown use or a child modal. Scroll offset and persistent resize grip survive.,
+  // ]
+  function tmSessionCtxHoverTick() {
+    try {
+      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none' || tmSessionCtxInteractionBusy()) return;
+      if (tmSessionCtxHoverPinned && Date.now() - tmSessionCtxHoverLastFullAt >= 30000 && tmSessionCtxHoverContentEl) {
+        var st = tmSessionCtxHoverContentEl.scrollTop;
+        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+        tmSessionCtxHoverContentEl.scrollTop = st;
+        return;
+      }
+      var frame = tmBuildSessionCtxLiveFrame();
+      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
+      for (var i = 0; i < zones.length; i++) {
+        var key = zones[i].getAttribute('data-live-key');
+        var info = tmSessionCtxHoverIdentities[key];
+        if (info) tmSessionCtxPatchHtml(zones[i], tmSessionCtxLiveHtml(key, info, frame));
+      }
+      var spins = tmSessionCtxHoverEl.querySelectorAll('[data-spin-key]');
+      for (var j = 0; j < spins.length; j++) {
+        var sk = spins[j].getAttribute('data-spin-key');
+        var si = tmSessionCtxHoverIdentities[sk];
+        tmSessionCtxPatchHtml(spins[j], si && tmSessionCtxIsBusy(sk, si, frame) ? '<span class="tm-hc-spin"></span>' : '');
+      }
+      tmRefreshSessionCtxKeepAlive(frame.keepalive);
+    } catch (e) { console.warn('[Payload] Sessions-in-Memory tick failed:', e); }
+  }
+
+  // Timer registration only; update decisions live in tmSessionCtxHoverTick.
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmEnsureSessionCtxHoverTicker-1j5q,
   //   role=__lambdao_1.tmEnsureSessionCtxHoverTicker,
@@ -9644,43 +9840,7 @@
   // ]
   function tmEnsureSessionCtxHoverTicker() {
     if (tmSessionCtxHoverTickerId != null) return;
-    tmSessionCtxHoverTickerId = setInterval(function() {
-      try {
-        if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
-        tmSessionCtxHoverTickCount++;
-        // (v4.336) Rebuild cadence 5s -> 3s: the rebuild re-enumerates the ring newest-first,
-        // so rows re-sort by most-recent activity this often when pinned.
-        if (tmSessionCtxHoverPinned && (tmSessionCtxHoverTickCount % 3 === 0)) {
-          // (v4.365) Never rebuild while a dropdown inside the card is open (a rebuild would
-          // destroy it mid-open -- the v4.227 flash-close pattern) or while a prompt is up.
-          var aeSkip = false;
-          try {
-            var aeEl = document.activeElement;
-            aeSkip = !!(aeEl && aeEl.tagName === 'SELECT' && tmSessionCtxHoverEl && tmSessionCtxHoverEl.contains(aeEl)) || !!tmPromptActive;
-          } catch (eAE) {}
-          if (!aeSkip) {
-            var st = tmSessionCtxHoverContentEl ? tmSessionCtxHoverContentEl.scrollTop : 0;
-            if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-            if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.scrollTop = st;
-          }
-          return;
-        }
-        var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
-        for (var i = 0; i < zones.length; i++) {
-          var key = zones[i].getAttribute('data-live-key');
-          var info = tmSessionCtxHoverIdentities[key];
-          if (!info) continue;
-          zones[i].innerHTML = tmSessionCtxLiveHtml(key, info);
-        }
-        // (v4.336) Busy spinners ride the same 1s tick (presence only; CSS does the motion).
-        var spins = tmSessionCtxHoverEl.querySelectorAll('[data-spin-key]');
-        for (var spi = 0; spi < spins.length; spi++) {
-          var spinKey = spins[spi].getAttribute('data-spin-key');
-          var spinInfo = tmSessionCtxHoverIdentities[spinKey];
-          spins[spi].innerHTML = (spinInfo && tmSessionCtxIsBusy(spinKey, spinInfo)) ? '<span class="tm-hc-spin"></span>' : '';
-        }
-      } catch (e) {}
-    }, 1000);
+    tmSessionCtxHoverTickerId = setInterval(tmSessionCtxHoverTick, 1000);
   }
 
   // (v4.336) Dashboard width: persisted, header [-]/[+] adjustable (80px steps, clamped).
@@ -9707,6 +9867,8 @@
   //   kind=ast,
   // ]
   function tmBuildSessionCtxHoverHtml() {
+    tmSessionCtxHoverLastFullAt = Date.now();
+    var liveFrame = tmBuildSessionCtxLiveFrame();
     tmSessionCtxHoverIdentities = {};
     var rows = [];
     rows.push('<div data-hovercard-drag="1" style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:' + (tmSessionCtxHoverPinned ? 'move' : 'default') + ';">' +
@@ -9717,8 +9879,7 @@
         '<span data-hovercard-action="pin" title="' + (tmSessionCtxHoverPinned ? 'Unpin: return to hover-dismiss' : 'Pin: keep open + draggable (survives widget refreshes; restored after TypingMind reload)') + '" style="cursor:pointer;opacity:' + (tmSessionCtxHoverPinned ? '1' : '0.55') + ';">\uD83D\uDCCC</span>' +
         (tmSessionCtxHoverPinned ? '<span data-hovercard-action="close" title="Close (unpins)" style="cursor:pointer;color:#d08b8b;font-weight:700;">\u2715</span>' : '') +
       '</span></div>');
-    var ring = [];
-    try { ring = tmReadCaptureRing() || []; } catch (eRing) {}
+    var ring = liveFrame.ring;
     var seen = {};
     var count = 0;
     for (var i = ring.length - 1; i >= 0 && count < 40; i--) { // (v4.338) cap 12 -> 40: resizable height + scrollbar make large fleets listable
@@ -9738,7 +9899,7 @@
       var ctxNumsHtml = '';
       var ctxCostHtml = '';
       var ctxCap = null;
-      try { ctxCap = tmLatestCtxSnapshotEntryForIdentity(key); } catch (eC) {}
+      try { ctxCap = liveFrame.ctx[key] || null; } catch (eC) {}
       if (ctxCap && ctxCap._ctx_snapshot) {
         ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 16, noClick: true, cap: ctxCap });
         ctxNumsHtml = '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
@@ -9785,19 +9946,19 @@
         namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
       }
       var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;">' +
-        '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key]) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
+        '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key], liveFrame) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
         '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
       '</div>';
       var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' +
         (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
-        '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key]) + '</span>' +
+        '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key], liveFrame) + '</span>' +
       '</div>';
       // (v4.354/v4.365) Thinking Observatory rows: REQ/OBS stacked at 13px (was 11px); the
       // note button moves off the badge and onto the controls row.
       var thinkRow = '';
       var tkCapH = null;
       try {
-        tkCapH = tmLatestThinkEntryForIdentity(key);
+        tkCapH = liveFrame.think[key] || null;
         if (tkCapH) {
           var thinkBadge = tmRenderThinkBadge(tkCapH, { fontSize: '13px', noNote: true, hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) });
           if (thinkBadge) thinkRow = '<div style="margin-top:3px;">' + thinkBadge + '</div>';
@@ -9815,7 +9976,7 @@
       var ctlParts = [];
       try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key, { selMaxWidth: '285px', selMaxWidthDisp: '255px' })); } catch (eCtl) {}
       if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
-      try { ctlParts.push(tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key])); } catch (eKaH) {}
+      try { ctlParts.push('<span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span>'); } catch (eKaH) {}
       var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
@@ -9965,6 +10126,7 @@
         tmSessionCtxHoverContentEl.style.flex = '1 1 auto';
         tmSessionCtxHoverContentEl.style.minHeight = '0';
         tmSessionCtxHoverContentEl.style.overflowY = 'auto';
+        tmSessionCtxHoverContentEl.addEventListener('scroll', function() { tmSessionCtxHoverLastScrollAt = Date.now(); }, { passive: true });
         tmSessionCtxHoverContentEl.style.padding = '6px 9px';
         tmSessionCtxHoverEl.appendChild(tmSessionCtxHoverContentEl);
         tmSessionCtxHoverGripEl = document.createElement('div');
@@ -10023,10 +10185,11 @@
         tmSessionCtxHoverEl.addEventListener('click', function(ev) {
           try {
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
-            var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"]') : null;
+            var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"],[data-action="ka-messages"]') : null;
             if (kaEl && kaEl.dataset) {
               ev.stopPropagation();
               if (kaEl.dataset.action === 'ka-toggle') tmKeepAliveHandleToggle(kaEl.dataset.key);
+              else if (kaEl.dataset.action === 'ka-messages') tmShowKeepAliveMessages(kaEl.dataset.key);
               else tmKeepAliveHandleInterval(kaEl.dataset.key);
               return;
             }
@@ -15364,7 +15527,8 @@
   //   kind=ast,
   //   comment=Scrollable pretty-printed JSON viewer modal used by the error popup and raw-segment views.,
   // ]
-  function tmShowJsonViewerModal(text, label) {
+  function tmShowJsonViewerModal(text, label, opts) {
+    opts = opts || {};
     if (typeof document === 'undefined') return;
     var existing = document.getElementById('tm-json-viewer-overlay');
     if (existing) { existing.parentNode.removeChild(existing); }
@@ -15375,7 +15539,7 @@
     box.style.cssText = 'width:85vw;max-width:1100px;height:85vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:12px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;';
     var hdr = document.createElement('div');
     hdr.style.cssText = 'color:#8ef0a0;font-weight:bold;font-size:12px;margin-bottom:8px;font-family:monospace;display:flex;justify-content:space-between;align-items:center;gap:12px;';
-    hdr.innerHTML = '<span>' + escapeHtml(label || 'Payload') + ' \u2014 copied to clipboard</span>';
+    hdr.innerHTML = '<span>' + escapeHtml(label || 'Payload') + (opts.contentHtml != null ? '</span>' : ' \u2014 copied to clipboard</span>');
 
     // (v4.246) Explicit copy button. The contents are almost always destined for an agent, and
     // hand-selecting a long pretty-printed JSON blob is tedious/error-prone. Copies exactly what
@@ -15402,7 +15566,7 @@
     copyBtn.style.cssText = 'background:#2a3f5a;color:#cfe4ff;border:1px solid #46617f;border-radius:4px;padding:3px 10px;font-size:11px;font-family:monospace;cursor:pointer;flex-shrink:0;';
     copyBtn.addEventListener('click', function(ev) {
       ev.stopPropagation();
-      var payload = (pre && pre.textContent) ? pre.textContent : '';
+      var payload = opts.copyText != null ? String(opts.copyText) : ((pre && pre.textContent) ? pre.textContent : '');
       function flash(ok) {
         copyBtn.textContent = ok ? '\u2713 Copied' : '\u26a0 Copy failed';
         copyBtn.style.background = ok ? '#1f4d2a' : '#5a2a2a';
@@ -15428,9 +15592,10 @@
     hdrRight.appendChild(copyBtn);
     hdrRight.appendChild(hdrHint);
     hdr.appendChild(hdrRight);
-    var pre = document.createElement('pre');
+    var pre = document.createElement(opts.contentHtml != null ? 'div' : 'pre');
     pre.style.cssText = 'flex:1;overflow:auto;background:#0d0d11;border:1px solid #2a2a2a;border-radius:6px;color:#d0d0d8;font-size:11px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;padding:10px;user-select:text;cursor:text;';
-    pre.textContent = tmPrettyPrintMaybeJson(text);
+    if (opts.contentHtml != null) { pre.style.whiteSpace = 'normal'; pre.innerHTML = opts.contentHtml; }
+    else pre.textContent = tmPrettyPrintMaybeJson(text);
     box.appendChild(hdr); box.appendChild(pre);
     overlay.appendChild(box);
     function close() {

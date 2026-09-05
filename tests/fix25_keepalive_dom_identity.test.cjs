@@ -50,6 +50,8 @@ function createHarness({ sid = 'tm-9b771fe5', key = identity, selected = [title]
     tmGetKeepAliveEntry: k => store[k] ? JSON.parse(JSON.stringify(store[k])) : null,
     tmSetKeepAliveEntry(k, e) { store[k] = JSON.parse(JSON.stringify(e)); },
     tmKeepAliveRefreshUI() {},
+    // History behavior is covered by sessions_delta_history_test.js; retain status for DOM tests.
+    tmKeepAliveSetStatus(k, status) { ctx.tmKeepAliveStatus[k] = status; },
     tmKeepAliveHandlePingFailure(k, e, reason) { throw new Error('Unexpected ping failure: ' + reason); },
     tmAgentManagementEnabled: () => management,
     tmIsAutoResumeCancelled: () => false,
