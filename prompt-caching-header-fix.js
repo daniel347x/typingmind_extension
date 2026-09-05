@@ -1,13 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.382
+// Version: 4.383
 // Issues Fixed:
+//   - v4.383: HEADER CORRECTION ONLY (zero runtime change). The v4.382 note about a 'ghost node' that
+//     'survived the refresh' was wrong: the stale tmKeepAliveBuildPing node was observed while the first
+//     F12+1 job was evidently still in its paced deletion phase; once the refresh completed the node was
+//     gone (verified: the UUID no longer resolves). Cartographer reconcile is correct; no bug.
 //   - v4.382: BEACON CURATION ONLY (comments; zero runtime change). Fix 24 / Fix 26 entry points that
 //     future agents target but no parent snippet reveals now carry beacons: tmKnownProviderDefault
 //     (tm-thinking-control + observatory), tmThinkControlSupportedForIdentity (tm-thinking-control),
 //     and the declarative tables TM_THINK_MAP / TM_THINK_STATES / TM_REPLAY_SUPPORT (tm-thinking-observatory).
 //     tmEnsurePlainSolReasoningHigh's beacon comment now states its v4.363 DEPRECATED status. Also noted:
-//     the Workflowy map had drifted from disk (F12+1 reconciled it; a ghost node for the removed
-//     tmKeepAliveBuildPing survived the refresh).
+//     the Workflowy map had drifted from disk; F12+1 reconciled it (see v4.383 for the corrected detail).
 //   - v4.381: RING SPACING POLISH (Dan confirmed v4.380 scrolling/thumb dragging is excellent).
 //     Default fixed slot height 320 -> 240px (25% less); explicit saved height overrides remain.
 //     Open full entry now follows the content instead of sitting at the bottom of unused space.
@@ -2039,7 +2042,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.382';
+  const EXT_VERSION = '4.383';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
