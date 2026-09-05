@@ -1,6 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.374
+// Version: 4.375
 // Issues Fixed:
+//   - v4.375: KEEP-ALIVE 'Skip this ping' now PAUSES until Dan's next real message (per Dan). A skip
+//     happens at quiescence by definition, so the next outbound payload is unambiguously him
+//     resuming; the v4.374 behavior (route through the failure path -> retry in 60s) would just
+//     re-interrupt him. New entry flag paused_until_turn: set by the skip, shown on the KA row as
+//     'paused until your next message', cleared by tmKeepAliveNoteRealTurn on the next non-ping
+//     outbound payload (and by toggling KA on).
 //   - v4.374: FIX 25 KEEP-ALIVE REDESIGNED ON THE ACTUATOR (the v4.360 replay design is retired;
 //     Workflowy [ap:1E1NO7] / [ap:8YKVCU] / [ap:V85CTU] record why). A prompt cache is content-
 //     addressed: its TTL is refreshed only by re-sending the WHOLE conversation, and TypingMind
@@ -1959,7 +1965,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.374';
+  const EXT_VERSION = '4.375';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4516,7 +4522,7 @@
         var same = (k === key) || (sidNorm && tmKeepAliveNormSid(e.sid) === sidNorm) || (sidNorm && k.indexOf(sid + '::') === 0);
         if (!same) continue;
         if (isPing) { e.pending_ping = { ts: now, key: key }; }
-        else { e.last_turn_ts = now; if (e.retry_at) e.retry_at = 0; }
+        else { e.last_turn_ts = now; if (e.retry_at) e.retry_at = 0; if (e.paused_until_turn) e.paused_until_turn = false; }
         e._ts = now;
         touched = true;
       }
@@ -4678,6 +4684,17 @@
           tmKeepAliveStatus[key] = { text: 'ping sent \u2014 awaiting response', tone: 'active' };
           tmKeepAliveRefreshUI();
         } else {
+          // (v4.375) 'Skip this ping' = PAUSE until Dan's next real message. A skip happens at
+          // quiescence by definition, so the next outbound payload is unambiguously him resuming;
+          // retrying in 60s (the failure path) would just re-interrupt him.
+          if (/skipped by user/i.test(String(err || ''))) {
+            e2.pending_ping = null; e2.retry_at = 0; e2.paused_until_turn = true;
+            tmSetKeepAliveEntry(key, e2);
+            tmKeepAliveStatus[key] = { text: 'paused until your next message (ping skipped)', tone: 'muted' };
+            console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping skipped by user \u2014 paused for ' + (e2.model || key) + ' until the next real turn.');
+            tmKeepAliveRefreshUI();
+            return;
+          }
           tmKeepAliveHandlePingFailure(key, e2, 'actuator: ' + String(err || 'unknown'));
         }
       });
@@ -4801,6 +4818,8 @@
           continue;
         }
         var sidNorm = tmKeepAliveNormSid(e.sid || String(key).split('::')[0]);
+        // (v4.375) Skipped a ping -> paused until the next real turn on this session.
+        if (e.paused_until_turn) { tmKeepAliveStatus[key] = { text: 'paused until your next message (ping skipped)', tone: 'muted' }; continue; }
         // A ping is queued/sent and its response has not arrived yet.
         if (e.pending_ping && e.pending_ping.ts) {
           if (now - e.pending_ping.ts > TM_KA_PENDING_TIMEOUT_MS) {
@@ -4908,7 +4927,7 @@
     var info = tmSessionCtxHoverIdentities[key] || {};
     if (e.enabled) { e.enabled = false; e.stopped_reason = 'toggled off'; }
     else {
-      e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = Date.now(); e.retry_at = 0; e.pending_ping = null;
+      e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = Date.now(); e.retry_at = 0; e.pending_ping = null; e.paused_until_turn = false;
       if (!e.last_turn_ts) e.last_turn_ts = Date.now();
       if (!e.interval_min) e.interval_min = /claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4;
       e.sid = info.sid || e.sid || null; e.model = info.model || e.model || ''; e.host = info.host || e.host || ''; e.proxy = !!info.isProxy;
