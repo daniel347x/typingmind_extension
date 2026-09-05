@@ -1,6 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.383
+// Version: 4.384
 // Issues Fixed:
+//   - v4.384: Fix 24 -- OPENROUTER REASONING CAPABILITIES from the live /api/v1/models catalogue. OpenRouter
+//     publishes per model `reasoning: { mandatory, default_enabled, supported_efforts[], default_effort }` --
+//     OpenRouter itself stating what ITS translation layer accepts. New module (tmMaybeFetchOrReasoningCaps /
+//     tmOrReasoningCapsFor; store tm_or_reasoning_caps_v1): ONE lazy fetch of the whole catalogue with the
+//     tm_passthrough=1 sentinel (same pattern as the v4.205 Endpoints-API discovery), compacted to
+//     {id -> {m,e,d,de}} (':batch' variants dropped), 12h TTL, 30-min retry after a failure, never fetched
+//     outside a browser. CONSUMERS on OpenRouter identities only: (1) tmThinkWriteChatCompletions -- `mandatory`
+//     now comes from OpenRouter data when present (the local always-on heuristic is the fallback), and a level
+//     OpenRouter does not list clamps to the NEAREST listed effort (tie -> lower) with a clamp line naming its
+//     source; the writer stamps rep.or_caps so the 🎛️ hover / Thinking Report show provenance. (2) the 🎛️ Think
+//     dropdown annotates options OpenRouter will not take with '⇢ <clamp target> (OR: not offered | mandatory)'
+//     -- still selectable, honest about what will be sent -- and the select hover carries the capabilities block
+//     (fetched-when, mandatory, efforts, default). (3) tmKnownProviderDefault prefers OpenRouter's reported
+//     default_effort on OpenRouter hosts. An EMPTY supported_efforts list (non-reasoning models AND budget-style
+//     Claude 4.x, where reasoning.effort still works via OpenRouter's effort->budget ratios) NEVER constrains --
+//     only a non-empty list does. Direct routes are untouched: tmThinkAnthropicCaps remains authoritative for
+//     api.anthropic.com. What this does NOT buy: the upstream request OpenRouter builds is still invisible; the
+//     per-turn 🧮 histogram remains the only instrument for whether a level was honored.
 //   - v4.383: HEADER CORRECTION ONLY (zero runtime change). The v4.382 note about a 'ghost node' that
 //     'survived the refresh' was wrong: the stale tmKeepAliveBuildPing node was observed while the first
 //     F12+1 job was evidently still in its paced deletion phase; once the refresh completed the node was
@@ -2042,7 +2060,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.383';
+  const EXT_VERSION = '4.384';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6645,6 +6663,161 @@
   function tmThinkBudgetToEffort(n) { n = Number(n) || 0; return n < 6000 ? 'low' : n < 16000 ? 'medium' : n < 32000 ? 'high' : n < 56000 ? 'xhigh' : 'max'; }
   function tmThinkEffortToBudget(eff) { return TM_THINK_EFFORT_TO_BUDGET[eff] || TM_THINK_EFFORT_TO_BUDGET.high; }
 
+  // ---------- v4.384: OPENROUTER REASONING CAPABILITIES -- live per-model data from /api/v1/models ----------
+  // OpenRouter publishes, per model, `reasoning: { mandatory, default_enabled, supported_efforts[], default_effort }`
+  // -- OpenRouter itself stating what ITS translation layer accepts (trust layer 2 of the thinking problem
+  // made partly inspectable). On OpenRouter identities this replaces the local clamp heuristics (the
+  // tmThinkIsAlwaysOn mandatory list, the effort vocabulary) and the tmKnownProviderDefault guess. Same
+  // lazy / cached / sentinel pattern as tmMaybeFetchProviderEndpoints (v4.205): ONE fetch for the whole
+  // catalogue, compacted to {id -> {m, e, d, de}} in localStorage (':batch' variants dropped -- TypingMind
+  // never sends them), 12h TTL, 30-min retry after a failure, and NO fetch outside a browser (the Node test
+  // harness). What it does NOT tell us: the upstream request OpenRouter builds. An EMPTY supported_efforts
+  // list means 'no effort vocabulary published' -- true of non-reasoning models AND of budget-style Claude 4.x,
+  // where reasoning.effort still works through OpenRouter's effort->budget ratios -- so an empty list NEVER
+  // constrains anything; only a non-empty list does.
+  var TM_OR_REASONING_CAPS_KEY = 'tm_or_reasoning_caps_v1';
+  var TM_OR_REASONING_CAPS_URL = 'https://openrouter.ai/api/v1/models?tm_passthrough=1';
+  var TM_OR_REASONING_CAPS_TTL_MS = 12 * 60 * 60 * 1000;
+  var TM_OR_REASONING_CAPS_RETRY_MS = 30 * 60 * 1000;
+  var TM_OR_EFFORT_RANK = { none: 0, minimal: 1, low: 2, medium: 3, high: 4, xhigh: 5, max: 6 };
+  var tmOrReasoningCapsMemo = null;
+  var tmOrReasoningCapsInFlight = false;
+  function tmReadOrReasoningCaps() {
+    if (tmOrReasoningCapsMemo) return tmOrReasoningCapsMemo;
+    try {
+      var raw = localStorage.getItem(TM_OR_REASONING_CAPS_KEY);
+      var s = raw ? JSON.parse(raw) : null;
+      if (s && typeof s === 'object' && s.models && typeof s.models === 'object') { tmOrReasoningCapsMemo = s; return s; }
+    } catch (e) {}
+    return null;
+  }
+  function tmOrReasoningCapsIsFresh(s) {
+    if (!s || !s.ts) return false;
+    var age = Date.now() - Number(s.ts);
+    return age >= 0 && age < (s.failed ? TM_OR_REASONING_CAPS_RETRY_MS : TM_OR_REASONING_CAPS_TTL_MS);
+  }
+  function tmOrNormalizeModelId(model) { return String(model || '').toLowerCase().trim(); }
+  // Lookup: exact id first, then the id with a routing suffix (:nitro / :floor / :free / :exacto) stripped.
+  // Returns null when the catalogue is not loaded or the model is not in it -> every consumer falls back to
+  // the local heuristics exactly as before v4.384.
+  // @beacon[
+  //   id=fix24-or-reasoning-caps-for,
+  //   slice_labels=tm-thinking-control,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.384) OpenRouter-reported reasoning capabilities for one model from the cached /api/v1/models catalogue: {mandatory, efforts[], defaultEffort, defaultEnabled, ts, stale} or null (not loaded / unknown model -> local heuristics apply). An empty efforts[] never constrains.,
+  // ]
+  function tmOrReasoningCapsFor(model) {
+    try {
+      var s = tmReadOrReasoningCaps();
+      if (!s || !s.models) return null;
+      var m = tmOrNormalizeModelId(model);
+      if (!m) return null;
+      var rec = s.models[m] || s.models[m.replace(/:(nitro|floor|free|exacto)$/, '')] || null;
+      if (!rec) return null;
+      return {
+        mandatory: !!rec.m,
+        efforts: Array.isArray(rec.e) ? rec.e.slice() : [],
+        defaultEffort: rec.d ? String(rec.d) : null,
+        defaultEnabled: (rec.de === undefined || rec.de === null) ? null : !!rec.de,
+        ts: s.ts || null,
+        stale: !tmOrReasoningCapsIsFresh(s)
+      };
+    } catch (e) { return null; }
+  }
+  // Nearest listed effort by rank distance (tie -> the LOWER one: never spend more than asked).
+  function tmOrCapsNearestEffort(eff, efforts) {
+    try {
+      var want = TM_OR_EFFORT_RANK[String(eff || '').toLowerCase()];
+      if (want == null || !Array.isArray(efforts) || !efforts.length) return null;
+      var best = null, bestD = Infinity, bestR = Infinity;
+      for (var i = 0; i < efforts.length; i++) {
+        var e = String(efforts[i]).toLowerCase(), r = TM_OR_EFFORT_RANK[e];
+        if (r == null || e === 'none') continue;
+        var d = Math.abs(r - want);
+        if (d < bestD || (d === bestD && r < bestR)) { best = e; bestD = d; bestR = r; }
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+  // Lowest listed real effort (excludes 'none') -- the clamp target for 'off' on a mandatory-reasoning model.
+  function tmOrCapsLowestEffort(efforts) {
+    try {
+      var best = null, bestR = Infinity;
+      for (var i = 0; i < (efforts || []).length; i++) {
+        var e = String(efforts[i]).toLowerCase(), r = TM_OR_EFFORT_RANK[e];
+        if (r == null || e === 'none') continue;
+        if (r < bestR) { best = e; bestR = r; }
+      }
+      return best;
+    } catch (e) { return null; }
+  }
+  // Human-readable provenance block for hovers / the Thinking Report.
+  function tmOrReasoningCapsText(model, caps) {
+    try {
+      if (!caps) {
+        var s0 = tmReadOrReasoningCaps();
+        if (s0 && s0.models && !s0.failed) return 'OPENROUTER CAPABILITIES: ' + String(model || '?') + ' is not in OpenRouter\'s /api/v1/models catalogue (fetched ' + (s0.ts_local || '?') + ') -- local heuristics apply.';
+        return 'OPENROUTER CAPABILITIES: not loaded yet (fetch pending or failed; retried within 30 min) -- local heuristics apply.';
+      }
+      var s1 = tmReadOrReasoningCaps();
+      return 'OPENROUTER CAPABILITIES for ' + String(model || '?') + ' (live /api/v1/models, fetched ' + ((s1 && s1.ts_local) || '?') + (caps.stale ? ', STALE -- refresh pending' : '') + '): mandatory reasoning = ' + (caps.mandatory ? 'YES (cannot be turned off; \'off\' clamps to the lowest listed effort)' : 'no') +
+        ' \u00b7 supported efforts = ' + (caps.efforts.length ? ('[' + caps.efforts.join(', ') + '] (levels not listed clamp to the nearest listed one, marked \u21e2 in the dropdown)') : '(none published -- OpenRouter translates reasoning.effort by its own ratios; local heuristics apply)') +
+        (caps.defaultEffort ? (' \u00b7 default effort = ' + caps.defaultEffort) : '') +
+        (caps.defaultEnabled === null ? '' : (' \u00b7 reasoning on by default = ' + (caps.defaultEnabled ? 'yes' : 'no'))) +
+        '. This is what OpenRouter says it ACCEPTS -- not the upstream request it builds; the \ud83e\uddee count on the next rows is still the only proof a level was honored.';
+    } catch (e) { return ''; }
+  }
+  // Lazy fetch of the whole catalogue. Browser-only; ONE in flight; fresh cache (or a recent failure
+  // tombstone) short-circuits. On success the persistent widget re-renders so dropdown annotations appear.
+  // @beacon[
+  //   id=fix24-or-reasoning-caps-fetch,
+  //   slice_labels=tm-thinking-control,
+  //   kind=ast,
+  //   comment=(v4.384) Lazy fetch of OpenRouter's /api/v1/models (tm_passthrough=1 sentinel; 12h localStorage cache in tm_or_reasoning_caps_v1; 30-min retry after failure; browser-only). Compacts each model's reasoning block to {m,e,d,de}; ':batch' variants dropped. Triggered from the OpenRouter writer and the Think dropdown builder.,
+  // ]
+  function tmMaybeFetchOrReasoningCaps() {
+    try {
+      if (typeof window === 'undefined' || typeof fetch !== 'function') return;
+      var s = tmReadOrReasoningCaps();
+      if (s && tmOrReasoningCapsIsFresh(s)) return;
+      if (tmOrReasoningCapsInFlight) return;
+      tmOrReasoningCapsInFlight = true;
+      function tomb(reason) {
+        tmOrReasoningCapsInFlight = false;
+        try {
+          var prev = tmReadOrReasoningCaps();
+          var t = { ts: Date.now(), ts_local: new Date().toLocaleString(), failed: true, reason: String(reason || 'fetch failed'), count: prev ? prev.count : 0, models: (prev && prev.models) || {} };
+          tmOrReasoningCapsMemo = t;
+          localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(t));
+        } catch (eT) {}
+      }
+      fetch(TM_OR_REASONING_CAPS_URL).then(function(r) { return r.ok ? r.json() : null; }).then(function(j) {
+        var list = j && Array.isArray(j.data) ? j.data : null;
+        if (!list || !list.length) { tomb('empty or non-OK response'); return; }
+        var models = {}, n = 0;
+        for (var i = 0; i < list.length; i++) {
+          var it = list[i];
+          if (!it || !it.id) continue;
+          var id = tmOrNormalizeModelId(it.id);
+          if (/:batch$/.test(id)) continue;
+          var rz = it.reasoning;
+          if (!rz || typeof rz !== 'object') continue;
+          var rec = { m: !!rz.mandatory, e: Array.isArray(rz.supported_efforts) ? rz.supported_efforts.map(function(x) { return String(x).toLowerCase(); }) : [] };
+          if (rz.default_effort) rec.d = String(rz.default_effort).toLowerCase();
+          if (rz.default_enabled !== undefined && rz.default_enabled !== null) rec.de = !!rz.default_enabled;
+          models[id] = rec; n++;
+        }
+        if (!n) { tomb('catalogue carried no reasoning blocks'); return; }
+        tmOrReasoningCapsInFlight = false;
+        var store = { ts: Date.now(), ts_local: new Date().toLocaleString(), count: n, models: models };
+        tmOrReasoningCapsMemo = store;
+        try { localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(store)); } catch (eS) {}
+        try { console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] OpenRouter reasoning capabilities loaded for ' + n + ' models (/api/v1/models; cached 12h)'); } catch (eL) {}
+        try { renderGpt51UsageWidget(); } catch (eR) {}
+      }).catch(function(err) { tomb(err && err.message); });
+    } catch (e) { tmOrReasoningCapsInFlight = false; }
+  }
+
   // Stable content key for a user message (anchor for per-message effort steps): hash of its text, or
   // its tool_use_ids for tool_result turns. Content-based (not positional) so our own later repairs /
   // stubs that insert or rewrite OTHER messages cannot shift it.
@@ -6916,11 +7089,28 @@
     rep.mode = 'top-level';
     if (isOR) {
       // ---- OpenRouter: ONE unified object. effort XOR max_tokens; exclude = display axis.
+      // (v4.384) OpenRouter's own per-model capabilities (/api/v1/models) drive `mandatory` and the effort
+      // vocabulary when loaded; the local heuristics remain the fallback. Provenance is stamped on rep.or_caps.
+      tmMaybeFetchOrReasoningCaps();
+      var orc = tmOrReasoningCapsFor(model);
+      rep.or_caps = orc
+        ? { source: 'openrouter /api/v1/models', stale: !!orc.stale, mandatory: orc.mandatory, supported_efforts: orc.efforts, default_effort: orc.defaultEffort, default_enabled: orc.defaultEnabled }
+        : { source: 'local heuristic', reason: 'OpenRouter capabilities not loaded for ' + model };
       var R = (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) ? body.reasoning : null;
       var eff = L.eff, budget = L.budget;
       if (L.off) {
-        if (tmThinkIsAlwaysOn(fam, model)) { eff = (fam === 'gemini' && /flash/.test(model.toLowerCase())) ? 'minimal' : 'low'; clamp('off \u2192 ' + eff + ': ' + model + ' cannot disable thinking (mandatory reasoning); OpenRouter rejects effort:none there'); }
-        else eff = 'none';
+        var orMand = orc ? orc.mandatory : tmThinkIsAlwaysOn(fam, model);
+        if (orMand) {
+          var lowOR = (orc && orc.efforts.length) ? tmOrCapsLowestEffort(orc.efforts) : null;
+          eff = lowOR || ((fam === 'gemini' && /flash/.test(model.toLowerCase())) ? 'minimal' : 'low');
+          clamp('off \u2192 ' + eff + ': ' + model + ' cannot disable thinking (mandatory reasoning' + (orc ? ', per OpenRouter /api/v1/models' : ', local heuristic') + '); OpenRouter rejects effort:none there');
+        } else {
+          eff = 'none';
+          if (orc && orc.efforts.length && orc.efforts.indexOf('none') < 0) rep.notes.push('OpenRouter lists no "none" effort for ' + model + ' (supported: ' + orc.efforts.join(', ') + ') but reports reasoning as optional; effort:none is its documented off switch -- verify on the next row');
+        }
+      } else if (eff && orc && orc.efforts.length && orc.efforts.indexOf(eff) < 0) {
+        var nearOR = tmOrCapsNearestEffort(eff, orc.efforts);
+        if (nearOR && nearOR !== eff) { clamp(eff + ' \u2192 ' + nearOR + ': OpenRouter lists supported_efforts [' + orc.efforts.join(', ') + '] for ' + model + ' (live /api/v1/models)'); eff = nearOR; }
       }
       if (L.set && (eff || budget != null)) {
         if (!R) R = body.reasoning = {};
@@ -7210,10 +7400,18 @@
   //   role=__lambdao_1.tmKnownProviderDefault,
   //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
   //   kind=ast,
-  //   comment=(v4.372) Heuristic table of DOCUMENTED provider-default thinking levels -- what the model actually does when NOTHING is sent on the wire; feeds the dropdown's 'provider default (...)' readout. Verify live via the next row's glyphs. Candidate for replacement by OpenRouter /api/v1/models reasoning.supported_efforts / mandatory (open follow-up).,
+  //   comment=(v4.372; v4.384) Provider-default thinking level -- what the model does when NOTHING is sent on the wire; feeds the dropdown's 'provider default (...)' readout. On OpenRouter hosts the LIVE /api/v1/models default_effort (tmOrReasoningCapsFor) wins when loaded; otherwise a heuristic table of documented defaults (verify live via the next row's glyphs).,
   // ]
   function tmKnownProviderDefault(model, host) {
     var m = String(model || '').toLowerCase(), h = String(host || '').toLowerCase();
+    // (v4.384) OpenRouter-reported default beats every guess below.
+    if (/openrouter/.test(h)) {
+      try {
+        var orc = tmOrReasoningCapsFor(m);
+        if (orc && orc.defaultEffort) return orc.defaultEffort + ' \u2014 OpenRouter-reported default';
+        if (orc && orc.defaultEnabled === false) return 'off \u2014 OpenRouter-reported default (reasoning not enabled unless requested)';
+      } catch (e) {}
+    }
     if (/gemini-3/.test(m)) return 'dynamic \u2248 medium';
     if (/gemini/.test(m)) return 'dynamic';
     if (/claude|anthropic/.test(m) || /anthropic\.com/.test(h)) return 'adaptive \u2014 the model decides';
@@ -7252,6 +7450,22 @@
       var LAST = ' \u25c2 last sent';
       function tagL(v) { return sentLvlKey === v ? LAST : ''; }
       function tagD(v) { return sentDispKey === v ? LAST : ''; }
+      // (v4.384) OpenRouter identities: annotate levels OpenRouter's own catalogue says it will not take
+      // with the clamp target the writer will actually send ('\u21e2 high (OR: not offered)'); options stay
+      // selectable -- the point is honesty about the wire, not a shorter menu. Empty efforts = no annotation.
+      var isORid = tmThinkIdentityIsOpenRouter(idKey);
+      var orcModel = isORid ? (String(idKey).split('::')[1] || '') : '';
+      var orc = null;
+      if (isORid) { try { tmMaybeFetchOrReasoningCaps(); orc = tmOrReasoningCapsFor(orcModel); } catch (eOC) { orc = null; } }
+      function tagOR(v) {
+        try {
+          if (!orc || !orc.efforts.length) return '';
+          if (v === 'off') { if (!orc.mandatory) return ''; var lo = tmOrCapsLowestEffort(orc.efforts); return lo ? (' \u21e2 ' + lo + ' (OR: mandatory)') : ''; }
+          if (orc.efforts.indexOf(v) >= 0) return '';
+          var nr = tmOrCapsNearestEffort(v, orc.efforts);
+          return (nr && nr !== v) ? (' \u21e2 ' + nr + ' (OR: not offered)') : '';
+        } catch (e) { return ''; }
+      }
       var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (active ? '#3f6f8f' : '#444') + ';border-radius:3px;padding:0 2px;margin-left:3px;';
       function opt(v, label, cur) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + '>' + label + '</option>'; }
       var curSel = isBudget ? '__budget' : lvl;
@@ -7261,7 +7475,7 @@
       // (v4.372) When TypingMind sends NO explicit level (or the scanner cannot reduce one to a
       // word), name the provider's KNOWN default rather than a bare 'provider default' / '?'.
       var inheritLbl;
-      if (!eff) inheritLbl = '\u21a9 inherit (awaiting a stamped turn)';
+      if (!eff) inheritLbl = '\u21a9 inherit (awaiting a stamped turn' + (orc && orc.defaultEffort ? ('; OR default: ' + escapeHtml(orc.defaultEffort)) : '') + ')';
       else if (natLvl && natLvl !== '?' && !(nat && nat.none)) inheritLbl = '\u21a9 ' + escapeHtml(natLvl);
       else {
         var kdParts = String(idKey).split('::');
@@ -7269,17 +7483,22 @@
         inheritLbl = '\u21a9 provider default' + (kdWord ? (' (' + escapeHtml(kdWord) + ')') : ' (nothing sent)');
       }
       var levelOpts = opt('inherit', inheritLbl, curSel) +
-        opt('off', S.OFF.g + ' off' + tagL('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low'), curSel) +
-        opt('medium', S.MED.g + ' medium' + tagL('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max'), curSel) +
+        opt('off', S.OFF.g + ' off' + tagL('off') + tagOR('off'), curSel) + opt('minimal', S.LOW.g + ' minimal' + tagL('minimal') + tagOR('minimal'), curSel) + opt('low', S.LOW.g + ' low' + tagL('low') + tagOR('low'), curSel) +
+        opt('medium', S.MED.g + ' medium' + tagL('medium') + tagOR('medium'), curSel) + opt('high', S.HIGH.g + ' high' + tagL('high') + tagOR('high'), curSel) + opt('xhigh', S.HIGH.g + ' xhigh' + tagL('xhigh') + tagOR('xhigh'), curSel) + opt('max', S.MAX.g + ' max' + tagL('max') + tagOR('max'), curSel) +
         opt('__budget', S.BUDGET.g + ' budget\u2026' + (isBudget ? (' (' + lvl.slice(7) + ')') : '') + tagL('budget'), curSel) +
         (nSteps ? opt('__clear_steps', '\u2716 clear per-message steps (' + nSteps + ') \u2014 cache miss', '') : '');
       var dispOpts = opt('inherit', natDisp ? ('\u21a9 ' + escapeHtml(natDisp)) : '\u21a9 inherit (awaiting a stamped turn)', disp) + opt('show', S.SHOW_REQ.g + ' show reasoning' + tagD('show'), disp) + opt('hide', S.HIDE_REQ.g + ' hide reasoning' + tagD('hide'), disp);
       var readout = eff ? ('\n\nREADOUT (newest row' + (eff.ts ? (' ' + eff.ts) : '') + '): TypingMind natively sends level "' + natLvl + '", display "' + natDisp + '"' + (eff.overridden ? ('; last wire (after override): level "' + (sent && sent.level) + '", display "' + (sent && sent.display) + '"') : '') + (nat && nat.raw && nat.raw.length ? ('\nraw: ' + nat.raw.slice(0, 6).join(' ; ')) : '')) : '\n\n(no stamped row for this identity yet -- send one turn and the readout appears)';
+      // (v4.384) OpenRouter capabilities provenance block (what OpenRouter says it accepts for this model).
+      var orCapsBlock = isORid ? ('\n\n' + tmOrReasoningCapsText(orcModel, orc)) : '';
+      readout += orCapsBlock;
       // (v4.364) OpenRouter warning: Claude gets the full cache-findings text; placed BETWEEN the two selects, 15px.
       var orWarn = '';
       if (tmThinkIdentityIsOpenRouter(idKey)) {
         var orModel = String(idKey).split('::')[1] || '';
         var orTxt = /claude|^anthropic\//i.test(orModel) ? TM_THINK_OR_CLAUDE_WARN : TM_THINK_OR_WARN;
+        // (v4.384) Lead the warning with what OpenRouter itself publishes for this model when we have it.
+        if (orc) orTxt = 'LIVE FROM OPENROUTER (/api/v1/models): ' + orModel + ' \u2014 mandatory reasoning ' + (orc.mandatory ? 'YES' : 'no') + (orc.efforts.length ? (' \u00b7 efforts [' + orc.efforts.join(', ') + ']') : ' \u00b7 no effort vocabulary published') + (orc.defaultEffort ? (' \u00b7 default ' + orc.defaultEffort) : '') + '. That narrows the guesswork below but does not show the upstream request OpenRouter builds.\n\n' + orTxt;
         orWarn = '<span title="' + escapeHtml(orTxt) + '" style="font-size:15px;line-height:1;color:#ffd166;margin:0 6px 0 7px;cursor:help;vertical-align:middle;text-shadow:0 0 4px rgba(255,209,102,0.55);">\u26a0\ufe0f</span>';
       }
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). Translated per wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi/DeepSeek/GLM thinking.type, Qwen enable_thinking, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change. Unmappable levels clamp to the nearest supported one -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
