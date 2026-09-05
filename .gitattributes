@@ -1,0 +1,31 @@
+# Line-ending policy for this repo: everything Git treats as text is LF —
+# in the object store AND in every checkout (Windows, WSL, GitHub Pages).
+# Sources are edited on Windows (E:\...\TODO) and copied into this WSL repo;
+# this file guarantees that CRLFs picked up on the Windows side never land in Git.
+* text=auto eol=lf
+
+# Explicit text types (belt and suspenders for anything auto-detection misses)
+*.js    text eol=lf
+*.mjs   text eol=lf
+*.cjs   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.txt   text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sh    text eol=lf
+.gitattributes text eol=lf
+.gitignore     text eol=lf
+
+# Binaries — never touch
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.zip   binary

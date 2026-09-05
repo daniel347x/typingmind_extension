@@ -3264,6 +3264,12 @@
   // (v4.353) Event-sourced per-session TOOL-EXECUTION ledger: accumulates client-side tool run
   // durations (tool-call response end -> tool-result payload out) onto the SAME session record as
   // cost / round-trip. Same identity, same anti-leak lifecycle.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRecordToolExec-t9gf,
+  //   role=__lambdao_1.tmRecordToolExec,
+  //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
+  //   kind=ast,
+  // ]
   function tmRecordToolExec(sessionId, model, endpointHost, isProxy, ms) {
     if (!sessionId || !model || !(ms > 0)) return 0;
     try {
@@ -4446,6 +4452,12 @@
   function tmSetKeepAliveEntry(key, entry) { var s = tmGetKeepAliveStore(); if (entry) { entry._ts = Date.now(); s[key] = entry; } else { delete s[key]; } tmSaveKeepAliveStore(s); }
 
   // Wire snapshot at real-turn time (called from tmCaptureFetchCall with the FINAL outbound bytes).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveNoteRealTurn-5u0g,
+  //   role=__lambdao_1.tmKeepAliveNoteRealTurn,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveNoteRealTurn(key, url, headers, bodyStr, sid) {
     try {
       if (!key || typeof bodyStr !== 'string' || !bodyStr) return;
@@ -4458,6 +4470,12 @@
 
   // Build the ping request from the stored wire: EXACT prefix + one minimal appended user turn.
   // Fresh JSON.parse per ping (never mutates the snapshot). Returns {url, headers, body} or {skip}.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveBuildPing-cnot,
+  //   role=__lambdao_1.tmKeepAliveBuildPing,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveBuildPing(wire) {
     try {
       var body = JSON.parse(wire.body);
@@ -4521,7 +4539,7 @@
   // @beacon[
   //   id=fix25-keepalive-fire-ping,
   //   role=__lambdao_1.tmKeepAliveFirePing,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
   //   comment=Fix 25 (v4.360): fires ONE cache keep-alive ping for an identity -- replays the exact last outbound prefix + one minimal user turn via tm_passthrough=1 (invisible to the hook), discards the response, extracts cache read/write evidence, computes cost (response cost else Set Costs table), logs to the per-entry ledger, and AUTO-DISABLES with a loud BROKEN flag when cache_creation exceeds the mismatch threshold (we paid a write). Errors retry once after 60s and never touch the kick-along path.,
   // ]
@@ -4593,8 +4611,8 @@
   // @beacon[
   //   id=fix25-keepalive-sweep,
   //   role=__lambdao_1.tmKeepAliveSweep,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   slice_labels=tm-payload-overview,
   //   comment=Fix 25 (v4.360): 30s sweeper deciding when a keep-alive ping may fire -- REUSES the existing state machine: skips when the identity has an in-flight request, when tmAgentManagementDisplayState says pendingToolCall (INCOMPLETE turn = kick-along territory, mutually exclusive), when no wire snapshot exists (fresh reload), or when idle < interval (idle measured from the LATEST of last real turn / turn completion / last ping). Enforces optional max_hours auto-off.,
   // ]
   function tmKeepAliveSweep() {
@@ -4625,8 +4643,20 @@
       }
     } catch (eS) {}
   }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveEnsureSweeper-7zsh,
+  //   role=__lambdao_1.tmKeepAliveEnsureSweeper,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveEnsureSweeper() { if (tmKeepAliveSweepId == null) tmKeepAliveSweepId = setInterval(tmKeepAliveSweep, 30 * 1000); }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveRefreshUI-49zy,
+  //   role=__lambdao_1.tmKeepAliveRefreshUI,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveRefreshUI() {
     try { renderGpt51UsageWidget(); } catch (e) {}
     try {
@@ -4639,6 +4669,12 @@
   }
 
   // Hovercard row control: ⏰ toggle + [Nm] interval button + status/broken line.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveRowHtml-vzmh,
+  //   role=__lambdao_1.tmKeepAliveRowHtml,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveRowHtml(key, info) {
     try {
       var e = tmGetKeepAliveEntry(key);
@@ -5439,6 +5475,12 @@
   // \u2016 run-on wall is gone) and 'inline' (widget: one compact line). OBS amount glyphs carry
   // parenthesized thinking amounts: leading edge = this turn's tokens (, sealed bytes); aggregate =
   // the session sum for that band.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkGlyphRowHtml-ols5,
+  //   role=__lambdao_1.tmThinkGlyphRowHtml,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  // ]
   function tmThinkGlyphRowHtml(cap, fs, hist, layout) {
     try {
       var req = cap && cap._think_req, obs = cap && cap._think_obs;
@@ -5648,6 +5690,12 @@
   }
 
   // One side of the histogram as glyph+count runs, sorted like the live glyphs (rank, then order).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkHistHtml-zgml,
+  //   role=__lambdao_1.tmThinkHistHtml,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  // ]
   function tmThinkHistHtml(hist, side, fs) {
     try {
       if (!hist || !hist[side]) return '';
@@ -5762,13 +5810,6 @@
     document.body.appendChild(overlay);
   }
 
-  // @beacon[
-  //   id=fix24-render-think-badge,
-  //   role=__lambdao_1.tmRenderThinkBadge,
-  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
-  //   kind=ast,
-  //   comment=Fix 24 (v4.352): ONE shared badge for ring rows AND the widget -- '🧠 <compact req> -> <compact obs>' (orange when verdict NONE = provider default), data-action=think-report opens the Thinking Report; optional 📝 quick-note button (with existing-note count) opens the Thinking Note editor with request/observation context pre-attached.,
-  // ]
   // (v4.365) ONE shared thinking-note button: the badge appends it; the sessions-in-memory
   // controls row mounts it beside the Think dropdowns.
   function tmThinkNoteButtonHtml(cap) {
@@ -5779,6 +5820,13 @@
     } catch (e) { return ''; }
   }
 
+  // @beacon[
+  //   id=fix24-render-think-badge,
+  //   role=__lambdao_1.tmRenderThinkBadge,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 (v4.352): ONE shared badge for ring rows AND the widget -- '🧠 <compact req> -> <compact obs>' (orange when verdict NONE = provider default), data-action=think-report opens the Thinking Report; optional 📝 quick-note button (with existing-note count) opens the Thinking Note editor with request/observation context pre-attached.,
+  // ]
   function tmRenderThinkBadge(cap, opts) {
     try {
       opts = opts || {};
@@ -6157,6 +6205,12 @@
 
   // Model capability table for the Anthropic Messages writer (regexes tolerate 'claude-fable-5-1',
   // 'claude-fable-5.1', 'anthropic/claude-fable-5.1', dated suffixes). Conservative on unknowns.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkAnthropicCaps-oemy,
+  //   role=__lambdao_1.tmThinkAnthropicCaps,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkAnthropicCaps(model) {
     var m = String(model || '').toLowerCase().replace(/^anthropic\//, '');
     var c = { family: 'claude-unknown', adaptive: false, enabled: true, disable: true, display: false, effort: false, xhigh: false, onByDefault: false, perMsgEffort: false, effortWithBudget: false, maxOut: 32000 };
@@ -6221,6 +6275,12 @@
   // so every later request lands the SAME bytes at the SAME spot -> cached prefix preserved; only the
   // tail after a new step re-caches. Steps whose anchor vanished (history edited) are dropped, except
   // the last one, which re-anchors. Mutates body.messages + ov.steps; reports into rep.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkApplyPerMessageEffort-3tya,
+  //   role=__lambdao_1.tmThinkApplyPerMessageEffort,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkApplyPerMessageEffort(body, eff, ov, rep, ctx) {
     var msgs = body && body.messages;
     if (!Array.isArray(msgs) || !msgs.length) return false;
@@ -6271,7 +6331,7 @@
   // @beacon[
   //   id=fix24-think-apply-override,
   //   role=__lambdao_1.tmThinkApplyOverride,
-  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
   //   kind=ast,
   //   comment=Fix 24 Phase 2 (v4.361): protocol-aware thinking-control WRITER. Translates the abstract {level, display} override into the Anthropic Messages field shape (thinking.type / thinking.display / output_config.effort or per-message effort system messages / budget_tokens / max_tokens), removing conflicting fields, clamping unmappable levels to the nearest supported one, and reporting every change + clamp for _think_req.override. Pure on (url, body, headers, ov); mutates body in place; ctx.setHeader adds beta headers.,
   // ]
@@ -6428,6 +6488,12 @@
   }
 
   // (a) OpenRouter unified `reasoning` + (b) direct OpenAI-compat chat-completions hosts.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkWriteChatCompletions-j57q,
+  //   role=__lambdao_1.tmThinkWriteChatCompletions,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkWriteChatCompletions(r, body, ov, rep) {
     var model = String(body.model || ''); rep.model = model;
     var fam = tmThinkChatFamily(model, r.host); rep.caps = fam;
@@ -6517,6 +6583,12 @@
   }
 
   // (c) OpenAI Responses API: reasoning.effort + reasoning.summary (display).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkWriteResponses-r6k8,
+  //   role=__lambdao_1.tmThinkWriteResponses,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkWriteResponses(r, body, ov, rep) {
     var model = String(body.model || ''); rep.model = model; rep.caps = 'openai-responses'; rep.mode = 'top-level';
     var L = tmThinkParseLevel(rep.level, rep);
@@ -6543,6 +6615,12 @@
   }
 
   // (d) Gemini native generateContent: generationConfig.thinkingConfig.{thinkingLevel|thinkingBudget, includeThoughts}.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkWriteGemini-xyv3,
+  //   role=__lambdao_1.tmThinkWriteGemini,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkWriteGemini(r, url, body, ov, rep) {
     var model = String(body.model || '');
     if (!model) { try { var mm = String(r.target || url || '').match(/\/models\/([^\/:?#]+)/i); if (mm) model = decodeURIComponent(mm[1]); } catch (e) {} }
@@ -6593,6 +6671,12 @@
   // Request-time entry point (universal outbound pass): resolve the identity, load its override, run
   // the writer, persist new per-message steps, log once. Returns the report (stamped on the capture
   // row as _think_req.override via options._tm_think_ovr) or null when nothing is configured.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkApplyOverrideForRequest-de98,
+  //   role=__lambdao_1.tmThinkApplyOverrideForRequest,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkApplyOverrideForRequest(url, options, body) {
     try {
       if (!body || typeof body !== 'object') return null;
@@ -6620,6 +6704,12 @@
   // level: off | low | medium | high | xhigh | max | adaptive[·effort] | budget N | on | provider default | implicit | ?
   // display: shown | hidden | default (falls back to what the response actually streamed when the request
   // carried no display field). `raw` carries the field=value lines behind the words (tooltip).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkNativeFromReq-kizz,
+  //   role=__lambdao_1.tmThinkNativeFromReq,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkNativeFromReq(req, obs) {
     var out = { level: '?', levelKey: null, display: 'default', displayKey: null, raw: [], none: false };
     try {
@@ -6653,6 +6743,12 @@
   }
   // What is in effect for an identity right now: the NATIVE config (pre-override) from the newest stamped
   // row, plus what was actually LAST SENT (post-override) so the matching option can be tagged.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkEffectiveForIdentity-2tk4,
+  //   role=__lambdao_1.tmThinkEffectiveForIdentity,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmThinkEffectiveForIdentity(idKey) {
     try {
       var cap = tmLatestThinkEntryForIdentity(idKey);
@@ -6706,6 +6802,12 @@
   // Shared control builder (widget line + ring-modal most-recent row + sessions-in-memory
   // controls row): '🎛️ Think: [level] 👁 [display]'. (v4.366) opts.selMaxWidth / selMaxWidthDisp
   // widen the selects on roomy surfaces (the hovercard passes 285px/255px).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildThinkControlHtml-nryz,
+  //   role=__lambdao_1.tmBuildThinkControlHtml,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmBuildThinkControlHtml(idKey, opts) {
     try {
       opts = opts || {};
@@ -6766,6 +6868,12 @@
   }
 
   // Change handler for both selects (document-level 'change' listener routes here).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmHandleThinkControlChange-m60q,
+  //   role=__lambdao_1.tmHandleThinkControlChange,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
+  //   kind=ast,
+  // ]
   function tmHandleThinkControlChange(target) {
     if (!target || !target.dataset) return false;
     var idKey = target.dataset.identityKey || '';
@@ -6817,6 +6925,12 @@
   }
 
   // Response-receipt accumulator: fold one turn's replayable reasoning evidence into the ledger.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmReplayLedgerBump-lqfa,
+  //   role=__lambdao_1.tmReplayLedgerBump,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  // ]
   function tmReplayLedgerBump(capRec, obs) {
     try {
       if (!capRec || !obs) return;
@@ -6912,6 +7026,12 @@
   // (v4.369) Also the TURN CENSUS: how many chat turns carry reasoning (raw vs encrypted) plus
   // per-turn char min/max/avg -- Dan's headline 'is the reasoning history actually in this
   // payload?' confirmation.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmCountOutboundReasoning-047s,
+  //   role=__lambdao_1.tmCountOutboundReasoning,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  // ]
   function tmCountOutboundReasoning(body) {
     var out = { rawBlocks: 0, rawChars: 0, encBlocks: 0, encChars: 0, totalBlocks: 0,
                 rawTurns: 0, encTurns: 0, rawMin: 0, rawMax: 0, rawAvg: 0, encMin: 0, encMax: 0, encAvg: 0 };
@@ -9156,6 +9276,12 @@
   // (v4.336) Busy detector for the dashboard spinner: a session is busy while a client-side
   // tool call runs (agent-management ledger) OR its assistant turn is in flight (the
   // per-identity map; 30-minute ceiling pruned lazily, mirroring the global marker).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSessionCtxIsBusy-slay,
+  //   role=__lambdao_1.tmSessionCtxIsBusy,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmSessionCtxIsBusy(key, info) {
     try {
       if (tmAgentManagementEnabled()) {
@@ -9185,6 +9311,12 @@
   // (LIVE when THIS identity owns the in-flight turn, else the latest completed turn), and
   // the cumulative session round-trip total. Solves: another session firing a payload no
   // longer hides the timer Dan was watching.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSessionCtxLiveHtml-3opa,
+  //   role=__lambdao_1.tmSessionCtxLiveHtml,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmSessionCtxLiveHtml(key, info) {
     var parts = [];
     info = info || {};
@@ -9256,6 +9388,12 @@
   // the per-row live zones. PINNED (v4.335) additionally rebuilds ALL rows every ~5 ticks
   // (scroll preserved) so dials, total/max numbers, costs, and newly-appearing sessions
   // stay fresh -- the dashboard Dan watches all day.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmEnsureSessionCtxHoverTicker-1j5q,
+  //   role=__lambdao_1.tmEnsureSessionCtxHoverTicker,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmEnsureSessionCtxHoverTicker() {
     if (tmSessionCtxHoverTickerId != null) return;
     tmSessionCtxHoverTickerId = setInterval(function() {
@@ -9314,6 +9452,12 @@
     } catch (e) {}
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildSessionCtxHoverHtml-zdza,
+  //   role=__lambdao_1.tmBuildSessionCtxHoverHtml,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmBuildSessionCtxHoverHtml() {
     tmSessionCtxHoverIdentities = {};
     var rows = [];
@@ -9441,6 +9585,12 @@
   }
 
   // (v4.335) Pin lifecycle. Dragging IMPLIES pinning (a moved card is a kept card).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmToggleSessionCtxHoverPin-qo5v,
+  //   role=__lambdao_1.tmToggleSessionCtxHoverPin,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmToggleSessionCtxHoverPin() {
     tmSessionCtxHoverPinned = !tmSessionCtxHoverPinned;
     if (tmSessionCtxHoverPinned) tmPersistSessionCtxHoverPin(); else tmClearSessionCtxHoverPin();
@@ -9471,6 +9621,12 @@
     try { localStorage.removeItem(TM_SESSION_CTX_HOVER_PIN_KEY); } catch (e) {}
   }
   // One-shot per page load: a pinned card from a previous session comes back where Dan left it.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmMaybeRestorePinnedSessionCtxHover-ps7r,
+  //   role=__lambdao_1.tmMaybeRestorePinnedSessionCtxHover,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmMaybeRestorePinnedSessionCtxHover() {
     try {
       if (tmSessionCtxHoverPinRestoreDone) return;
@@ -9486,6 +9642,12 @@
       });
     } catch (e) {}
   }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmStartSessionCtxHoverDrag-nc4k,
+  //   role=__lambdao_1.tmStartSessionCtxHoverDrag,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmStartSessionCtxHoverDrag(ev) {
     try {
       if (!tmSessionCtxHoverEl) return;
@@ -9518,6 +9680,12 @@
     } catch (e) {}
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowSessionCtxHover-e4gr,
+  //   role=__lambdao_1.tmShowSessionCtxHover,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  // ]
   function tmShowSessionCtxHover(anchorEl, opts) {
     try {
       opts = opts || {};
@@ -11220,6 +11388,12 @@
       '\n… [end sample] …\n' + take(lines.length - 3, 3);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmBuildOversizedToolStub-kjvq,
+  //   role=__lambdao_1.tmBuildOversizedToolStub,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmBuildOversizedToolStub(meta, content, sizeBytes, limitBytes, at) {
     var args = tmStableJson(meta.args == null ? {} : meta.args);
     if (args.length > 4000) args = args.slice(0, 4000) + '…[arguments clipped]';
@@ -11389,6 +11563,12 @@
     return removed;
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmApplyOversizedToolResultGuard-r6rv,
+  //   role=__lambdao_1.tmApplyOversizedToolResultGuard,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmApplyOversizedToolResultGuard(body) {
     var report = { changed: false, stubbed: [], recovered: [], whitelisted: [] };
     if (!body || typeof body !== 'object') return report;
@@ -11758,7 +11938,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.ensurePayloadCaptureModal-l2it,
   //   role=__lambdao_1.ensurePayloadCaptureModal,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Builds the ring-buffer modal DOM including the model→provider map row, retry-visibility toggle, and per-entry copy buttons.,
   // ]
@@ -12587,6 +12767,12 @@
   // Capture/widget surfaces prefer tmDeriveStableSessionId(), which prepends `tm-` to an explicit
   // pasted ID; the continuity/DOM actuator deliberately uses the raw pasted ID itself. Try exact
   // first (future-proof if the ledger changes), then remove exactly one routing prefix.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmAgentManagementDisplayState-ta9j,
+  //   role=__lambdao_1.tmAgentManagementDisplayState,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmAgentManagementDisplayState(sessionId) {
     var id = String(sessionId || '');
     if (!id) return null;
@@ -12641,6 +12827,12 @@
     console.log((enabled ? '🔴' : '🟠') + ' [v' + EXT_VERSION + '] Agent management mode ' + (enabled ? 'ENABLED' : 'disabled') + '.');
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmAgentManagementNoteOutbound-9p00,
+  //   role=__lambdao_1.tmAgentManagementNoteOutbound,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmAgentManagementNoteOutbound(sessionId, captureId) {
     if (!sessionId) return;
     var key = String(sessionId);
@@ -12676,6 +12868,12 @@
     if (flipped) tmAgentManagementRefreshBadgeUI();
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmAgentManagementNoteResponse-4y2a,
+  //   role=__lambdao_1.tmAgentManagementNoteResponse,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmAgentManagementNoteResponse(sessionId, endedWithToolCall, captureId) {
     if (!sessionId) return;
     var key = String(sessionId);
@@ -12856,6 +13054,12 @@
     }, 900);
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRunAgentManagementSweep-npjx,
+  //   role=__lambdao_1.tmRunAgentManagementSweep,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmRunAgentManagementSweep() {
     tmAgentManagementTimer = null;
     tmAgentManagementTimerDue = 0;
@@ -13797,6 +14001,12 @@
     try { return (Date.now() - tmLastUserGestureTs) > 5000; } catch (e) { return true; }
   }
 
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmTapContinuitySignals-zpzv,
+  //   role=__lambdao_1.tmTapContinuitySignals,
+  //   slice_labels=tm-payload-overview,tm-agent-management,
+  //   kind=ast,
+  // ]
   function tmTapContinuitySignals(response, sessionId, stubbedIds, hooks) {
     hooks = hooks || {};
     function petWatchdog() { try { if (hooks.pet) hooks.pet(); } catch (e) {} }
@@ -14804,7 +15014,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildCaptureSummary-h05z,
   //   role=__lambdao_1.tmBuildCaptureSummary,
-  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Builds a diagnostic summary from a capture record for modal copy buttons. Uses tmCaptureModel for model identity.,
   // ]
@@ -15014,7 +15224,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.copyPayloadCapturePart-xdsa,
   //   role=__lambdao_1.copyPayloadCapturePart,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Per-part copy logic behind the modal buttons: Summary, Outbound/Response Headers/Body/Skeleton, Raw Seg.,
   // ]
@@ -15199,7 +15409,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmIsRetryRow-yt0k,
   //   role=__lambdao_1.tmIsRetryRow,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Detects auto-retry/429 ring rows (vendor tag, HTTP 429, or a parsed 429 error body incl. 200-streamed 429s) for the retry-visibility filter.,
   // ]
@@ -15238,7 +15448,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmIsDeadProxyProbeRow-dppr,
   //   role=__lambdao_1.tmIsDeadProxyProbeRow,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Detects the CORS-blocked direct OpenRouter Anthropic-skin probe (the 'enable the proxy' call, recurring per 24h grant lapse) for the Noise-visibility filter. Peer of tmIsRetryRow. Safe because usage/cost are stamped ONLY in tmCaptureResponse, so a row with no response at all cannot carry billing data; all clauses are required and a 30s age floor protects the in-flight turn.,
   // ]
@@ -15390,7 +15600,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmSortModalItems-oyh5,
   //   role=__lambdao_1.tmSortModalItems,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Ring-modal row ordering across the sort modes (identity filtering applied by the caller).,
   // ]
@@ -15467,7 +15677,7 @@
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildTimelineSeparator-t1m3,
   //   role=__lambdao_1.tmBuildTimelineSeparator,
-  //   slice_labels=tm-payload-overview,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Timeline separator for the ring-buffer modal in chronological sort mode. Inserts a dim gray horizontal rule with a date label when the day changes or AM/PM crosses noon.,
   // ]
@@ -15515,7 +15725,7 @@
   // @beacon[
   //   id=None,
   //   role=__lambdao_1.renderPayloadCaptureModal,
-  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
+  //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,tm-ring-modal,
   //   kind=ast,
   //   comment=Payload Capture ring buffer modal. Shows 500-entry history with HIT/MISS/cost/session badges. MUST use cap._identity for hue+cost.,
   // ]
@@ -17444,17 +17654,6 @@
     }
   }
 
-  // Canonicalize body.tools in place (key-sorted, array order preserved). Returns true if the
-  // serialized form actually changed (i.e., TypingMind had emitted non-sorted keys this turn).
-  // Applied UNIVERSALLY to all OpenRouter requests (both Claude and OpenAI-family) so the
-  // outbound tools block is byte-stable across turns for every model.
-  // @beacon[
-  //   id=auto-beacon@__lambdao_1.tmStabilizeToolsOrdering-cyrk,
-  //   role=__lambdao_1.tmStabilizeToolsOrdering,
-  //   slice_labels=tm-payload-overview,
-  //   kind=ast,
-  //   comment=Fix 6A entry point: runs key canonicalization on body.tools for EVERY intercepted JSON request, before any endpoint-specific branch.,
-  // ]
   // (v4.243) Strip reasoning.encrypted blocks that were minted by a DIFFERENT model than the one
   // now being targeted. Such blocks are cryptographically sealed to their origin endpoint and can
   // NEVER be replayed elsewhere — OpenRouter 404s with 'encrypted reasoning ... produced under a
@@ -17502,6 +17701,17 @@
     return removed;
   }
 
+  // Canonicalize body.tools in place (key-sorted, array order preserved). Returns true if the
+  // serialized form actually changed (i.e., TypingMind had emitted non-sorted keys this turn).
+  // Applied UNIVERSALLY to all OpenRouter requests (both Claude and OpenAI-family) so the
+  // outbound tools block is byte-stable across turns for every model.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmStabilizeToolsOrdering-cyrk,
+  //   role=__lambdao_1.tmStabilizeToolsOrdering,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=Fix 6A entry point: runs key canonicalization on body.tools for EVERY intercepted JSON request, before any endpoint-specific branch.,
+  // ]
   function tmStabilizeToolsOrdering(body) {
     try {
       if (!body || !Array.isArray(body.tools) || body.tools.length === 0) return false;
