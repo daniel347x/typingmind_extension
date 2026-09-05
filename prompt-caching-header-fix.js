@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.375
+// Version: 4.376
 // Issues Fixed:
+//   - v4.376: KEEP-ALIVE SIDEBAR-ID ALIAS FIX. Dan's countdown fired, but navigation reported
+//     'sidebar conversation not found' even while '9b771fe5 - [Payload REDUX - 004]' was visible.
+//     Root cause: the KA entry carried 'tm-9b771fe5'; the existing actuator checks the literal
+//     title prefix and visible Session ID line, both of which use the RAW hash. Normalize the
+//     ID at the KA -> actuator handoff with tmKeepAliveNormSid (trim, lowercase, strip ONE tm-).
+//     Persisted identity keys and entry.sid stay unchanged. Lookup, active-conversation
+//     verification and return-trip bookmarks now receive the same raw ID. Existing auto-resume
+//     callers are untouched. Regression: temp/fix25_keepalive_dom_identity_test.js uses the
+//     production FirePing -> queue -> execute -> verify -> submit path with Dan's exact title.
 //   - v4.375: KEEP-ALIVE 'Skip this ping' now PAUSES until Dan's next real message (per Dan). A skip
 //     happens at quiescence by definition, so the next outbound payload is unambiguously him
 //     resuming; the v4.374 behavior (route through the failure path -> retry in 60s) would just
@@ -1965,7 +1974,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.375';
+  const EXT_VERSION = '4.376';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -4649,7 +4658,11 @@
   function tmKeepAliveFirePing(key) {
     var entry = tmGetKeepAliveEntry(key);
     if (!entry || !entry.enabled) return;
-    var sid = entry.sid || (String(key).split('::')[0] || '');
+    // (v4.376) The persisted identity may say 'tm-9b771fe5', but the sidebar title and
+    // visible Session ID line say '9b771fe5'. Normalize ONLY the ID handed to the DOM
+    // actuator; retain key and entry.sid verbatim for accounting, pending state and callbacks.
+    // This also gives verification and the return-trip bookmark the same raw ID as lookup.
+    var sid = tmKeepAliveNormSid(entry.sid || (String(key).split('::')[0] || ''));
     if (!sid) {
       tmKeepAliveStatus[key] = { text: 'no Session ID for this row \u2014 cannot target the conversation', tone: 'warn' };
       if (!tmKeepAliveSkipLogged[key]) { tmKeepAliveSkipLogged[key] = 1; console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive (' + key + '): no session id; cannot fire.'); }
