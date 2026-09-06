@@ -1,6 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.386
+// Version: 4.387
 // Issues Fixed:
+//   - v4.387: ⚖ Think Audit -- (1) the instructions now say what is on each side of the arrow: LEFT = the level
+//     you would pick in the 🎛️ Think dropdown (what we offer), RIGHT = what the writer actually sends after the
+//     clamp OpenRouter's catalogue implies; direct-identity lines name the levels the local table would send that
+//     OpenRouter does not list (and vice versa). (2) Discrepancies are split by SEVERITY: any discrepancy that
+//     involves medium / high / xhigh / max on either side (incl. 'host treated as on/off only but OpenRouter lists
+//     levels') is a ⚠️ WARNING and sits in its own group at the top, amber; discrepancies touching only off /
+//     minimal / low (incl. the mandatory-vs-can-disable disagreement) are a plain white NOTE group below it -- Dan
+//     rarely runs below medium, so those are information, not alarms. Then the not-in-catalogue / no-vocabulary /
+//     unknown-family rows, then AGREE. Same grouping in the plain-text report.
 //   - v4.386: Fix 24 -- ⚖ THINK AUDIT button on the persistent widget (top row, right-justified, largish). One
 //     place to go: opens a modal listing EVERY discrepancy between what OpenRouter's catalogue reports and what
 //     the 🎛️ Think dropdown offers, for every model Dan has actually used (session ledger + think overrides,
@@ -2086,7 +2095,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.386';
+  const EXT_VERSION = '4.387';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6974,14 +6983,17 @@
     out.sort(function(a, b) { return (a.model + a.host).localeCompare(b.model + b.host); });
     return out;
   }
-  // Pure report builder (tested in the harness). rows: [{model, host, proxy, route, status, lines[]}];
+  // Pure report builder (tested in the harness). rows: [{model, host, proxy, route, status, severity, levels[], lines[]}];
   // status: 'disagree' | 'agree' | 'not-in-catalogue' | 'not-loaded' | 'no-vocabulary' | 'unknown-family'.
+  // (v4.387) severity on 'disagree' rows: 'warn' when any level involved on either side is medium or higher
+  // (Dan rarely runs below medium, so those are the ones that matter), else 'note'.
   // @beacon[
   //   id=fix24-think-audit-report,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.386) Pure builder behind the ⚖ Think Audit modal: for every model actually used (session ledger + think overrides) lists OpenRouter-vs-dropdown discrepancies -- OR identities: options that would clamp; direct identities: the v4.385 cross-check -- plus the catalogue state and a plain-text rendering for pasting to an agent. Disagreements sort first; no other prioritization.,
+  //   comment=(v4.386; v4.387) Pure builder behind the ⚖ Think Audit modal: for every model actually used (session ledger + think overrides) lists OpenRouter-vs-dropdown discrepancies -- OR identities: options that would clamp; direct identities: the v4.385 cross-check -- split into ⚠️ WARNING (a medium-or-higher level involved) and plain NOTE (off/minimal/low only), plus the catalogue state and a plain-text rendering for pasting to an agent.,
   // ]
+  function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
   function tmBuildThinkAuditReport() {
     var st = tmReadOrReasoningCaps();
     var cat = { loaded: !!(st && st.models && Object.keys(st.models).length), failed: !!(st && st.failed), fetched: (st && st.ts_local) || null, count: (st && st.count) || 0, fresh: tmOrReasoningCapsIsFresh(st), reason: (st && st.reason) || null };
@@ -6991,7 +7003,7 @@
     for (var i = 0; i < models.length; i++) {
       var m = models[i];
       var isOR = /openrouter/i.test(m.host);
-      var row = { model: m.model, host: m.host, proxy: m.proxy, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'), status: 'unknown-family', lines: [], orId: null };
+      var row = { model: m.model, host: m.host, proxy: m.proxy, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'), status: 'unknown-family', severity: null, levels: [], lines: [], orId: null };
       if (isOR) {
         var caps = tmOrReasoningCapsFor(m.model);
         row.orId = m.model;
@@ -7000,10 +7012,10 @@
         else {
           for (var li = 0; li < levels.length; li++) {
             var lv = levels[li];
-            if (lv === 'off') { if (caps.mandatory) { var lo = tmOrCapsLowestEffort(caps.efforts); row.lines.push('off \u2192 ' + (lo || '?') + ' (OpenRouter: mandatory reasoning)'); } continue; }
+            if (lv === 'off') { if (caps.mandatory) { var lo = tmOrCapsLowestEffort(caps.efforts); row.lines.push('off \u2192 ' + (lo || '?') + ' (OpenRouter: mandatory reasoning)'); row.levels.push('off'); } continue; }
             if (caps.efforts.indexOf(lv) >= 0) continue;
             var nr = tmOrCapsNearestEffort(lv, caps.efforts);
-            if (nr && nr !== lv) row.lines.push(lv + ' \u2192 ' + nr + ' (OpenRouter does not list ' + lv + ')');
+            if (nr && nr !== lv) { row.lines.push(lv + ' \u2192 ' + nr + ' (OpenRouter does not list ' + lv + ')'); row.levels.push(lv); }
           }
           row.status = row.lines.length ? 'disagree' : 'agree';
           if (!row.lines.length) row.lines.push('every dropdown level is accepted as-is: [' + caps.efforts.join(', ') + ']' + (caps.mandatory ? ' \u00b7 mandatory' : ''));
@@ -7018,32 +7030,48 @@
           if (x.status === 'not-loaded') row.lines.push('OpenRouter catalogue not loaded');
           else if (x.status === 'not-in-catalogue') row.lines.push('no OpenRouter entry matched (tried ' + (x.candidates || []).join(', ') + ')');
           else {
-            if (x.disagreements.length) x.disagreements.forEach(function(d) { row.lines.push(d); });
-            else row.lines.push('agrees: ' + x.agreements.join(' \u00b7 '));
+            if (x.disagreements.length) {
+              x.disagreements.forEach(function(d) { row.lines.push(d); });
+              // Levels involved: ours that OR does not list, OR's that we do not offer, and -- when the local
+              // table treats the host as budget / on-off only -- every level OR lists (picking any of them
+              // here gets clamped to ON). A mandatory-vs-can-disable disagreement involves only 'off'.
+              row.levels = (x.localOnly || []).concat(x.orOnly || []);
+              if (x.local && !x.local.efforts.length && x.caps && x.caps.efforts.length) row.levels = row.levels.concat(x.caps.efforts.filter(function(e) { return e !== 'none'; }));
+              if (x.local && x.caps && !!x.caps.mandatory !== !!x.local.mandatory) row.levels.push('off');
+            } else row.lines.push('agrees: ' + x.agreements.join(' \u00b7 '));
             if (x.caps && x.caps.defaultEffort) row.lines.push('vendor default per OpenRouter: ' + x.caps.defaultEffort);
             row.lines.push('local source: ' + x.local.source);
           }
         }
       }
+      if (row.status === 'disagree') row.severity = row.levels.some(tmThinkAuditIsWarnLevel) ? 'warn' : 'note';
       rows.push(row);
     }
-    var rank = { disagree: 0, 'not-in-catalogue': 1, 'not-loaded': 2, 'no-vocabulary': 3, 'unknown-family': 4, agree: 5 };
-    rows.sort(function(a, b) { var ra = Object.prototype.hasOwnProperty.call(rank, a.status) ? rank[a.status] : 9, rb = Object.prototype.hasOwnProperty.call(rank, b.status) ? rank[b.status] : 9; var d = ra - rb; return d || (a.model + a.host).localeCompare(b.model + b.host); });
-    var nDis = rows.filter(function(r) { return r.status === 'disagree'; }).length;
+    // Order: ⚠️ warnings, then plain notes, then the not-comparable rows, then agree. Nothing else is prioritized.
+    var rank = { 'disagree:warn': 0, 'disagree:note': 1, 'not-in-catalogue': 2, 'not-loaded': 3, 'no-vocabulary': 4, 'unknown-family': 5, agree: 6 };
+    function rk(r) { var k = r.status === 'disagree' ? ('disagree:' + r.severity) : r.status; return Object.prototype.hasOwnProperty.call(rank, k) ? rank[k] : 9; }
+    rows.sort(function(a, b) { var d = rk(a) - rk(b); return d || (a.model + a.host).localeCompare(b.model + b.host); });
+    var nWarn = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn'; }).length;
+    var nNote = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'note'; }).length;
+    var nDis = nWarn + nNote;
     // Plain text for pasting to an agent.
     var T = [];
     T.push('THINK AUDIT -- OpenRouter catalogue vs the 🎛️ Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
     T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
-    T.push(rows.length + ' model/route identities from the session ledger + think overrides; ' + nDis + ' with discrepancies.');
+    T.push(rows.length + ' model/route identities from the session ledger + think overrides; ' + nWarn + ' WARNING (medium or higher involved), ' + nNote + ' note (off/minimal/low only).');
+    T.push('Arrow lines: LEFT = the level you would pick in the dropdown (what we offer); RIGHT = what the writer actually sends after the clamp OpenRouter\'s catalogue implies.');
     T.push('');
+    var lastGroup = null;
     rows.forEach(function(r) {
-      T.push('[' + r.status.toUpperCase() + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : ''));
+      var g = r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING -- discrepancies involving medium / high / xhigh / max' : 'NOTE -- discrepancies involving only off / minimal / low') : (r.status === 'agree' ? 'AGREE' : 'NOT COMPARABLE');
+      if (g !== lastGroup) { T.push('== ' + g + ' =='); lastGroup = g; }
+      T.push('[' + r.status.toUpperCase() + (r.severity ? ('/' + r.severity.toUpperCase()) : '') + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : ''));
       r.lines.forEach(function(l) { T.push('   - ' + l); });
     });
     T.push('');
     T.push('VENDOR DOCUMENTATION (best-known URLs as of 2026-09; if stale, tell the agent -- TM_THINK_VENDOR_DOCS):');
     TM_THINK_VENDOR_DOCS.forEach(function(v) { v.links.forEach(function(l) { T.push('   ' + v.vendor + ' -- ' + l.label + ': ' + l.url); }); });
-    return { catalogue: cat, rows: rows, disagreements: nDis, text: T.join('\n') };
+    return { catalogue: cat, rows: rows, disagreements: nDis, warnings: nWarn, notes: nNote, text: T.join('\n') };
   }
   function tmShowThinkAuditModal() {
     if (typeof document === 'undefined') return;
@@ -7056,22 +7084,33 @@
     box.style.cssText = 'width:80vw;max-width:1100px;height:84vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
     var cat = R.catalogue;
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
-    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 OpenRouter catalogue vs what the \ud83c\udf9b\ufe0f Think dropdown offers \u00b7 ' + R.rows.length + ' identities \u00b7 ' + R.disagreements + ' with discrepancies \u00b7 catalogue: ' + catTxt + '</span></span>' +
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 OpenRouter catalogue vs what the \ud83c\udf9b\ufe0f Think dropdown offers \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:#ffd166;">' + R.warnings + ' \u26a0\ufe0f warning' + (R.warnings === 1 ? '' : 's') + '</span> \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
       '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
-    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;">Every model you have actually used (session ledger + think overrides). OpenRouter identities: dropdown levels that would be CLAMPED by the writer. Direct identities: the local capability table diffed against OpenRouter\'s entry for the same model \u2014 advisory only, the direct route sends what the local table says. Discrepancies sort first; nothing else is prioritized. Links below are best-known as of 2026-09 \u2014 click one now and again; if it looks stale, tell the agent.</div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;">Every model you have actually used (session ledger + think overrides). <b style="color:#d0d0d8;">How to read an arrow line:</b> <b style="color:#e6e6ee;">LEFT of \u2192</b> = the level you would pick in the \ud83c\udf9b\ufe0f Think dropdown (what we offer); <b style="color:#e6e6ee;">RIGHT of \u2192</b> = what the writer actually puts on the wire after the clamp OpenRouter\'s catalogue implies. Direct-identity lines instead name the levels the local table would send that OpenRouter does not list (and the reverse) \u2014 advisory only, the direct route sends what the local table says. <b style="color:#ffd166;">\u26a0\ufe0f WARNING</b> = a discrepancy involving medium / high / xhigh / max on either side; <b style="color:#e6e6ee;">NOTE</b> = only off / minimal / low involved. Nothing else is prioritized. Links below are best-known as of 2026-09 \u2014 click one now and again; if it looks stale, tell the agent.</div>';
     var body = '<div style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
-    function section(title) { return '<div style="font-weight:700;font-size:12px;color:#8ef0a0;margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
-    body += section('DISCREPANCIES \u2014 ' + R.disagreements + ' of ' + R.rows.length + ' identities');
-    if (!R.rows.length) body += '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
-    else {
-      body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
-      R.rows.forEach(function(r) {
-        var stColor = r.status === 'disagree' ? '#ffd166' : r.status === 'agree' ? '#8ef0a0' : '#9aa4b2';
-        body += '<tr style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;"><td style="padding:4px 8px;white-space:nowrap;color:' + stColor + ';font-weight:700;">' + escapeHtml(r.status.toUpperCase()) + '</td>' +
+    function section(title, color) { return '<div style="font-weight:700;font-size:12px;color:' + (color || '#8ef0a0') + ';margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
+    function rowsTable(list, statusColorFn) {
+      var t = '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
+      list.forEach(function(r) {
+        var stColor = statusColorFn(r);
+        t += '<tr style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;"><td style="padding:4px 8px;white-space:nowrap;color:' + stColor + ';font-weight:700;">' + escapeHtml(r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING' : 'NOTE') : r.status.toUpperCase()) + '</td>' +
           '<td style="padding:4px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '</span></td>' +
           '<td style="padding:4px 8px;color:#d0d0d8;">' + r.lines.map(function(l) { return '<div>\u2022 ' + escapeHtml(l) + '</div>'; }).join('') + '</td></tr>';
       });
-      body += '</table>';
+      return t + '</table>';
+    }
+    var warnRows = R.rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn'; });
+    var noteRows = R.rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'note'; });
+    var otherRows = R.rows.filter(function(r) { return r.status !== 'disagree' && r.status !== 'agree'; });
+    var agreeRows = R.rows.filter(function(r) { return r.status === 'agree'; });
+    if (!R.rows.length) body += section('DISCREPANCIES') + '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
+    else {
+      body += section('\u26a0\ufe0f WARNING \u2014 discrepancies involving medium / high / xhigh / max (' + warnRows.length + ')', '#ffd166');
+      body += warnRows.length ? rowsTable(warnRows, function() { return '#ffd166'; }) : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
+      body += section('NOTE \u2014 discrepancies involving only off / minimal / low (' + noteRows.length + ')', '#e6e6ee');
+      body += noteRows.length ? rowsTable(noteRows, function() { return '#e6e6ee'; }) : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
+      if (otherRows.length) { body += section('NOT COMPARABLE \u2014 not in the catalogue / no vocabulary published / no local table (' + otherRows.length + ')', '#9aa4b2'); body += rowsTable(otherRows, function() { return '#9aa4b2'; }); }
+      if (agreeRows.length) { body += section('AGREE (' + agreeRows.length + ')', '#8ef0a0'); body += rowsTable(agreeRows, function() { return '#8ef0a0'; }); }
     }
     body += section('VENDOR DOCUMENTATION \u2014 best-known URLs as of 2026-09 (click = new tab; \u2398 = copy)');
     body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
