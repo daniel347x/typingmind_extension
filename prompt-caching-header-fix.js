@@ -1,6 +1,22 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.387
+// Version: 4.388
 // Issues Fixed:
+//   - v4.388: ⚖ THINK AUDIT v2 -- every line now says WHAT HAPPENS TO YOUR PICK, and the audit stops describing
+//     the writers and DRY-RUNS them instead. For each identity (session ledger + think overrides) and each of the
+//     7 dropdown levels the real writer (tmThinkApplyOverride) runs on a synthetic body; the report lists per level:
+//     🔁 MAPPED (left = your pick, right = what is actually sent; says whether the mapping came from OpenRouter's
+//     catalogue or from the local table), ➡️ SENT AS-IS BUT UNLISTED (goes out verbatim; OpenRouter does not list
+//     it; the host may reject or reinterpret), ✅ SENT AS-IS, LISTED (collapsed to one line), ℹ️ INFO (levels
+//     OpenRouter lists that our menu never puts on the wire; OpenRouter's default). A KEY under the instructions
+//     explains the four icons. THREE menus per row: 'Our 🎛️ menu' = the actual dropdown as rendered for that model
+//     (display-only; same builder, identity-neutral); 'OpenRouter lists' = supported_efforts with ★ on its
+//     default_effort; 'Vendor' = the honest maximum -- vendor default per OpenRouter + that vendor's docs link
+//     (no vendor publishes a machine-readable recommendation). 🪦 TOMBSTONE per row (tm_think_audit_tombstones_v1):
+//     the row stays in place, dimmed with a dashed border, and is excluded from the warning count; click again to
+//     revive. The widget button now reflects state: '⚖ Think Audit ⚠️ N' amber only when LIVE (non-tombstoned)
+//     warnings exist, neutral otherwise (5s memo). Severity unchanged: WARNING when a discrepancy involves
+//     medium/high/xhigh/max, NOTE otherwise; a locally-mapped level that OpenRouter also does not list is NOT a
+//     discrepancy (we agree it is unavailable) -- it is shown as 🔁 for clarity only.
 //   - v4.387: ⚖ Think Audit -- (1) the instructions now say what is on each side of the arrow: LEFT = the level
 //     you would pick in the 🎛️ Think dropdown (what we offer), RIGHT = what the writer actually sends after the
 //     clamp OpenRouter's catalogue implies; direct-identity lines name the levels the local table would send that
@@ -2095,7 +2111,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.387';
+  const EXT_VERSION = '4.388';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6965,7 +6981,8 @@
       { label: 'Live models catalogue JSON (the source of the cross-check)', url: 'https://openrouter.ai/api/v1/models' } ] }
   ];
   // Every model Dan has actually used: session ledger identities + think-override identities, deduped by
-  // model + host + proxy (the session id is irrelevant to capabilities).
+  // model + host + proxy (the session id is irrelevant to capabilities; the FIRST sid seen is kept so the
+  // newest stamped row for that identity can be consulted, e.g. for the wire protocol).
   function tmThinkAuditCollectModels() {
     var seen = {}, out = [];
     function add(key) {
@@ -6973,9 +6990,9 @@
         var p = String(key || '').split('::');
         if (p.length < 3 || !p[1]) return;
         var model = p[1], host = p[2] || '', proxy = p[3] === 'proxy';
-        var k = model.toLowerCase() + '::' + host.toLowerCase() + '::' + (proxy ? 'proxy' : 'direct');
+        var k = tmThinkAuditIdentityKey(model, host, proxy);
         if (seen[k]) return; seen[k] = 1;
-        out.push({ model: model, host: host, proxy: proxy });
+        out.push({ model: model, host: host, proxy: proxy, sid: p[0] || '', idKey: String(key), auditKey: k });
       } catch (e) {}
     }
     try { var costs = tmGetSessionCosts(); for (var k1 in costs) if (Object.prototype.hasOwnProperty.call(costs, k1) && k1.indexOf('::') > 0) add(k1); } catch (e1) {}
@@ -6983,119 +7000,273 @@
     out.sort(function(a, b) { return (a.model + a.host).localeCompare(b.model + b.host); });
     return out;
   }
-  // Pure report builder (tested in the harness). rows: [{model, host, proxy, route, status, severity, levels[], lines[]}];
+  function tmThinkAuditIdentityKey(model, host, proxy) { return String(model || '').toLowerCase() + '::' + String(host || '').toLowerCase() + '::' + (proxy ? 'proxy' : 'direct'); }
+  // (v4.388) Tombstones: identities Dan has decided not to resolve. Kept in place, dimmed, excluded from the
+  // live warning count; toggling again revives. Keyed by the audit identity (model::host::proxy|direct).
+  var TM_THINK_AUDIT_TOMB_KEY = 'tm_think_audit_tombstones_v1';
+  var tmThinkAuditMemo = null;   // { ts, warningsLive } -- the widget button reads this (5s memo)
+  function tmThinkAuditReadTombstones() { try { var v = JSON.parse(localStorage.getItem(TM_THINK_AUDIT_TOMB_KEY) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; } }
+  function tmThinkAuditToggleTombstone(auditKey) {
+    try {
+      var t = tmThinkAuditReadTombstones();
+      if (t[auditKey]) delete t[auditKey]; else t[auditKey] = Date.now();
+      localStorage.setItem(TM_THINK_AUDIT_TOMB_KEY, JSON.stringify(t));
+      tmThinkAuditMemo = null;
+      return !!t[auditKey];
+    } catch (e) { return false; }
+  }
+  // (v4.388) The four line kinds -- ONE vocabulary for the report, the modal key and the plain text.
+  var TM_THINK_AUDIT_KINDS = {
+    map:  { icon: '\ud83d\udd01', label: 'MAPPED',               desc: 'The level on the LEFT is in our \ud83c\udf9b\ufe0f menu; if you pick it the writer REWRITES it before sending, and the value on the RIGHT is what actually goes over the wire. The parenthesis says who decided the mapping: OpenRouter\'s catalogue (OpenRouter identities) or the local capability table (direct identities).' },
+    asis: { icon: '\u27a1\ufe0f', label: 'SENT AS-IS, UNLISTED', desc: 'The level is in our menu and goes out VERBATIM -- nothing rewrites it -- but OpenRouter\'s catalogue does not list it for this model, so the host may reject it or silently reinterpret it. Check the vendor docs; the next row\'s \ud83c\udf9b\ufe0f/\ud83e\uddee glyphs show what really happened.' },
+    ok:   { icon: '\u2705', label: 'SENT AS-IS, LISTED',   desc: 'Levels in our menu that go out verbatim AND that OpenRouter lists as accepted for this model. Nothing to resolve.' },
+    info: { icon: '\u2139\ufe0f', label: 'INFO',                 desc: 'Not about a menu pick: levels OpenRouter lists that our menu never puts on the wire (a stale local table, or a deliberate clamp), OpenRouter\'s reported default, and the local table\'s provenance.' }
+  };
+  var TM_THINK_AUDIT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+  function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
+  // Which wire shape does this identity use? Newest stamped row when there is one; host heuristics otherwise.
+  function tmThinkAuditProtocolFor(m) {
+    try { var e = tmLatestThinkEntryForIdentity(m.idKey); var p = e && e._think_req && e._think_req.protocol; if (p) return p; } catch (e0) {}
+    var h = String(m.host || '').toLowerCase(), mo = String(m.model || '').toLowerCase();
+    if (/openrouter/.test(h)) return 'openai-chat-completions';
+    if (/anthropic\.com/.test(h)) return 'anthropic-messages';
+    if (/generativelanguage|googleapis/.test(h)) return 'gemini-generatecontent';
+    if (/api\.openai\.com/.test(h) && /sol|(^|[\/_-])o[1-9](-|$)/.test(mo)) return 'openai-responses';
+    return 'openai-chat-completions';
+  }
+  // DRY-RUN the real writer for one level on a synthetic body: returns the writer's report (clamps/changes/notes).
+  // Nothing is persisted: the override object is throwaway, ctx.setHeader is a no-op, the body is discarded.
+  function tmThinkAuditDryRun(m, level) {
+    try {
+      var h = String(m.host || '').toLowerCase();
+      var proto = tmThinkAuditProtocolFor(m);
+      var url, body;
+      if (/openrouter/.test(h)) {
+        url = (proto === 'anthropic-messages') ? 'https://openrouter.ai/api/v1/messages' : 'https://openrouter.ai/api/v1/chat/completions';
+        body = { model: m.model, max_tokens: 32000, messages: [{ role: 'user', content: 'audit' }] };
+      } else if (proto === 'anthropic-messages') {
+        url = 'https://' + m.host + '/v1/messages';
+        body = { model: m.model, max_tokens: 32000, messages: [{ role: 'user', content: 'audit' }] };
+      } else if (proto === 'gemini-generatecontent') {
+        url = 'https://' + m.host + '/v1beta/models/' + m.model + ':streamGenerateContent';
+        body = { contents: [{ role: 'user', parts: [{ text: 'audit' }] }], generationConfig: {} };
+      } else if (proto === 'openai-responses') {
+        url = 'https://' + m.host + '/v1/responses';
+        body = { model: m.model, input: [{ role: 'user', content: [{ type: 'input_text', text: 'audit' }] }] };
+      } else {
+        url = 'https://' + m.host + '/v1/chat/completions';
+        body = { model: m.model, messages: [{ role: 'user', content: 'audit' }] };
+      }
+      var headers = m.proxy ? { 'x-target-endpoint': url } : {};
+      if (m.proxy) url = 'https://www.typingmind.com/api/cors-proxy';
+      return tmThinkApplyOverride(url, body, headers, { level: level, display: 'inherit', steps: [] }, { setHeader: function() {} });
+    } catch (e) { return null; }
+  }
+  // Parse the writer's clamp text for the level: 'xhigh \u2192 high: reason' -> { to: 'high', reason }.
+  function tmThinkAuditClampFor(rep, level) {
+    try {
+      if (!rep || !rep.clamps) return null;
+      for (var i = 0; i < rep.clamps.length; i++) {
+        var c = String(rep.clamps[i]);
+        var mm = new RegExp('(?:^|[\\s(:])' + level + '\\s*\\u2192\\s*([^:(]+?)\\s*(?::\\s*(.*))?$').exec(c);
+        if (mm) return { to: mm[1].trim(), reason: (mm[2] || '').trim(), raw: c };
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+  // Pure report builder (tested in the harness).
+  // rows: [{ model, host, proxy, route, idKey, auditKey, orId, orCaps, status, severity, tombstoned, levels[], lines[{kind, text, level, disc}] }]
   // status: 'disagree' | 'agree' | 'not-in-catalogue' | 'not-loaded' | 'no-vocabulary' | 'unknown-family'.
-  // (v4.387) severity on 'disagree' rows: 'warn' when any level involved on either side is medium or higher
-  // (Dan rarely runs below medium, so those are the ones that matter), else 'note'.
+  // severity on 'disagree' rows: 'warn' when any DISCREPANT level is medium or higher, else 'note'.
   // @beacon[
   //   id=fix24-think-audit-report,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.386; v4.387) Pure builder behind the ⚖ Think Audit modal: for every model actually used (session ledger + think overrides) lists OpenRouter-vs-dropdown discrepancies -- OR identities: options that would clamp; direct identities: the v4.385 cross-check -- split into ⚠️ WARNING (a medium-or-higher level involved) and plain NOTE (off/minimal/low only), plus the catalogue state and a plain-text rendering for pasting to an agent.,
+  //   comment=(v4.386-v4.388) Pure builder behind the \u2696 Think Audit modal. For every identity actually used it DRY-RUNS the real writer for each of the 7 dropdown levels and reports per level what happens to the pick -- \ud83d\udd01 MAPPED (to what, by whom), \u27a1\ufe0f SENT AS-IS but unlisted by OpenRouter, \u2705 sent as-is and listed, \u2139\ufe0f info -- with WARNING/NOTE severity (medium+ involved), tombstones excluded from the live count, and a plain-text rendering.,
   // ]
-  function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
   function tmBuildThinkAuditReport() {
     var st = tmReadOrReasoningCaps();
     var cat = { loaded: !!(st && st.models && Object.keys(st.models).length), failed: !!(st && st.failed), fetched: (st && st.ts_local) || null, count: (st && st.count) || 0, fresh: tmOrReasoningCapsIsFresh(st), reason: (st && st.reason) || null };
+    var tombs = tmThinkAuditReadTombstones();
     var rows = [];
     var models = tmThinkAuditCollectModels();
-    var levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
     for (var i = 0; i < models.length; i++) {
       var m = models[i];
       var isOR = /openrouter/i.test(m.host);
-      var row = { model: m.model, host: m.host, proxy: m.proxy, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'), status: 'unknown-family', severity: null, levels: [], lines: [], orId: null };
-      if (isOR) {
-        var caps = tmOrReasoningCapsFor(m.model);
-        row.orId = m.model;
-        if (!caps) { row.status = cat.loaded ? 'not-in-catalogue' : 'not-loaded'; row.lines.push(cat.loaded ? 'not in OpenRouter\'s catalogue -- the dropdown falls back to the local heuristics' : 'OpenRouter catalogue not loaded'); }
-        else if (!caps.efforts.length) { row.status = 'no-vocabulary'; row.lines.push('OpenRouter publishes no effort vocabulary for this model (mandatory=' + caps.mandatory + (caps.defaultEffort ? (', default ' + caps.defaultEffort) : '') + ') -- every dropdown level is sent as-is; OpenRouter translates by its own ratios'); }
-        else {
-          for (var li = 0; li < levels.length; li++) {
-            var lv = levels[li];
-            if (lv === 'off') { if (caps.mandatory) { var lo = tmOrCapsLowestEffort(caps.efforts); row.lines.push('off \u2192 ' + (lo || '?') + ' (OpenRouter: mandatory reasoning)'); row.levels.push('off'); } continue; }
-            if (caps.efforts.indexOf(lv) >= 0) continue;
-            var nr = tmOrCapsNearestEffort(lv, caps.efforts);
-            if (nr && nr !== lv) { row.lines.push(lv + ' \u2192 ' + nr + ' (OpenRouter does not list ' + lv + ')'); row.levels.push(lv); }
-          }
-          row.status = row.lines.length ? 'disagree' : 'agree';
-          if (!row.lines.length) row.lines.push('every dropdown level is accepted as-is: [' + caps.efforts.join(', ') + ']' + (caps.mandatory ? ' \u00b7 mandatory' : ''));
-          if (caps.defaultEffort) row.lines.push('OpenRouter-reported default: ' + caps.defaultEffort);
+      var row = { model: m.model, host: m.host, proxy: m.proxy, idKey: m.idKey, auditKey: m.auditKey, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'),
+        status: 'unknown-family', severity: null, tombstoned: !!tombs[m.auditKey], levels: [], lines: [], orId: null, orCaps: null, protocol: tmThinkAuditProtocolFor(m), vendorDocs: null };
+      function line(kind, text, level, disc) { row.lines.push({ kind: kind, text: text, level: level || null, disc: !!disc }); if (disc && level) row.levels.push(level); }
+      // OpenRouter's view of this model (exact id on OR identities; mapped id on direct ones).
+      var orc = null;
+      if (isOR) { orc = tmOrReasoningCapsFor(m.model); row.orId = m.model; }
+      else { var f = tmOrCapsForDirect(m.model, m.host); orc = f.caps; row.orId = f.orId; row.orCandidates = f.candidates; }
+      row.orCaps = orc;
+      var loc = isOR ? null : tmThinkLocalCapsForDirect(m.model, m.host);
+      if (!isOR && !loc) { row.status = 'unknown-family'; line('info', 'no local capability table for this model family -- nothing to compare', null, false); rows.push(row); continue; }
+      if (!orc) {
+        row.status = cat.loaded ? 'not-in-catalogue' : 'not-loaded';
+        line('info', cat.loaded ? ('not in OpenRouter\'s catalogue' + (isOR ? '' : (' (tried ' + (row.orCandidates || []).join(', ') + ')')) + ' -- the menu falls back to the local table') : 'OpenRouter catalogue not loaded (fetch pending or failed)', null, false);
+      }
+      var orE = (orc && orc.efforts.length) ? orc.efforts.filter(function(e) { return e !== 'none'; }) : [];
+      // DRY-RUN every level through the real writer.
+      var sentSet = {}, okLevels = [];
+      for (var li = 0; li < TM_THINK_AUDIT_LEVELS.length; li++) {
+        var lv = TM_THINK_AUDIT_LEVELS[li];
+        var rep = tmThinkAuditDryRun(m, lv);
+        var cl = tmThinkAuditClampFor(rep, lv);
+        if (cl) {
+          var byOR = /OpenRouter/i.test(cl.reason) || /OpenRouter/i.test(cl.raw);
+          sentSet[cl.to.toLowerCase()] = 1;
+          // A local clamp of a level OpenRouter ALSO does not list is not a disagreement -- both sides agree it is
+          // unavailable. A local clamp of a level OpenRouter DOES list is (the table may be stale).
+          var discMap = isOR ? true : (orE.length ? (lv !== 'off' && orE.indexOf(lv) >= 0) || (lv === 'off' && orc && orc.mandatory === false) : false);
+          line('map', lv + ' \u2192 ' + cl.to + ' (' + (byOR ? 'mapped per OpenRouter\'s catalogue' : 'mapped by the local table') + (cl.reason ? ('; ' + cl.reason) : '') + ')' + (discMap && !isOR ? ' \u2014 but OpenRouter lists ' + lv + ' for this model; the local table may be stale' : ''), lv, discMap);
+          continue;
         }
-      } else {
-        var x = tmOrCapsCrossCheck(m.model, m.host);
-        if (!x) { row.status = 'unknown-family'; row.lines.push('no local capability table for this model family -- nothing to compare'); }
-        else {
-          row.orId = x.orId;
-          row.status = x.status;
-          if (x.status === 'not-loaded') row.lines.push('OpenRouter catalogue not loaded');
-          else if (x.status === 'not-in-catalogue') row.lines.push('no OpenRouter entry matched (tried ' + (x.candidates || []).join(', ') + ')');
-          else {
-            if (x.disagreements.length) {
-              x.disagreements.forEach(function(d) { row.lines.push(d); });
-              // Levels involved: ours that OR does not list, OR's that we do not offer, and -- when the local
-              // table treats the host as budget / on-off only -- every level OR lists (picking any of them
-              // here gets clamped to ON). A mandatory-vs-can-disable disagreement involves only 'off'.
-              row.levels = (x.localOnly || []).concat(x.orOnly || []);
-              if (x.local && !x.local.efforts.length && x.caps && x.caps.efforts.length) row.levels = row.levels.concat(x.caps.efforts.filter(function(e) { return e !== 'none'; }));
-              if (x.local && x.caps && !!x.caps.mandatory !== !!x.local.mandatory) row.levels.push('off');
-            } else row.lines.push('agrees: ' + x.agreements.join(' \u00b7 '));
-            if (x.caps && x.caps.defaultEffort) row.lines.push('vendor default per OpenRouter: ' + x.caps.defaultEffort);
-            row.lines.push('local source: ' + x.local.source);
-          }
-        }
+        // Not clamped: the level goes out as-is.
+        sentSet[lv] = 1;
+        if (!orc || !orE.length) continue;                 // nothing to compare against
+        if (lv === 'off') { if (orc.mandatory) line('asis', 'off is sent as-is (thinking disabled) -- OpenRouter says reasoning is MANDATORY on this model; the host may reject it', 'off', true); else okLevels.push('off'); continue; }
+        if (orE.indexOf(lv) >= 0) okLevels.push(lv);
+        else line('asis', lv + ' is sent as-is -- OpenRouter does not list ' + lv + ' for ' + row.orId + ' (lists [' + orE.join(', ') + ']); the host may reject or silently reinterpret it', lv, true);
+      }
+      if (okLevels.length) line('ok', 'sent as-is and listed by OpenRouter: ' + okLevels.join(', '), null, false);
+      if (orc && !orE.length) line('info', 'OpenRouter publishes no effort vocabulary for ' + row.orId + ' (mandatory=' + orc.mandatory + ') -- every level goes out as the writer decides above; nothing to compare on levels', null, false);
+      if (orE.length) {
+        // Levels OpenRouter lists that never reach the wire -- unless a flagged 🔁 line already said so for that level.
+        var coveredDisc = {};
+        row.lines.forEach(function(l) { if (l.kind === 'map' && l.disc && l.level) coveredDisc[l.level] = 1; });
+        var never = orE.filter(function(e) { return !sentSet[e] && !coveredDisc[e]; });
+        if (never.length) never.forEach(function(e) { line('info', 'OpenRouter lists ' + e + ' for this model, but our menu never puts ' + e + ' on the wire' + (isOR ? '' : ' (the local table may be stale)'), e, true); });
+      }
+      if (orc && orc.defaultEffort) line('info', (isOR ? 'OpenRouter-reported default: ' : 'vendor default per OpenRouter: ') + orc.defaultEffort, null, false);
+      if (loc) line('info', 'local table: ' + loc.source, null, false);
+      if (orc && !orE.length && row.status === 'unknown-family') row.status = 'no-vocabulary';
+      if (orc) {
+        var disc = row.lines.some(function(l) { return l.disc; });
+        if (!orE.length) row.status = 'no-vocabulary';
+        else row.status = disc ? 'disagree' : 'agree';
       }
       if (row.status === 'disagree') row.severity = row.levels.some(tmThinkAuditIsWarnLevel) ? 'warn' : 'note';
+      // Vendor docs for this family (the 'third menu' -- the honest maximum: default + docs link).
+      row.vendorDocs = tmThinkAuditVendorDocsFor(m.model, m.host);
       rows.push(row);
     }
-    // Order: ⚠️ warnings, then plain notes, then the not-comparable rows, then agree. Nothing else is prioritized.
+    // Order: warnings, then notes, then not-comparable, then agree. Tombstoned rows keep their place.
     var rank = { 'disagree:warn': 0, 'disagree:note': 1, 'not-in-catalogue': 2, 'not-loaded': 3, 'no-vocabulary': 4, 'unknown-family': 5, agree: 6 };
     function rk(r) { var k = r.status === 'disagree' ? ('disagree:' + r.severity) : r.status; return Object.prototype.hasOwnProperty.call(rank, k) ? rank[k] : 9; }
     rows.sort(function(a, b) { var d = rk(a) - rk(b); return d || (a.model + a.host).localeCompare(b.model + b.host); });
     var nWarn = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn'; }).length;
     var nNote = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'note'; }).length;
-    var nDis = nWarn + nNote;
+    var nWarnLive = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn' && !r.tombstoned; }).length;
+    var nTomb = rows.filter(function(r) { return r.tombstoned; }).length;
     // Plain text for pasting to an agent.
     var T = [];
-    T.push('THINK AUDIT -- OpenRouter catalogue vs the 🎛️ Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
+    T.push('THINK AUDIT -- OpenRouter catalogue vs the \ud83c\udf9b\ufe0f Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
     T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
-    T.push(rows.length + ' model/route identities from the session ledger + think overrides; ' + nWarn + ' WARNING (medium or higher involved), ' + nNote + ' note (off/minimal/low only).');
-    T.push('Arrow lines: LEFT = the level you would pick in the dropdown (what we offer); RIGHT = what the writer actually sends after the clamp OpenRouter\'s catalogue implies.');
+    T.push(rows.length + ' identities; ' + nWarnLive + ' live WARNING (medium or higher involved)' + (nWarn !== nWarnLive ? (' + ' + (nWarn - nWarnLive) + ' tombstoned') : '') + ', ' + nNote + ' note (off/minimal/low only), ' + nTomb + ' tombstoned.');
+    T.push('KEY: ' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { return TM_THINK_AUDIT_KINDS[k].icon + ' ' + TM_THINK_AUDIT_KINDS[k].label; }).join(' \u00b7 ') + '. Arrow lines: LEFT = the level you would pick in the dropdown; RIGHT = what actually goes over the wire.');
     T.push('');
     var lastGroup = null;
     rows.forEach(function(r) {
       var g = r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING -- discrepancies involving medium / high / xhigh / max' : 'NOTE -- discrepancies involving only off / minimal / low') : (r.status === 'agree' ? 'AGREE' : 'NOT COMPARABLE');
       if (g !== lastGroup) { T.push('== ' + g + ' =='); lastGroup = g; }
-      T.push('[' + r.status.toUpperCase() + (r.severity ? ('/' + r.severity.toUpperCase()) : '') + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : ''));
-      r.lines.forEach(function(l) { T.push('   - ' + l); });
+      T.push((r.tombstoned ? '\ud83e\udea6 TOMBSTONED ' : '') + '[' + r.status.toUpperCase() + (r.severity ? ('/' + r.severity.toUpperCase()) : '') + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : '') + ' \u00b7 wire: ' + r.protocol);
+      r.lines.forEach(function(l) { T.push('   ' + (TM_THINK_AUDIT_KINDS[l.kind] || {}).icon + ' ' + l.text); });
+      if (r.orCaps && r.orCaps.efforts.length) T.push('   OpenRouter lists: [' + r.orCaps.efforts.join(', ') + ']' + (r.orCaps.defaultEffort ? (' default ' + r.orCaps.defaultEffort) : '') + (r.orCaps.mandatory ? ' mandatory' : ''));
     });
     T.push('');
     T.push('VENDOR DOCUMENTATION (best-known URLs as of 2026-09; if stale, tell the agent -- TM_THINK_VENDOR_DOCS):');
     TM_THINK_VENDOR_DOCS.forEach(function(v) { v.links.forEach(function(l) { T.push('   ' + v.vendor + ' -- ' + l.label + ': ' + l.url); }); });
-    return { catalogue: cat, rows: rows, disagreements: nDis, warnings: nWarn, notes: nNote, text: T.join('\n') };
+    var out = { catalogue: cat, rows: rows, disagreements: nWarn + nNote, warnings: nWarn, warningsLive: nWarnLive, notes: nNote, tombstoned: nTomb, text: T.join('\n') };
+    tmThinkAuditMemo = { ts: Date.now(), warningsLive: nWarnLive };
+    return out;
   }
-  function tmShowThinkAuditModal() {
+  // Vendor docs entry for a model/host (the 'Vendor' column). null when no family matches.
+  function tmThinkAuditVendorDocsFor(model, host) {
+    try {
+      var fam = tmThinkChatFamily(model, host);
+      var name = fam === 'claude' ? 'Anthropic' : fam === 'openai' ? 'OpenAI' : fam === 'kimi' ? 'Moonshot' : fam === 'gemini' ? 'Gemini' : fam === 'grok' ? 'xAI' : null;
+      if (!name) return null;
+      for (var i = 0; i < TM_THINK_VENDOR_DOCS.length; i++) if (TM_THINK_VENDOR_DOCS[i].vendor.indexOf(name) === 0) return TM_THINK_VENDOR_DOCS[i];
+      return null;
+    } catch (e) { return null; }
+  }
+  // Live warning count for the widget button (5s memo; never builds the report more than once per 5s).
+  function tmThinkAuditLiveWarnings() {
+    try {
+      if (tmThinkAuditMemo && (Date.now() - tmThinkAuditMemo.ts) < 5000) return tmThinkAuditMemo.warningsLive;
+      return tmBuildThinkAuditReport().warningsLive;
+    } catch (e) { return 0; }
+  }
+  // Widget button HTML: amber '\u2696 Think Audit \u26a0\ufe0f N' when live warnings exist, neutral otherwise.
+  function tmThinkAuditButtonHtml() {
+    var n = tmThinkAuditLiveWarnings();
+    var warn = n > 0;
+    var style = warn
+      ? 'font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#3a2f0f;color:#ffd166;border:1px solid #8a6d1a;border-radius:5px;cursor:pointer;text-shadow:0 0 3px rgba(255,209,102,0.35);'
+      : 'font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#23232c;color:#aab;border:1px solid #444;border-radius:5px;cursor:pointer;';
+    return '<button type="button" data-action="show-think-audit" title="Think Audit: what happens to every \ud83c\udf9b\ufe0f Think level you could pick, per model you have used -- mapped before sending, sent as-is but unlisted by OpenRouter, or sent as-is and listed -- plus the vendor documentation links. ' + (warn ? (n + ' live warning' + (n === 1 ? '' : 's') + ' (medium or higher involved, not tombstoned).') : 'No live warnings.') + '" style="' + style + '">\u2696 Think Audit' + (warn ? (' \u26a0\ufe0f ' + n) : '') + '</button>';
+  }
+  // Display-only copy of the REAL \ud83c\udf9b\ufe0f Think level menu for an identity (same builder, identity-neutral key so no
+  // override or stamped row leaks in; data-action stripped so a change does nothing).
+  function tmThinkAuditDemoMenuHtml(model, host, proxy) {
+    try {
+      var key = 'audit::' + model + '::' + host + '::' + (proxy ? 'proxy' : 'direct');
+      var html = tmBuildThinkControlHtml(key, { selMaxWidth: '260px' });
+      var mm = /<select[^>]*data-action="set-think-level"[\s\S]*?<\/select>/.exec(html || '');
+      if (!mm) return '<span style="color:#6f7a8a;">(menu unavailable)</span>';
+      return mm[0].replace(/ data-action="set-think-level"/, ' data-demo="our-menu"').replace(/ data-identity-key="[^"]*"/, '').replace(/ title="[^"]*"/, ' title="Display-only copy of the \ud83c\udf9b\ufe0f Think menu as rendered for this model. Changing it here does nothing."');
+    } catch (e) { return ''; }
+  }
+  function tmThinkAuditOrMenuHtml(row) {
+    var c = row.orCaps;
+    if (!c) return '<span style="color:#6f7a8a;">' + (row.status === 'not-loaded' ? 'catalogue not loaded' : 'not in catalogue') + '</span>';
+    if (!c.efforts.length) return '<span style="color:#6f7a8a;">no effort vocabulary published' + (c.mandatory ? ' \u00b7 mandatory' : '') + (c.defaultEffort ? (' \u00b7 default ' + escapeHtml(c.defaultEffort)) : '') + '</span>';
+    var eff = c.efforts.slice().sort(function(a, b) { return (TM_OR_EFFORT_RANK[b] || 0) - (TM_OR_EFFORT_RANK[a] || 0); });
+    var o = '<select data-demo="or-menu" title="What OpenRouter\'s /api/v1/models catalogue lists as supported_efforts for ' + escapeHtml(row.orId || row.model) + '. \u2605 = OpenRouter\'s reported default. Display-only." style="font-size:9px;background:#222;color:#aab;border:1px solid #444;border-radius:3px;padding:0 2px;max-width:220px;">';
+    o += '<option>' + eff.length + ' level' + (eff.length === 1 ? '' : 's') + (c.mandatory ? ' \u00b7 mandatory' : '') + '</option>';
+    eff.forEach(function(e) { o += '<option>' + escapeHtml(e) + (c.defaultEffort === e ? ' \u2605 default' : '') + '</option>'; });
+    return o + '</select>';
+  }
+  function tmShowThinkAuditModal(keepScroll) {
     if (typeof document === 'undefined') return;
     try { tmMaybeFetchOrReasoningCaps(); } catch (e0) {}
-    var old = document.getElementById('tm-think-audit-overlay'); if (old) old.parentNode.removeChild(old);
+    var old = document.getElementById('tm-think-audit-overlay');
+    var prevScroll = 0;
+    if (old) { try { var pb = old.querySelector('[data-think-audit-body]'); if (pb) prevScroll = pb.scrollTop; } catch (eS) {} old.parentNode.removeChild(old); }
     var R = tmBuildThinkAuditReport();
     var overlay = document.createElement('div'); overlay.id = 'tm-think-audit-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
     var box = document.createElement('div');
-    box.style.cssText = 'width:80vw;max-width:1100px;height:84vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    box.style.cssText = 'width:88vw;max-width:1400px;height:88vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
     var cat = R.catalogue;
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
-    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 OpenRouter catalogue vs what the \ud83c\udf9b\ufe0f Think dropdown offers \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:#ffd166;">' + R.warnings + ' \u26a0\ufe0f warning' + (R.warnings === 1 ? '' : 's') + '</span> \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 what happens to each \ud83c\udf9b\ufe0f Think level you could pick, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
       '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
-    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:8px;line-height:1.4;">Every model you have actually used (session ledger + think overrides). <b style="color:#d0d0d8;">How to read an arrow line:</b> <b style="color:#e6e6ee;">LEFT of \u2192</b> = the level you would pick in the \ud83c\udf9b\ufe0f Think dropdown (what we offer); <b style="color:#e6e6ee;">RIGHT of \u2192</b> = what the writer actually puts on the wire after the clamp OpenRouter\'s catalogue implies. Direct-identity lines instead name the levels the local table would send that OpenRouter does not list (and the reverse) \u2014 advisory only, the direct route sends what the local table says. <b style="color:#ffd166;">\u26a0\ufe0f WARNING</b> = a discrepancy involving medium / high / xhigh / max on either side; <b style="color:#e6e6ee;">NOTE</b> = only off / minimal / low involved. Nothing else is prioritized. Links below are best-known as of 2026-09 \u2014 click one now and again; if it looks stale, tell the agent.</div>';
-    var body = '<div style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;">Every model you have actually used (session ledger + think overrides). For each one the REAL writer was dry-run on every level in the \ud83c\udf9b\ufe0f Think menu, so each line says exactly what happens to that pick. <b style="color:#e6e6ee;">Arrow lines: LEFT of \u2192</b> = the level you would pick in the menu; <b style="color:#e6e6ee;">RIGHT of \u2192</b> = what actually goes over the wire. <b style="color:#ffd166;">\u26a0\ufe0f WARNING</b> = a discrepancy with OpenRouter\'s catalogue involving medium / high / xhigh / max; <b style="color:#e6e6ee;">NOTE</b> = only off / minimal / low involved. <b style="color:#e6e6ee;">\ud83e\udea6 Tombstone</b> a row you do not care to resolve: it stays here, dimmed, and stops counting as a warning (click again to revive). Menus per row: <i>Our \ud83c\udf9b\ufe0f menu</i> is the actual dropdown as rendered for that model; <i>OpenRouter lists</i> is its catalogue (\u2605 = its default); <i>Vendor</i> is the honest maximum \u2014 no vendor publishes a machine-readable recommendation, so you get the default OpenRouter reports plus the vendor\'s docs link.</div>';
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11px;margin-bottom:8px;padding:6px 8px;border:1px solid #2a2a33;border-radius:6px;background:#191922;">' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { var K = TM_THINK_AUDIT_KINDS[k]; return '<span title="' + escapeHtml(K.desc) + '" style="white-space:nowrap;"><span style="font-size:13px;">' + K.icon + '</span> <b style="color:#e6e6ee;">' + escapeHtml(K.label) + '</b> <span style="color:#8b93a3;">\u2014 ' + escapeHtml(K.desc.split('.')[0]) + '.</span></span>'; }).join('') + '</div>';
+    var body = '<div data-think-audit-body="1" style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
     function section(title, color) { return '<div style="font-weight:700;font-size:12px;color:' + (color || '#8ef0a0') + ';margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
-    function rowsTable(list, statusColorFn) {
+    function rowsTable(list, color) {
       var t = '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
       list.forEach(function(r) {
-        var stColor = statusColorFn(r);
-        t += '<tr style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;"><td style="padding:4px 8px;white-space:nowrap;color:' + stColor + ';font-weight:700;">' + escapeHtml(r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING' : 'NOTE') : r.status.toUpperCase()) + '</td>' +
-          '<td style="padding:4px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '</span></td>' +
-          '<td style="padding:4px 8px;color:#d0d0d8;">' + r.lines.map(function(l) { return '<div>\u2022 ' + escapeHtml(l) + '</div>'; }).join('') + '</td></tr>';
+        var tomb = r.tombstoned;
+        var stLabel = r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING' : 'NOTE') : r.status.toUpperCase().replace(/-/g, ' ');
+        var rowStyle = 'border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;' + (tomb ? 'opacity:0.45;outline:1px dashed #6f7a8a;outline-offset:-2px;' : '');
+        var docs = r.vendorDocs;
+        t += '<tr style="' + rowStyle + '">' +
+          '<td style="padding:5px 8px;white-space:nowrap;">' +
+            '<div style="color:' + (tomb ? '#9aa4b2' : color) + ';font-weight:700;">' + (tomb ? '\ud83e\udea6 TOMBSTONED' : escapeHtml(stLabel)) + '</div>' + (tomb ? ('<div style="color:#6f7a8a;font-size:10px;">(was ' + escapeHtml(stLabel) + ')</div>') : '') +
+            '<button data-action="think-audit-tomb" data-key="' + escapeHtml(r.auditKey) + '" title="' + (tomb ? 'Revive: count this identity again' : 'Tombstone: keep the row here, dimmed, and stop counting it as a warning') + '" style="margin-top:4px;font-size:10px;background:#2a2a33;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 6px;cursor:pointer;">' + (tomb ? '\u21a9 revive' : '\ud83e\udea6 tombstone') + '</button>' +
+          '</td>' +
+          '<td style="padding:5px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '<br>wire: ' + escapeHtml(r.protocol) + '</span></td>' +
+          '<td style="padding:5px 8px;color:#d0d0d8;min-width:320px;">' + r.lines.map(function(l) { var K = TM_THINK_AUDIT_KINDS[l.kind] || { icon: '', label: '' }; return '<div title="' + escapeHtml(K.label) + '" style="display:flex;gap:6px;align-items:flex-start;' + (l.disc ? '' : 'color:#9aa4b2;') + '"><span style="flex-shrink:0;width:16px;text-align:center;">' + K.icon + '</span><span>' + escapeHtml(l.text) + '</span></div>'; }).join('') + '</td>' +
+          '<td style="padding:5px 8px;white-space:nowrap;font-size:10px;color:#9aa4b2;">' +
+            '<div style="margin-bottom:3px;">Our \ud83c\udf9b\ufe0f menu:<br>' + tmThinkAuditDemoMenuHtml(r.model, r.host, r.proxy) + '</div>' +
+            '<div style="margin-bottom:3px;">OpenRouter lists:<br>' + tmThinkAuditOrMenuHtml(r) + '</div>' +
+            '<div>Vendor: ' + (r.orCaps && r.orCaps.defaultEffort ? ('default <b style="color:#e6e6ee;">' + escapeHtml(r.orCaps.defaultEffort) + '</b> (per OpenRouter)') : 'no default reported') + (docs ? (' \u00b7 <a href="' + escapeHtml(docs.links[0].url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + escapeHtml(docs.vendor) + ' docs \u2197</a>') : '') + '</div>' +
+          '</td></tr>';
       });
       return t + '</table>';
     }
@@ -7105,12 +7276,12 @@
     var agreeRows = R.rows.filter(function(r) { return r.status === 'agree'; });
     if (!R.rows.length) body += section('DISCREPANCIES') + '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
     else {
-      body += section('\u26a0\ufe0f WARNING \u2014 discrepancies involving medium / high / xhigh / max (' + warnRows.length + ')', '#ffd166');
-      body += warnRows.length ? rowsTable(warnRows, function() { return '#ffd166'; }) : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
+      body += section('\u26a0\ufe0f WARNING \u2014 discrepancies involving medium / high / xhigh / max (' + warnRows.length + (R.warnings !== R.warningsLive ? (', ' + (R.warnings - R.warningsLive) + ' tombstoned') : '') + ')', '#ffd166');
+      body += warnRows.length ? rowsTable(warnRows, '#ffd166') : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
       body += section('NOTE \u2014 discrepancies involving only off / minimal / low (' + noteRows.length + ')', '#e6e6ee');
-      body += noteRows.length ? rowsTable(noteRows, function() { return '#e6e6ee'; }) : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
-      if (otherRows.length) { body += section('NOT COMPARABLE \u2014 not in the catalogue / no vocabulary published / no local table (' + otherRows.length + ')', '#9aa4b2'); body += rowsTable(otherRows, function() { return '#9aa4b2'; }); }
-      if (agreeRows.length) { body += section('AGREE (' + agreeRows.length + ')', '#8ef0a0'); body += rowsTable(agreeRows, function() { return '#8ef0a0'; }); }
+      body += noteRows.length ? rowsTable(noteRows, '#e6e6ee') : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
+      if (otherRows.length) { body += section('NOT COMPARABLE \u2014 not in the catalogue / no vocabulary published / no local table (' + otherRows.length + ')', '#9aa4b2'); body += rowsTable(otherRows, '#9aa4b2'); }
+      if (agreeRows.length) { body += section('AGREE (' + agreeRows.length + ')', '#8ef0a0'); body += rowsTable(agreeRows, '#8ef0a0'); }
     }
     body += section('VENDOR DOCUMENTATION \u2014 best-known URLs as of 2026-09 (click = new tab; \u2398 = copy)');
     body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
@@ -7125,7 +7296,7 @@
     body += '</table></div>';
     box.innerHTML = h + body;
     overlay.appendChild(box);
-    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); }
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); try { renderGpt51UsageWidget(); } catch (eW) {} }
     function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
     function flash(btn, txt) { try { var o = btn.textContent; btn.textContent = txt; setTimeout(function() { btn.textContent = o; }, 900); } catch (e) {} }
     overlay.addEventListener('click', function(ev) {
@@ -7137,13 +7308,17 @@
       if (a === 'close-think-audit') close();
       else if (a === 'think-audit-copy') { try { navigator.clipboard.writeText(R.text).then(function() { flash(b, '\u2705 copied'); }); } catch (e) {} }
       else if (a === 'think-audit-copy-link') { try { navigator.clipboard.writeText(b.dataset.url || '').then(function() { flash(b, '\u2705'); }); } catch (e) {} }
+      else if (a === 'think-audit-tomb') { tmThinkAuditToggleTombstone(b.dataset.key || ''); tmShowThinkAuditModal(true); try { renderGpt51UsageWidget(); } catch (eW2) {} }
       else if (a === 'think-audit-refresh') {
-        try { var s = tmReadOrReasoningCaps(); if (s) { s.ts = 0; tmOrReasoningCapsMemo = s; localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(s)); } tmMaybeFetchOrReasoningCaps(); flash(b, '\u23f3 fetching\u2026'); setTimeout(function() { if (overlay.parentNode) tmShowThinkAuditModal(); }, 2500); } catch (e) {}
+        try { var s = tmReadOrReasoningCaps(); if (s) { s.ts = 0; tmOrReasoningCapsMemo = s; localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(s)); } tmMaybeFetchOrReasoningCaps(); flash(b, '\u23f3 fetching\u2026'); setTimeout(function() { if (overlay.parentNode) tmShowThinkAuditModal(true); }, 2500); } catch (e) {}
       }
     });
+    // (v4.388) Demo menus are display-only: swallow their change events before the document-level listener sees them.
+    overlay.addEventListener('change', function(ev) { try { if (ev.target && ev.target.dataset && ev.target.dataset.demo) { ev.stopPropagation(); } } catch (e) {} }, true);
     document.addEventListener('keydown', onKey, true);
     tmPromptActive = true;
     document.body.appendChild(overlay);
+    if (keepScroll && prevScroll) { try { var nb = overlay.querySelector('[data-think-audit-body]'); if (nb) nb.scrollTop = prevScroll; } catch (eR) {} }
   }
 
   // Stable content key for a user message (anchor for per-message effort steps): hash of its text, or
@@ -11824,8 +11999,8 @@
       '<div data-action="copy-session-id" title="Click to copy Session ID to clipboard" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
         '<span style="font-weight:normal;line-height:1.5;">' + tmBuildWidgetStatusLine() + '</span>' +
         '<span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;">' +
-          // (v4.386) ⚖ Think Audit: prominent, right-justified on the top row (Dan: "so prominent that it is in the persistent widget itself").
-          '<button type="button" data-action="show-think-audit" title="Think Audit: every discrepancy between what OpenRouter\'s catalogue reports and what the \ud83c\udf9b\ufe0f Think dropdown offers, for every model you have used -- plus the vendor documentation links (Anthropic, OpenAI, Moonshot, Gemini, xAI, OpenRouter). One place to go." style="font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#3a2f0f;color:#ffd166;border:1px solid #8a6d1a;border-radius:5px;cursor:pointer;text-shadow:0 0 3px rgba(255,209,102,0.35);">\u2696 Think Audit</button>' +
+          // (v4.386/v4.388) ⚖ Think Audit: prominent, right-justified on the top row; amber + count only when LIVE warnings exist.
+          tmThinkAuditButtonHtml() +
           '<span data-action="toggle-widget" style="cursor:pointer;font-size:10px;opacity:0.8;font-weight:bold;">' + toggleIcon + '</span>' +
         '</span>' +
       '</div>'
