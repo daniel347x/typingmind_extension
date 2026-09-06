@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.394
+// Version: 4.395
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,10 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.395: KEEP-ALIVE ROW renders even when its identity info is missing. The Sessions-in-Memory row's
+//     KA toggle was swallowed (empty row) whenever tmSessionCtxHoverIdentities had no entry for that key --
+//     the same per-identity key drift that left the Fable row armed overnight. tmKeepAliveRowHtml now falls
+//     back to the key's own model / host (always parseable) instead of throwing -> the toggle always renders.
 //   - v4.394: KEEP-ALIVE TOGGLE IS CONVERSATION-SCOPED. The keep-alive store (tm_keepalive_v1) is keyed by the full
 //     identity sid::model::host::proxy, so 'this conversation' spans one row per model it ran on. Toggling any row
 //     flips EVERY sibling row for that session id (same sid normalization as the sweep), so arming the Kimi row can
@@ -2212,7 +2216,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.394';
+  const EXT_VERSION = '4.395';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5234,7 +5238,12 @@
     try {
       var e = store ? store[key] : tmGetKeepAliveEntry(key);
       var on = !!(e && e.enabled);
-      var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String((info && info.model) || '') + String((info && info.host) || '')) ? 50 : 4);
+      // (v4.395) info may be missing for a row whose identity key drifted from tmSessionCtxHoverIdentities
+      // (the same per-identity key brittleness as v4.394). Fall back to the key's own model / host (always
+      // parseable: sid::model::host::proxy) so the toggle ALWAYS renders; a missing row must never go silent.
+      var kParts = String(key || '').split('::');
+      var iModel = (info && info.model) || kParts[1] || '', iHost = (info && info.host) || kParts[2] || '';
+      var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String(iModel) + String(iHost)) ? 50 : 4);
       var btn = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
       btn += ' <span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
       var status = '';
