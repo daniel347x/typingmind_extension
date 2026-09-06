@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.366 Changes:
+ * - 📏 TITLE BAR compacted from a banner into a control ribbon: .deepgram-header padding
+ *   20px → 8px 14px. All fonts and button sizes IDENTICAL — only the padding (visual margin)
+ *   above/below the row shrank. The header has grown into a real control strip (🆕 Session,
+ *   📝 Context, Status, ⬇ Expand, 🔄 Reset, 📦, ×), so it now looks the part.
+ * - 🏷️ Status toggle RENAMED 'Whisper Model Status' → 'Status' (title bar + toggle text +
+ *   hover tooltip): the row now carries the general status line and the 🕘 status-history
+ *   clicker, not just Whisper — shorter AND more accurate. Freed horizontal space on the
+ *   ribbon. localStorage key unchanged (no state migration).
+ * - 📏 STATUS LINE tightened vertically: .deepgram-status padding 4px 10px → 2px 10px,
+ *   margin-bottom 4px → 2px. Font size and colors unchanged.
+ *
  * v3.365 Changes:
  * - 🎤 TOGGLE BUTTON hides while the panel is open, and the panel drops from bottom:90px to
  *   bottom:10px — reclaiming ~80px of vertical space now that the Payload extension's
@@ -1830,7 +1842,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.365',
+  VERSION: '3.366',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7455,7 +7467,7 @@
     if (!block || !btn) return;
     const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
     block.style.display = hidden ? 'none' : '';
-    btn.textContent = (hidden ? '\u25b8' : '\u25be') + ' Whisper Model Status';
+    btn.textContent = (hidden ? '\u25b8' : '\u25be') + ' Status';
     // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
     // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
     const recordRow = document.getElementById('deepgram-record-row');
@@ -7792,7 +7804,7 @@
       .deepgram-header {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        padding: 20px;
+        padding: 8px 14px;   /* (v3.366) control-ribbon compact — was banner padding 20px */
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -7944,12 +7956,12 @@
       
       /* Status Indicator */
       .deepgram-status {
-        padding: 4px 10px;   /* (v3.323) compacted from 10px 12px — the status line earns its keep now */
+        padding: 2px 10px;   /* (v3.366) tight message line — was 4px 10px (v3.323) */
         border-radius: 8px;
         font-size: 13px;
         font-weight: 500;
         text-align: center;
-        margin-bottom: 4px;   /* (v3.323) compacted from 15px */
+        margin-bottom: 2px;   /* (v3.366) tight — was 4px (v3.323) */
       }
       
       .deepgram-status.connected {
@@ -9317,7 +9329,7 @@
           <div style="display: flex; gap: 10px; align-items: center;">
             <button id="deepgram-newsession-btn" onclick="window.startNewSession()" title="Start a brand-new session: mint a Session ID, type the Load GLIMPSE initializer, recycle the oldest context slot (wipe + rename + seed), and rename the first visible 'New Chat' sidebar row" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:rgba(255,255,255,0.18); border:1px solid rgba(255,255,255,0.4); border-radius:4px; color:inherit; font-weight:700;">🆕 Session</button>
             <button id="deepgram-refine-context-btn" title="Edit the 10 named Refine context slots (prior chat turns / topic); the ACTIVE slot is what ✨ Refine sends" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">📝 Context</button>
-            <button id="deepgram-status-toggle-btn" title="Show/hide the rarely-used (deprecated) Whisper model status block" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Whisper Model Status</button>
+            <button id="deepgram-status-toggle-btn" title="Show/hide the general status line (and the 🕘 status-history clicker)" style="font-size: 11px; padding: 3px 8px; cursor:pointer; background:transparent; border:1px solid rgba(128,128,128,0.4); border-radius:4px; color:inherit;">▾ Status</button>
             <button class="deepgram-edit-btn" id="deepgram-top-toggle-btn" title="Show rarely-used controls above status panel" style="font-size: 11px; padding: 3px 8px;">⬇ Expand</button>
             <button class="deepgram-edit-btn" onclick="window.clearAllState()" title="Reset all state flags" style="font-size: 11px; padding: 3px 8px;">🔄 Reset</button>
             <button id="deepgram-legacy-toggle-btn" onclick="window.toggleLegacyUi()" title="Show/hide legacy controls (Start Recording ribbon, Click-to-add-paragraph bar, … Ellipsis button) — deprecated recording-era UI, hidden by default" style="font-size:11px; padding:2px 5px; cursor:pointer; background:transparent; border:none; color:inherit; opacity:0.35;">📦</button>
