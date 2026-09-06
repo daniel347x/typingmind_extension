@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.367 Changes:
+ * - 📏 STATUS ROW properly compacted — v3.366 tightened only the INNER .deepgram-status pill
+ *   (padding 4→2px), which was already tight; the plain-as-day vertical band Dan saw is the
+ *   OUTER sandwich around it, which had no v3.366 touch at all. Now: #deepgram-status-block
+ *   gets an explicit compact rule (was an unstyled div: no padding/margin of its own, but it
+ *   sat between the default .deepgram-section margins), the transcript section's margin
+ *   shrinks, and the 🕘/status flex row and keyboard-indicator bells tighten. Font sizes,
+ *   colors, and the pill's inner padding all unchanged — only inter-block whitespace.
+ *
  * v3.366 Changes:
  * - 📏 TITLE BAR compacted from a banner into a control ribbon: .deepgram-header padding
  *   20px → 8px 14px. All fonts and button sizes IDENTICAL — only the padding (visual margin)
@@ -1842,7 +1851,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.366',
+  VERSION: '3.367',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7954,6 +7963,21 @@
         background: rgba(0, 0, 0, 0.05);
       }
       
+      /* (v3.367) Compact the status-row SANDWICH, not just the pill: the outer block was an
+         unstyled div, so the visible band came from surrounding section margins. Explicit compact
+         margins here reclaim that whitespace; the pill's own padding/fonts are untouched. */
+      #deepgram-status-block {
+        margin: 4px 0 4px 0;
+      }
+      #deepgram-status-block > div:first-child {
+        gap: 4px;
+      }
+      /* The transcript wrapper directly under the status row: default .deepgram-section
+         margin-bottom is 20px — halve it here so the status→transcript gap tightens. */
+      #deepgram-status-block + .deepgram-section {
+        margin-top: 2px;
+      }
+
       /* Status Indicator */
       .deepgram-status {
         padding: 2px 10px;   /* (v3.366) tight message line — was 4px 10px (v3.323) */
@@ -8123,7 +8147,7 @@
         display: flex;
         gap: 6px;
         justify-content: flex-end;
-        margin-bottom: 4px;
+        margin-bottom: 2px;   /* (v3.367) was 4px — tightens the bells→transcript gap */
       }
       
       .keyboard-bell {
