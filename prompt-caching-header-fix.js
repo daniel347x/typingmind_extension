@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.400
+// Version: 4.401
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,10 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.401: QWEN 3.8 READ. The Qwen 3.8 vocabulary is now real (Dan pasted the first-party DashScope reference):
+//     reasoning_effort low | medium | xhigh (default xhigh), enable_thinking disables thinking, reasoning_effort and
+//     thinking_budget are mutually exclusive (auto-convert). The Qwen writer now sends reasoning_effort on Alibaba
+//     direct (the enable_thinking + thinking_budget form is superseded); TM_THINK_LOCAL_BASIS.qwen -> docs-verified.
 //   - v4.400: THINK AUDIT seam lines += two (inherit = never on the wire; static registry vs live OpenRouter catalogue
 //     vs observed wire) + a collapse toggle for the seam block (persisted). UI-only; nothing on the wire changes.
 //   - v4.399: RETIRE the legacy global Sol Reasoning select. v4.398's per-shape defaults cover the gpt-5.6 range and the
@@ -2239,7 +2243,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.400';
+  const EXT_VERSION = '4.401';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7237,7 +7241,7 @@
     glm:      { basis: 'docs-verified', date: '2026-09-06', url: 'https://docs.z.ai/guides/llm/glm-5.3', note: 'GLM-5.3 always operates with reasoning enabled; reasoning_effort low | high | max, default max (v4.390: the page states the default; the readout used to say not stated); thinking.type disabled now FAILS (migration notice: switch to enabled + reasoning_effort low); GLM <= 5.2 stays thinking.type on/off' },
     gemini:   { basis: 'docs-verified', date: '2026-09-06', url: 'https://ai.google.dev/gemini-api/docs/thinking', note: 'Gemini 3.x: thinkingLevel low | medium | high (default medium, dynamic); Gemini 2.5: thinkingBudget (Flash may be 0, Pro floors at 128); includeThoughts for summaries' },
     grok:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://docs.x.ai/docs/guides/reasoning', note: 'reasoning_effort low | medium | high (default) | xhigh; some Grok models ignore the field' },
-    qwen:     { basis: 'docs-partial', date: '2026-09-06', url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', note: 'Qwen3.8 pages document reasoning_effort low | medium | high alongside enable_thinking + thinking_budget; the writer still uses the budget form -- not re-verified line by line' }
+    qwen:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-dashscope', note: 'Qwen 3.8: reasoning_effort low | medium | xhigh (default xhigh); enable_thinking false disables; reasoning_effort and thinking_budget are mutually exclusive (auto-convert low=4096 / medium=16384 / xhigh=262144). Read from the first-party DashScope reference (Dan-pasted verbatim).' }
   };
   function tmThinkLocalBasisFor(fam) {
     var b = TM_THINK_LOCAL_BASIS[fam];
@@ -7543,19 +7547,15 @@
     { provider: 'Alibaba (Qwen)', kind: 'direct', hosts: /dashscope|aliyun/, verified: '2026-09-06',
       extra: [ { label: 'Model pricing table (lists qwen3.8-max with Non-Thinking and Thinking modes)', url: TM_THINK_URL.qPricing } ],
       entries: [
-        { models: 'Qwen3.8 (max / flash / 27b / 2.4t-a95b) and Qwen3.5-3.7 -- enable_thinking + thinking_budget, and reasoning_effort', match: /qwen/, verified: '2026-09-06',
-          vocab: { kind: 'effort', levels: [], canDisable: null, def: null, insufficient: 'Alibaba\'s deep-thinking guide and model list do not mention Qwen3.8 in extractable form (2026-09-06); OpenRouter lists xhigh, high, medium, low, minimal (mandatory, default xhigh) for qwen/qwen3.8-max-0902 and xhigh, medium, low for 27b / 2.4t-a95b; Alibaba\'s pricing table says qwen3.8-max has Non-Thinking and Thinking modes',
-            // (v4.393) REGISTRY EXCEPTION (Dan's call): with no first-party vocabulary, OpenRouter routes offer OpenRouter's own
-            // catalogue list for the id, labelled as OpenRouter's; direct routes stay inherit-only. Rendered RED in the menu
-            // hover, the audit row and the map. Delete this record the day a real Qwen 3.8 page is read and the vocab is filled in.
-            fallback: { use: 'intermediary', since: '2026-09-06', note: 'no first-party Qwen 3.8 vocabulary could be read (Alibaba\'s pages do not mention Qwen3.8 in extractable form), so on OpenRouter the menu offers OpenRouter\'s catalogue list for the id, labelled as OpenRouter\'s; the audit row stays NOT COMPARABLE; direct Alibaba routes offer inherit only. Remove this record once a real Qwen 3.8 page is read.' } },
+        { models: 'Qwen3.8 (max / flash / 27b / 2.4t-a95b) and Qwen3.5-3.7 -- reasoning_effort low | medium | xhigh; enable_thinking to disable', match: /qwen/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'xhigh'], canDisable: true, def: 'xhigh' },
           cells: {
-            mode:        { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'the deep-thinking guide documents enable_thinking true | false for the Qwen3 line but does not mention Qwen3.8 in extractable form; Alibaba\'s pricing table lists qwen3.8-max with Non-Thinking and Thinking modes, while OpenRouter marks qwen3.8-max-0902 mandatory -- unresolved' },
-            level:       { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'the deep-thinking guide documents reasoning_effort low | medium | high (taking precedence over thinking_budget) for the Qwen3 line, but no Qwen3.8 row could be read; OpenRouter lists xhigh, high, medium, low, minimal for qwen3.8-max-0902 (default xhigh) and xhigh, medium, low for 27b / 2.4t-a95b. Our writer still sends enable_thinking + thinking_budget (TM_THINK_LOCAL_BASIS.qwen = docs-partial)' },
-            display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no display switch (Qwen3 line)' },
+            mode:        { url: TM_THINK_URL.qDeep, path: 'enable_thinking', values: 'true | false -- thinking can be switched off (enable_thinking: false)', note: 'First-party DashScope reference (Dan-pasted verbatim, 2026-09-06): enable_thinking applies to the Qwen3.8 series. The deep-thinking guide earlier said Qwen3.8 could not be read; this page settles it.' },
+            level:       { url: TM_THINK_URL.qDeep, path: 'reasoning_effort', values: 'low | medium | xhigh; default xhigh', note: 'First-party: "Qwen3.8 series models: Default value: xhigh. Valid values: xhigh (default) · medium · low." OpenAI-standard words map in: max->xhigh, high->xhigh, minimal->low, none->enable_thinking:false. reasoning_effort and thinking_budget CANNOT be set together (error); they auto-convert (low=4096, medium=16384, xhigh=262144). Our writer sends reasoning_effort.' },
+            display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no display switch' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'reasoning_content text is documented for the Qwen3 line; whether usage carries a reasoning-token count for Qwen3.8 was not readable' },
-            output_cap:  { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'max_tokens for the answer and thinking_budget for the reasoning part per the Qwen3 line; Qwen3.8 limits not readable' }
+            usage:       { url: TM_THINK_URL.qDeep, path: 'usage (reasoning tokens)', values: 'reasoning_content text; reasoning-token count per the page', note: 'Evidence \u2705 where present.' },
+            output_cap:  { url: TM_THINK_URL.qDeep, path: 'max_tokens / max_completion_tokens', values: 'model dependent; thinking shares the cap', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
     { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', hosts: /deepinfra/, verified: '2026-09-06',
@@ -9004,12 +9004,20 @@
     }
     if (fam === 'qwen') {
       if (L.set) {
-        if (L.off) { if (body.enable_thinking !== false) { body.enable_thinking = false; change('enable_thinking = false'); } }
+        // (v4.401) Alibaba direct: the first-party DashScope reference documents reasoning_effort (low | medium |
+        // xhigh, default xhigh) for the Qwen3.8 series, mutually exclusive with thinking_budget (auto-convert);
+        // enable_thinking:false disables. Send reasoning_effort; drop the legacy budget form.
+        if (L.off) { if (body.enable_thinking !== false) { body.enable_thinking = false; change('enable_thinking = false'); } if (body.thinking_budget !== undefined) { delete body.thinking_budget; change('thinking_budget removed (thinking disabled)'); } if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (thinking disabled)'); } }
         else {
+          var eQ = L.eff;
+          if (L.budget != null) { eQ = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + eQ + ': Qwen3.8 uses reasoning_effort, not a token budget'); }
+          var regVQ = tmThinkRegistryVocab(model, r.host);
+          var regLvQ = (regVQ && regVQ.levels && regVQ.levels.length) ? regVQ.levels : ['low', 'medium', 'xhigh'];
+          var nearQ = tmThinkRegistryNearest(eQ, regLvQ);
+          if (nearQ && nearQ !== eQ) { clamp(eQ + ' \u2192 ' + nearQ + ': Qwen3.8 reasoning_effort accepts low | medium | xhigh (DashScope docs ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); eQ = nearQ; }
           if (body.enable_thinking !== true) { body.enable_thinking = true; change('enable_thinking = true'); }
-          var qb = L.budget != null ? L.budget : tmThinkEffortToBudget(L.eff);
-          if (L.eff) clamp('effort ' + L.eff + ' \u2192 thinking_budget ' + qb + ': Qwen has no effort levels');
-          if (body.thinking_budget !== qb) { body.thinking_budget = qb; change('thinking_budget = ' + qb); }
+          if (body.thinking_budget !== undefined) { delete body.thinking_budget; change('thinking_budget removed (reasoning_effort wins; they cannot be set together)'); }
+          if (body.reasoning_effort !== eQ) { var wasQ = body.reasoning_effort; body.reasoning_effort = eQ; change('reasoning_effort ' + (wasQ || '(none)') + ' \u2192 ' + eQ + ' (Qwen3.8 vocabulary low | medium | xhigh, docs ' + TM_THINK_DOCS_AS_OF + ')'); }
         }
       }
       if (disp === 'show' || disp === 'hide') rep.notes.push('Qwen streams reasoning_content whenever thinking is enabled; display is not controllable');
