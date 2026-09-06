@@ -1,6 +1,32 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.388
+// Version: 4.389
 // Issues Fixed:
+//   - v4.389: Fix 24 -- THE LOCAL THINKING TABLES ARE NOW DOCS-VERIFIED (2026-09-06) and the Think Audit says where
+//     each rule came from. A research pass against the vendors' own pages (Anthropic per-model thinking table +
+//     /effort + /thinking; OpenAI reasoning guide + gpt-5.6-sol model page; Moonshot chat schema + thinking guides;
+//     DeepSeek API reference; Z.ai GLM-5.3; Alibaba Qwen deep-thinking; xAI; Google) found FOUR stale rules in the
+//     direct-route writers, all corrected here. (1) Kimi K3 -- Moonshot: 'kimi-k3 always reasons and uses the
+//     top-level reasoning_effort field (low | high | max; default max)' and 'does not support the thinking parameter';
+//     the writer sent a K2.x thinking:{type} and DELETED reasoning_effort, so every K3 pick ran at Moonshot's default
+//     max. Now: reasoning_effort with nearest-in-vocabulary clamps and the thinking object removed on K3; K2.x keeps
+//     thinking.type on/off. (2) OpenAI -- 'max' exists (Sol lists none | low | medium | high | xhigh | max, default
+//     medium); the blanket max->xhigh clamp now applies only outside the gpt-5.6+/gpt-6 families, minimal->low on
+//     gpt-5.6 (not listed), GPT-6 Astra treated as always-on (its docs: none -> HTTP 400). (3) xAI -- reasoning_effort
+//     is low | medium | high | xhigh (default high), not low | high. (4) Gemini 3 -- thinkingLevel is low | medium |
+//     high; minimal->low everywhere and the Pro medium->high clamp is gone. NEW: DeepSeek V4 and GLM-5.3 gain effort
+//     writers (reasoning_effort low | high | max; GLM-5.3 cannot disable -- Z.ai: thinking.type disabled now FAILS;
+//     DeepSeek can, via thinking:{type:disabled}); GLM <= 5.2 stays on/off. TM_THINK_LOCAL_BASIS registers, per
+//     family, the basis of every local rule (docs-verified date + URL) and the audit prints it on each row. The Think
+//     Audit modal opens with a hardcoded 'Best-known documentation as of 2026-09-06' banner (TM_THINK_TOP_LINKS:
+//     Anthropic per-model table, OpenAI reasoning guide, OpenRouter reasoning-tokens) and TM_THINK_VENDOR_DOCS is
+//     re-pointed at the pages that actually carry the fields (Anthropic's old 'extended-thinking' URL is now its
+//     manual-budget page; several vendors redirect: platform.moonshot.ai -> platform.kimi.ai, platform.openai.com
+//     -> developers.openai.com). Catalogue fix: OpenRouter distinguishes supported_efforts null ('all gateway values
+//     accepted') from omitted ('no effort selection'); the compactor no longer collapses null to [] (effortsAll).
+//     Research conclusions (recorded in the Fix 24 Dock): OpenRouter is a documented TRANSLATION layer for reasoning,
+//     not a passthrough -- but every vendor's level vocabulary is a subset of OpenRouter's, so an in-vocabulary word
+//     is forwarded verbatim (Fable 5.1 400s on budget_tokens yet works via OR, so OR must send the effort word). The
+//     dynamic prober (v4.388 handoff) is ABANDONED: docs answered the acceptance questions for free.
 //   - v4.388: ⚖ THINK AUDIT v2 -- every line now says WHAT HAPPENS TO YOUR PICK, and the audit stops describing
 //     the writers and DRY-RUNS them instead. For each identity (session ledger + think overrides) and each of the
 //     7 dropdown levels the real writer (tmThinkApplyOverride) runs on a synthetic body; the report lists per level:
@@ -2111,7 +2137,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.388';
+  const EXT_VERSION = '4.389';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6768,6 +6794,9 @@
       return {
         mandatory: !!rec.m,
         efforts: Array.isArray(rec.e) ? rec.e.slice() : [],
+        // (v4.389) OpenRouter's docs distinguish supported_efforts null ('all gateway effort values are accepted')
+        // from omitted ('the model does not expose effort selection'); the compactor keeps null as null.
+        effortsAll: rec.e === null,
         defaultEffort: rec.d ? String(rec.d) : null,
         defaultEnabled: (rec.de === undefined || rec.de === null) ? null : !!rec.de,
         ts: s.ts || null,
@@ -6812,7 +6841,7 @@
       }
       var s1 = tmReadOrReasoningCaps();
       return 'OPENROUTER CAPABILITIES for ' + String(model || '?') + ' (live /api/v1/models, fetched ' + ((s1 && s1.ts_local) || '?') + (caps.stale ? ', STALE -- refresh pending' : '') + '): mandatory reasoning = ' + (caps.mandatory ? 'YES (cannot be turned off; \'off\' clamps to the lowest listed effort)' : 'no') +
-        ' \u00b7 supported efforts = ' + (caps.efforts.length ? ('[' + caps.efforts.join(', ') + '] (levels not listed clamp to the nearest listed one, marked \u21e2 in the dropdown)') : '(none published -- OpenRouter translates reasoning.effort by its own ratios; local heuristics apply)') +
+        ' \u00b7 supported efforts = ' + (caps.efforts.length ? ('[' + caps.efforts.join(', ') + '] (levels not listed clamp to the nearest listed one, marked \u21e2 in the dropdown)') : (caps.effortsAll ? '(null -- OpenRouter says it accepts ALL gateway effort values for this model and maps them itself; local heuristics decide our clamps)' : '(none published -- OpenRouter translates reasoning.effort by its own ratios; local heuristics apply)')) +
         (caps.defaultEffort ? (' \u00b7 default effort = ' + caps.defaultEffort) : '') +
         (caps.defaultEnabled === null ? '' : (' \u00b7 reasoning on by default = ' + (caps.defaultEnabled ? 'yes' : 'no'))) +
         '. This is what OpenRouter says it ACCEPTS -- not the upstream request it builds; the \ud83e\uddee count on the next rows is still the only proof a level was honored.';
@@ -6853,7 +6882,7 @@
           if (/:batch$/.test(id)) continue;
           var rz = it.reasoning;
           if (!rz || typeof rz !== 'object') continue;
-          var rec = { m: !!rz.mandatory, e: Array.isArray(rz.supported_efforts) ? rz.supported_efforts.map(function(x) { return String(x).toLowerCase(); }) : [] };
+          var rec = { m: !!rz.mandatory, e: Array.isArray(rz.supported_efforts) ? rz.supported_efforts.map(function(x) { return String(x).toLowerCase(); }) : (rz.supported_efforts === null ? null : []) };
           if (rz.default_effort) rec.d = String(rz.default_effort).toLowerCase();
           if (rz.default_enabled !== undefined && rz.default_enabled !== null) rec.de = !!rz.default_enabled;
           models[id] = rec; n++;
@@ -6897,20 +6926,28 @@
   }
   // What the LOCAL tables believe about a direct identity: can thinking be disabled, and which effort words
   // the writer would put on the wire unclamped. [] = budget / on-off only (no level vocabulary).
+  // (v4.389) Re-verified against the vendors' own pages on 2026-09-06 (TM_THINK_LOCAL_BASIS carries the URLs):
+  // Kimi K3 / DeepSeek V4 / GLM-5.3 expose reasoning_effort low|high|max; OpenAI gpt-5.6+ has max and no minimal;
+  // xAI is low|medium|high|xhigh; Gemini 3.x thinkingLevel is low|medium|high.
   function tmThinkLocalCapsForDirect(model, host) {
     try {
       var fam = tmThinkChatFamily(model, host), m = String(model || '').toLowerCase();
-      var loc = { fam: fam, mandatory: null, efforts: [], source: '' };
+      var loc = { fam: fam, mandatory: null, efforts: [], source: '', basis: '' };
       if (fam === 'claude') { var c = tmThinkAnthropicCaps(model); loc.mandatory = !c.disable; loc.efforts = c.effort ? ['low', 'medium', 'high'].concat(c.xhigh ? ['xhigh'] : []).concat(['max']) : []; loc.source = 'tmThinkAnthropicCaps (' + c.family + ')'; }
-      else if (fam === 'openai') { loc.mandatory = tmThinkIsAlwaysOn('openai', model); loc.efforts = ['minimal', 'low', 'medium', 'high', 'xhigh']; loc.source = 'tmThinkIsAlwaysOn + OpenAI reasoning_effort vocabulary (max clamps to xhigh)'; }
-      else if (fam === 'gemini') { loc.mandatory = tmThinkIsAlwaysOn('gemini', model); loc.efforts = /gemini-3/.test(m) ? (/flash/.test(m) ? ['minimal', 'low', 'medium', 'high'] : ['low', 'high']) : []; loc.source = 'tmThinkIsAlwaysOn + tmThinkWriteGemini level table' + (/gemini-3/.test(m) ? '' : ' (2.5: token budget, no levels)'); }
-      else if (fam === 'kimi' || fam === 'deepseek' || fam === 'glm') { loc.mandatory = false; loc.efforts = []; loc.source = fam + ' direct: thinking on/off only'; }
-      else if (fam === 'grok') { loc.mandatory = false; loc.efforts = ['low', 'high']; loc.source = 'xAI reasoning_effort low|high'; }
+      else if (fam === 'openai') { var new56 = /gpt-5\.[6-9]|gpt-6/.test(m); loc.mandatory = tmThinkIsAlwaysOn('openai', model); loc.efforts = new56 ? ['low', 'medium', 'high', 'xhigh', 'max'] : ['minimal', 'low', 'medium', 'high', 'xhigh']; loc.source = 'tmThinkIsAlwaysOn + OpenAI reasoning_effort vocabulary' + (new56 ? ' (gpt-5.6+: none | low | medium | high | xhigh | max per the model page)' : ' (pre-5.6: max clamps to xhigh)'); }
+      else if (fam === 'gemini') { loc.mandatory = tmThinkIsAlwaysOn('gemini', model); loc.efforts = /gemini-3/.test(m) ? ['low', 'medium', 'high'] : []; loc.source = 'tmThinkIsAlwaysOn + tmThinkWriteGemini level table' + (/gemini-3/.test(m) ? ' (thinkingLevel low | medium | high)' : ' (2.5: token budget, no levels)'); }
+      else if (fam === 'kimi') { if (/kimi-k3/.test(m)) { loc.mandatory = true; loc.efforts = ['low', 'high', 'max']; loc.source = 'Moonshot kimi-k3: reasoning_effort low | high | max, always on'; } else { loc.mandatory = false; loc.efforts = []; loc.source = 'Moonshot K2.x: thinking.type on/off only'; } }
+      else if (fam === 'deepseek') { loc.mandatory = false; loc.efforts = ['low', 'high', 'max']; loc.source = 'DeepSeek: reasoning_effort low | high | max (+ thinking.type disabled to turn off)'; }
+      else if (fam === 'glm') { if (tmThinkGlmHasEffort(m)) { loc.mandatory = true; loc.efforts = ['low', 'high', 'max']; loc.source = 'Z.ai GLM-5.3+: reasoning_effort low | high | max, always on'; } else { loc.mandatory = false; loc.efforts = []; loc.source = 'GLM <= 5.2: thinking.type on/off only'; } }
+      else if (fam === 'grok') { loc.mandatory = false; loc.efforts = ['low', 'medium', 'high', 'xhigh']; loc.source = 'xAI reasoning_effort low | medium | high | xhigh'; }
       else if (fam === 'qwen') { loc.mandatory = false; loc.efforts = []; loc.source = 'Qwen enable_thinking + thinking_budget'; }
       else return null;
+      loc.basis = tmThinkLocalBasisFor(fam);
       return loc;
     } catch (e) { return null; }
   }
+  // (v4.389) GLM-5.3 and later expose reasoning_effort and cannot disable thinking (Z.ai migration notice); <= 5.2 is on/off.
+  function tmThinkGlmHasEffort(m) { return /glm-(5\.[3-9]|[6-9])/.test(String(m || '').toLowerCase()); }
   // @beacon[
   //   id=fix24-or-caps-cross-check,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
@@ -6959,25 +6996,73 @@
   }
 
   // ---------- v4.386: ⚖ THINK AUDIT -- one place to see every OpenRouter-vs-us discrepancy + the vendor docs ----------
-  // Best-known vendor documentation URLs (as of 2026-09). Dan clicks these now and again; if one looks stale he
-  // tells the agent and THIS table is the one edit. Order matters: Anthropic, OpenAI, Moonshot first (his ask).
+  // (v4.389) The date every table below was last checked against the vendors' own pages, and the three links that
+  // open the modal. HARDCODED on purpose: Dan clicks them, judges whether the page still looks maintained, and tells
+  // the agent when one rots -- this block is the one edit.
+  var TM_THINK_DOCS_AS_OF = '2026-09-06';
+  var TM_THINK_TOP_LINKS = [
+    { label: 'Anthropic \u2014 per-model thinking table', url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models' },
+    { label: 'OpenAI \u2014 reasoning guide', url: 'https://developers.openai.com/api/docs/guides/reasoning' },
+    { label: 'OpenRouter \u2014 reasoning tokens (its translation rules)', url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens' }
+  ];
+  // (v4.389) BASIS of every local capability rule, per family: what it was checked against and when. The Think Audit
+  // prints this on each direct-identity row. Agents: whenever you touch a writer's clamp table, update this entry.
+  // @beacon[
+  //   id=fix24-think-local-basis,
+  //   slice_labels=tm-thinking-control,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.389) Per-family provenance of the LOCAL thinking capability rules the direct-route writers encode: basis (docs-verified | docs-partial), the date they were last checked against the vendor's own page, the URL, and a one-line note of what that page says. Printed on every Think Audit row ('basis:'). Update this whenever a writer's clamp table changes.,
+  // ]
+  var TM_THINK_LOCAL_BASIS = {
+    claude:   { basis: 'docs-verified', date: '2026-09-06', url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models', note: 'per-model table + /effort + /thinking pages matched tmThinkAnthropicCaps row for row (first verified 2026-09-04): 5.x adaptive-only, enabled/disabled -> 400; Mythos Preview no xhigh; Opus 5 rejects disabled at xhigh/max; 4.6 has max, no xhigh; display summarized|omitted|updates; per-message beta mid-conversation-output-config-2026-07-01' },
+    openai:   { basis: 'docs-verified', date: '2026-09-06', url: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol', note: 'gpt-5.6-sol: none | low | medium | high | xhigh | max, default medium, no reasoning summaries; guide: values are model-dependent, GPT-6 Astra rejects none (400); pre-5.6 families keep the max -> xhigh clamp (not re-verified)' },
+    kimi:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://platform.kimi.ai/docs/api/chat', note: 'kimi-k3: top-level reasoning_effort low | high | max (default max), always reasons, thinking parameter not supported, max_tokens deprecated for max_completion_tokens, reasoning_content must be replayed; K2.6/K2.7-code: thinking.type enabled|disabled (+ thinking.keep)' },
+    deepseek: { basis: 'docs-verified', date: '2026-09-06', url: 'https://api-docs.deepseek.com/api/create-chat-completion/', note: 'V4 (pro/flash): thinking on by default at effort high; reasoning_effort low | high | max; thinking.type enabled|disabled turns it off; reasoning_content replayed in multi-turn' },
+    glm:      { basis: 'docs-verified', date: '2026-09-06', url: 'https://docs.z.ai/guides/llm/glm-5.3', note: 'GLM-5.3 always operates with reasoning enabled; reasoning_effort low | high | max; thinking.type disabled now FAILS (migration notice: switch to enabled + reasoning_effort low); GLM <= 5.2 stays thinking.type on/off' },
+    gemini:   { basis: 'docs-verified', date: '2026-09-06', url: 'https://ai.google.dev/gemini-api/docs/thinking', note: 'Gemini 3.x: thinkingLevel low | medium | high (default medium, dynamic); Gemini 2.5: thinkingBudget (Flash may be 0, Pro floors at 128); includeThoughts for summaries' },
+    grok:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://docs.x.ai/docs/guides/reasoning', note: 'reasoning_effort low | medium | high (default) | xhigh; some Grok models ignore the field' },
+    qwen:     { basis: 'docs-partial', date: '2026-09-06', url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', note: 'Qwen3.8 pages document reasoning_effort low | medium | high alongside enable_thinking + thinking_budget; the writer still uses the budget form -- not re-verified line by line' }
+  };
+  function tmThinkLocalBasisFor(fam) {
+    var b = TM_THINK_LOCAL_BASIS[fam];
+    if (!b) return '\ud83d\udcc4 docs, unverified (v4.362)';
+    return (b.basis === 'docs-verified' ? '\ud83d\udcc4 docs-verified ' : '\ud83d\udcc4 docs, partially verified ') + b.date + ' \u2014 ' + b.url;
+  }
+  // Best-known vendor documentation URLs (as of TM_THINK_DOCS_AS_OF). Dan clicks these now and again; if one looks stale
+  // he tells the agent and THIS table is the one edit. Order matters: Anthropic, OpenAI, Moonshot first (his ask).
+  // (v4.389) Re-pointed at the pages that actually carry the fields; several vendors redirect (platform.moonshot.ai ->
+  // platform.kimi.ai; platform.openai.com/docs -> developers.openai.com/api/docs). Append .md to an OpenAI/Kimi/Anthropic
+  // docs URL, or fetch <site>/llms.txt, for a clean Markdown copy an agent can diff.
   var TM_THINK_VENDOR_DOCS = [
     { vendor: 'Anthropic', links: [
-      { label: 'Extended thinking (effort, adaptive, display, per-message effort beta)', url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking' },
-      { label: 'Models overview (which generation supports what)', url: 'https://platform.claude.com/docs/en/about-claude/models/overview' },
-      { label: 'Legacy docs host (same page, older URL)', url: 'https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking' } ] },
+      { label: 'Per-model thinking table (adaptive / enabled / disabled, effort, display, per model)', url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models' },
+      { label: 'Effort (output_config.effort low..max, mid-conversation per-message effort beta)', url: 'https://platform.claude.com/docs/en/build-with-claude/effort' },
+      { label: 'Thinking overview (display summarized | omitted | updates, streaming, tool use)', url: 'https://platform.claude.com/docs/en/build-with-claude/thinking' },
+      { label: 'Extended thinking = MANUAL mode (budget_tokens; 4.5-and-older) + migration to adaptive', url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking' } ] },
     { vendor: 'OpenAI', links: [
-      { label: 'Reasoning models guide (reasoning_effort / reasoning.effort, summaries)', url: 'https://platform.openai.com/docs/guides/reasoning' },
-      { label: 'Models catalogue', url: 'https://platform.openai.com/docs/models' } ] },
+      { label: 'Reasoning models guide (reasoning.effort none..max, summary, context, mode, configuration_update)', url: 'https://developers.openai.com/api/docs/guides/reasoning' },
+      { label: 'gpt-5.6-sol model page (its exact effort list + default)', url: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol' },
+      { label: 'Model catalogue', url: 'https://developers.openai.com/api/docs/models' } ] },
     { vendor: 'Moonshot (Kimi)', links: [
-      { label: 'Chat completions API (thinking.type, reasoning_content)', url: 'https://platform.moonshot.ai/docs/api/chat' },
-      { label: 'Docs root (guides for the current Kimi thinking models)', url: 'https://platform.moonshot.ai/docs' } ] },
+      { label: 'Chat completions schema (kimi-k3: reasoning_effort low | high | max; K2.x: thinking.type)', url: 'https://platform.kimi.ai/docs/api/chat' },
+      { label: 'Reasoning effort guide (K3)', url: 'https://platform.kimi.ai/docs/guide/use-reasoning-effort' },
+      { label: 'Thinking models guide (reasoning_content, preserved thinking, tool loops)', url: 'https://platform.kimi.ai/docs/guide/use-thinking-models' } ] },
+    { vendor: 'DeepSeek', links: [
+      { label: 'Thinking mode guide (V4: on by default, effort high)', url: 'https://api-docs.deepseek.com/guides/thinking_mode/' },
+      { label: 'Chat completion reference (thinking.type, reasoning_effort low | high | max)', url: 'https://api-docs.deepseek.com/api/create-chat-completion/' } ] },
+    { vendor: 'Z.ai (GLM)', links: [
+      { label: 'GLM-5.3 (always-on thinking, reasoning_effort low | high | max, migration notice)', url: 'https://docs.z.ai/guides/llm/glm-5.3' },
+      { label: 'Deep thinking capability overview', url: 'https://docs.z.ai/guides/capabilities/thinking' } ] },
+    { vendor: 'Alibaba (Qwen)', links: [
+      { label: 'Deep thinking (enable_thinking, thinking_budget, reasoning_effort)', url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking' } ] },
     { vendor: 'Google Gemini', links: [
-      { label: 'Thinking (thinkingLevel / thinkingBudget / includeThoughts)', url: 'https://ai.google.dev/gemini-api/docs/thinking' } ] },
+      { label: 'Thinking (thinkingLevel low | medium | high, thinkingBudget, includeThoughts)', url: 'https://ai.google.dev/gemini-api/docs/thinking' } ] },
     { vendor: 'xAI Grok', links: [
-      { label: 'Reasoning guide (reasoning_effort low | high)', url: 'https://docs.x.ai/docs/guides/reasoning' } ] },
+      { label: 'Reasoning guide (reasoning_effort low | medium | high | xhigh)', url: 'https://docs.x.ai/docs/guides/reasoning' } ] },
     { vendor: 'OpenRouter', links: [
-      { label: 'Reasoning tokens (unified reasoning object, effort->budget ratios, exclude)', url: 'https://openrouter.ai/docs/use-cases/reasoning-tokens' },
+      { label: 'Reasoning tokens (unified reasoning object; effort->budget ratios; per-model discovery; mid-conversation effort)', url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens' },
+      { label: 'Parameters (what is forwarded; verbosity -> output_config.effort on Anthropic)', url: 'https://openrouter.ai/docs/api-reference/parameters' },
+      { label: 'Provider routing (require_parameters: unsupported parameters are silently ignored by default)', url: 'https://openrouter.ai/docs/guides/routing/provider-selection' },
       { label: 'Live models catalogue JSON (the source of the cross-check)', url: 'https://openrouter.ai/api/v1/models' } ] }
   ];
   // Every model Dan has actually used: session ledger identities + think-override identities, deduped by
@@ -7131,7 +7216,7 @@
         else line('asis', lv + ' is sent as-is -- OpenRouter does not list ' + lv + ' for ' + row.orId + ' (lists [' + orE.join(', ') + ']); the host may reject or silently reinterpret it', lv, true);
       }
       if (okLevels.length) line('ok', 'sent as-is and listed by OpenRouter: ' + okLevels.join(', '), null, false);
-      if (orc && !orE.length) line('info', 'OpenRouter publishes no effort vocabulary for ' + row.orId + ' (mandatory=' + orc.mandatory + ') -- every level goes out as the writer decides above; nothing to compare on levels', null, false);
+      if (orc && !orE.length) line('info', orc.effortsAll ? ('OpenRouter reports supported_efforts = null for ' + row.orId + ' (mandatory=' + orc.mandatory + '): it accepts ALL gateway effort values and maps them itself -- nothing to compare on levels') : ('OpenRouter publishes no effort vocabulary for ' + row.orId + ' (mandatory=' + orc.mandatory + ') -- every level goes out as the writer decides above; nothing to compare on levels'), null, false);
       if (orE.length) {
         // Levels OpenRouter lists that never reach the wire -- unless a flagged 🔁 line already said so for that level.
         var coveredDisc = {};
@@ -7140,7 +7225,7 @@
         if (never.length) never.forEach(function(e) { line('info', 'OpenRouter lists ' + e + ' for this model, but our menu never puts ' + e + ' on the wire' + (isOR ? '' : ' (the local table may be stale)'), e, true); });
       }
       if (orc && orc.defaultEffort) line('info', (isOR ? 'OpenRouter-reported default: ' : 'vendor default per OpenRouter: ') + orc.defaultEffort, null, false);
-      if (loc) line('info', 'local table: ' + loc.source, null, false);
+      if (loc) line('info', 'local table: ' + loc.source + ' \u00b7 basis: ' + loc.basis, null, false);
       if (orc && !orE.length && row.status === 'unknown-family') row.status = 'no-vocabulary';
       if (orc) {
         var disc = row.lines.some(function(l) { return l.disc; });
@@ -7164,6 +7249,7 @@
     var T = [];
     T.push('THINK AUDIT -- OpenRouter catalogue vs the \ud83c\udf9b\ufe0f Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
     T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
+    T.push('BEST-KNOWN DOCUMENTATION as of ' + TM_THINK_DOCS_AS_OF + ' (hardcoded; TM_THINK_TOP_LINKS): ' + TM_THINK_TOP_LINKS.map(function(l) { return l.label + ' ' + l.url; }).join(' \u00b7 '));
     T.push(rows.length + ' identities; ' + nWarnLive + ' live WARNING (medium or higher involved)' + (nWarn !== nWarnLive ? (' + ' + (nWarn - nWarnLive) + ' tombstoned') : '') + ', ' + nNote + ' note (off/minimal/low only), ' + nTomb + ' tombstoned.');
     T.push('KEY: ' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { return TM_THINK_AUDIT_KINDS[k].icon + ' ' + TM_THINK_AUDIT_KINDS[k].label; }).join(' \u00b7 ') + '. Arrow lines: LEFT = the level you would pick in the dropdown; RIGHT = what actually goes over the wire.');
     T.push('');
@@ -7176,7 +7262,7 @@
       if (r.orCaps && r.orCaps.efforts.length) T.push('   OpenRouter lists: [' + r.orCaps.efforts.join(', ') + ']' + (r.orCaps.defaultEffort ? (' default ' + r.orCaps.defaultEffort) : '') + (r.orCaps.mandatory ? ' mandatory' : ''));
     });
     T.push('');
-    T.push('VENDOR DOCUMENTATION (best-known URLs as of 2026-09; if stale, tell the agent -- TM_THINK_VENDOR_DOCS):');
+    T.push('VENDOR DOCUMENTATION (best-known URLs as of ' + TM_THINK_DOCS_AS_OF + '; if stale, tell the agent -- TM_THINK_VENDOR_DOCS):');
     TM_THINK_VENDOR_DOCS.forEach(function(v) { v.links.forEach(function(l) { T.push('   ' + v.vendor + ' -- ' + l.label + ': ' + l.url); }); });
     var out = { catalogue: cat, rows: rows, disagreements: nWarn + nNote, warnings: nWarn, warningsLive: nWarnLive, notes: nNote, tombstoned: nTomb, text: T.join('\n') };
     tmThinkAuditMemo = { ts: Date.now(), warningsLive: nWarnLive };
@@ -7186,7 +7272,7 @@
   function tmThinkAuditVendorDocsFor(model, host) {
     try {
       var fam = tmThinkChatFamily(model, host);
-      var name = fam === 'claude' ? 'Anthropic' : fam === 'openai' ? 'OpenAI' : fam === 'kimi' ? 'Moonshot' : fam === 'gemini' ? 'Gemini' : fam === 'grok' ? 'xAI' : null;
+      var name = fam === 'claude' ? 'Anthropic' : fam === 'openai' ? 'OpenAI' : fam === 'kimi' ? 'Moonshot' : fam === 'gemini' ? 'Google' : fam === 'grok' ? 'xAI' : fam === 'deepseek' ? 'DeepSeek' : fam === 'glm' ? 'Z.ai' : fam === 'qwen' ? 'Alibaba' : null;
       if (!name) return null;
       for (var i = 0; i < TM_THINK_VENDOR_DOCS.length; i++) if (TM_THINK_VENDOR_DOCS[i].vendor.indexOf(name) === 0) return TM_THINK_VENDOR_DOCS[i];
       return null;
@@ -7222,7 +7308,7 @@
   function tmThinkAuditOrMenuHtml(row) {
     var c = row.orCaps;
     if (!c) return '<span style="color:#6f7a8a;">' + (row.status === 'not-loaded' ? 'catalogue not loaded' : 'not in catalogue') + '</span>';
-    if (!c.efforts.length) return '<span style="color:#6f7a8a;">no effort vocabulary published' + (c.mandatory ? ' \u00b7 mandatory' : '') + (c.defaultEffort ? (' \u00b7 default ' + escapeHtml(c.defaultEffort)) : '') + '</span>';
+    if (!c.efforts.length) return '<span style="color:#6f7a8a;">' + (c.effortsAll ? 'accepts all gateway efforts (null)' : 'no effort vocabulary published') + (c.mandatory ? ' \u00b7 mandatory' : '') + (c.defaultEffort ? (' \u00b7 default ' + escapeHtml(c.defaultEffort)) : '') + '</span>';
     var eff = c.efforts.slice().sort(function(a, b) { return (TM_OR_EFFORT_RANK[b] || 0) - (TM_OR_EFFORT_RANK[a] || 0); });
     var o = '<select data-demo="or-menu" title="What OpenRouter\'s /api/v1/models catalogue lists as supported_efforts for ' + escapeHtml(row.orId || row.model) + '. \u2605 = OpenRouter\'s reported default. Display-only." style="font-size:9px;background:#222;color:#aab;border:1px solid #444;border-radius:3px;padding:0 2px;max-width:220px;">';
     o += '<option>' + eff.length + ' level' + (eff.length === 1 ? '' : 's') + (c.mandatory ? ' \u00b7 mandatory' : '') + '</option>';
@@ -7244,6 +7330,8 @@
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
     var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 what happens to each \ud83c\udf9b\ufe0f Think level you could pick, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
       '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
+    // (v4.389) The banner Dan asked for: the best-known documentation, hardcoded with its date, right at the top.
+    h += '<div style="display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;font-size:12px;margin:0 0 8px;padding:7px 10px;border:1px solid #6b5a1e;border-radius:6px;background:#1e1a10;"><b style="color:#ffd166;">\ud83d\udccc Best-known documentation as of ' + escapeHtml(TM_THINK_DOCS_AS_OF) + '</b>' + TM_THINK_TOP_LINKS.map(function(l) { return '<a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;font-weight:600;">' + escapeHtml(l.label) + ' \u2197</a>'; }).join('<span style="color:#6f7a8a;">\u00b7</span>') + '<span style="color:#8b93a3;font-size:11px;">\u2014 hardcoded; click one now and again. If a page looks stale or unmaintained, tell the agent (TM_THINK_TOP_LINKS / TM_THINK_VENDOR_DOCS / TM_THINK_LOCAL_BASIS).</span></div>';
     h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;">Every model you have actually used (session ledger + think overrides). For each one the REAL writer was dry-run on every level in the \ud83c\udf9b\ufe0f Think menu, so each line says exactly what happens to that pick. <b style="color:#e6e6ee;">Arrow lines: LEFT of \u2192</b> = the level you would pick in the menu; <b style="color:#e6e6ee;">RIGHT of \u2192</b> = what actually goes over the wire. <b style="color:#ffd166;">\u26a0\ufe0f WARNING</b> = a discrepancy with OpenRouter\'s catalogue involving medium / high / xhigh / max; <b style="color:#e6e6ee;">NOTE</b> = only off / minimal / low involved. <b style="color:#e6e6ee;">\ud83e\udea6 Tombstone</b> a row you do not care to resolve: it stays here, dimmed, and stops counting as a warning (click again to revive). Menus per row: <i>Our \ud83c\udf9b\ufe0f menu</i> is the actual dropdown as rendered for that model; <i>OpenRouter lists</i> is its catalogue (\u2605 = its default); <i>Vendor</i> is the honest maximum \u2014 no vendor publishes a machine-readable recommendation, so you get the default OpenRouter reports plus the vendor\'s docs link.</div>';
     h += '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11px;margin-bottom:8px;padding:6px 8px;border:1px solid #2a2a33;border-radius:6px;background:#191922;">' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { var K = TM_THINK_AUDIT_KINDS[k]; return '<span title="' + escapeHtml(K.desc) + '" style="white-space:nowrap;"><span style="font-size:13px;">' + K.icon + '</span> <b style="color:#e6e6ee;">' + escapeHtml(K.label) + '</b> <span style="color:#8b93a3;">\u2014 ' + escapeHtml(K.desc.split('.')[0]) + '.</span></span>'; }).join('') + '</div>';
     var body = '<div data-think-audit-body="1" style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
@@ -7283,7 +7371,7 @@
       if (otherRows.length) { body += section('NOT COMPARABLE \u2014 not in the catalogue / no vocabulary published / no local table (' + otherRows.length + ')', '#9aa4b2'); body += rowsTable(otherRows, '#9aa4b2'); }
       if (agreeRows.length) { body += section('AGREE (' + agreeRows.length + ')', '#8ef0a0'); body += rowsTable(agreeRows, '#8ef0a0'); }
     }
-    body += section('VENDOR DOCUMENTATION \u2014 best-known URLs as of 2026-09 (click = new tab; \u2398 = copy)');
+    body += section('VENDOR DOCUMENTATION \u2014 best-known URLs as of ' + escapeHtml(TM_THINK_DOCS_AS_OF) + ' (click = new tab; \u2398 = copy)');
     body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
     TM_THINK_VENDOR_DOCS.forEach(function(v) {
       v.links.forEach(function(l, i) {
@@ -7569,8 +7657,12 @@
   function tmThinkIsAlwaysOn(fam, model) {
     var m = String(model || '').toLowerCase();
     if (fam === 'claude') return !tmThinkAnthropicCaps(model).disable;
-    if (fam === 'openai') return /(^|[\/_-])(o1|o3|o4)(-|$)/.test(m);
+    // (v4.389) GPT-6 Astra: OpenAI's guide says effort none returns HTTP 400 -- treat as always-on.
+    if (fam === 'openai') return /(^|[\/_-])(o1|o3|o4)(-|$)/.test(m) || /gpt-6/.test(m);
     if (fam === 'gemini') return /gemini-3|gemini-2\.5-pro|gemini-.*-pro/.test(m);
+    // (v4.389) Moonshot: 'kimi-k3 always reasons'; Z.ai: GLM-5.3 'thinking.type: disabled' fails.
+    if (fam === 'kimi') return /kimi-k3/.test(m);
+    if (fam === 'glm') return tmThinkGlmHasEffort(m);
     return false;
   }
 
@@ -7639,13 +7731,46 @@
       return;
     }
     // ---- Direct OpenAI-compat hosts
+    var ml = model.toLowerCase();
+    // (v4.389) Vendor docs re-read 2026-09-06 (TM_THINK_LOCAL_BASIS): Kimi K3, DeepSeek V4 and GLM-5.3 expose an EFFORT
+    // vocabulary -- top-level reasoning_effort low | high | max. Moonshot: 'kimi-k3 always reasons and uses the top-level
+    // reasoning_effort field (default max)' and 'does not support the thinking parameter' (the pre-v4.389 writer sent a
+    // K2.x thinking:{type} and DELETED reasoning_effort, so every K3 pick ran at max). Z.ai: GLM-5.3 always reasons and
+    // thinking.type:disabled now fails. DeepSeek: thinking on by default at high; thinking.type:disabled turns it off.
+    // The on/off-only contract below remains for Kimi K2.x and GLM <= 5.2.
+    var effortHost = (fam === 'kimi' && /kimi-k3/.test(ml)) || fam === 'deepseek' || (fam === 'glm' && tmThinkGlmHasEffort(ml));
+    if (effortHost) {
+      var vocab3 = ['low', 'high', 'max'];
+      var vendorName = fam === 'kimi' ? 'Moonshot' : fam === 'glm' ? 'Z.ai' : 'DeepSeek';
+      var alwaysOn3 = fam === 'kimi' || fam === 'glm';
+      var setEffort3 = function(e) {
+        if (fam === 'kimi') { if (body.thinking !== undefined) { delete body.thinking; change('thinking object removed (Moonshot: kimi-k3 does not support the thinking parameter)'); } }
+        else { var th3 = (body.thinking && typeof body.thinking === 'object') ? body.thinking : null; if (!th3 || th3.type !== 'enabled') { body.thinking = { type: 'enabled' }; change('thinking = {type:"enabled"}'); } }
+        if (body.reasoning_effort !== e) { var wasE3 = body.reasoning_effort; body.reasoning_effort = e; change('reasoning_effort ' + (wasE3 || '(none)') + ' \u2192 ' + e + ' (' + vendorName + ' vocabulary low | high | max, docs ' + TM_THINK_DOCS_AS_OF + ')'); }
+        if (body.reasoning !== undefined && typeof body.reasoning === 'object') { delete body.reasoning; change('unified reasoning object removed (direct host uses reasoning_effort)'); }
+      };
+      if (L.set) {
+        if (L.off) {
+          if (alwaysOn3) { clamp('off \u2192 low: ' + model + ' always reasons (' + vendorName + ' docs ' + TM_THINK_DOCS_AS_OF + ': thinking cannot be disabled; reasoning_effort low is the floor)'); setEffort3('low'); }
+          else { body.thinking = { type: 'disabled' }; change('thinking = {type:"disabled"}'); if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (thinking disabled)'); } }
+        } else {
+          var e3d = L.eff;
+          if (L.budget != null) { e3d = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + e3d + ': ' + fam + ' has no token budget'); }
+          var near3 = tmOrCapsNearestEffort(e3d, vocab3);
+          if (near3 && near3 !== e3d) { clamp(e3d + ' \u2192 ' + near3 + ': ' + model + ' reasoning_effort accepts low | high | max (' + vendorName + ' docs ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); e3d = near3; }
+          if (e3d) setEffort3(e3d);
+        }
+      }
+      if (disp === 'show' || disp === 'hide') rep.notes.push(fam + ' always streams reasoning_content when thinking is enabled; display is not controllable on this route');
+      return;
+    }
     if (fam === 'kimi' || fam === 'deepseek' || fam === 'glm') {
       if (L.set) {
         var th = (body.thinking && typeof body.thinking === 'object') ? body.thinking : null;
         var wantT = L.off ? 'disabled' : 'enabled';
         if (!th || th.type !== wantT) { body.thinking = { type: wantT }; change('thinking = {type:"' + wantT + '"}'); }
-        if (!L.off && (L.eff || L.budget != null)) clamp((L.eff || ('budget:' + L.budget)) + ' \u2192 ON: ' + fam + ' direct API exposes thinking on/off only (no effort levels)');
-        if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (not part of the ' + fam + ' thinking contract)'); }
+        if (!L.off && (L.eff || L.budget != null)) clamp((L.eff || ('budget:' + L.budget)) + ' \u2192 ON: ' + fam + ' ' + (fam === 'kimi' ? 'K2.x' : '<= 5.2') + ' direct API exposes thinking on/off only (no effort levels)');
+        if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (not part of the ' + fam + ' on/off thinking contract)'); }
       }
       if (disp === 'show' || disp === 'hide') rep.notes.push(fam + ' always streams reasoning_content when thinking is enabled; display is not controllable on this route');
       return;
@@ -7664,16 +7789,21 @@
       return;
     }
     // gemini via OpenAI-compat, openai, grok, deepinfra, other -> reasoning_effort vocabulary
+    // (v4.389) Vocabularies from the vendors' pages (TM_THINK_LOCAL_BASIS): OpenAI gpt-5.6+/gpt-6 accept max (Sol lists
+    // none | low | medium | high | xhigh | max, no minimal); xAI accepts low | medium | high | xhigh; Gemini 3 thinkingLevel
+    // is low | medium | high on every 3.x model.
     if (L.set) {
       var e2 = L.eff;
+      var new56 = fam === 'openai' && /gpt-5\.[6-9]|gpt-6/.test(ml);
       if (L.budget != null) { e2 = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + e2 + ': chat-completions has no token budget for ' + fam); }
-      if (L.off) { if (tmThinkIsAlwaysOn(fam, model)) { e2 = 'low'; clamp('off \u2192 low: ' + model + ' always reasons'); } else e2 = 'none'; }
-      if (fam === 'grok') { var g0 = e2; e2 = (/^(none|minimal|low)$/.test(e2)) ? 'low' : 'high'; if (g0 !== e2) clamp(g0 + ' \u2192 ' + e2 + ': xAI reasoning_effort accepts low | high only'); }
-      else if (fam === 'gemini') { var gg = e2; if (e2 === 'max' || e2 === 'xhigh') e2 = 'high'; if (e2 === 'minimal' && !/flash/.test(model.toLowerCase())) e2 = 'low'; if (gg !== e2) clamp(gg + ' \u2192 ' + e2 + ': Gemini OpenAI-compat reasoning_effort range'); }
-      else if (e2 === 'max') { e2 = 'xhigh'; clamp('max \u2192 xhigh: OpenAI-style reasoning_effort has no max'); }
+      if (L.off) { if (tmThinkIsAlwaysOn(fam, model)) { e2 = 'low'; clamp('off \u2192 low: ' + model + ' always reasons' + (/gpt-6/.test(ml) ? ' (OpenAI: effort none returns 400 on GPT-6 Astra)' : '')); } else e2 = 'none'; }
+      if (fam === 'grok') { var g0 = e2; if (/^(none|minimal)$/.test(e2)) e2 = 'low'; else if (e2 === 'max') e2 = 'xhigh'; if (g0 !== e2) clamp(g0 + ' \u2192 ' + e2 + ': xAI reasoning_effort accepts low | medium | high | xhigh (docs ' + TM_THINK_DOCS_AS_OF + ')'); }
+      else if (fam === 'gemini') { var gg = e2; if (e2 === 'max' || e2 === 'xhigh') e2 = 'high'; if (e2 === 'minimal') e2 = 'low'; if (gg !== e2) clamp(gg + ' \u2192 ' + e2 + ': Gemini 3 thinkingLevel accepts low | medium | high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); }
+      else if (e2 === 'max' && !new56) { e2 = 'xhigh'; clamp('max \u2192 xhigh: reasoning_effort max is only documented for gpt-5.6+ / gpt-6 (pre-5.6 and passthrough hosts keep the xhigh ceiling)'); }
+      else if (e2 === 'minimal' && new56) { e2 = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
       if (body.reasoning_effort !== e2) { var wasRE = body.reasoning_effort; body.reasoning_effort = e2; change('reasoning_effort ' + (wasRE || '(none)') + ' \u2192 ' + e2 + (fam === 'other' || r.kind === 'aggregator' ? ' (OpenAI-compat passthrough on ' + r.host + '; unverified for this host)' : '')); }
       if (body.reasoning !== undefined && typeof body.reasoning === 'object') { delete body.reasoning; change('unified reasoning object removed (direct host uses reasoning_effort)'); }
-      if (fam === 'openai' && Number(body.max_completion_tokens) && Number(body.max_completion_tokens) < 16000 && /^(high|xhigh)$/.test(e2)) { var mct = body.max_completion_tokens; body.max_completion_tokens = 32000; change('max_completion_tokens ' + mct + ' \u2192 32000 (room for reasoning at ' + e2 + ')'); }
+      if (fam === 'openai' && Number(body.max_completion_tokens) && Number(body.max_completion_tokens) < 16000 && /^(high|xhigh|max)$/.test(e2)) { var mct = body.max_completion_tokens; body.max_completion_tokens = 32000; change('max_completion_tokens ' + mct + ' \u2192 32000 (room for reasoning at ' + e2 + ')'); }
     }
     if (disp === 'show' || disp === 'hide') {
       if (fam === 'gemini') {
@@ -7700,20 +7830,24 @@
     function change(s) { rep.changes.push(s); rep.applied = true; }
     function clamp(s) { rep.clamps.push(s); }
     var R = (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) ? body.reasoning : null;
+    var mlR = model.toLowerCase(), new56R = /gpt-5\.[6-9]|gpt-6/.test(mlR);
     if (L.set) {
       var eff = L.eff;
       if (L.budget != null) { eff = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + eff + ': the Responses API has no reasoning token budget'); }
-      if (L.off) { if (tmThinkIsAlwaysOn('openai', model)) { eff = 'low'; clamp('off \u2192 low: o-series models always reason'); } else eff = 'none'; }
-      if (eff === 'max') { eff = 'xhigh'; clamp('max \u2192 xhigh: OpenAI reasoning.effort has no max'); }
+      if (L.off) { if (tmThinkIsAlwaysOn('openai', model)) { eff = 'low'; clamp('off \u2192 low: ' + (/gpt-6/.test(mlR) ? 'GPT-6 Astra rejects effort none (OpenAI docs: HTTP 400)' : 'o-series models always reason')); } else eff = 'none'; }
+      // (v4.389) OpenAI's guide lists max; the gpt-5.6-sol model page lists none | low | medium | high | xhigh | max
+      // (default medium, no minimal). Pre-5.6 families keep the old xhigh ceiling (not re-verified).
+      if (eff === 'max' && !new56R) { eff = 'xhigh'; clamp('max \u2192 xhigh: reasoning.effort max is only documented for gpt-5.6+ / gpt-6'); }
+      if (eff === 'minimal' && new56R) { eff = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
       if (!R) R = body.reasoning = {};
       if (R.effort !== eff) { var was = R.effort; R.effort = eff; change('reasoning.effort ' + (was || '(none)') + ' \u2192 ' + eff + ((typeof tmIsPlainSolModel === 'function' && tmIsPlainSolModel(model)) ? ' (overrides the legacy Sol Reasoning select for this call)' : '')); }
       if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('top-level reasoning_effort removed (Responses uses reasoning.effort)'); }
-      if (/^(high|xhigh)$/.test(eff) && Number(body.max_output_tokens) && Number(body.max_output_tokens) < 16000) { var mo = body.max_output_tokens; body.max_output_tokens = 32000; change('max_output_tokens ' + mo + ' \u2192 32000 (room for reasoning at ' + eff + ')'); }
+      if (/^(high|xhigh|max)$/.test(eff) && Number(body.max_output_tokens) && Number(body.max_output_tokens) < 16000) { var mo = body.max_output_tokens; body.max_output_tokens = 32000; change('max_output_tokens ' + mo + ' \u2192 32000 (room for reasoning at ' + eff + ')'); }
       rep.notes.push('Responses API: a top-level effort change re-renders the prompt once (one cache miss)');
     }
     if (disp === 'show' || disp === 'hide') {
       if (!R) R = body.reasoning = {};
-      if (disp === 'show') { if (!/^(auto|concise|detailed)$/.test(String(R.summary || ''))) { var wasS = R.summary; R.summary = 'auto'; change('reasoning.summary ' + (wasS || '(none)') + ' \u2192 auto (reasoning summaries stream back; OpenAI never returns raw reasoning)'); } }
+      if (disp === 'show') { if (!/^(auto|concise|detailed)$/.test(String(R.summary || ''))) { var wasS = R.summary; R.summary = 'auto'; change('reasoning.summary ' + (wasS || '(none)') + ' \u2192 auto (reasoning summaries stream back; OpenAI never returns raw reasoning)'); } if (/gpt-5\.6-sol/.test(mlR)) rep.notes.push('OpenAI\'s gpt-5.6-sol model page lists NO reasoning summaries (' + TM_THINK_DOCS_AS_OF + '): summary:auto is accepted on the wire but no summary text is expected back'); }
       else if (R.summary !== undefined) { delete R.summary; change('reasoning.summary removed (no summaries returned; encrypted replay unaffected)'); }
     }
   }
@@ -7745,11 +7879,12 @@
         var lvl3 = null;
         if (L.budget != null) { if (tc.thinkingBudget !== L.budget || tc.thinkingLevel !== undefined) { tc.thinkingBudget = L.budget; delete tc.thinkingLevel; delete tc.thinking_level; delete tc.thinking_budget; change('thinkingConfig.thinkingBudget = ' + L.budget + ' (Gemini 3 maps a budget to a thinkingLevel internally)'); } }
         else {
+          // (v4.389) Google's thinking page: Gemini 3.x thinkingLevel is low | medium | high on every model (no minimal;
+          // the old 'Pro exposes low | high' rule came from the 3 Pro preview era). off -> low: Gemini 3 cannot disable.
           var e3 = L.eff;
-          if (L.off) { e3 = flash ? 'minimal' : 'low'; clamp('off \u2192 ' + e3 + ': Gemini 3 cannot disable thinking'); }
-          if (e3 === 'xhigh' || e3 === 'max') { clamp(e3 + ' \u2192 high: Gemini 3 tops out at high'); e3 = 'high'; }
-          if (!flash && e3 === 'minimal') { clamp('minimal \u2192 low: only Gemini 3 Flash has minimal'); e3 = 'low'; }
-          if (pro && !flash && e3 === 'medium') { clamp('medium \u2192 high: Gemini 3 Pro exposes low | high'); e3 = 'high'; }
+          if (L.off) { e3 = 'low'; clamp('off \u2192 low: Gemini 3 cannot disable thinking (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); }
+          if (e3 === 'xhigh' || e3 === 'max') { clamp(e3 + ' \u2192 high: Gemini 3 thinkingLevel tops out at high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); e3 = 'high'; }
+          if (e3 === 'minimal') { clamp('minimal \u2192 low: Gemini 3 thinkingLevel accepts low | medium | high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); e3 = 'low'; }
           lvl3 = e3;
           if (tc.thinkingLevel !== lvl3 || tc.thinkingBudget !== undefined) { var was3 = tc.thinkingLevel; tc.thinkingLevel = lvl3; delete tc.thinkingBudget; delete tc.thinking_budget; delete tc.thinking_level; change('thinkingConfig.thinkingLevel ' + (was3 || '(none)') + ' \u2192 ' + lvl3 + (tc.thinkingBudget === undefined ? '' : '') + ' (thinkingBudget removed: the two conflict)'); }
         }
@@ -7924,13 +8059,16 @@
         if (orc && orc.defaultEnabled === false) return 'off \u2014 OpenRouter-reported default (reasoning not enabled unless requested)';
       } catch (e) {}
     }
-    if (/gemini-3/.test(m)) return 'dynamic \u2248 medium';
+    if (/gemini-3/.test(m)) return 'medium (dynamic) \u2014 Google docs ' + TM_THINK_DOCS_AS_OF;
     if (/gemini/.test(m)) return 'dynamic';
-    if (/claude|anthropic/.test(m) || /anthropic\.com/.test(h)) return 'adaptive \u2014 the model decides';
+    if (/claude|anthropic/.test(m) || /anthropic\.com/.test(h)) return 'adaptive \u00b7 effort high (API default) \u2014 Anthropic docs ' + TM_THINK_DOCS_AS_OF;
+    if (/kimi-k3/.test(m)) return 'max \u2014 Moonshot docs ' + TM_THINK_DOCS_AS_OF + ' (always reasons; reasoning_effort default max)';
     if (/kimi|moonshot/.test(m) || /moonshot/.test(h)) return 'on \u2014 always-thinking model';
-    if (/deepseek/.test(m)) return 'on \u2014 reasoner model';
-    if (/(^|[\/_-])o[1-9](-|$)/.test(m) || /gpt-5/.test(m)) return 'medium';
-    if (/grok/.test(m)) return 'on';
+    if (/deepseek/.test(m)) return 'high \u2014 DeepSeek docs ' + TM_THINK_DOCS_AS_OF + ' (thinking on by default)';
+    if (/glm-(5\.[3-9]|[6-9])/.test(m)) return 'on \u2014 Z.ai: GLM-5.3 always reasons (default effort not stated)';
+    if (/gpt-5\.[6-9]/.test(m)) return 'medium \u2014 OpenAI docs ' + TM_THINK_DOCS_AS_OF;
+    if (/(^|[\/_-])o[1-9](-|$)/.test(m) || /gpt-5/.test(m) || /gpt-6/.test(m)) return 'medium';
+    if (/grok/.test(m)) return 'high \u2014 xAI docs ' + TM_THINK_DOCS_AS_OF;
     return '';
   }
 
