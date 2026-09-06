@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.395
+// Version: 4.396
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,11 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.396: KEEP-ALIVE controls on their OWN ROW in Sessions in Memory. The KA toggle / interval / status shared
+//     the controls row with the Think dropdowns + note button inside a flex-wrap; on a tight window the KA cluster
+//     wrapped to a second line and slipped under the fold (Dan sized the window to two entries and lost the Fable
+//     row's button -- the v4.395 blank row was this wrap, plus the info-less render the same day). The KA cluster is
+//     now a dedicated full-width row directly beneath the controls row: no wrap, no rollover, predictable row height.
 //   - v4.395: KEEP-ALIVE ROW renders even when its identity info is missing. The Sessions-in-Memory row's
 //     KA toggle was swallowed (empty row) whenever tmSessionCtxHoverIdentities had no entry for that key --
 //     the same per-identity key drift that left the Fable row armed overnight. tmKeepAliveRowHtml now falls
@@ -2216,7 +2221,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.395';
+  const EXT_VERSION = '4.396';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -11958,18 +11963,22 @@
         ctxCostHtml +
       '</div>';
       // Controls row: Think level/display dropdowns (shared builder, incl. the OpenRouter
-      // warning triangle) + thinking-note button + keep-alive toggle/interval/status.
+      // warning triangle) + thinking-note button. (v4.396) The keep-alive toggle/interval/status moved
+      // OFF this row onto its own dedicated row below -- in a flex-wrap the KA cluster wrapped to a second
+      // line on tight windows and slipped under the fold (Dan sized the window to two entries and lost the
+      // Fable row's button). No wrap on the KA row -> predictable height, the toggle is always where expected.
       var ctlParts = [];
       try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key, { selMaxWidth: '285px', selMaxWidthDisp: '255px' })); } catch (eCtl) {}
       if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
-      try { ctlParts.push('<span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span>'); } catch (eKaH) {}
       var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
+      var kaRowHtml = '';
+      try { kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;"><span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span></div>'; } catch (eKaH) {}
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
         '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
           nameRow +
           // (v4.366) Everything under the name row is inset 48px (outline-like hierarchy, per Dan).
-          '<div style="padding-left:48px;">' + modelLiveRow + thinkRow + gaugesRow + ctlRow + '</div>' +
+          '<div style="padding-left:48px;">' + modelLiveRow + thinkRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
         '</div>'
       );
     }
