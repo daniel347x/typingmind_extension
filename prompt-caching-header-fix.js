@@ -1,6 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.391
+// Version: 4.392
 // Issues Fixed:
+//   - v4.392: Fix 24 -- a SIXTH seam line above the Think Audit banner (Dan): the registry is built by hand and kept as
+//     data -- every first-party fact was read from a vendor page by an agent in a session with Dan and saved into
+//     TM_THINK_DOCS_REGISTRY, dated per range; nothing re-reads vendor pages on its own, the contents are refreshed only
+//     in a manual session and the banner date says when. The OpenRouter side is different and the line says so: the
+//     catalogue is fetched live by the extension (v4.384: 12 h cache, refresh button), so an UNKNOWN MAPPING or a rot
+//     hint can appear between sessions -- the tripwire working. Same sentence in the text report. Plan renumbered:
+//     table-driven menus = v4.393, writers read the registry vocabulary + Qwen reasoning_effort = v4.394.
 //   - v4.391: Fix 24 -- THE MATCH RULE replaces the v4.386-v4.388 discrepancy logic in the ⚖ Think Audit, and five
 //     'seam' lines above the brown banner state what used to confuse. Two sources of truth about a model's thinking
 //     vocabulary: the vendor's own pages (the first-party table -- every TM_THINK_DOCS_REGISTRY range now carries a
@@ -2179,7 +2186,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.391';
+  const EXT_VERSION = '4.392';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7843,7 +7850,7 @@
     var T = [];
     T.push('THINK AUDIT -- the match rule: vendor vocabulary vs intermediary catalogue (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
     T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
-    T.push('OUR TABLE IS CONSTRUCTED FROM FIRST-PARTY DOCUMENTATION. Intermediaries (OpenRouter) publish their own table. Vendor vocabulary a subset of the intermediary\'s = MATCH (forwarded verbatim); a vendor word the intermediary does not list = UNKNOWN MAPPING (warning); `off` just means no thinking and is never a warning; direct routes map nothing. Provider taxonomy: direct / intermediary / host. Not analyzed: ' + (TM_THINK_GRAYLIST.providers.map(function(g) { return g.short + ' [' + g.kind + ']'; }).join(', ') || 'none') + '. Aliases to avoid: ' + (TM_THINK_GRAYLIST.aliases.map(function(a) { return '`' + a.avoid + '` (pick `' + a.prefer + '`)'; }).join(', ') || 'none') + '.');
+    T.push('OUR TABLE IS CONSTRUCTED FROM FIRST-PARTY DOCUMENTATION. Intermediaries (OpenRouter) publish their own table. Vendor vocabulary a subset of the intermediary\'s = MATCH (forwarded verbatim); a vendor word the intermediary does not list = UNKNOWN MAPPING (warning); `off` just means no thinking and is never a warning; direct routes map nothing. Provider taxonomy: direct / intermediary / host. Not analyzed: ' + (TM_THINK_GRAYLIST.providers.map(function(g) { return g.short + ' [' + g.kind + ']'; }).join(', ') || 'none') + '. Aliases to avoid: ' + (TM_THINK_GRAYLIST.aliases.map(function(a) { return '`' + a.avoid + '` (pick `' + a.prefer + '`)'; }).join(', ') || 'none') + '. The registry is built by hand from vendor pages in manual sessions and kept as dated data (nothing re-reads vendor pages on its own); the OpenRouter catalogue is fetched live by the extension (12 h cache), so warnings and rot hints can appear between sessions.');
     T.push('BEST-KNOWN DOCUMENTATION ' + DD.headline + ' (TM_THINK_DOCS_REGISTRY: ' + tmThinkDocsDates().per.length + ' analyzed providers' + (usedNames.length ? ('; in use here: ' + usedNames.join(', ')) : '; none resolved from these rows, so every analyzed provider counts') + '): ' + TM_THINK_TOP_LINKS.map(function(l) { return l.label + ' ' + l.url; }).join(' \u00b7 '));
     T.push('DOCS VERIFIED PER PROVIDER: ' + tmThinkDocsDates().per.map(function(p) { return p.provider + ' ' + p.verified + (p.partial ? '*' : ''); }).join(' \u00b7 ') + '  (* = a range with not-enough-vendor-information cells; writer-table provenance is TM_THINK_LOCAL_BASIS, printed per row as basis:)');
     T.push(rows.length + ' identities; ' + nWarnLive + ' live UNKNOWN-MAPPING WARNING (medium or higher word involved)' + (nWarn !== nWarnLive ? (' + ' + (nWarn - nWarnLive) + ' tombstoned') : '') + ', ' + nNote + ' note (off / minimal / low only), ' + nHints + ' rot hint' + (nHints === 1 ? '' : 's') + ', ' + nTomb + ' tombstoned.');
@@ -7935,7 +7942,8 @@
       '<div style="' + seam + '"><b style="color:#e6e6ee;">' + chip('off') + ' just means "no thinking."</b> Endpoints spell it differently \u2014 ' + chip('none') + ', <code style="' + TM_THINK_CHIP_STYLE + '">type: disabled</code>, <code style="' + TM_THINK_CHIP_STYLE + '">enable_thinking: false</code>, a zero budget \u2014 and the mapping is unambiguous, so it is never a warning. Some models cannot switch thinking off at all; there ' + chip('off') + ' is simply disabled in the menu, with the reason.</div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">Provider taxonomy \u2014 three kinds.</b> <b>direct</b> = the model developer\'s own API (Anthropic, OpenAI, Moonshot, Google, xAI, DeepSeek, Z.ai, Alibaba). <b>intermediary</b> = routes to others and translates (OpenRouter) \u2014 the subset test applies. <b>host</b> = serves open-weight models on its own API with its own vocabulary (DeepInfra) \u2014 its docs are first-party for that route. The TypingMind proxy is a relay, not a provider: identities are resolved to the true host.</div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">Not analyzed yet \u2014 no table rows below:</b> ' + (TM_THINK_GRAYLIST.providers.length ? TM_THINK_GRAYLIST.providers.map(function(g) { return '<b>' + escapeHtml(g.short) + '</b> (' + escapeHtml(g.kind) + ') \u2014 ' + chip(g.reason); }).join('; ') : 'none') + '. Identities on these show "provider not analyzed" in the audit.</div>' +
-      '<div style="padding:5px 0;line-height:1.45;"><b style="color:#e6e6ee;">Prefer the exact, dated model id over a generic alias.</b> ' + TM_THINK_GRAYLIST.aliases.map(function(a) { return escapeHtml(a.provider) + ': do not choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.avoid) + '</code> (no date suffix) \u2014 ' + chip(a.reason) + ' Choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.prefer) + '</code>.'; }).join(' ') + ' In general, choose the most granular id \u2014 the one with the version or date \u2014 never the alias.</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">Prefer the exact, dated model id over a generic alias.</b> ' + TM_THINK_GRAYLIST.aliases.map(function(a) { return escapeHtml(a.provider) + ': do not choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.avoid) + '</code> (no date suffix) \u2014 ' + chip(a.reason) + ' Choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.prefer) + '</code>.'; }).join(' ') + ' In general, choose the most granular id \u2014 the one with the version or date \u2014 never the alias.</div>' +
+      '<div style="padding:5px 0;line-height:1.45;"><b style="color:#e6e6ee;">The registry is built by hand, kept as data.</b> Every first-party fact here was read from a vendor page by an agent in a session with Dan and saved into <code style="' + TM_THINK_CHIP_STYLE + '">TM_THINK_DOCS_REGISTRY</code> \u2014 a real data structure, dated per model range \u2014 but nothing re-reads vendor pages on its own: the contents are reviewed and refreshed only in a manual session, and the banner date says when that last happened. The OpenRouter side is different: its catalogue is fetched live by the extension (cached 12 h; <i>\u21bb Refresh catalogue</i> forces it; the fetch time is in the header above), so an UNKNOWN MAPPING or a rot hint can appear between sessions \u2014 that is the tripwire working, not a bug.</div>' +
       '</div>';
     // The banner (v4.389 -> v4.390): derived date, ONE hover on the whole banner, provider chips + the \ud83d\udcd6 map button.
     var DD = R.docsDates || tmThinkDocsDates();
