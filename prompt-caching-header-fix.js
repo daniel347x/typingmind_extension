@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.393
+// Version: 4.394
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,12 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.394: KEEP-ALIVE TOGGLE IS CONVERSATION-SCOPED. The keep-alive store (tm_keepalive_v1) is keyed by the full
+//     identity sid::model::host::proxy, so 'this conversation' spans one row per model it ran on. Toggling any row
+//     flips EVERY sibling row for that session id (same sid normalization as the sweep), so arming the Kimi row can
+//     no longer leave the Claude row armed and paying a cache-miss ping every interval. A sibling paused by 'skip
+//     this ping' resumes on re-arm (the skip was a one-off); an auto-offed (max_hours) row is not re-armed; a final
+//     store sweep asserts nothing under the sid disagrees. Nothing on the wire changes.
 //   - v4.377: REMOVE KEEP-ALIVE OUTPUT-BUDGET OVERRIDE. After the sidebar fix, Dan's sentinel
 //     reached the conversation, but TypingMind showed 'maximum output tokens or context limit'
 //     without a visible reply (context gauge ~31%). v4.374-v4.376 reduced output limits to 64
@@ -2206,7 +2212,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.393';
+  const EXT_VERSION = '4.394';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5249,11 +5255,36 @@
     } catch (e9) { return ''; }
   }
 
+  // (v4.394) The keep-alive toggle is CONVERSATION-scoped: one click flips every entry whose session id
+  // matches (the store is keyed sid::model::host::proxy, so one conversation is one row per model it ran
+  // on -- that is exactly why arming Kimi left the Fable row armed and kept paying cache-miss pings
+  // overnight). Sibling keying reuses tmKeepAliveNormSid (tm- alias tolerant) -- the same sid key the
+  // sweep, noteRealTurn, firePing and recordPingResult already use. A sibling PAUSED by 'skip this ping'
+  // resumes on re-arm (the skip was a one-off); an entry that auto-offed (max_hours reached) is NOT
+  // re-armed. The final sweep re-reads the store and asserts nothing under the sid disagrees.
+  function tmKeepAliveSidOfEntry(key, e) { return tmKeepAliveNormSid((e && e.sid) || String(key || '').split('::')[0] || ''); }
+  function tmKeepAliveSidOfKey(key, store) {
+    var e = store && store[key];
+    if (e && e.sid) return tmKeepAliveNormSid(e.sid);
+    // No entry yet (first arm of this row): the sid the sweep would use for it.
+    var info = (typeof tmSessionCtxHoverIdentities !== 'undefined' && tmSessionCtxHoverIdentities[key]) || null;
+    return tmKeepAliveNormSid((info && info.sid) || String(key || '').split('::')[0] || '');
+  }
+  function tmKeepAliveSameSid(key, e, sidNorm) {
+    if (!sidNorm) return false;
+    return tmKeepAliveSidOfEntry(key, e) === sidNorm;
+  }
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmKeepAliveHandleToggle-ka01,
+  //   role=__lambdao_1.tmKeepAliveHandleToggle,
+  //   slice_labels=tm-payload-overview,tm-keepalive,
+  //   kind=ast,
+  // ]
   function tmKeepAliveHandleToggle(key) {
     var e = tmGetKeepAliveEntry(key) || {};
     var info = tmSessionCtxHoverIdentities[key] || {};
-    if (e.enabled) { e.enabled = false; e.stopped_reason = 'toggled off'; }
-    else {
+    var newEnabled = !e.enabled;
+    if (newEnabled) {
       e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = Date.now(); e.retry_at = 0; e.pending_ping = null; e.paused_until_turn = false;
       if (!e.last_turn_ts) e.last_turn_ts = Date.now();
       if (!e.interval_min) e.interval_min = /claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4;
@@ -5262,8 +5293,33 @@
       tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + e.interval_min + 'm', tone: 'muted' });
       console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm (session ' + (e.sid || '?') + '; a signposted ping turn will be typed into the conversation after ' + e.interval_min + 'm of quiescence).');
       tmKeepAliveEnsureSweeper();
+    } else {
+      e.enabled = false; e.stopped_reason = 'toggled off';
     }
     tmSetKeepAliveEntry(key, e);
+    // (v4.394) Sync every sibling row of this conversation to the same state, then verify.
+    var sidNorm = tmKeepAliveSidOfKey(key, tmGetKeepAliveStore());
+    if (sidNorm) {
+      var store = tmGetKeepAliveStore();
+      var synced = 0, resumed = 0;
+      for (var k in store) {
+        if (!store.hasOwnProperty(k) || k === key) continue;
+        var se = store[k];
+        if (!se || !tmKeepAliveSameSid(k, se, sidNorm)) continue;
+        if (se.enabled === newEnabled) continue;
+        if (newEnabled && se.stopped_reason && /^max duration/.test(String(se.stopped_reason))) continue; // auto-offed stays off
+        se.enabled = newEnabled; se._ts = Date.now();
+        if (newEnabled) { se.stopped_reason = null; if (se.paused_until_turn) { se.paused_until_turn = false; resumed++; } }
+        else se.stopped_reason = 'toggled off (sibling of ' + key + ')';
+        store[k] = se; synced++;
+      }
+      if (synced) tmSaveKeepAliveStore(store);
+      // Final safety check: nothing under this sid may disagree.
+      var st2 = tmGetKeepAliveStore(), bad = [];
+      for (var k2 in st2) { if (st2.hasOwnProperty(k2) && st2[k2] && tmKeepAliveSameSid(k2, st2[k2], sidNorm) && !!st2[k2].enabled !== newEnabled) bad.push(k2); }
+      if (bad.length) console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive toggle sync: ' + bad.length + ' sibling row(s) still disagree with the new state (' + newEnabled + '): ' + bad.join(', '));
+      if (synced || bad.length) console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ' + (newEnabled ? 'ENABLED' : 'DISABLED') + ' conversation ' + sidNorm + ' across ' + (1 + synced) + ' row(s)' + (resumed ? (' (' + resumed + ' resumed from a skipped ping)') : '') + (bad.length ? ' \u2014 \u26a0 ' + bad.length + ' still off' : '') + '.');
+    }
     tmKeepAliveRefreshUI();
   }
 
