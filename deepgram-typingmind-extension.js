@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.365 Changes:
+ * - 🎤 TOGGLE BUTTON hides while the panel is open, and the panel drops from bottom:90px to
+ *   bottom:10px — reclaiming ~80px of vertical space now that the Payload extension's
+ *   sessions-in-memory modal shares the same vertical strip. The 🎤 (60px at bottom:20px) is
+ *   only a reopen affordance; with the panel open the title-bar × closes it, so the button is
+ *   pure dead space in that state. Pure CSS sibling rule — createWidget appends #deepgram-toggle
+ *   immediately before #deepgram-panel, so `#deepgram-toggle:has(+ #deepgram-panel.open)` hides
+ *   it and `#deepgram-panel.open { bottom:10px }` drops the panel; covers ×, togglePanel, and
+ *   any future open/close path with zero JS and zero timing risk.
+ *
  * v3.364 Changes:
  * - FIX (sidebar fullness bulge missing on some sessions — e.g. 16f8006b Payload Redux at 51%
  *   with zero styling): tmCtxFullnessForHash's denominator resolution drifted from the Payload
@@ -1820,7 +1830,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.364',
+  VERSION: '3.365',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7687,6 +7697,14 @@
         transform: scale(1.1);
         box-shadow: 0 6px 25px rgba(102, 126, 234, 0.6);
       }
+
+      /* (v3.365) Hide the 🎤 toggle whenever the panel is open (createWidget appends the button
+         immediately before the panel), and drop the panel from bottom:90px to bottom:10px to
+         reclaim the ~80px of dead space the button used to occupy. Zero JS; covers ×, togglePanel,
+         and any future open/close path. */
+      #deepgram-toggle:has(+ #deepgram-panel.open) {
+        display: none;
+      }
       
       #deepgram-toggle.recording {
         background: linear-gradient(135deg, #c75b5b 0%, #b54a4a 100%);
@@ -7719,6 +7737,7 @@
       
       #deepgram-panel.open {
         display: flex;
+        bottom: 10px;   /* (v3.365) was 90px — no toggle button to clear while open */
       }
       
       /* Content Container (left side - original width) */
