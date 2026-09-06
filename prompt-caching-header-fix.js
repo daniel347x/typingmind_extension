@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.396
+// Version: 4.397
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,12 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.397: WRITERS READ THE REGISTRY. The thinking writers' clamp vocabularies now come from
+//     TM_THINK_DOCS_REGISTRY via tmThinkVendorVocabFor -- one source of truth, no parallel per-family
+//     tables (the clamp is now only the safety net for 'inherit' and stale persisted overrides). 'on' is
+//     a real level token (tmThinkParseLevel) and the OpenRouter writer emits reasoning.enabled for toggle
+//     ranges. Nothing else on the wire changes; the v4.393 zero-rewrite invariant over offered options is
+//     the guard.
 //   - v4.396: KEEP-ALIVE controls on their OWN ROW in Sessions in Memory. The KA toggle / interval / status shared
 //     the controls row with the Think dropdowns + note button inside a flex-wrap; on a tight window the KA cluster
 //     wrapped to a second line and slipped under the fold (Dan sized the window to two entries and lost the Fable
@@ -2221,7 +2227,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.396';
+  const EXT_VERSION = '4.397';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6879,6 +6885,33 @@
   function tmThinkBudgetToEffort(n) { n = Number(n) || 0; return n < 6000 ? 'low' : n < 16000 ? 'medium' : n < 32000 ? 'high' : n < 56000 ? 'xhigh' : 'max'; }
   function tmThinkEffortToBudget(eff) { return TM_THINK_EFFORT_TO_BUDGET[eff] || TM_THINK_EFFORT_TO_BUDGET.high; }
 
+  // (v4.397) THE WRITER'S VOCABULARY, from the registry -- the single source of truth the menus and the audit
+  // already read (tmThinkVendorVocabFor). Replaces the hand-written per-family clamp tables in the writers:
+  // a writer now asks the registry what this model accepts instead of consulting its own copy. Clamps remain,
+  // but only as the safety net for 'inherit' and stale persisted overrides, and they now point at the registry.
+  // Returns { levels[], canDisable, def, kind, provider } or null when the family has no usable vocabulary.
+  function tmThinkRegistryVocab(model, host) {
+    try {
+      var V = tmThinkVendorVocabFor(model);
+      if (!V || V.insufficient) return null;
+      return { levels: (V.levels || []).slice(), canDisable: V.canDisable, def: V.def || null, kind: V.kind, provider: V.provider };
+    } catch (e) { return null; }
+  }
+  // Nearest in-vocabulary word to a requested effort (rank distance, tie -> lower), from the registry levels.
+  function tmThinkRegistryNearest(word, levels) {
+    if (!Array.isArray(levels) || !levels.length) return null;
+    var want = TM_OR_EFFORT_RANK[String(word || '').toLowerCase()];
+    if (want == null) return null;
+    var best = null, bestD = Infinity, bestR = Infinity;
+    for (var i = 0; i < levels.length; i++) {
+      var e = String(levels[i]).toLowerCase(), r = TM_OR_EFFORT_RANK[e];
+      if (r == null || e === 'none') continue;
+      var d = Math.abs(r - want);
+      if (d < bestD || (d === bestD && r < bestR)) { best = e; bestD = d; bestR = r; }
+    }
+    return best;
+  }
+
   // ---------- v4.384: OPENROUTER REASONING CAPABILITIES -- live per-model data from /api/v1/models ----------
   // OpenRouter publishes, per model, `reasoning: { mandatory, default_enabled, supported_efforts[], default_effort }`
   // -- OpenRouter itself stating what ITS translation layer accepts (trust layer 2 of the thinking problem
@@ -8669,6 +8702,7 @@
     if (lvl === 'off') out.off = true;
     else if (mb) out.budget = Math.max(1024, parseInt(mb[1], 10) || 1024);
     else if (TM_THINK_LEVELS.indexOf(lvl) > 0) out.eff = lvl;
+    else if (lvl === 'on') out.eff = 'on';   // (v4.397) toggle ranges: an explicit 'thinking on' request
     else rep.notes.push('unknown level "' + lvl + '" ignored');
     return out;
   }
@@ -8687,6 +8721,9 @@
   }
   function tmThinkIsAlwaysOn(fam, model) {
     var m = String(model || '').toLowerCase();
+    // (v4.397) Read the registry: canDisable false = always-on. Falls back to the historical heuristics only
+    // when the family has no usable registry vocabulary (the clamps stay as the safety net).
+    try { var rv = tmThinkRegistryVocab(model, ''); if (rv && rv.canDisable === false) return true; if (rv && rv.canDisable === true) return false; } catch (eR) {}
     if (fam === 'claude') return !tmThinkAnthropicCaps(model).disable;
     // (v4.389) GPT-6 Astra: OpenAI's guide says effort none returns HTTP 400 -- treat as always-on.
     if (fam === 'openai') return /(^|[\/_-])(o1|o3|o4)(-|$)/.test(m) || /gpt-6/.test(m);
@@ -8734,12 +8771,15 @@
           eff = 'none';
           if (orc && orc.efforts.length && orc.efforts.indexOf('none') < 0) rep.notes.push('OpenRouter lists no "none" effort for ' + model + ' (supported: ' + orc.efforts.join(', ') + ') but reports reasoning as optional; effort:none is its documented off switch -- verify on the next row');
         }
-      } else if (eff && orc && orc.efforts.length && orc.efforts.indexOf(eff) < 0) {
+      } else if (eff && eff !== 'on' && orc && orc.efforts.length && orc.efforts.indexOf(eff) < 0) {
         var nearOR = tmOrCapsNearestEffort(eff, orc.efforts);
         if (nearOR && nearOR !== eff) { clamp(eff + ' \u2192 ' + nearOR + ': OpenRouter lists supported_efforts [' + orc.efforts.join(', ') + '] for ' + model + ' (live /api/v1/models)'); eff = nearOR; }
       }
       if (L.set && (eff || budget != null)) {
         if (!R) R = body.reasoning = {};
+        // (v4.397) Toggle ranges via OpenRouter: 'on' is reasoning.enabled = true (thinking on, no level); the
+        // registry vocab for a toggle range is empty, so 'on' is the only meaningful non-off pick.
+        if (eff === 'on') { if (R.enabled !== true) { R.enabled = true; change('reasoning.enabled = true (toggle range: thinking on)'); } delete R.effort; delete R.max_tokens; }
         if (budget != null) {
           if (R.max_tokens !== budget || R.effort !== undefined) { R.max_tokens = budget; delete R.effort; change('reasoning.max_tokens = ' + budget + (fam === 'claude' ? ' (Anthropic budget_tokens via OpenRouter)' : ' (OpenRouter converts to an effort level for this family)')); }
           var mt = Number(body.max_tokens) || 0;
@@ -8787,8 +8827,12 @@
         } else {
           var e3d = L.eff;
           if (L.budget != null) { e3d = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + e3d + ': ' + fam + ' has no token budget'); }
-          var near3 = tmOrCapsNearestEffort(e3d, vocab3);
-          if (near3 && near3 !== e3d) { clamp(e3d + ' \u2192 ' + near3 + ': ' + model + ' reasoning_effort accepts low | high | max (' + vendorName + ' docs ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); e3d = near3; }
+          if (e3d === 'on') e3d = null; // (v4.397) toggle 'on' is not an effort level
+          // (v4.397) Clamp to the REGISTRY vocabulary for this family (one source of truth with the menus).
+          var regV = tmThinkRegistryVocab(model, r.host);
+          var regLv = (regV && regV.levels && regV.levels.length) ? regV.levels : vocab3;
+          var near3 = tmThinkRegistryNearest(e3d, regLv);
+          if (near3 && near3 !== e3d) { clamp(e3d + ' \u2192 ' + near3 + ': ' + model + ' reasoning_effort accepts ' + regLv.join(' | ') + ' (' + vendorName + ' docs ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); e3d = near3; }
           if (e3d) setEffort3(e3d);
         }
       }
@@ -8800,7 +8844,10 @@
         var th = (body.thinking && typeof body.thinking === 'object') ? body.thinking : null;
         var wantT = L.off ? 'disabled' : 'enabled';
         if (!th || th.type !== wantT) { body.thinking = { type: wantT }; change('thinking = {type:"' + wantT + '"}'); }
-        if (!L.off && (L.eff || L.budget != null)) clamp((L.eff || ('budget:' + L.budget)) + ' \u2192 ON: ' + fam + ' ' + (fam === 'kimi' ? 'K2.x' : '<= 5.2') + ' direct API exposes thinking on/off only (no effort levels)');
+        // (v4.397) 'on' is a real token (tmThinkParseLevel): on an on/off-only range it IS the request
+        // (enable thinking), not an effort to clamp -- never log a spurious clamp for it.
+        if (!L.off && L.eff && L.eff !== 'on') clamp((L.eff || ('budget:' + L.budget)) + ' \u2192 ON: ' + fam + ' ' + (fam === 'kimi' ? 'K2.x' : '<= 5.2') + ' direct API exposes thinking on/off only (no effort levels)');
+        if (!L.off && L.budget != null) clamp('budget:' + L.budget + ' \u2192 ON: ' + fam + ' ' + (fam === 'kimi' ? 'K2.x' : '<= 5.2') + ' direct API exposes thinking on/off only (no effort levels)');
         if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (not part of the ' + fam + ' on/off thinking contract)'); }
       }
       if (disp === 'show' || disp === 'hide') rep.notes.push(fam + ' always streams reasoning_content when thinking is enabled; display is not controllable on this route');
@@ -8827,8 +8874,15 @@
       var e2 = L.eff;
       var new56 = fam === 'openai' && /gpt-5\.[6-9]|gpt-6/.test(ml);
       if (L.budget != null) { e2 = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + e2 + ': chat-completions has no token budget for ' + fam); }
+      if (e2 === 'on') e2 = 'low'; // (v4.397) toggle 'on' on an effort host maps to the floor
       if (L.off) { if (tmThinkIsAlwaysOn(fam, model)) { e2 = 'low'; clamp('off \u2192 low: ' + model + ' always reasons' + (/gpt-6/.test(ml) ? ' (OpenAI: effort none returns 400 on GPT-6 Astra)' : '')); } else e2 = 'none'; }
-      if (fam === 'grok') { var g0 = e2; if (/^(none|minimal)$/.test(e2)) e2 = 'low'; else if (e2 === 'max') e2 = 'xhigh'; if (g0 !== e2) clamp(g0 + ' \u2192 ' + e2 + ': xAI reasoning_effort accepts low | medium | high | xhigh (docs ' + TM_THINK_DOCS_AS_OF + ')'); }
+      // (v4.397) Clamp to the registry vocabulary for this model where one exists, instead of the hand-written
+      // per-family branches. Falls back to the historical rules only when the registry has no vocabulary.
+      var regV2 = tmThinkRegistryVocab(model, r.host);
+      if (regV2 && regV2.levels && regV2.levels.length) {
+        var nearR = tmThinkRegistryNearest(e2, regV2.levels);
+        if (nearR && nearR !== e2) { clamp(e2 + ' \u2192 ' + nearR + ': ' + (regV2.provider || fam) + ' vocabulary ' + regV2.levels.join(' | ') + ' (registry ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); e2 = nearR; }
+      } else if (fam === 'grok') { var g0 = e2; if (/^(none|minimal)$/.test(e2)) e2 = 'low'; else if (e2 === 'max') e2 = 'xhigh'; if (g0 !== e2) clamp(g0 + ' \u2192 ' + e2 + ': xAI reasoning_effort accepts low | medium | high | xhigh (docs ' + TM_THINK_DOCS_AS_OF + ')'); }
       else if (fam === 'gemini') { var gg = e2; if (e2 === 'max' || e2 === 'xhigh') e2 = 'high'; if (e2 === 'minimal') e2 = 'low'; if (gg !== e2) clamp(gg + ' \u2192 ' + e2 + ': Gemini 3 thinkingLevel accepts low | medium | high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); }
       else if (e2 === 'max' && !new56) { e2 = 'xhigh'; clamp('max \u2192 xhigh: reasoning_effort max is only documented for gpt-5.6+ / gpt-6 (pre-5.6 and passthrough hosts keep the xhigh ceiling)'); }
       else if (e2 === 'minimal' && new56) { e2 = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
@@ -8868,8 +8922,15 @@
       if (L.off) { if (tmThinkIsAlwaysOn('openai', model)) { eff = 'low'; clamp('off \u2192 low: ' + (/gpt-6/.test(mlR) ? 'GPT-6 Astra rejects effort none (OpenAI docs: HTTP 400)' : 'o-series models always reason')); } else eff = 'none'; }
       // (v4.389) OpenAI's guide lists max; the gpt-5.6-sol model page lists none | low | medium | high | xhigh | max
       // (default medium, no minimal). Pre-5.6 families keep the old xhigh ceiling (not re-verified).
-      if (eff === 'max' && !new56R) { eff = 'xhigh'; clamp('max \u2192 xhigh: reasoning.effort max is only documented for gpt-5.6+ / gpt-6'); }
-      if (eff === 'minimal' && new56R) { eff = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
+      // (v4.397) Clamp to the registry vocabulary where one exists; the pre-5.6 xhigh ceiling is the fallback.
+      var regVR = tmThinkRegistryVocab(model, r.host);
+      if (regVR && regVR.levels && regVR.levels.length) {
+        var nearRsp = tmThinkRegistryNearest(eff, regVR.levels);
+        if (nearRsp && nearRsp !== eff) { clamp(eff + ' \u2192 ' + nearRsp + ': ' + (regVR.provider || 'OpenAI') + ' vocabulary ' + regVR.levels.join(' | ') + ' (registry ' + TM_THINK_DOCS_AS_OF + ')'); eff = nearRsp; }
+      } else {
+        if (eff === 'max' && !new56R) { eff = 'xhigh'; clamp('max \u2192 xhigh: reasoning.effort max is only documented for gpt-5.6+ / gpt-6'); }
+        if (eff === 'minimal' && new56R) { eff = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
+      }
       if (!R) R = body.reasoning = {};
       if (R.effort !== eff) { var was = R.effort; R.effort = eff; change('reasoning.effort ' + (was || '(none)') + ' \u2192 ' + eff + ((typeof tmIsPlainSolModel === 'function' && tmIsPlainSolModel(model)) ? ' (overrides the legacy Sol Reasoning select for this call)' : '')); }
       if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('top-level reasoning_effort removed (Responses uses reasoning.effort)'); }
@@ -8914,8 +8975,11 @@
           // the old 'Pro exposes low | high' rule came from the 3 Pro preview era). off -> low: Gemini 3 cannot disable.
           var e3 = L.eff;
           if (L.off) { e3 = 'low'; clamp('off \u2192 low: Gemini 3 cannot disable thinking (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); }
-          if (e3 === 'xhigh' || e3 === 'max') { clamp(e3 + ' \u2192 high: Gemini 3 thinkingLevel tops out at high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); e3 = 'high'; }
-          if (e3 === 'minimal') { clamp('minimal \u2192 low: Gemini 3 thinkingLevel accepts low | medium | high (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); e3 = 'low'; }
+          // (v4.397) Clamp to the registry vocabulary (Gemini 3.x: low | medium | high).
+          var regVG = tmThinkRegistryVocab(model, r.host);
+          var regLvG = (regVG && regVG.levels && regVG.levels.length) ? regVG.levels : ['low', 'medium', 'high'];
+          var nearG = tmThinkRegistryNearest(e3, regLvG);
+          if (nearG && nearG !== e3) { clamp(e3 + ' \u2192 ' + nearG + ': ' + (regVG ? regVG.provider : 'Gemini 3') + ' thinkingLevel accepts ' + regLvG.join(' | ') + ' (Google docs ' + TM_THINK_DOCS_AS_OF + ')'); e3 = nearG; }
           lvl3 = e3;
           if (tc.thinkingLevel !== lvl3 || tc.thinkingBudget !== undefined) { var was3 = tc.thinkingLevel; tc.thinkingLevel = lvl3; delete tc.thinkingBudget; delete tc.thinking_budget; delete tc.thinking_level; change('thinkingConfig.thinkingLevel ' + (was3 || '(none)') + ' \u2192 ' + lvl3 + (tc.thinkingBudget === undefined ? '' : '') + ' (thinkingBudget removed: the two conflict)'); }
         }
