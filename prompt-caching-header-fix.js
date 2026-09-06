@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.398
+// Version: 4.399
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,9 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.399: RETIRE the legacy global Sol Reasoning select. v4.398's per-shape defaults cover the gpt-5.6 range and the
+//     writer runs after any default, so the v4.161/4.162 Sol-only injector (tmEnsurePlainSolReasoningHigh), its ring-modal
+//     select, its handlers, its localStorage key and tmIsPlainSolModel are all removed. tmIsSolProModel stays (used elsewhere).
 //   - v4.398: PER-SHAPE THINKING DEFAULTS. A new conversation starts at TypingMind's own setting; there was no way
 //     to set 'reasoning high, words visible' once and have every NEW session on that model/route inherit it. New store
 //     tm_think_defaults_v1 keyed by the conversation-independent shape (family::host::proxy): on the first request of a
@@ -2234,7 +2237,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.398';
+  const EXT_VERSION = '4.399';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2243,20 +2246,6 @@
   };
 
   const GPT51_CONTEXT_LIMIT = 400000;        // 400k token context window for GPT-5.1
-
-  // v4.162: Toggleable Sol reasoning effort (medium / high / x-high / max). Persisted in localStorage.
-  const TM_SOL_REASONING_EFFORT_KEY = 'tm_sol_reasoning_effort';
-
-  function tmGetSolReasoningEffort() {
-    try {
-      var v = localStorage.getItem(TM_SOL_REASONING_EFFORT_KEY);
-      return (v === 'medium' || v === 'high' || v === 'xhigh' || v === 'max') ? v : 'high';
-    } catch (e) { return 'high'; }
-  }
-
-  function tmSetSolReasoningEffort(level) {
-    try { localStorage.setItem(TM_SOL_REASONING_EFFORT_KEY, level); } catch (e) {}
-  }
 
   // (v4.62) Removed obsolete GPT-5.4 reasoning-effort helpers (tmModelString / tmIsGpt54Model /
   // tmEnsureOpenRouterGpt54Reasoning / tmEnsureOpenAIGpt54Reasoning). TypingMind now exposes the
@@ -9082,7 +9071,7 @@
         if (eff === 'minimal' && new56R) { eff = 'low'; clamp('minimal \u2192 low: gpt-5.6 lists none | low | medium | high | xhigh | max (OpenAI model page ' + TM_THINK_DOCS_AS_OF + ')'); }
       }
       if (!R) R = body.reasoning = {};
-      if (R.effort !== eff) { var was = R.effort; R.effort = eff; change('reasoning.effort ' + (was || '(none)') + ' \u2192 ' + eff + ((typeof tmIsPlainSolModel === 'function' && tmIsPlainSolModel(model)) ? ' (overrides the legacy Sol Reasoning select for this call)' : '')); }
+      if (R.effort !== eff) { var was = R.effort; R.effort = eff; change('reasoning.effort ' + (was || '(none)') + ' \u2192 ' + eff); }
       if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('top-level reasoning_effort removed (Responses uses reasoning.effort)'); }
       if (/^(high|xhigh|max)$/.test(eff) && Number(body.max_output_tokens) && Number(body.max_output_tokens) < 16000) { var mo = body.max_output_tokens; body.max_output_tokens = 32000; change('max_output_tokens ' + mo + ' \u2192 32000 (room for reasoning at ' + eff + ')'); }
       rep.notes.push('Responses API: a top-level effort change re-renders the prompt once (one cache miss)');
@@ -12628,11 +12617,6 @@
             ev.stopPropagation();
             return;
           }
-          // (v4.162) Sol reasoning effort dropdown — handled by the 'change' listener (v4.228),
-          // NOT on click (see set-provider-routing note below for the flash-close rationale).
-          if (target.dataset.action === 'set-sol-reasoning-effort') {
-            return;
-          }
           // (Fix 17, v4.202) Open the error popup with the full raw error JSON.
           if (target.dataset.action === 'open-error-popup') {
             try { tmShowErrorPopup(); } catch (e) {}
@@ -12776,15 +12760,6 @@
     // (Fix 24 Phase 2, v4.361) Thinking level / display selects (widget + ring modal share the builder).
     if (t.dataset.action === 'set-think-level' || t.dataset.action === 'set-think-display') {
       tmHandleThinkControlChange(t);
-      ev.stopPropagation();
-      return;
-    }
-    if (t.dataset.action === 'set-sol-reasoning-effort') {
-      var newLevel = t.value;
-      if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
-        tmSetSolReasoningEffort(newLevel);
-        console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
-      }
       ev.stopPropagation();
       return;
     }
@@ -15049,14 +15024,6 @@
         tmHandleProviderRoutingChange(t);
         ev.stopPropagation();
         return;
-      }
-      if (t && t.dataset && t.dataset.action === 'set-sol-reasoning-effort') {
-        var newLevel = t.value;
-        if (newLevel && (newLevel === 'medium' || newLevel === 'high' || newLevel === 'xhigh' || newLevel === 'max')) {
-          tmSetSolReasoningEffort(newLevel);
-          console.log('✅ [v' + EXT_VERSION + '] Sol reasoning effort set to: ' + newLevel);
-        }
-        ev.stopPropagation();
       }
       // (v4.224) Time-window filter dropdown
       if (t && t.dataset && t.dataset.action === 'set-modal-time-filter') {
@@ -18707,18 +18674,9 @@
       }
     }
 
-    // v4.162: Sol reasoning effort dropdown + v4.163: sort pills + filter dropdown — on one row.
-    var solEffort = tmGetSolReasoningEffort();
-    var solOpts = ['medium', 'high', 'xhigh', 'max'];
-    // (v4.363) DEPRECATED marker: superseded by the per-session 🎛️ Think / 👁 controls (Fix 24 Phase 2).
-    var solDeprecTitle = 'DEPRECATED (v4.363): this is the legacy GLOBAL Sol-only knob (v4.161/4.162). It still injects reasoning.effort=<value> + summary:auto + context:all_turns on every request to a plain-Sol model (GPT-5.6 Sol, not Sol Pro) as the DEFAULT when that session has no override. The per-session \ud83c\udf9b\ufe0f Think / \ud83d\udc41 controls (widget + newest ring row per session) now supersede it: whenever they are set they override this value for that call. Kept for now so un-overridden Sol sessions do not silently change; slated for removal once a per-MODEL default exists.';
-    var solSelectHtml = '<span title="' + escapeHtml(solDeprecTitle) + '" style="font-size:10px;color:#ffd166;cursor:help;margin-right:2px;">\u26a0\ufe0f</span><span title="' + escapeHtml(solDeprecTitle) + '" style="font-size:10px;opacity:0.6;text-decoration:line-through;">Sol Reasoning:</span><span style="font-size:10px;opacity:0.85;">&nbsp;</span>' +
-      '<select data-action="set-sol-reasoning-effort" style="font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:1px 4px;">';
-    for (var si = 0; si < solOpts.length; si++) {
-      var opt = solOpts[si];
-      solSelectHtml += '<option value="' + opt + '"' + (opt === solEffort ? ' selected' : '') + '>' + opt + '</option>';
-    }
-    solSelectHtml += '</select>';
+    // (v4.162/4.163) sort pills + filter dropdown — on one row. (v4.399) The legacy global Sol Reasoning select is removed.
+    var solOpts = [];
+    var solSelectHtml = '';
 
     // v4.163: Sort pills
     var sortPills = ['chronological', 'turn-cost', 'session-cost'];
@@ -20905,14 +20863,6 @@
     return (/sol-pro/).test(m);
   }
 
-  // v4.161: Detects plain Sol (not Sol Pro). Matches 'sol' as a model-name segment.
-  function tmIsPlainSolModel(model) {
-    if (!model) return false;
-    var m = String(model).toLowerCase();
-    if (tmIsSolProModel(m)) return false;
-    // Recognize 'sol' as a distinct segment delimited by /, -, _, or string boundaries.
-    return /(?:^|[\/_-])sol(?:$|[\/_-])/.test(m);
-  }
 
   // ==================== KIMI PROVIDER PINNING (Fix 13, v4.197) ====================
   // OpenRouter serves Kimi K3 from 8+ providers with WILDLY different prompt-cache hit
@@ -21078,44 +21028,6 @@
 
   // v4.161: Ensure plain-Sol requests carry reasoning.effort = 'high' at the top level.
   // Mutates body in place. Returns true if anything was changed.
-  // @beacon[
-  //   id=auto-beacon@__lambdao_1.tmEnsurePlainSolReasoningHigh-z80e,
-  //   role=__lambdao_1.tmEnsurePlainSolReasoningHigh,
-  //   slice_labels=tm-payload-overview,
-  //   kind=ast,
-  //   comment=v4.161/4.162: plain-Sol requests carry reasoning.effort=high + summary=auto + context=all_turns (restores streaming thinking). DEPRECATED since v4.363: still the default for un-overridden Sol sessions, but the per-identity 🎛️ Think / 👁 controls (tmThinkWriteResponses) run after it and override it whenever set; retire once a per-MODEL default exists.,
-  // ]
-  function tmEnsurePlainSolReasoningHigh(body) {
-    if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
-    if (!tmIsPlainSolModel(body.model)) return false;
-    var changed = false;
-    var level = tmGetSolReasoningEffort();
-    // v4.162: always inject summary:auto alongside the effort level (restores streaming thinking).
-    // v4.257: also pin context:'all_turns' (GPT-5.6's persisted-reasoning context mode). Default
-    // is already all_turns on the direct/OpenRouter Responses paths, so pinning is a no-op there;
-    // this matters only on any residual config where it might have defaulted to current_turn.
-    if (!body.reasoning || typeof body.reasoning !== 'object' || Array.isArray(body.reasoning)) {
-      body.reasoning = { effort: level, summary: 'auto', context: 'all_turns' };
-      changed = true;
-    } else {
-      if (body.reasoning.effort !== level) {
-        body.reasoning.effort = level;
-        changed = true;
-      }
-      if (body.reasoning.summary !== 'auto') {
-        body.reasoning.summary = 'auto';
-        changed = true;
-      }
-      if (body.reasoning.context !== 'all_turns') {
-        body.reasoning.context = 'all_turns';
-        changed = true;
-      }
-    }
-    if (changed) {
-      console.log('✅ [v' + EXT_VERSION + '] Injected reasoning.effort=' + level + ' + summary=auto + context=all_turns for plain Sol model:', body.model);
-    }
-    return changed;
-  }
 
   // Mutates usage in place. Returns true if anything was changed.
   function tmRewriteSolProUsage(usage, completionTokens, logPrefix) {
@@ -21617,9 +21529,6 @@
           tmUniversalChanged = true;
         }
         if (tmStabilizeToolsOrdering(tmUniversalBody)) {
-          tmUniversalChanged = true;
-        }
-        if (tmEnsurePlainSolReasoningHigh(tmUniversalBody)) {
           tmUniversalChanged = true;
         }
         // (Fix 24 Phase 2, v4.361) Thinking CONTROL: apply this identity's {level, display} override to
