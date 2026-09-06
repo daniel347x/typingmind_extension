@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.397
+// Version: 4.398
 // Issues Fixed:
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
@@ -222,6 +222,13 @@
 //     copies; starts recording with this version. Shared viewer's default JSON behavior retained.
 //     Tests: tests/sessions_delta_history.test.cjs (40-row DOM-write/read counts, interaction
 //     guards, numeric deduplication, reload, storage limits, escaped report and read-only render).
+//   - v4.398: PER-SHAPE THINKING DEFAULTS. A new conversation starts at TypingMind's own setting; there was no way
+//     to set 'reasoning high, words visible' once and have every NEW session on that model/route inherit it. New store
+//     tm_think_defaults_v1 keyed by the conversation-independent shape (family::host::proxy): on the first request of a
+//     brand-new identity with no existing override, the shape default is applied as that identity's override ({level,
+//     display} only -- never the per-message steps, which are session-specific). The 🎛️ Think Defaults modal lists one
+//     row per registry provider/model-range, each row's dropdowns built from tmThinkVocabFor (options from the
+//     registry, zero new hardcoding); a range with no published default stays 'inherit'. Wire-only, persisted.
 //   - v4.397: WRITERS READ THE REGISTRY. The thinking writers' clamp vocabularies now come from
 //     TM_THINK_DOCS_REGISTRY via tmThinkVendorVocabFor -- one source of truth, no parallel per-family
 //     tables (the clamp is now only the safety net for 'inherit' and stale persisted overrides). 'on' is
@@ -2227,7 +2234,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.397';
+  const EXT_VERSION = '4.398';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6897,6 +6904,46 @@
       return { levels: (V.levels || []).slice(), canDisable: V.canDisable, def: V.def || null, kind: V.kind, provider: V.provider };
     } catch (e) { return null; }
   }
+
+  // ---------- v4.398: PER-SHAPE THINKING DEFAULTS (new sessions inherit a shape default) ----------
+  // A conversation's identity is sid::model::host::proxy; the per-session part is the sid. The SHAPE is the
+  // conversation-independent identity of a documented model range plus the route: provider::models::route
+  // (route 'direct' | 'openrouter'). The range is identified by its provider + exact models prose -- the same
+  // stable identity the graylist uses (a test enforces the 1:1 match, so registry reorders can't drift it).
+  // tm_think_defaults_v1 maps shapeKey -> {level, display} (never steps). On the first request of a new identity
+  // with no existing override, the shape default is applied.
+  var TM_THINK_DEFAULTS_KEY = 'tm_think_defaults_v1';
+  function tmThinkDefaultsRead() { try { var v = JSON.parse(localStorage.getItem(TM_THINK_DEFAULTS_KEY) || '{}'); return (v && typeof v === 'object') ? v : {}; } catch (e) { return {}; } }
+  function tmThinkDefaultsWrite(m) { try { localStorage.setItem(TM_THINK_DEFAULTS_KEY, JSON.stringify(m || {})); } catch (e) {} }
+  function tmThinkShapeKeyFor(model, host, isProxy) {
+    var e = tmThinkDocsVendorEntryFor(model);
+    if (!e) return null;
+    var route = (/openrouter/i.test(String(host || '')) || isProxy) ? 'openrouter' : 'direct';
+    return e.provider + '::' + e.models + '::' + route;
+  }
+  function tmThinkDefaultForShape(shapeKey) { var d = tmThinkDefaultsRead()[shapeKey]; return (d && typeof d === 'object') ? d : null; }
+  function tmThinkSetDefaultForShape(shapeKey, level, display) {
+    var all = tmThinkDefaultsRead();
+    var rec = { level: level || 'inherit', display: display || 'inherit' };
+    if (rec.level === 'inherit' && rec.display === 'inherit') delete all[shapeKey]; else all[shapeKey] = rec;
+    tmThinkDefaultsWrite(all);
+    return rec;
+  }
+  // Apply the shape default to a brand-new identity that has no override yet. Returns the override written, else null.
+  function tmThinkApplyDefaultForNewIdentity(idKey) {
+    try {
+      if (!idKey) return null;
+      if (tmThinkOverrideIsActive(tmGetThinkOverride(idKey))) return null; // an override already set -- never clobber
+      var p = String(idKey).split('::');
+      var shapeKey = tmThinkShapeKeyFor(p[1] || '', p[2] || '', p[3] === 'proxy');
+      if (!shapeKey) return null;
+      var d = tmThinkDefaultForShape(shapeKey);
+      if (!d || (d.level === 'inherit' && d.display === 'inherit')) return null;
+      var ov = tmSetThinkOverride(idKey, { level: d.level, display: d.display, steps: [] });
+      console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Think default applied for new identity ' + idKey + ' (shape ' + shapeKey + '): level=' + d.level + ' display=' + d.display);
+      return ov;
+    } catch (e) { return null; }
+  }
   // Nearest in-vocabulary word to a requested effort (rank distance, tie -> lower), from the registry levels.
   function tmThinkRegistryNearest(word, levels) {
     if (!Array.isArray(levels) || !levels.length) return null;
@@ -8233,6 +8280,108 @@
       return mm[0].replace(/ data-action="set-think-level"/, ' data-demo="our-menu"').replace(/ data-identity-key="[^"]*"/, '').replace(/ title="[^"]*"/, ' title="Display-only copy of the \ud83c\udf9b\ufe0f Think menu as rendered for this model. Changing it here does nothing."');
     } catch (e) { return ''; }
   }
+  // ---------- v4.398: THINK DEFAULTS modal (per-range + route, options straight from the registry vocab) ----------
+  // The options for one range on one route, from the entry's structured vocab ONLY (never a model string, never the
+  // writers). route 'direct' | 'openrouter'. Insufficient vocabulary -> no options (inherit only). Budget ranges ->
+  // numeric presets within the range's budget min/max + off where it can disable. Toggle -> off / on.
+  function tmThinkDefaultEntryMenu(provider, models, route) {
+    try {
+      var P = tmThinkDocsProviderByName(provider); if (!P) return null;
+      var E = null; for (var j = 0; j < P.entries.length; j++) if (P.entries[j].models === models) { E = P.entries[j]; break; }
+      if (!E) return null;
+      var v = E.vocab || {};
+      var out = { provider: provider, models: models, route: route, kind: v.kind || null, insufficient: v.insufficient || null, options: [], canDisable: (v.canDisable === undefined ? null : v.canDisable), def: v.def || null, display: { enabled: true, reason: '' }, notes: [] };
+      if (v.insufficient) { out.notes.push('not enough vendor information \u2014 inherit only'); return out; }
+      function opt(value, label, enabled, reason) { out.options.push({ value: value, label: label, enabled: enabled !== false, reason: reason || '' }); }
+      if (v.kind === 'budget') {
+        var B = v.budget || {};
+        opt('off', 'off', v.canDisable === true, 'this model cannot switch thinking off' + (B.min ? ('; the floor is a budget of ' + B.min) : ''));
+        Object.keys(TM_THINK_EFFORT_TO_BUDGET).map(function(w) { return { w: w, n: TM_THINK_EFFORT_TO_BUDGET[w] }; }).sort(function(a, b) { return a.n - b.n; }).forEach(function(p) {
+          if ((B.min != null && p.n < B.min) || (B.max != null && p.n > B.max)) return;
+          opt('budget:' + p.n, p.n.toLocaleString() + ' tokens (\u2248 ' + p.w + ')');
+        });
+      } else if (v.kind === 'toggle') {
+        opt('off', 'off', v.canDisable !== false, 'this model cannot switch thinking off');
+        opt('on', 'on');
+      } else {
+        var levels = tmThinkSortLevelsAsc(v.levels || []);
+        opt('off', 'off', v.canDisable === true, 'this model cannot switch thinking off' + (levels.length ? ('; lowest is ' + levels[0]) : ''));
+        levels.forEach(function(w) { opt(w, w); });
+      }
+      if (route === 'openrouter') out.notes.push('OpenRouter route: the per-model catalogue list decides what is forwarded verbatim; a word it does not list for the specific id is remapped by undocumented rules \u2014 the audit row shows it per model.');
+      // Display: direct -> the range's own display cell; openrouter -> the OR chat door's reasoning.exclude.
+      if (route === 'openrouter') { out.display = { enabled: true, reason: '' }; }
+      else { var dc = tmThinkDocsCellNorm(E.cells && E.cells.display); if (dc.na) out.display = { enabled: false, reason: dc.reason }; else if (dc.insufficient) out.display = { enabled: true, reason: 'not enough vendor information: ' + dc.reason }; }
+      return out;
+    } catch (e) { return null; }
+  }
+  // Pure HTML for the defaults modal (harness-testable; the mount is tmShowThinkDefaultsModal).
+  function tmBuildThinkDefaultsHtml() {
+    var store = tmThinkDefaultsRead();
+    function sel(shapeKey, axis, menu) {
+      var cur = store[shapeKey] || {};
+      var cv = axis === 'display' ? (cur.display || 'inherit') : (cur.level || 'inherit');
+      if (axis === 'display' && menu.display && menu.display.enabled === false) {
+        return '<span style="color:#6f7a8a;font-size:10px;" title="' + escapeHtml(menu.display.reason || 'no display control on this route') + '">\ud83d\udc41 n/a</span>';
+      }
+      var o = '<select data-action="think-default-set" data-key="' + escapeHtml(shapeKey) + '" data-axis="' + axis + '" style="font-size:9px;background:#222;color:#aab;border:1px solid #444;border-radius:3px;padding:0 2px;max-width:120px;">';
+      o += '<option value="inherit"' + (cv === 'inherit' ? ' selected' : '') + '>\u21a9 inherit' + (axis === 'level' && menu.def ? (' (' + escapeHtml(menu.def) + ')') : '') + '</option>';
+      if (axis === 'level') menu.options.forEach(function(op) { o += '<option value="' + escapeHtml(op.value) + '"' + (cv === op.value ? ' selected' : '') + (op.enabled ? '' : ' disabled') + (op.enabled ? '' : (' title="' + escapeHtml(op.reason) + '"')) + '>' + escapeHtml(op.label) + (op.enabled ? '' : ' \u2014 off here') + '</option>'; });
+      else ['show', 'hide'].forEach(function(d) { o += '<option value="' + d + '"' + (cv === d ? ' selected' : '') + '>' + (d === 'show' ? '\ud83d\udc41\ufe0f show' : '\ud83d\ude48 hide') + '</option>'; });
+      return o + '</select>';
+    }
+    var rows = '';
+    TM_THINK_DOCS_REGISTRY.forEach(function(P) {
+      if (P.kind !== 'direct' || !P.entries.length) return;
+      P.entries.forEach(function(E) {
+        if (tmThinkDocsIsGrayRange(P.provider, E.models)) return;
+        var dM = tmThinkDefaultEntryMenu(P.provider, E.models, 'direct');
+        var oM = tmThinkDefaultEntryMenu(P.provider, E.models, 'openrouter');
+        if (!dM) return;
+        var kd = P.provider + '::' + E.models + '::direct', ko = P.provider + '::' + E.models + '::openrouter';
+        var vocab = tmThinkVocabSummary(E.vocab);
+        rows += '<tr data-def-row="1" style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;">' +
+          '<td style="padding:5px 8px;white-space:normal;min-width:200px;"><div style="color:#e6e6ee;font-weight:600;font-size:11px;">' + escapeHtml(P.provider) + '</div><div style="color:#8b93a3;font-size:10px;">' + escapeHtml(tmThinkDocsShortModels(E.models)) + '</div><div style="color:#6f7a8a;font-size:10px;">' + tmThinkChipHtml(vocab) + (E.vocab && E.vocab.def ? (' \u00b7 default ' + tmThinkChipHtml(E.vocab.def)) : '') + '</div></td>' +
+          '<td style="padding:5px 8px;white-space:nowrap;">' + (dM.insufficient ? '<span style="color:#d9a441;font-size:10px;">not enough vendor information \u2014 inherit only</span>' : (sel(kd, 'level', dM) + ' ' + sel(kd, 'display', dM))) + '</td>' +
+          '<td style="padding:5px 8px;white-space:nowrap;">' + (oM && !oM.insufficient ? (sel(ko, 'level', oM) + ' ' + sel(ko, 'display', oM)) : '<span style="color:#d9a441;font-size:10px;">not enough vendor information \u2014 inherit only</span>') + (oM && oM.notes && oM.notes.length ? ('<div style="color:#6f7a8a;font-size:9px;white-space:normal;max-width:260px;">' + escapeHtml(oM.notes[0]) + '</div>') : '') + '</td></tr>';
+      });
+    });
+    return '<div style="font-weight:bold;font-size:14px;color:#7fd8ff;margin-bottom:6px;">\ud83c\udf9b\ufe0f Think Defaults <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 what a NEW conversation on each model range starts with. Per range \u00d7 route; options come straight from the registry\'s first-party vocabulary (the same table that drives the \ud83c\udf9b\ufe0f menu). \u21a9 inherit = no default (TypingMind\'s own setting). Set once; persists in this browser until you change it.</span></div>' +
+      '<div style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;"><table style="border-collapse:collapse;font-size:11px;width:100%;"><thead><tr style="color:#8b93a3;font-size:10px;text-align:left;"><th style="padding:4px 8px;">provider \u203a model range</th><th style="padding:4px 8px;">DIRECT route</th><th style="padding:4px 8px;">OPENROUTER route</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+  // @beacon[
+  //   id=fix24-think-defaults-modal,
+  //   slice_labels=tm-thinking-control,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.398) The Think Defaults modal: one row per non-graylisted first-party registry range, DIRECT and OPENROUTER columns, each cell a level + display select whose options come from the range's structured vocab (tmThinkDefaultEntryMenu). Writes tm_think_defaults_v1 keyed provider::models::route; a new identity with no override inherits its shape default on the first request (tmThinkApplyDefaultForNewIdentity).,
+  // ]
+  function tmShowThinkDefaultsModal() {
+    if (typeof document === 'undefined') return;
+    var old = document.getElementById('tm-think-defaults-overlay');
+    if (old) old.parentNode.removeChild(old);
+    var overlay = document.createElement('div'); overlay.id = 'tm-think-defaults-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.65);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:80vw;max-width:1100px;height:80vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    box.innerHTML = tmBuildThinkDefaultsHtml() + '<div style="margin-top:8px;text-align:right;"><button data-action="close-think-defaults" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 10px;font-size:11px;cursor:pointer;">Close</button></div>';
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    tmPromptActive = true;
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); }
+    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
+    document.addEventListener('keydown', onKey, true);
+    overlay.addEventListener('click', function(ev) { var t = ev.target; if (t === overlay) { close(); return; } var b = t && t.closest ? t.closest('[data-action="close-think-defaults"]') : null; if (b) close(); });
+    overlay.addEventListener('change', function(ev) {
+      var s = ev.target;
+      if (!s || !s.dataset || s.dataset.action !== 'think-default-set') return;
+      var key = s.dataset.key, axis = s.dataset.axis;
+      var row = s.closest && s.closest('[data-def-row]');
+      var lvl = axis === 'level' ? s.value : (function() { var q = row && row.querySelector('select[data-axis="level"]'); return q ? q.value : 'inherit'; })();
+      var dsp = axis === 'display' ? s.value : (function() { var q = row && row.querySelector('select[data-axis="display"]'); return q ? q.value : 'inherit'; })();
+      tmThinkSetDefaultForShape(key, lvl, dsp);
+      console.log('\ud83c\udf9b\ufe0f [v' + EXT_VERSION + '] Think default set: ' + key + ' \u2192 level=' + lvl + ' display=' + dsp);
+    });
+  }
   function tmThinkAuditOrMenuHtml(row) {
     var c = row.orCaps;
     if (!c) return '<span style="color:#6f7a8a;">' + (row.status === 'not-loaded' ? 'catalogue not loaded' : 'not in catalogue') + '</span>';
@@ -8258,7 +8407,7 @@
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
     var chip = tmThinkChipHtml;
     var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 the match rule: vendor vocabulary vs intermediary catalogue, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f unknown-mapping warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 ' + R.hints + ' \ud83d\udd0e rot hint' + (R.hints === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
-      '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
+      '<span style="white-space:nowrap;"><button data-action="show-think-defaults" title="Think Defaults -- what a NEW conversation on each model range starts with (level + display, per range and route; options from the registry)" style="background:#1a2a3a;color:#7fd8ff;border:1px solid #2a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\ud83c\udf9b\ufe0f Defaults</button><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
     // (v4.391) THE SEAMS -- five lines Dan asked for, above the brown banner, each exposing one thing that used to confuse.
     var seam = 'padding:5px 0;border-bottom:1px dashed #2e2e3a;line-height:1.45;';
     h += '<div style="font-size:12px;color:#c8ccd6;margin:0 0 8px;padding:6px 10px;border:1px solid #3a3a4a;border-radius:6px;background:#17171f;">' +
@@ -8338,7 +8487,7 @@
     overlay.appendChild(box);
     function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); document.removeEventListener('keydown', onKey, true); tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; setTimeout(function() { tmPromptActive = false; }, 100); try { renderGpt51UsageWidget(); } catch (eW) {} }
     // (v4.390) While the \ud83d\udcd6 documentation map is open above this modal, Escape belongs to it (its own handler closes it).
-    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { if (document.getElementById('tm-think-docs-overlay')) return; ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
+    function onKey(ev) { if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; } if (ev.key === 'Escape' || ev.keyCode === 27) { if (document.getElementById('tm-think-docs-overlay') || document.getElementById('tm-think-defaults-overlay')) return; ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); } }
     function flash(btn, txt) { try { var o = btn.textContent; btn.textContent = txt; setTimeout(function() { btn.textContent = o; }, 900); } catch (e) {} }
     overlay.addEventListener('click', function(ev) {
       var t = ev.target;
@@ -8352,6 +8501,7 @@
       else if (a === 'think-audit-tomb') { tmThinkAuditToggleTombstone(b.dataset.key || ''); tmShowThinkAuditModal(true); try { renderGpt51UsageWidget(); } catch (eW2) {} }
       else if (a === 'think-docs-map') { tmShowThinkDocsMapModal((b.dataset.pi != null && b.dataset.pi !== '') ? { pi: parseInt(b.dataset.pi, 10) } : null); }
       else if (a === 'think-docs-row') { tmShowThinkDocsMapModal({ pi: parseInt(b.dataset.pi, 10), ei: parseInt(b.dataset.ei, 10) }); }
+      else if (a === 'show-think-defaults') { tmShowThinkDefaultsModal(); }
       else if (a === 'think-audit-refresh') {
         try { var s = tmReadOrReasoningCaps(); if (s) { s.ts = 0; tmOrReasoningCapsMemo = s; localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(s)); } tmMaybeFetchOrReasoningCaps(); flash(b, '\u23f3 fetching\u2026'); setTimeout(function() { if (overlay.parentNode) tmShowThinkAuditModal(true); }, 2500); } catch (e) {}
       }
@@ -9017,6 +9167,8 @@
       var idKey = tmComputeRoutingIdentityKey(body, url, options);
       if (!idKey) return null;
       var ov = tmGetThinkOverride(idKey);
+      // (v4.398) New identity with no override yet: inherit the per-shape default, if one is set.
+      if (!tmThinkOverrideIsActive(ov)) { try { var appliedD = tmThinkApplyDefaultForNewIdentity(idKey); if (appliedD) ov = appliedD; } catch (eD) {} }
       if (!tmThinkOverrideIsActive(ov)) return null;
       var headersNorm = {};
       try { headersNorm = tmNormalizeHeaders(options && options.headers) || {}; } catch (e) {}
