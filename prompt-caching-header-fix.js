@@ -1,6 +1,28 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.390
+// Version: 4.391
 // Issues Fixed:
+//   - v4.391: Fix 24 -- THE MATCH RULE replaces the v4.386-v4.388 discrepancy logic in the ⚖ Think Audit, and five
+//     'seam' lines above the brown banner state what used to confuse. Two sources of truth about a model's thinking
+//     vocabulary: the vendor's own pages (the first-party table -- every TM_THINK_DOCS_REGISTRY range now carries a
+//     STRUCTURED vocab {kind effort | budget | toggle, levels, canDisable, def}) and, on an intermediary route,
+//     OpenRouter's catalogue. With 'off' a member of either set when thinking can be disabled there: vendor subset of
+//     intermediary = MATCH (every offered word forwarded verbatim); vendor words the intermediary does not list =
+//     UNKNOWN MAPPING (WARNING for medium+, NOTE for off / minimal / low) -- the only thing that counts; intermediary
+//     words the vendor lacks = a rot hint; direct routes map nothing (hints only); a missing piece = NOT COMPARABLE
+//     with the reason ('not enough vendor information' is now a CELL state -- e.g. Qwen 3.8, whose Alibaba pages could
+//     not be read; the earlier Qwen 3.8 facts had been hallucinated by the page extractor and are withdrawn). The writer
+//     dry-run shrinks to one informational line. Why: two identical 🔁 stacks (Gemini 3.7 via OpenRouter, Gemini 3.8
+//     direct) landed in opposite groups because the v4.386 OpenRouter rule counted every clamp while the v4.388 direct
+//     rule counted only source disagreements -- an asymmetry with no justification (Dan). TM_THINK_GRAYLIST: ranges
+//     Dan will not use (cells kept, bottom of the map, never drive the banner date), providers not analyzed (DeepInfra,
+//     a HOST -- no rows), and aliases FOUND not to match (deepseek/deepseek-v4-pro: OpenRouter lists xhigh, high vs
+//     DeepSeek's max, high, low -- pick the dated -0813 id). Provider taxonomy direct | intermediary | host on every
+//     registry provider. Anthropic's adaptive range split into four (Fable / Mythos 5.x always-on; Mythos Preview;
+//     Opus 5 / Sonnet 5 can disable; Opus 4.7 / 4.8) so each range has ONE vocabulary. Live OpenRouter catalogue read
+//     2026-09-06: 431 models, 158 publish an effort list, none use null; every model Dan uses matches the first-party
+//     table; GPT-6 Astra's vocabulary settled by its model page (low .. max, mandatory) with its default in conflict
+//     (page reads 'highest', OpenRouter says medium). Value tokens render as code chips (tmThinkChipHtml) in the
+//     audit, the map and both Copy outputs. Nothing on the wire changes.
 //   - v4.390: Fix 24 -- 📖 THINKING DOCUMENTATION MAP: the brown 'best-known documentation' banner grows from three
 //     links into a real registry. TM_THINK_DOCS_REGISTRY: provider -> flat list of documented model ranges (prose for
 //     the human, optional match / protocol regex for the code, a verified date) -> six fixed categories
@@ -2157,7 +2179,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.390';
+  const EXT_VERSION = '4.391';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7068,247 +7090,341 @@
   ];
   var TM_THINK_DOC_GROUPS = { knob: 'KNOBS \u2014 what you can set', trust: 'TRUST & COST \u2014 what to expect back' };
   // Provider -> FLAT list of documented model ranges (Dan: do not predict a hierarchy -- list whatever ranges the vendor
-  // actually breaks its documentation on, in prose, with an optional regex for the code). `hosts` decides the provider
-  // (host wins over model: an OpenRouter identity meets OpenRouter's translation layer whatever the model string says);
-  // `match` filters on the model; `protocol` (optional) picks the door when the caller knows the wire shape. `verified`
-  // is the date the pages were read (entry overrides provider); `partial: true` marks a range whose page could not be
-  // read cleanly. Facts here come from the 2026-09-06 research pass (verbatim quotes in the Fix 24 deploy log) plus
-  // the same-day gap re-fetches; the seven Anthropic / OpenAI / Moonshot / OpenRouter / Google / xAI / DeepSeek /
-  // Z.ai / Alibaba / DeepInfra sites are the sources.
+  // actually breaks its documentation on, in prose, with an optional regex for the code). (v4.391) `kind` is the provider
+  // TAXONOMY: 'direct' = the model developer's own API; 'intermediary' = routes to others and translates (OpenRouter) --
+  // the subset test applies; 'host' = serves open-weight models on its own API with its own vocabulary (DeepInfra) --
+  // its docs are first-party for that route. `hosts` decides the provider (host wins over model); `match` filters on
+  // the model; `protocol` (optional) picks the door. `verified` = the date the pages were read.
+  // (v4.391) Every range carries a STRUCTURED `vocab` beside the prose cells -- {kind: effort | budget | toggle |
+  // gateway, levels[], canDisable, def, rules[], insufficient} -- the vendor vocabulary V of the MATCH RULE
+  // (tmBuildThinkAuditReport) and, from v4.392, the source of the dropdowns. A cell is {url, path, values, note},
+  // {na: true, reason} (the category does not exist on that API -- a positive fact) or {insufficient: true, reason}
+  // (it exists, but the vendor's page could not be read cleanly -- rendered 'not enough vendor information').
+  // Facts: the 2026-09-06 research pass, the same-day gap re-fetches and the live OpenRouter catalogue read that day.
+  var TM_THINK_URL = {
+    aTable: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models',
+    aEffort: 'https://platform.claude.com/docs/en/build-with-claude/effort',
+    aThinking: 'https://platform.claude.com/docs/en/build-with-claude/thinking',
+    aExtended: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking',
+    oGuide: 'https://developers.openai.com/api/docs/guides/reasoning',
+    oSol: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol',
+    oAstra: 'https://developers.openai.com/api/docs/models/gpt-6-astra',
+    oModels: 'https://developers.openai.com/api/docs/models',
+    kChat: 'https://platform.kimi.ai/docs/api/chat',
+    kEffort: 'https://platform.kimi.ai/docs/guide/use-reasoning-effort',
+    kThinking: 'https://platform.kimi.ai/docs/guide/use-thinking-models',
+    rTokens: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens',
+    rParams: 'https://openrouter.ai/docs/api-reference/parameters',
+    rRouting: 'https://openrouter.ai/docs/guides/routing/provider-selection',
+    rModels: 'https://openrouter.ai/api/v1/models',
+    gThinking: 'https://ai.google.dev/gemini-api/docs/thinking',
+    gOpenai: 'https://ai.google.dev/gemini-api/docs/openai',
+    xReasoning: 'https://docs.x.ai/docs/guides/reasoning',
+    dChat: 'https://api-docs.deepseek.com/api/create-chat-completion/',
+    dThinking: 'https://api-docs.deepseek.com/guides/thinking_mode/',
+    zGlm53: 'https://docs.z.ai/guides/llm/glm-5.3',
+    zThinking: 'https://docs.z.ai/guides/capabilities/thinking',
+    qDeep: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking',
+    qPricing: 'https://www.alibabacloud.com/help/en/model-studio/model-pricing',
+    iReasoning: 'https://docs.deepinfra.com/chat/reasoning'
+  };
+  // The six cells shared by every ADAPTIVE Claude range (only the MODE values / note differ per range).
+  function tmThinkClaudeAdaptiveCells(modeValues, modeNote) {
+    return {
+      mode:        { url: TM_THINK_URL.aTable, path: 'thinking.type', values: modeValues, note: modeNote + '\nThe per-model table documents the MODE field and its 400s, not the level vocabulary (that is /effort) nor display (that is /thinking). tmThinkAnthropicCaps encodes it row for row; matched 2026-09-04 and again 2026-09-06.' },
+      level:       { url: TM_THINK_URL.aEffort, path: 'output_config.effort', values: 'low | medium | high | xhigh | max; default high ("effort: high matches the API default"); effort scales the thinking AND the visible answer', note: 'The LEVEL page. On this generation the writer sends the word verbatim (budget:N -> nearest word; minimal -> low).\nNot on the per-model table -- read this page for the vocabulary.' },
+      display:     { url: TM_THINK_URL.aThinking, path: 'thinking.display', values: 'summarized | omitted | updates (beta); default omitted on this generation ("display defaults to "omitted" on these models, so the thinking text is hidden until you opt in"); invalid with type: disabled; thinking tokens count toward max_tokens and are billed either way -- display never changes the count', note: 'The DISPLAY page (re-read 2026-09-06 for the default sentence). TypingMind sends display: omitted explicitly (LIVE FINDING 1) -- the same as the default; the \ud83d\udc41 control flips it to summarized.\nWith omitted no thinking_delta events stream; with updates only progress-update blocks do. Cache-neutral (verified live on direct and on OpenRouter).' },
+      per_message: { url: TM_THINK_URL.aEffort, path: 'messages[]: {role: "system", content: [], output_config: {effort}} + header anthropic-beta: mid-conversation-output-config-2026-07-01', values: 'same effort words; applies from that message onward; the cached prefix survives (only the tail re-caches); documented for Fable 5.1 / Mythos 5.1 / Opus 5', note: 'Our writer uses it on the DIRECT route for those three models (tmThinkApplyPerMessageEffort; content-hash anchored in ov.steps so every later request replays the same bytes at the same spot). Other Claude models and every OpenRouter route fall back to top-level effort = one cache miss per change, reported.\nThe beta header is direct-only: custom headers are the one thing never assumed to survive a proxy.' },
+      usage:       { url: TM_THINK_URL.aThinking, path: 'usage.output_tokens_details.thinking_tokens', values: 'integer; reported whether or not the text was displayed (on the omitted route it was the ONLY evidence of thinking -- LIVE FINDING 1); when streaming, on the final message_delta', note: 'The number the \ud83e\uddee glyph and the histogram read on this route (evidence \u2705 reported).' },
+      output_cap:  { url: TM_THINK_URL.aThinking, path: 'max_tokens', values: 'hard ceiling on total output INCLUDING thinking ("Thinking tokens count toward max_tokens ... alongside the response text"); no budget rule in adaptive mode', note: 'Our writer raises max_tokens (never lowers) so thinking has room. The v4.374-v4.377 keep-alive lesson: never cap output on a reasoning model.' }
+    };
+  }
   // @beacon[
   //   id=fix24-think-docs-registry,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.390) THE THINKING DOCUMENTATION MAP's data: provider -> flat list of documented model ranges (prose + optional match / protocol regex + verified date) -> six fixed categories (TM_THINK_DOC_CATEGORIES: mode / level / display = knobs; mid-conversation effort / reported reasoning count / output cap = trust and cost) -> each cell {url, JSON path, values, dated note} or an explicit {na, reason} -- never blank. Vendor documentation (what the API accepts); TM_THINK_LOCAL_BASIS is the separate writer provenance. TM_THINK_VENDOR_DOCS is derived from this table.,
+  //   comment=(v4.390-v4.391) THE THINKING DOCUMENTATION MAP's data: provider (kind direct | intermediary | host) -> flat list of documented model ranges (prose + optional match / protocol regex + verified date) -> six fixed categories (TM_THINK_DOC_CATEGORIES) -> each cell {url, JSON path, values, dated note}, an explicit {na, reason} or {insufficient, reason} -- never blank -- PLUS a structured vocab {kind, levels, canDisable, def} per range: the first-party vocabulary V of the match rule. Vendor documentation (what the API accepts); TM_THINK_LOCAL_BASIS is the separate writer provenance; TM_THINK_GRAYLIST marks ranges / providers / aliases set aside. TM_THINK_VENDOR_DOCS is derived from this table.,
   // ]
   var TM_THINK_DOCS_REGISTRY = [
-    { provider: 'Anthropic', hosts: /api\.anthropic\.com/, verified: '2026-09-06', index_url: 'https://platform.claude.com/docs/llms.txt',
-      extra: [ { label: 'Extended thinking = MANUAL mode (budget_tokens; 4.5-and-older) + migration to adaptive', url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking' } ],
+    { provider: 'Anthropic', kind: 'direct', hosts: /api\.anthropic\.com/, verified: '2026-09-06', index_url: 'https://platform.claude.com/docs/llms.txt',
+      extra: [ { label: 'Extended thinking = MANUAL mode (budget_tokens; 4.5-and-older) + migration to adaptive', url: TM_THINK_URL.aExtended } ],
       entries: [
-        { models: 'Claude Fable 5.1 / Mythos 5.1 / Fable 5 / Mythos 5 / Mythos Preview / Opus 5 / Sonnet 5 / Opus 4.8 / Opus 4.7 -- the adaptive generation (Messages API)',
-          match: /fable|mythos|opus[-_.]?5(?![0-9])|sonnet[-_.]?5(?![0-9])|opus[-_.]?4[-_.]?[78]/, verified: '2026-09-06',
-          cells: {
-            mode:        { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models', path: 'thinking.type', values: 'adaptive (the only mode on Fable / Mythos / Opus 5 / Sonnet 5 / Opus 4.7-4.8); enabled -> 400 (Mythos Preview still accepts enabled); disabled -> 400 on Fable / Mythos (always on), accepted on Opus 5 / Sonnet 5 / Opus 4.7 / 4.8 -- but Opus 5 rejects disabled at effort xhigh / max', note: 'The per-model table -- the page the v4.389 banner link opened. It documents the MODE field and its 400s, not the level vocabulary (that is /effort) nor display (that is /thinking).\ntmThinkAnthropicCaps encodes it row for row (families claude-5x / claude-5 / claude-4.7+); matched on 2026-09-04 and again on 2026-09-06.' },
-            level:       { url: 'https://platform.claude.com/docs/en/build-with-claude/effort', path: 'output_config.effort', values: 'low | medium | high | xhigh | max; default high ("effort: high matches the API default"); xhigh not on Mythos Preview; effort scales the thinking AND the visible answer', note: 'The LEVEL page. On this generation the writer sends the word verbatim (budget:N -> nearest word; minimal -> low).\nNot on the per-model table -- read this page for the vocabulary.' },
-            display:     { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'thinking.display', values: 'summarized | omitted | updates (beta); default omitted on this generation ("display defaults to \"omitted\" on these models, so the thinking text is hidden until you opt in"); invalid with type: disabled; thinking tokens count toward max_tokens and are billed either way -- display never changes the count', note: 'The DISPLAY page (re-read 2026-09-06 for the default sentence). TypingMind sends display: omitted explicitly (LIVE FINDING 1) -- the same as the default; the \ud83d\udc41 control flips it to summarized.\nWith omitted no thinking_delta events stream; with updates only progress-update blocks do. Cache-neutral (verified live on direct and on OpenRouter).' },
-            per_message: { url: 'https://platform.claude.com/docs/en/build-with-claude/effort', path: 'messages[]: {role: "system", content: [], output_config: {effort}} + header anthropic-beta: mid-conversation-output-config-2026-07-01', values: 'same effort words; applies from that message onward; the cached prefix survives (only the tail re-caches); Fable 5.1 / Mythos 5.1 / Opus 5', note: 'Our writer uses it on the DIRECT route for those three models (tmThinkApplyPerMessageEffort; content-hash anchored in ov.steps so every later request replays the same bytes at the same spot). Other Claude models and every OpenRouter route fall back to top-level effort = one cache miss per change, reported.\nThe beta header is direct-only: custom headers are the one thing never assumed to survive a proxy.' },
-            usage:       { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'usage.output_tokens_details.thinking_tokens', values: 'integer; reported whether or not the text was displayed (on the omitted route it was the ONLY evidence of thinking -- LIVE FINDING 1); when streaming, on the final message_delta', note: 'The number the \ud83e\uddee glyph and the histogram read on this route (evidence \u2705 reported).' },
-            output_cap:  { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'max_tokens', values: 'hard ceiling on total output INCLUDING thinking ("Thinking tokens count toward max_tokens ... alongside the response text"); no budget rule in adaptive mode', note: 'Our writer raises max_tokens (never lowers) so thinking has room. The v4.374-v4.377 keep-alive lesson: never cap output on a reasoning model.' }
-          } },
+        { models: 'Claude Fable 5.1 / Mythos 5.1 / Fable 5 / Mythos 5 -- the always-on adaptive generation (Messages API)',
+          match: /(fable|mythos)[-_.]?5/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], canDisable: false, def: 'high' },
+          cells: tmThinkClaudeAdaptiveCells('adaptive only; enabled -> 400; disabled -> 400 (these models always think)', 'Writer family claude-5x: type adaptive, off clamps to effort low (the model cannot be switched off).') },
+        { models: 'Claude Mythos Preview -- adaptive, no xhigh, still accepts type: enabled',
+          match: /mythos[-_.]?preview/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'max'], canDisable: false, def: 'high' },
+          cells: tmThinkClaudeAdaptiveCells('adaptive | enabled (still accepted on the Preview); disabled -> 400 (always on); no xhigh', 'Writer family claude-5x with the Preview exceptions (enabled accepted, xhigh clamps to high).') },
+        { models: 'Claude Opus 5 / Sonnet 5 -- adaptive; thinking CAN be disabled (Opus 5: not at effort xhigh / max)',
+          match: /(opus|sonnet)[-_.]?5(?![0-9])/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], canDisable: true, def: 'high', rules: ['Opus 5 rejects type: disabled at effort xhigh / max -- the writer lowers the companion effort to high'] },
+          cells: tmThinkClaudeAdaptiveCells('adaptive | disabled (enabled -> 400); Opus 5 rejects disabled at effort xhigh / max', 'Writer family claude-5: adaptive with a working off switch; OpenRouter marks both models mandatory: false (2026-09-06 catalogue), agreeing.') },
+        { models: 'Claude Opus 4.8 / Opus 4.7 -- adaptive; thinking can be disabled',
+          match: /opus[-_.]?4[-_.]?[78]/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], canDisable: true, def: 'high' },
+          cells: tmThinkClaudeAdaptiveCells('adaptive | disabled (enabled -> 400)', 'Writer family claude-4.7+.') },
         { models: 'Claude Opus 4.6 / Sonnet 4.6 -- adaptive available, manual budget_tokens still accepted, thinking off unless requested',
           match: /(opus|sonnet)[-_.]?4[-_.]?6/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'max'], canDisable: true, def: null },
           cells: {
-            mode:        { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models', path: 'thinking.type', values: 'adaptive | enabled (manual budget) | disabled -- all accepted; thinking is off unless one is sent', note: 'tmThinkAnthropicCaps family claude-4.6.' },
-            level:       { url: 'https://platform.claude.com/docs/en/build-with-claude/effort', path: 'output_config.effort (with type: adaptive) / thinking.budget_tokens (with type: enabled)', values: 'low | medium | high | max -- no xhigh on 4.6; budget_tokens integer >= 1024 in manual mode', note: 'The writer clamps xhigh -> high here (reported on the \ud83c\udf9b\ufe0f OVERRIDDEN hover).' },
-            display:     { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'thinking.display', values: 'summarized | omitted | updates; the omitted-by-default sentence names the 4.7+ / 5.x models only -- the 4.6 default was not re-read this session', note: 'tmThinkAnthropicCaps.display = true for 4.6.' },
+            mode:        { url: TM_THINK_URL.aTable, path: 'thinking.type', values: 'adaptive | enabled (manual budget) | disabled -- all accepted; thinking is off unless one is sent', note: 'tmThinkAnthropicCaps family claude-4.6.' },
+            level:       { url: TM_THINK_URL.aEffort, path: 'output_config.effort (with type: adaptive) / thinking.budget_tokens (with type: enabled)', values: 'low | medium | high | max -- no xhigh on 4.6 (OpenRouter agrees: [max, high, medium, low]); budget_tokens integer >= 1024 in manual mode', note: 'The writer clamps xhigh -> high here (reported on the \ud83c\udf9b\ufe0f OVERRIDDEN hover).' },
+            display:     { url: TM_THINK_URL.aThinking, path: 'thinking.display', values: 'summarized | omitted | updates; the omitted-by-default sentence names the 4.7+ / 5.x models only -- the 4.6 default was not re-read', note: 'tmThinkAnthropicCaps.display = true for 4.6.' },
             per_message: { na: true, reason: 'the mid-conversation-output-config beta is documented for Fable 5.1 / Mythos 5.1 / Opus 5 only; on 4.6 a level change is a top-level edit = one cache miss (the writer says so in its notes)' },
-            usage:       { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'usage.output_tokens_details.thinking_tokens', values: 'integer', note: 'Evidence \u2705 reported.' },
-            output_cap:  { url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking', path: 'max_tokens', values: 'ceiling incl. thinking; in manual mode budget_tokens must be below max_tokens', note: 'The writer raises max_tokens, never lowers it.' }
+            usage:       { url: TM_THINK_URL.aThinking, path: 'usage.output_tokens_details.thinking_tokens', values: 'integer', note: 'Evidence \u2705 reported.' },
+            output_cap:  { url: TM_THINK_URL.aExtended, path: 'max_tokens', values: 'ceiling incl. thinking; in manual mode budget_tokens must be below max_tokens', note: 'The writer raises max_tokens, never lowers it.' }
           } },
         { models: 'Claude Opus 4.5 / Sonnet 4.5 / Haiku 4.5 and older Claude 4 / 3.7 -- extended (manual) thinking only: budget_tokens; type: adaptive -> 400',
           match: /(opus|sonnet|haiku)[-_.]?4[-_.]?[0-5](?![0-9])|claude[-_.]?3[-_.]/, verified: '2026-09-06',
+          vocab: { kind: 'budget', levels: [], canDisable: true, def: null, budget: { min: 1024 } },
           cells: {
-            mode:        { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models', path: 'thinking.type', values: 'enabled | disabled; adaptive -> 400', note: 'tmThinkAnthropicCaps families claude-4.5 / claude-legacy.' },
-            level:       { url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking', path: 'thinking.budget_tokens (integer >= 1024, below max_tokens); Opus 4.5 additionally accepts output_config.effort', values: 'a token budget, not a word -- our menu words become budgets via TM_THINK_EFFORT_TO_BUDGET (low 4096 / medium 10240 / high 20480 / xhigh 40960 / max 60000)', note: 'The manual-mode page (the URL the v4.386 vendor table pointed at for everything). OpenRouter converts effort -> budget for these models by its own documented ratios.' },
+            mode:        { url: TM_THINK_URL.aTable, path: 'thinking.type', values: 'enabled | disabled; adaptive -> 400', note: 'tmThinkAnthropicCaps families claude-4.5 / claude-legacy.' },
+            level:       { url: TM_THINK_URL.aExtended, path: 'thinking.budget_tokens (integer >= 1024, below max_tokens); Opus 4.5 additionally accepts output_config.effort', values: 'a token budget, not a word -- our menu words become budgets via TM_THINK_EFFORT_TO_BUDGET (low 4096 / medium 10240 / high 20480 / xhigh 40960 / max 60000)', note: 'The manual-mode page. OpenRouter converts effort -> budget for these models by its own documented ratios.' },
             display:     { na: true, reason: 'thinking.display predates these models (tmThinkAnthropicCaps.display = false); the full thinking text streams back as thinking blocks and can only be hidden client-side' },
             per_message: { na: true, reason: 'the beta is not offered on this generation; any budget change is a top-level edit that restarts the cache prefix' },
-            usage:       { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'usage.output_tokens_details.thinking_tokens', values: 'integer where reported; on older models thinking was billed inside output_tokens without a separate count -- the \ud83d\udcd6 raw-text \u2248 estimate is the fallback; verify on the next row', note: 'Evidence \u2705 or \u2248 depending on the model.' },
-            output_cap:  { url: 'https://platform.claude.com/docs/en/build-with-claude/extended-thinking', path: 'max_tokens', values: 'must exceed budget_tokens (except with the interleaved-thinking beta, where the budget may exceed it)', note: 'The writer raises max_tokens above the budget.' }
+            usage:       { url: TM_THINK_URL.aThinking, path: 'usage.output_tokens_details.thinking_tokens', values: 'integer where reported; on older models thinking was billed inside output_tokens without a separate count -- the \ud83d\udcd6 raw-text \u2248 estimate is the fallback', note: 'Evidence \u2705 or \u2248 depending on the model.' },
+            output_cap:  { url: TM_THINK_URL.aExtended, path: 'max_tokens', values: 'must exceed budget_tokens (except with the interleaved-thinking beta, where the budget may exceed it)', note: 'The writer raises max_tokens above the budget.' }
           } }
       ] },
-    { provider: 'OpenAI', hosts: /api\.openai\.com|openai\.azure\.com/, verified: '2026-09-06', index_url: 'https://developers.openai.com/api/llms.txt',
-      extra: [ { label: 'Model catalogue', url: 'https://developers.openai.com/api/docs/models' } ],
+    { provider: 'OpenAI', kind: 'direct', hosts: /api\.openai\.com|openai\.azure\.com/, verified: '2026-09-06', index_url: 'https://developers.openai.com/api/llms.txt',
+      extra: [ { label: 'Model catalogue', url: TM_THINK_URL.oModels } ],
       entries: [
-        { models: 'gpt-5.6 family (sol / terra / luna) -- Responses API (TypingMind\'s route for Sol) and Chat Completions',
+        { models: 'gpt-5.6 family (sol / terra / luna, and the -pro tiers) -- Responses API (TypingMind\'s route for Sol) and Chat Completions',
           match: /gpt-5[-.]6/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], canDisable: true, def: 'medium' },
           cells: {
-            mode:        { na: true, reason: 'no on/off field -- reasoning is intrinsic; effort none is the off switch where the model lists none (gpt-5.6-sol does); GPT-5.6 also has reasoning.mode standard | pro, which is a compute tier, not a thinking switch' },
-            level:       { url: 'https://developers.openai.com/api/docs/models/gpt-5.6-sol', path: 'reasoning.effort (Responses) / reasoning_effort (Chat Completions)', values: 'gpt-5.6-sol: none | low | medium | high | xhigh | max; default medium. The guide: "Supported values are model-dependent and can include none, minimal, low, medium, high, xhigh, and max"', note: 'The model page is the vocabulary; the guide is the rule. Our writer sends the word verbatim on gpt-5.6+ (minimal -> low: Sol lists no minimal).\nThe Chat Completions API-reference page is JS-rendered and could not be text-extracted on 2026-09-06; the Chat path rests on the guide plus our own wire scans (_think_req reads reasoning_effort on OpenAI-compat hosts).' },
-            display:     { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'reasoning.summary (Responses)', values: 'auto | concise | detailed -- but reasoning summaries are UNSUPPORTED on gpt-5.6-sol (and o1 / o3 / o4-mini; supported on GPT-6 Astra); raw reasoning is never returned by OpenAI', note: 'The legacy Sol Reasoning select sends summary: auto -- accepted on the wire, no summary text comes back. On this route the reported count is the only evidence of thinking.' },
+            mode:        { na: true, reason: 'no on/off field -- reasoning is intrinsic; effort none is the off switch (gpt-5.6-sol lists none); GPT-5.6 also has reasoning.mode standard | pro, which is a compute tier, not a thinking switch' },
+            level:       { url: TM_THINK_URL.oSol, path: 'reasoning.effort (Responses) / reasoning_effort (Chat Completions)', values: 'gpt-5.6-sol: none | low | medium | high | xhigh | max; default medium. The guide: "Supported values are model-dependent and can include none, minimal, low, medium, high, xhigh, and max"', note: 'The model page is the vocabulary; the guide is the rule. OpenRouter lists exactly the same words for openai/gpt-5.6-sol / -terra / -luna (+ -pro), 2026-09-06.\nThe Chat Completions API-reference page is JS-rendered and could not be text-extracted on 2026-09-06; the Chat path rests on the guide plus our own wire scans (_think_req reads reasoning_effort on OpenAI-compat hosts).' },
+            display:     { url: TM_THINK_URL.oGuide, path: 'reasoning.summary (Responses)', values: 'auto | concise | detailed -- but reasoning summaries are UNSUPPORTED on gpt-5.6-sol (and o1 / o3 / o4-mini; supported on GPT-6 Astra); raw reasoning is never returned by OpenAI', note: 'The legacy Sol Reasoning select sends summary: auto -- accepted on the wire, no summary text comes back. On this route the reported count is the only evidence of thinking.' },
             per_message: { na: true, reason: '"Configuration updates are supported only by GPT-6 Astra in standard, single-agent mode" (guide, 2026-09-06); on gpt-5.6 a level change is a top-level edit -- OpenAI prompt caching keys on the prefix, so expect one miss' },
-            usage:       { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'usage.output_tokens_details.reasoning_tokens (Responses) / usage.completion_tokens_details.reasoning_tokens (Chat)', values: 'integer; reported even though no text is returned', note: 'Evidence \u2705 reported on both OpenAI shapes.' },
-            output_cap:  { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'max_output_tokens (Responses) / max_completion_tokens (Chat; max_tokens is rejected on reasoning models)', values: 'reasoning tokens count against it; incomplete_details.reason = max_output_tokens when reasoning eats the cap -- possibly before any visible text', note: 'The v4.374-v4.377 lesson (the Fix 25 keep-alive stopped capping output).' }
+            usage:       { url: TM_THINK_URL.oGuide, path: 'usage.output_tokens_details.reasoning_tokens (Responses) / usage.completion_tokens_details.reasoning_tokens (Chat)', values: 'integer; reported even though no text is returned', note: 'Evidence \u2705 reported on both OpenAI shapes.' },
+            output_cap:  { url: TM_THINK_URL.oGuide, path: 'max_output_tokens (Responses) / max_completion_tokens (Chat; max_tokens is rejected on reasoning models)', values: 'reasoning tokens count against it; incomplete_details.reason = max_output_tokens when reasoning eats the cap -- possibly before any visible text', note: 'The v4.374-v4.377 lesson (the Fix 25 keep-alive stopped capping output).' }
           } },
-        { models: 'GPT-6 Astra -- Responses API; always reasons; the first OpenAI model with mid-conversation configuration_update',
-          match: /gpt-6/, verified: '2026-09-06', partial: true,
+        { models: 'GPT-6 Astra (and Astra Pro) -- Responses API + Chat Completions; always reasons; the first OpenAI model with mid-conversation configuration_update',
+          match: /gpt-6/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh', 'max'], canDisable: false, def: null, rules: ['default effort: conflicting sources -- the model page reads as the highest level, OpenRouter reports medium; unconfirmed'] },
           cells: {
-            mode:        { na: true, reason: 'always reasons: effort none -> HTTP 400 (guide); tmThinkIsAlwaysOn treats gpt-6 as mandatory (off -> low)' },
-            level:       { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'reasoning.effort (Responses) / reasoning_effort (Chat Completions)', values: 'model-dependent within minimal .. max (none rejected); the exact list was not read from a model page this session -- OpenRouter lists it per model', note: 'PARTIAL: vocabulary from the guide only.' },
-            display:     { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'reasoning.summary', values: 'auto | concise | detailed -- summaries supported on GPT-6 Astra (guide, 2026-09-06)', note: 'The Responses writer sends summary: auto when display = show.' },
-            per_message: { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'configuration_update item in the Responses input (exact shape on the guide)', values: '"Configuration updates are supported only by GPT-6 Astra in standard, single-agent mode"', note: 'Our writers do NOT use it yet (the Responses writer sends top-level reasoning.effort) -- a follow-up if Dan runs Astra.' },
-            usage:       { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'usage.output_tokens_details.reasoning_tokens', values: 'integer', note: 'Evidence \u2705 reported.' },
-            output_cap:  { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'max_output_tokens', values: 'reasoning tokens count against it', note: 'Never cap output on a reasoning model.' }
+            mode:        { na: true, reason: 'always reasons: effort none -> HTTP 400 (guide); OpenRouter marks openai/gpt-6-astra mandatory; tmThinkIsAlwaysOn treats gpt-6 as always-on (off -> low)' },
+            level:       { url: TM_THINK_URL.oAstra, path: 'reasoning.effort (Responses) / reasoning_effort (Chat Completions)', values: 'low | medium | high | xhigh | max (model page, 2026-09-06; OpenRouter lists the same five, mandatory); DEFAULT unconfirmed -- the page reads as the highest level, OpenRouter reports medium', note: 'Vocabulary settled by the model page and OpenRouter agreeing; only the default is still in question -- read the page before relying on it.' },
+            display:     { url: TM_THINK_URL.oGuide, path: 'reasoning.summary', values: 'auto | concise | detailed -- summaries supported on GPT-6 Astra (guide + model page, 2026-09-06)', note: 'The Responses writer sends summary: auto when display = show.' },
+            per_message: { url: TM_THINK_URL.oGuide, path: 'configuration_update item in the Responses input (exact shape on the guide)', values: '"Configuration updates are supported only by GPT-6 Astra in standard, single-agent mode"', note: 'Our writers do NOT use it yet (the Responses writer sends top-level reasoning.effort) -- a follow-up if Dan runs Astra.' },
+            usage:       { url: TM_THINK_URL.oGuide, path: 'usage.output_tokens_details.reasoning_tokens', values: 'integer', note: 'Evidence \u2705 reported.' },
+            output_cap:  { url: TM_THINK_URL.oGuide, path: 'max_output_tokens', values: 'reasoning tokens count against it', note: 'Never cap output on a reasoning model.' }
           } },
         { models: 'o-series (o1 / o3 / o4-mini) -- always reason; no reasoning summaries',
-          match: /(^|[\/_-])o[134](-|$)/, verified: '2026-09-06', partial: true,
+          match: /(^|[\/_-])o[134](-|$)/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: [], canDisable: false, def: null, insufficient: 'the historical low | medium | high list was not re-verified per model; OpenRouter lists only high for o3-mini-high / o4-mini-high' },
           cells: {
             mode:        { na: true, reason: 'always reason; effort none is not accepted (the guide lists values as model-dependent; the o-series predates none)' },
-            level:       { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'reasoning.effort (Responses) / reasoning_effort (Chat Completions)', values: 'low | medium | high, default medium -- the historical o-series list, not re-verified per model on 2026-09-06', note: 'PARTIAL. Our writer clamps max -> xhigh outside gpt-5.6+ / gpt-6.' },
+            level:       { insufficient: true, url: TM_THINK_URL.oGuide, reason: 'the historical low | medium | high list was not re-verified per model on 2026-09-06 (OpenRouter lists only high for o3-mini-high / o4-mini-high)' },
             display:     { na: true, reason: 'no reasoning summaries on o1 / o3 / o4-mini (guide, 2026-09-06); raw reasoning is never returned' },
             per_message: { na: true, reason: 'configuration_update is GPT-6 Astra only' },
-            usage:       { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'usage.output_tokens_details.reasoning_tokens (Responses) / usage.completion_tokens_details.reasoning_tokens (Chat)', values: 'integer', note: 'Evidence \u2705 reported.' },
-            output_cap:  { url: 'https://developers.openai.com/api/docs/guides/reasoning', path: 'max_output_tokens (Responses) / max_completion_tokens (Chat)', values: 'reasoning tokens count against it', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.oGuide, path: 'usage.output_tokens_details.reasoning_tokens (Responses) / usage.completion_tokens_details.reasoning_tokens (Chat)', values: 'integer', note: 'Evidence \u2705 reported.' },
+            output_cap:  { url: TM_THINK_URL.oGuide, path: 'max_output_tokens (Responses) / max_completion_tokens (Chat)', values: 'reasoning tokens count against it', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'Moonshot (Kimi)', hosts: /moonshot/, verified: '2026-09-06', index_url: 'https://platform.kimi.ai/docs/llms.txt',
-      extra: [ { label: 'Reasoning effort guide (K3)', url: 'https://platform.kimi.ai/docs/guide/use-reasoning-effort' } ],
+    { provider: 'Moonshot (Kimi)', kind: 'direct', hosts: /moonshot/, verified: '2026-09-06', index_url: 'https://platform.kimi.ai/docs/llms.txt',
+      extra: [ { label: 'Reasoning effort guide (K3)', url: TM_THINK_URL.kEffort } ],
       entries: [
         { models: 'kimi-k3 -- always reasons; top-level reasoning_effort', match: /kimi-k3/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: false, def: 'max' },
           cells: {
-            mode:        { na: true, reason: '"kimi-k3 always reasons" and "does not support the thinking parameter" (chat schema, 2026-09-06) -- there is no switch; our writer removes any thinking object on K3' },
-            level:       { url: 'https://platform.kimi.ai/docs/api/chat', path: 'reasoning_effort (top-level)', values: 'low | high | max; default max', note: 'Until v4.389 our writer sent the K2.x thinking:{type} and DELETED this field, so every K3 pick ran at max -- fixed; nearest-in-vocabulary clamps (medium -> low, xhigh -> high; tie -> lower).' },
+            mode:        { na: true, reason: '"kimi-k3 always reasons" and "does not support the thinking parameter" (chat schema, 2026-09-06) -- there is no switch; our writer removes any thinking object on K3. (OpenRouter marks moonshotai/kimi-k3 mandatory: false -- a rot hint, not a mapping problem.)' },
+            level:       { url: TM_THINK_URL.kChat, path: 'reasoning_effort (top-level)', values: 'low | high | max; default max (OpenRouter lists the same three, default max)', note: 'Until v4.389 our writer sent the K2.x thinking:{type} and DELETED this field, so every K3 pick ran at max -- fixed; nearest-in-vocabulary clamps (medium -> low, xhigh -> high; tie -> lower).' },
             display:     { na: true, reason: 'no display switch: reasoning_content is returned whenever the model thinks -- always, on K3' },
             per_message: { na: true, reason: 'not offered; a level change is a top-level field edit' },
-            usage:       { url: 'https://platform.kimi.ai/docs/guide/use-thinking-models', path: 'choices[].message.reasoning_content (TEXT; streamed as delta.reasoning_content)', values: 'no reasoning-token COUNT in usage -- the evidence is the bytes-estimate (chars / 4), the ladder\'s second rung (\u2248)', note: 'reasoning_content must be replayed on prior assistant turns and inside tool loops (Fix 26 keeps it).' },
-            output_cap:  { url: 'https://platform.kimi.ai/docs/api/chat', path: 'max_completion_tokens (max_tokens deprecated)', values: 'counts thinking + answer; K3 default 131072, up to 1048576', note: 'Thinking and answer share the one cap.' }
+            usage:       { url: TM_THINK_URL.kThinking, path: 'choices[].message.reasoning_content (TEXT; streamed as delta.reasoning_content)', values: 'no reasoning-token COUNT in usage -- the evidence is the bytes-estimate (chars / 4), the ladder\'s second rung (\u2248)', note: 'reasoning_content must be replayed on prior assistant turns and inside tool loops (Fix 26 keeps it).' },
+            output_cap:  { url: TM_THINK_URL.kChat, path: 'max_completion_tokens (max_tokens deprecated)', values: 'counts thinking + answer; K3 default 131072, up to 1048576', note: 'Thinking and answer share the one cap.' }
           } },
         { models: 'kimi-k2.6 / kimi-k2.7-code -- thinking.type on / off', match: /kimi-k2/, verified: '2026-09-06',
+          vocab: { kind: 'toggle', levels: [], canDisable: true, def: null },
           cells: {
-            mode:        { url: 'https://platform.kimi.ai/docs/api/chat', path: 'thinking.type', values: 'enabled | disabled (k2.7-code always enabled); thinking.keep null | all decides whether prior reasoning is kept', note: 'Our writer: on / off only here.' },
+            mode:        { url: TM_THINK_URL.kChat, path: 'thinking.type', values: 'enabled | disabled (k2.7-code always enabled); thinking.keep null | all decides whether prior reasoning is kept', note: 'Our writer: on / off only here.' },
             level:       { na: true, reason: 'on / off only -- no effort vocabulary on K2.x (a requested level is recorded as ON with a clamp; OpenRouter converts effort -> budget by ratio for these)' },
             display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no separate switch' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://platform.kimi.ai/docs/guide/use-thinking-models', path: 'choices[].message.reasoning_content (TEXT)', values: 'bytes-estimate only (\u2248)', note: 'Replay reasoning_content in multi-turn and tool loops.' },
-            output_cap:  { url: 'https://platform.kimi.ai/docs/api/chat', path: 'max_completion_tokens (max_tokens deprecated)', values: 'model dependent', note: 'Thinking and answer share the one cap.' }
+            usage:       { url: TM_THINK_URL.kThinking, path: 'choices[].message.reasoning_content (TEXT)', values: 'bytes-estimate only (\u2248)', note: 'Replay reasoning_content in multi-turn and tool loops.' },
+            output_cap:  { url: TM_THINK_URL.kChat, path: 'max_completion_tokens (max_tokens deprecated)', values: 'model dependent', note: 'Thinking and answer share the one cap.' }
           } }
       ] },
-    { provider: 'OpenRouter', hosts: /openrouter\.ai/, verified: '2026-09-06', index_url: 'https://openrouter.ai/docs/llms.txt',
+    { provider: 'OpenRouter', kind: 'intermediary', hosts: /openrouter\.ai/, verified: '2026-09-06', index_url: 'https://openrouter.ai/docs/llms.txt',
       extra: [
-        { label: 'Parameters (what is forwarded; verbosity -> output_config.effort on Anthropic)', url: 'https://openrouter.ai/docs/api-reference/parameters' },
-        { label: 'Provider routing (require_parameters: unsupported parameters are silently ignored by default)', url: 'https://openrouter.ai/docs/guides/routing/provider-selection' },
-        { label: 'Live models catalogue JSON (reasoning.mandatory / supported_efforts / default_effort -- the cross-check source)', url: 'https://openrouter.ai/api/v1/models' } ],
+        { label: 'Parameters (what is forwarded; verbosity -> output_config.effort on Anthropic)', url: TM_THINK_URL.rParams },
+        { label: 'Provider routing (require_parameters: unsupported parameters are silently ignored by default)', url: TM_THINK_URL.rRouting },
+        { label: 'Live models catalogue JSON (reasoning.mandatory / supported_efforts / default_effort -- the intermediary vocabulary I of the match rule)', url: TM_THINK_URL.rModels } ],
       entries: [
         { models: 'ANY model through the Chat Completions door (/api/v1/chat/completions) -- a documented TRANSLATION layer, not a passthrough', match: /./, protocol: /chat-completions/, verified: '2026-09-06',
+          vocab: { kind: 'gateway', levels: ['max', 'xhigh', 'high', 'medium', 'low', 'minimal'], canDisable: true, def: null, live: 'per model: GET /api/v1/models reasoning.supported_efforts + mandatory + default_effort (158 of 431 models publish a list; none use null; 2026-09-06)' },
           cells: {
-            mode:        { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'reasoning.enabled', values: 'true | false (inferred from reasoning.effort / max_tokens when omitted); models flagged reasoning.mandatory in GET /api/v1/models reject effort none', note: '"OpenRouter normalizes the different ways of customizing the amount of reasoning tokens"; for Anthropic "only using the unified reasoning parameter".' },
-            level:       { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'reasoning.effort  XOR  reasoning.max_tokens', values: 'max | xhigh | high | medium | low | minimal | none; per model: GET /api/v1/models reasoning.supported_efforts + default_effort (null = every gateway value accepted; omitted = no effort selection)', note: 'In-vocabulary words are forwarded verbatim (the catalogue matched the vendor pages 4-for-4 on 2026-09-06); out-of-vocabulary words are remapped to the nearest listed level (minimal -> low on Claude; none rejected when mandatory).\nBudget-style models (Claude <= 4.5, Gemini 2.5, Kimi K2.x): effort -> budget_tokens by a documented ratio of max_tokens. Gemini 3: effort -> thinkingLevel one-to-one, xhigh -> high. verbosity ALSO maps to output_config.effort on Anthropic -- never send both. Unsupported parameters are SILENTLY IGNORED by default; provider.require_parameters: true refuses providers that lack them.\nOur OR writer consults the live catalogue (tmOrReasoningCapsFor) for mandatory / listed / default, provenance stamped as override.or_caps.' },
-            display:     { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'reasoning.exclude', values: 'true withholds the trace -- still billed, count still reported; OpenRouter defaults Claude to thinking.display: summarized, so the trace comes back unless excluded', note: 'The \ud83d\udc41 control on OpenRouter identities is exactly this flag. Cache-neutral (verified live).' },
-            per_message: { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'messages[]: {role: "system", content: "", configuration_update: {reasoning: {effort}}}', values: 'OpenRouter extension, normalized and re-emitted per provider (Claude -> per-message output_config; OpenAI -> Responses configuration_update); first models Fable 5.1 and GPT-6 Astra; unsupported -> 400, never silently dropped', note: 'Our OR writer does NOT use it yet -- it sends top-level reasoning.effort, which on Claude-via-OR re-renders the prompt = one full cache write per change (set the level once, near session start). Candidate follow-up.' },
-            usage:       { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'usage.completion_tokens_details.reasoning_tokens (normalized for every provider) + reasoning_details[] typed blocks', values: 'the strongest signal short of the upstream request (\u2705 reported)', note: 'usage: {include: true} (Fix 6B) makes the usage block appear on every row.' },
-            output_cap:  { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'max_tokens (must exceed reasoning.max_tokens)', values: 'forwarded into the provider\'s own cap field', note: 'Our writer keeps body max_tokens strictly above reasoning.max_tokens.' }
+            mode:        { url: TM_THINK_URL.rTokens, path: 'reasoning.enabled', values: 'true | false (inferred from reasoning.effort / max_tokens when omitted); models flagged reasoning.mandatory in GET /api/v1/models reject effort none', note: '"OpenRouter normalizes the different ways of customizing the amount of reasoning tokens"; for Anthropic "only using the unified reasoning parameter".' },
+            level:       { url: TM_THINK_URL.rTokens, path: 'reasoning.effort  XOR  reasoning.max_tokens', values: 'gateway vocabulary max | xhigh | high | medium | low | minimal | none; per model: GET /api/v1/models reasoning.supported_efforts + default_effort (null would mean every gateway value accepted -- no model uses it today; omitted = no effort selection)', note: 'THE MATCH RULE: a first-party word that OpenRouter lists for the model id is forwarded verbatim (the catalogue matched the vendor pages on every model Dan uses, 2026-09-06; structural proof: Fable 5.1 400s on budget_tokens yet works via OR); a first-party word OpenRouter does NOT list is remapped by rules we do not know -> UNKNOWN MAPPING.\nBudget-style models (Claude <= 4.5, Gemini 2.5, Kimi K2.x): effort -> budget_tokens by a documented ratio of max_tokens. Gemini 3: effort -> thinkingLevel one-to-one, xhigh -> high. verbosity ALSO maps to output_config.effort on Anthropic -- never send both. Unsupported parameters are SILENTLY IGNORED by default; provider.require_parameters: true refuses providers that lack them.\nOur OR writer consults the live catalogue (tmOrReasoningCapsFor) for mandatory / listed / default, provenance stamped as override.or_caps. Prefer DATED model ids over generic aliases (TM_THINK_GRAYLIST.aliases).' },
+            display:     { url: TM_THINK_URL.rTokens, path: 'reasoning.exclude', values: 'true withholds the trace -- still billed, count still reported; OpenRouter defaults Claude to thinking.display: summarized, so the trace comes back unless excluded', note: 'The \ud83d\udc41 control on OpenRouter identities is exactly this flag. Cache-neutral (verified live).' },
+            per_message: { url: TM_THINK_URL.rTokens, path: 'messages[]: {role: "system", content: "", configuration_update: {reasoning: {effort}}}', values: 'OpenRouter extension, normalized and re-emitted per provider (Claude -> per-message output_config; OpenAI -> Responses configuration_update); first models Fable 5.1 and GPT-6 Astra; unsupported -> 400, never silently dropped', note: 'Our OR writer does NOT use it yet -- it sends top-level reasoning.effort, which on Claude-via-OR re-renders the prompt = one full cache write per change (set the level once, near session start). Candidate follow-up.' },
+            usage:       { url: TM_THINK_URL.rTokens, path: 'usage.completion_tokens_details.reasoning_tokens (normalized for every provider) + reasoning_details[] typed blocks', values: 'the strongest signal short of the upstream request (\u2705 reported)', note: 'usage: {include: true} (Fix 6B) makes the usage block appear on every row.' },
+            output_cap:  { url: TM_THINK_URL.rTokens, path: 'max_tokens (must exceed reasoning.max_tokens)', values: 'forwarded into the provider\'s own cap field', note: 'Our writer keeps body max_tokens strictly above reasoning.max_tokens.' }
           } },
-        { models: 'Claude through the Anthropic Messages door (/api/v1/messages) -- the proxy->OpenRouter Anthropic-skin route', match: /claude|anthropic/, protocol: /anthropic-messages/, verified: '2026-09-06', partial: true,
+        { models: 'Claude through the Anthropic Messages door (/api/v1/messages) -- the proxy->OpenRouter Anthropic-skin route', match: /claude|anthropic/, protocol: /anthropic-messages/, verified: '2026-09-06',
+          vocab: { kind: 'gateway', levels: [], canDisable: true, def: null, insufficient: 'OpenRouter\'s Messages-API reference page was not read; whether this door accepts output_config.effort is unverified' },
           cells: {
-            mode:        { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking-troubleshooting#supported-models', path: 'thinking.type', values: 'Anthropic-native (adaptive | enabled | disabled per model) -- OpenRouter\'s Messages endpoint accepts Anthropic\'s own fields', note: 'PARTIAL: OpenRouter\'s Messages-API reference page was not fetched; field semantics are Anthropic\'s. Whether this door accepts output_config.effort is UNVERIFIED -- the \ud83c\udf9b\ufe0f glyph on the next row is the check.' },
-            level:       { url: 'https://platform.claude.com/docs/en/build-with-claude/effort', path: 'output_config.effort (Anthropic-native) / thinking.budget_tokens', values: 'as Anthropic; OpenRouter still passes its internal representation -- fidelity presumed high, unproven', note: 'The highest-fidelity OpenRouter route for Claude.' },
-            display:     { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'thinking.display', values: 'as Anthropic (summarized | omitted | updates)', note: 'Same \ud83d\udc41 semantics as the direct route.' },
-            per_message: { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'messages[]: {role: "system", content: [], output_config: {effort}} (Anthropic shape)', values: 'OpenRouter documents mid-conversation effort on all three of its APIs (first model Fable 5.1)', note: 'Our writer uses per-message effort on DIRECT api.anthropic.com only; on this route it falls back to top-level effort (one cache miss, reported).' },
-            usage:       { url: 'https://openrouter.ai/docs/guides/best-practices/reasoning-tokens', path: 'usage.output_tokens_details.thinking_tokens (Anthropic shape) -- plus OpenRouter\'s normalized reasoning_tokens where present', values: 'integer (\u2705 reported)', note: 'The histogram reads whichever is present.' },
-            output_cap:  { url: 'https://platform.claude.com/docs/en/build-with-claude/thinking', path: 'max_tokens', values: 'as Anthropic', note: 'Raised, never lowered, by the writer.' }
+            mode:        { insufficient: true, url: TM_THINK_URL.rTokens, reason: 'OpenRouter\'s Messages-API reference page was not read; the fields are Anthropic-native (thinking.type per model) but the door\'s acceptance rules are unverified' },
+            level:       { insufficient: true, url: TM_THINK_URL.aEffort, reason: 'whether this door accepts output_config.effort (Anthropic-native) is unverified -- the \ud83c\udf9b\ufe0f glyph on the next row is the check; OpenRouter still passes its internal representation' },
+            display:     { url: TM_THINK_URL.aThinking, path: 'thinking.display', values: 'as Anthropic (summarized | omitted | updates)', note: 'Same \ud83d\udc41 semantics as the direct route.' },
+            per_message: { url: TM_THINK_URL.rTokens, path: 'messages[]: {role: "system", content: [], output_config: {effort}} (Anthropic shape)', values: 'OpenRouter documents mid-conversation effort on all three of its APIs (first model Fable 5.1)', note: 'Our writer uses per-message effort on DIRECT api.anthropic.com only; on this route it falls back to top-level effort (one cache miss, reported).' },
+            usage:       { url: TM_THINK_URL.rTokens, path: 'usage.output_tokens_details.thinking_tokens (Anthropic shape) -- plus OpenRouter\'s normalized reasoning_tokens where present', values: 'integer (\u2705 reported)', note: 'The histogram reads whichever is present.' },
+            output_cap:  { url: TM_THINK_URL.aThinking, path: 'max_tokens', values: 'as Anthropic', note: 'Raised, never lowered, by the writer.' }
           } }
       ] },
-    { provider: 'Google (Gemini)', hosts: /generativelanguage|googleapis/, verified: '2026-09-06',
+    { provider: 'Google (Gemini)', kind: 'direct', hosts: /generativelanguage|googleapis/, verified: '2026-09-06',
       entries: [
         { models: 'Gemini 3.x (3.8-flash ... 3.1-pro-preview) -- native generateContent', match: /gemini-3/, protocol: /gemini/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high'], canDisable: false, def: 'medium' },
           cells: {
-            mode:        { na: true, reason: 'Gemini 3 cannot disable thinking (always on per Google docs 2026-09-06); the level is the only knob' },
-            level:       { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.thinkingConfig.thinkingLevel', values: 'low | medium | high; default medium (dynamic -- the model decides within the level)', note: 'Our writer: minimal -> low; the former Pro medium -> high clamp was removed in v4.389 (not in the docs). Since the v4.371 identity-key repair these overrides actually reach the wire.' },
-            display:     { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.thinkingConfig.includeThoughts', values: 'true | false -- returns thought SUMMARIES as parts flagged thought: true; does not change thoughtsTokenCount', note: 'TypingMind sends includeThoughts: false natively; \ud83d\udc41 show flips it. Thought signatures must be replayed for function calling -- a separate mechanism from display.' },
+            mode:        { na: true, reason: 'Gemini 3 cannot disable thinking (always on per Google docs 2026-09-06; OpenRouter marks google/gemini-3.8-flash mandatory); the level is the only knob' },
+            level:       { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.thinkingLevel', values: 'low | medium | high; default medium (dynamic -- the model decides within the level). OpenRouter lists exactly [high, medium, low] for 3.8 / 3.7 Flash', note: 'Our writer: minimal -> low; the former Pro medium -> high clamp was removed in v4.389 (not in the docs). Since the v4.371 identity-key repair these overrides actually reach the wire.' },
+            display:     { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.includeThoughts', values: 'true | false -- returns thought SUMMARIES as parts flagged thought: true; does not change thoughtsTokenCount', note: 'TypingMind sends includeThoughts: false natively; \ud83d\udc41 show flips it. Thought signatures must be replayed for function calling -- a separate mechanism from display.' },
             per_message: { na: true, reason: 'not offered; a level change is a top-level edit (implicit caching keys on the prefix -- expect one miss)' },
-            usage:       { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.' },
-            output_cap:  { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.maxOutputTokens', values: 'thinking tokens count against it', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.gThinking, path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.' },
+            output_cap:  { url: TM_THINK_URL.gThinking, path: 'generationConfig.maxOutputTokens', values: 'thinking tokens count against it', note: 'Never cap output on a reasoning model.' }
           } },
         { models: 'Gemini 2.5 (pro / flash / flash-lite) -- native generateContent; a token budget, no words', match: /gemini-2[-.]5/, protocol: /gemini/, verified: '2026-09-06',
+          vocab: { kind: 'budget', levels: [], canDisable: true, def: null, budget: { min: 0, note: 'Flash may be 0; Pro floors at 128; -1 = dynamic' } },
           cells: {
-            mode:        { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.thinkingConfig.thinkingBudget', values: '0 turns thinking off on Flash / Flash-Lite; Pro cannot go below 128; -1 = dynamic', note: 'Our writer: off -> 0 on Flash, 128 on Pro.' },
-            level:       { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.thinkingConfig.thinkingBudget', values: 'integer token budget -- no words; our menu words become budgets', note: 'OpenRouter converts effort -> budget for these by its documented ratios.' },
-            display:     { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.thinkingConfig.includeThoughts', values: 'true | false (thought summaries)', note: 'Same control as 3.x.' },
+            mode:        { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.thinkingBudget', values: '0 turns thinking off on Flash / Flash-Lite; Pro cannot go below 128; -1 = dynamic', note: 'Our writer: off -> 0 on Flash, 128 on Pro.' },
+            level:       { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.thinkingBudget', values: 'integer token budget -- no words; our menu words become budgets', note: 'OpenRouter converts effort -> budget for these by its documented ratios.' },
+            display:     { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.includeThoughts', values: 'true | false (thought summaries)', note: 'Same control as 3.x.' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'Same field as 3.x.' },
-            output_cap:  { url: 'https://ai.google.dev/gemini-api/docs/thinking', path: 'generationConfig.maxOutputTokens', values: 'thinking tokens count against it', note: 'Same field as 3.x.' }
+            usage:       { url: TM_THINK_URL.gThinking, path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'Same field as 3.x.' },
+            output_cap:  { url: TM_THINK_URL.gThinking, path: 'generationConfig.maxOutputTokens', values: 'thinking tokens count against it', note: 'Same field as 3.x.' }
           } },
-        { models: 'Gemini via the OpenAI-compatible door (/v1beta/openai/chat/completions)', match: /gemini-([3-9]|2[-.]5)/, protocol: /chat-completions/, verified: '2026-09-06', partial: true,
+        { models: 'Gemini via the OpenAI-compatible door (/v1beta/openai/chat/completions)', match: /gemini-([3-9]|2[-.]5)/, protocol: /chat-completions/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: [], canDisable: false, def: null, insufficient: 'the OpenAI-compat page was not re-read; reasoning_effort low | medium | high per the v4.362 reading' },
           cells: {
             mode:        { na: true, reason: 'no on/off field on this door; Gemini 3 cannot disable thinking anyway (the level is the knob)' },
-            level:       { url: 'https://ai.google.dev/gemini-api/docs/openai', path: 'reasoning_effort', values: 'low | medium | high -- translated by Google into thinkingLevel (3.x) or a thinkingBudget (2.5) by rules of its own', note: 'PARTIAL: the OpenAI-compat page was not re-read this session; our writer sends the word (v4.362).' },
-            display:     { url: 'https://ai.google.dev/gemini-api/docs/openai', path: 'extra_body.google.thinking_config.include_thoughts', values: 'true | false', note: 'The \ud83d\udc41 control on this door.' },
+            level:       { insufficient: true, url: TM_THINK_URL.gOpenai, reason: 'the OpenAI-compat page was not re-read on 2026-09-06; reasoning_effort low | medium | high per the v4.362 reading, translated by Google into thinkingLevel (3.x) or a thinkingBudget (2.5) by rules of its own' },
+            display:     { url: TM_THINK_URL.gOpenai, path: 'extra_body.google.thinking_config.include_thoughts', values: 'true | false', note: 'The \ud83d\udc41 control on this door.' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://ai.google.dev/gemini-api/docs/openai', path: 'usage.completion_tokens_details.reasoning_tokens (OpenAI shape)', values: 'integer where translated -- verify on the next row', note: 'Evidence \u2705 when present.' },
-            output_cap:  { url: 'https://ai.google.dev/gemini-api/docs/openai', path: 'max_tokens / max_completion_tokens', values: 'thinking tokens count against it', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.gOpenai, path: 'usage.completion_tokens_details.reasoning_tokens (OpenAI shape)', values: 'integer where translated -- verify on the next row', note: 'Evidence \u2705 when present.' },
+            output_cap:  { url: TM_THINK_URL.gOpenai, path: 'max_tokens / max_completion_tokens', values: 'thinking tokens count against it', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'xAI (Grok)', hosts: /api\.x\.ai/, verified: '2026-09-06',
+    { provider: 'xAI (Grok)', kind: 'direct', hosts: /api\.x\.ai/, verified: '2026-09-06',
       entries: [
         { models: 'Grok 4.x reasoning models -- reasoning_effort where the model exposes it (some Grok models ignore the field)', match: /grok/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'high', 'xhigh'], canDisable: false, def: 'high' },
           cells: {
-            mode:        { na: true, reason: 'no on/off field; the reasoning models always reason -- reasoning_effort only sets depth' },
-            level:       { url: 'https://docs.x.ai/docs/guides/reasoning', path: 'reasoning_effort', values: 'low | medium | high (default) | xhigh', note: 'Our writer: none / minimal -> low, max -> xhigh (v4.389 widened this from low | high).' },
+            mode:        { na: true, reason: 'no on/off field documented; the reasoning models always reason -- reasoning_effort only sets depth (OpenRouter marks x-ai/grok-4.6 mandatory)' },
+            level:       { url: TM_THINK_URL.xReasoning, path: 'reasoning_effort', values: 'low | medium | high (default) | xhigh (OpenRouter lists the same four for grok-4.6, default high)', note: 'Our writer: none / minimal -> low, max -> xhigh (v4.389 widened this from low | high).' },
             display:     { na: true, reason: 'no display field; whether reasoning text comes back is per model (the \ud83d\udcd6 / \ud83d\ude48 glyph on the next row tells)' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://docs.x.ai/docs/guides/reasoning', path: 'usage.completion_tokens_details.reasoning_tokens', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.' },
-            output_cap:  { url: 'https://docs.x.ai/docs/guides/reasoning', path: 'max_tokens / max_completion_tokens', values: 'thinking counts against it', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.xReasoning, path: 'usage.completion_tokens_details.reasoning_tokens', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.' },
+            output_cap:  { url: TM_THINK_URL.xReasoning, path: 'max_tokens / max_completion_tokens', values: 'thinking counts against it', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'DeepSeek', hosts: /deepseek/, verified: '2026-09-06',
-      extra: [ { label: 'Thinking mode guide (V4: on by default, effort high)', url: 'https://api-docs.deepseek.com/guides/thinking_mode/' } ],
+    { provider: 'DeepSeek', kind: 'direct', hosts: /deepseek/, verified: '2026-09-06',
+      extra: [ { label: 'Thinking mode guide (V4: on by default, effort high)', url: TM_THINK_URL.dThinking } ],
       entries: [
-        { models: 'DeepSeek V4 (pro / flash) -- thinking on by default; reasoning_effort', match: /deepseek/, verified: '2026-09-06',
+        { models: 'DeepSeek V4 (pro / flash, dated ids such as -0813 / -0731) -- thinking on by default; reasoning_effort', match: /deepseek/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: true, def: 'high' },
           cells: {
-            mode:        { url: 'https://api-docs.deepseek.com/api/create-chat-completion/', path: 'thinking.type', values: 'enabled | disabled; on by default (effort high)', note: 'Our writer: off -> thinking:{type: "disabled"}; otherwise enabled + reasoning_effort.' },
-            level:       { url: 'https://api-docs.deepseek.com/api/create-chat-completion/', path: 'reasoning_effort', values: 'low | high | max; default high (the thinking-mode guide also lists none)', note: 'Nearest-in-vocabulary clamps: medium -> low, xhigh -> high (tie -> lower).' },
+            mode:        { url: TM_THINK_URL.dChat, path: 'thinking.type', values: 'enabled | disabled; on by default (effort high)', note: 'Our writer: off -> thinking:{type: "disabled"}; otherwise enabled + reasoning_effort.' },
+            level:       { url: TM_THINK_URL.dChat, path: 'reasoning_effort', values: 'low | high | max; default high (the thinking-mode guide also lists none). OpenRouter lists exactly [max, high, low] for the DATED ids (deepseek-v4-pro-0813, deepseek-v4-flash-0731) -- but [xhigh, high] for the undated aliases deepseek-v4-pro / deepseek-v4-flash: graylisted, pick the dated id', note: 'Nearest-in-vocabulary clamps: medium -> low, xhigh -> high (tie -> lower).' },
             display:     { na: true, reason: 'reasoning_content is always returned when thinking is enabled; no display switch' },
             per_message: { na: true, reason: 'not offered; a level change is a top-level field edit' },
-            usage:       { url: 'https://api-docs.deepseek.com/guides/thinking_mode/', path: 'choices[].message.reasoning_content (TEXT) + usage.completion_tokens_details.reasoning_tokens', values: 'DeepSeek has reported reasoning_tokens in usage since the V3 reasoner -- \u2705 where present, \u2248 bytes-estimate otherwise; verify on the next row', note: 'reasoning_content must be replayed in multi-turn (Fix 26).' },
-            output_cap:  { url: 'https://api-docs.deepseek.com/api/create-chat-completion/', path: 'max_tokens', values: 'includes reasoning tokens', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.dThinking, path: 'choices[].message.reasoning_content (TEXT) + usage.completion_tokens_details.reasoning_tokens', values: 'DeepSeek has reported reasoning_tokens in usage since the V3 reasoner -- \u2705 where present, \u2248 bytes-estimate otherwise; verify on the next row', note: 'reasoning_content must be replayed in multi-turn (Fix 26).' },
+            output_cap:  { url: TM_THINK_URL.dChat, path: 'max_tokens', values: 'includes reasoning tokens', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'Z.ai (GLM)', hosts: /bigmodel|z\.ai/, verified: '2026-09-06',
-      extra: [ { label: 'Deep thinking capability overview', url: 'https://docs.z.ai/guides/capabilities/thinking' } ],
+    { provider: 'Z.ai (GLM)', kind: 'direct', hosts: /bigmodel|z\.ai/, verified: '2026-09-06',
+      extra: [ { label: 'Deep thinking capability overview', url: TM_THINK_URL.zThinking } ],
       entries: [
         { models: 'GLM-5.3 and later -- always on; reasoning_effort', match: /glm-(5[-.][3-9]|[6-9])/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: false, def: 'max' },
           cells: {
-            mode:        { url: 'https://docs.z.ai/guides/llm/glm-5.3', path: 'thinking.type', values: 'enabled only -- "If your application currently uses thinking.type: \"disabled\", please change it to enabled and set reasoning_effort to low before updating the model ID to glm-5.3. Otherwise, the request will fail."', note: 'Our writer: off -> reasoning_effort low (the vendor\'s own migration advice).' },
-            level:       { url: 'https://docs.z.ai/guides/llm/glm-5.3', path: 'reasoning_effort', values: 'low | high | max; default max (page, 2026-09-06)', note: 'Until v4.390 the provider-default readout said "not stated"; the page states max. Nearest-in-vocabulary clamps (medium -> low, xhigh -> high).' },
+            mode:        { url: TM_THINK_URL.zGlm53, path: 'thinking.type', values: 'enabled only -- "If your application currently uses thinking.type: "disabled", please change it to enabled and set reasoning_effort to low before updating the model ID to glm-5.3. Otherwise, the request will fail."', note: 'Our writer: off -> reasoning_effort low (the vendor\'s own migration advice).' },
+            level:       { url: TM_THINK_URL.zGlm53, path: 'reasoning_effort', values: 'low | high | max; default max (page, 2026-09-06; OpenRouter agrees: [max, high, low], mandatory, default max)', note: 'Until v4.390 the provider-default readout said "not stated"; the page states max. Nearest-in-vocabulary clamps (medium -> low, xhigh -> high).' },
             display:     { na: true, reason: 'reasoning_content is returned whenever the model reasons (always, on 5.3); no display switch' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://docs.z.ai/guides/llm/glm-5.3', path: 'choices[].message.reasoning_content (TEXT)', values: 'no reasoning-token count named on the page -- bytes-estimate (\u2248)', note: 'Evidence \u2248 on this host.' },
-            output_cap:  { url: 'https://docs.z.ai/guides/llm/glm-5.3', path: 'max_tokens', values: 'up to 128K output (page)', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.zGlm53, path: 'choices[].message.reasoning_content (TEXT)', values: 'no reasoning-token count named on the page -- bytes-estimate (\u2248)', note: 'Evidence \u2248 on this host.' },
+            output_cap:  { url: TM_THINK_URL.zGlm53, path: 'max_tokens', values: 'up to 128K output (page)', note: 'Never cap output on a reasoning model.' }
           } },
         { models: 'GLM-5.2 and earlier (GLM-4.x / 5.0-5.2) -- thinking.type on / off', match: /glm-(4|5(?![-.][3-9]))/, verified: '2026-09-06',
+          vocab: { kind: 'toggle', levels: [], canDisable: true, def: null },
           cells: {
-            mode:        { url: 'https://docs.z.ai/guides/capabilities/thinking', path: 'thinking.type', values: 'enabled | disabled', note: 'Our writer: on / off only here.' },
-            level:       { na: true, reason: 'on / off only -- no effort vocabulary before GLM-5.3' },
+            mode:        { url: TM_THINK_URL.zThinking, path: 'thinking.type', values: 'enabled | disabled', note: 'Our writer: on / off only here. (OpenRouter lists [xhigh, high] for z-ai/glm-5.2 -- a rot hint; graylisted range.)' },
+            level:       { na: true, reason: 'on / off only -- no effort vocabulary before GLM-5.3 per Z.ai\'s pages' },
             display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no separate switch' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://docs.z.ai/guides/capabilities/thinking', path: 'choices[].message.reasoning_content (TEXT)', values: 'bytes-estimate (\u2248)', note: 'Evidence \u2248 on this host.' },
-            output_cap:  { url: 'https://docs.z.ai/guides/capabilities/thinking', path: 'max_tokens', values: 'model dependent', note: 'Never cap output on a reasoning model.' }
+            usage:       { url: TM_THINK_URL.zThinking, path: 'choices[].message.reasoning_content (TEXT)', values: 'bytes-estimate (\u2248)', note: 'Evidence \u2248 on this host.' },
+            output_cap:  { url: TM_THINK_URL.zThinking, path: 'max_tokens', values: 'model dependent', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'Alibaba (Qwen)', hosts: /dashscope|aliyun/, verified: '2026-09-06',
+    { provider: 'Alibaba (Qwen)', kind: 'direct', hosts: /dashscope|aliyun/, verified: '2026-09-06',
+      extra: [ { label: 'Model pricing table (lists qwen3.8-max with Non-Thinking and Thinking modes)', url: TM_THINK_URL.qPricing } ],
       entries: [
-        { models: 'Qwen3.8 (max / flash) and Qwen3.5-3.7 -- enable_thinking + thinking_budget, and reasoning_effort', match: /qwen/, verified: '2026-09-06', partial: true,
+        { models: 'Qwen3.8 (max / flash / 27b / 2.4t-a95b) and Qwen3.5-3.7 -- enable_thinking + thinking_budget, and reasoning_effort', match: /qwen/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: [], canDisable: null, def: null, insufficient: 'Alibaba\'s deep-thinking guide and model list do not mention Qwen3.8 in extractable form (2026-09-06); OpenRouter lists xhigh, high, medium, low, minimal (mandatory, default xhigh) for qwen/qwen3.8-max-0902 and xhigh, medium, low for 27b / 2.4t-a95b; Alibaba\'s pricing table says qwen3.8-max has Non-Thinking and Thinking modes' },
           cells: {
-            mode:        { url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', path: 'enable_thinking', values: 'true | false; default true on Qwen3.8 (page); "some models only support thinking mode and cannot disable it"', note: 'PARTIAL: two text extractions of this page disagreed on details on 2026-09-06 -- read the page before relying on a default.' },
-            level:       { url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', path: 'reasoning_effort (low | medium | high) and / or thinking_budget (integer); reasoning_effort takes precedence', values: 'Qwen3.5-3.8 document reasoning_effort; thinking_budget caps the reasoning tokens', note: 'Our writer still sends enable_thinking + thinking_budget (documented and valid); switching to reasoning_effort is a follow-up (TM_THINK_LOCAL_BASIS.qwen = docs-partial).' },
-            display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no display switch' },
+            mode:        { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'the deep-thinking guide documents enable_thinking true | false for the Qwen3 line but does not mention Qwen3.8 in extractable form; Alibaba\'s pricing table lists qwen3.8-max with Non-Thinking and Thinking modes, while OpenRouter marks qwen3.8-max-0902 mandatory -- unresolved' },
+            level:       { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'the deep-thinking guide documents reasoning_effort low | medium | high (taking precedence over thinking_budget) for the Qwen3 line, but no Qwen3.8 row could be read; OpenRouter lists xhigh, high, medium, low, minimal for qwen3.8-max-0902 (default xhigh) and xhigh, medium, low for 27b / 2.4t-a95b. Our writer still sends enable_thinking + thinking_budget (TM_THINK_LOCAL_BASIS.qwen = docs-partial)' },
+            display:     { na: true, reason: 'reasoning_content is returned whenever thinking is enabled; no display switch (Qwen3 line)' },
             per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', path: 'choices[].message.reasoning_content (TEXT) + a usage reasoning-token count (the page names reasoning tokens; exact nesting not verified)', values: '\u2248 bytes-estimate at minimum; \u2705 if the count is present', note: 'Observe the next row.' },
-            output_cap:  { url: 'https://www.alibabacloud.com/help/en/model-studio/deep-thinking', path: 'max_tokens (answer) -- thinking_budget caps the reasoning part separately', values: 'per model', note: 'Never cap output on a reasoning model.' }
+            usage:       { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'reasoning_content text is documented for the Qwen3 line; whether usage carries a reasoning-token count for Qwen3.8 was not readable' },
+            output_cap:  { insufficient: true, url: TM_THINK_URL.qDeep, reason: 'max_tokens for the answer and thinking_budget for the reasoning part per the Qwen3 line; Qwen3.8 limits not readable' }
           } }
       ] },
-    { provider: 'DeepInfra (aggregator, OpenAI-compatible)', hosts: /deepinfra/, verified: '2026-09-06',
-      entries: [
-        { models: 'any hosted open-weight model (DeepSeek V4, GLM, Kimi K3, Qwen, Ling ...) through DeepInfra\'s OpenAI-compatible door', match: /./, verified: '2026-09-06',
-          cells: {
-            mode:        { url: 'https://docs.deepinfra.com/chat/reasoning', path: 'reasoning_effort: none (off) / reasoning.enabled', values: 'DeepInfra exposes its OWN switch (effort none, or a reasoning object); vendor-native extras (thinking.type / enable_thinking) pass through unverified. "Not all models support reasoning; using unsupported parameters on a non-reasoning model has no effect."', note: 'Reasoning Models page, read 2026-09-06 -- the first time DeepInfra was documented here rather than guessed.' },
-            level:       { url: 'https://docs.deepinfra.com/chat/reasoning', path: 'reasoning_effort', values: 'none | low | medium | high -- DeepInfra\'s vocabulary, NOT the vendor\'s (Kimi K3 native is low | high | max): max / xhigh are not listed here', note: 'Our writer treats DeepInfra as an unverified passthrough (flagged in the override notes); clamping to DeepInfra\'s four words is a logged follow-up, not done in v4.390.' },
-            display:     { na: true, reason: 'no display switch documented; "the reasoning trace is produced alongside the response by default" (reasoning_content)' },
-            per_message: { na: true, reason: 'not offered' },
-            usage:       { url: 'https://docs.deepinfra.com/chat/reasoning', path: 'choices[].message.reasoning_content + a usage reasoning-token count (page: usage reports reasoning tokens)', values: 'per model -- observe the next row (\u2705 or \u2248)', note: 'Evidence depends on the hosted model.' },
-            output_cap:  { url: 'https://docs.deepinfra.com/chat/reasoning', path: 'max_tokens', values: 'per model', note: 'Never cap output on a reasoning model.' }
-          } }
-      ] }
+    { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', hosts: /deepinfra/, verified: '2026-09-06',
+      notes: 'Not analyzed (TM_THINK_GRAYLIST.providers). What its Reasoning Models page says (read 2026-09-06): its OWN reasoning_effort vocabulary none | low | medium | high on DeepSeek-V4 Flash / Pro, GLM-5.2, Kimi-K3, Ling-3.0-flash (Kimi K3\'s native max is not in it); also a reasoning object; reasoning_content returned by default; usage reports reasoning tokens; "Not all models support reasoning; using unsupported parameters on a non-reasoning model has no effect." No verified verbatim-forwarding rule -- identical words may not mean identical behaviour, so no match test is attempted. Our writer treats DeepInfra as a flagged passthrough.',
+      extra: [ { label: 'Reasoning Models (its own reasoning_effort none | low | medium | high) -- not analyzed', url: TM_THINK_URL.iReasoning } ],
+      entries: [] }
   ];
+  // (v4.391) THE GRAYLIST -- things set aside on purpose, so the map and the audit say so instead of leaving a gap.
+  // Three buckets, each a flat, prose-identified list (the agent is the smart part; this is not a taxonomy):
+  //   ranges    -- model ranges Dan will not use (identified by the EXACT `models` string of a registry entry; a test
+  //                enforces the 1:1 match so the two lists cannot drift). Their cells stay in the registry and render in
+  //                the map's bottom GRAYLIST section; they do not drive the banner date; audit rows on them are marked.
+  //   providers -- providers not analyzed (by provider name + kind). No table rows; listed above the banner (line 4)
+  //                and at the bottom of the map; audit rows on their hosts read NOT ANALYZED.
+  //   aliases   -- generic model ids (no version / date suffix) whose intermediary catalogue row was FOUND not to be a
+  //                superset of the vendor's published vocabulary. We do NOT enumerate every alias of every family here:
+  //                an alias is added only when such a mismatch is actually found (say where and when). Line 5 above the
+  //                banner and the audit row tell Dan to pick the dated id instead.
+  var TM_THINK_GRAYLIST = {
+    ranges: [
+      { provider: 'Anthropic', models: 'Claude Mythos Preview -- adaptive, no xhigh, still accepts type: enabled', reason: 'preview model, not used' },
+      { provider: 'Anthropic', models: 'Claude Opus 4.6 / Sonnet 4.6 -- adaptive available, manual budget_tokens still accepted, thinking off unless requested', reason: 'superseded by Opus 4.7 / 4.8 and the 5.x generation' },
+      { provider: 'Anthropic', models: 'Claude Opus 4.5 / Sonnet 4.5 / Haiku 4.5 and older Claude 4 / 3.7 -- extended (manual) thinking only: budget_tokens; type: adaptive -> 400', reason: 'manual-budget generation, not used' },
+      { provider: 'OpenAI', models: 'o-series (o1 / o3 / o4-mini) -- always reason; no reasoning summaries', reason: 'superseded by gpt-5.6 / GPT-6' },
+      { provider: 'Moonshot (Kimi)', models: 'kimi-k2.6 / kimi-k2.7-code -- thinking.type on / off', reason: 'superseded by kimi-k3' },
+      { provider: 'Google (Gemini)', models: 'Gemini 2.5 (pro / flash / flash-lite) -- native generateContent; a token budget, no words', reason: 'superseded by Gemini 3.x' },
+      { provider: 'Google (Gemini)', models: 'Gemini via the OpenAI-compatible door (/v1beta/openai/chat/completions)', reason: 'Dan uses the native generateContent door' },
+      { provider: 'Z.ai (GLM)', models: 'GLM-5.2 and earlier (GLM-4.x / 5.0-5.2) -- thinking.type on / off', reason: 'superseded by GLM-5.3' }
+    ],
+    providers: [
+      { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', short: 'DeepInfra', reason: 'not analyzed: its own reasoning_effort vocabulary (none | low | medium | high) and no verified verbatim-forwarding rule -- identical words may not mean identical behaviour; rarely used' }
+    ],
+    aliases: [
+      { provider: 'DeepSeek', label: 'DeepSeek undated aliases (deepseek-v4-pro / deepseek-v4-flash without the date suffix)', avoid: 'deepseek/deepseek-v4-pro', prefer: 'deepseek/deepseek-v4-pro-0813', match: /deepseek-v4-(pro|flash)(:[a-z]+)?$/, found: '2026-09-06',
+        reason: 'OpenRouter\'s catalogue row for the alias lists xhigh, high -- not a subset of DeepSeek\'s own published max, high, low: xhigh is not a DeepSeek word, and low / max would be remapped by OpenRouter in an undocumented way. The dated ids (deepseek-v4-pro-0813, deepseek-v4-flash-0731) list max, high, low and match exactly.' }
+    ]
+  };
+  var TM_THINK_FAMILY_PROVIDER = { claude: 'Anthropic', openai: 'OpenAI', kimi: 'Moonshot (Kimi)', gemini: 'Google (Gemini)', grok: 'xAI (Grok)', deepseek: 'DeepSeek', glm: 'Z.ai (GLM)', qwen: 'Alibaba (Qwen)' };
+  function tmThinkDocsProviderByName(name) { for (var i = 0; i < TM_THINK_DOCS_REGISTRY.length; i++) if (TM_THINK_DOCS_REGISTRY[i].provider === name) return TM_THINK_DOCS_REGISTRY[i]; return null; }
+  function tmThinkDocsIsGrayRange(providerName, models) { for (var i = 0; i < TM_THINK_GRAYLIST.ranges.length; i++) { var g = TM_THINK_GRAYLIST.ranges[i]; if (g.provider === providerName && g.models === models) return g; } return null; }
+  function tmThinkDocsIsGrayProvider(providerName) { for (var i = 0; i < TM_THINK_GRAYLIST.providers.length; i++) if (TM_THINK_GRAYLIST.providers[i].provider === providerName) return TM_THINK_GRAYLIST.providers[i]; return null; }
+  // A range is 'partial' when any of its cells is 'not enough vendor information'.
+  function tmThinkDocsEntryIsPartial(E) { try { for (var i = 0; i < TM_THINK_DOC_CATEGORIES.length; i++) { var c = E.cells && E.cells[TM_THINK_DOC_CATEGORIES[i].id]; if (c && c.insufficient) return true; } return !!(E.vocab && E.vocab.insufficient); } catch (e) { return false; } }
   // Resolve (model, host[, protocol]) -> the documented range, or null (= an explicit gap the UI names). HOST WINS: an
   // OpenRouter identity resolves to OpenRouter's entries whatever the model string says. Within a provider, entries are
   // tried in order: `match` filters on the model; `protocol` (when the caller knows the wire shape -- the audit does)
   // picks the door (OpenRouter Messages vs Chat Completions; Gemini native vs OpenAI-compat). A known host with no
-  // matching range returns null on purpose -- the UI prints '📖 no documentation entry', never a wrong one.
+  // matching range returns null on purpose -- the UI prints '\ud83d\udcd6 no documentation entry', never a wrong one.
   // @beacon[
   //   id=fix24-think-docs-entry-for,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.390) Resolves (model, host, optional protocol) to one TM_THINK_DOCS_REGISTRY entry {provider, models, verified, partial, pi, ei} or null. Host decides the provider (OpenRouter wins over the model string); match / protocol regexes pick the range and the door; a known host with no range is an explicit null shown as '📖 no documentation entry'. Feeds the per-row pointer, the 'docs:' report line and the banner's providers-in-use date.,
+  //   comment=(v4.390-v4.391) Resolves (model, host, optional protocol) to one TM_THINK_DOCS_REGISTRY entry {provider, kind, models, verified, partial, gray, pi, ei} or null. Host decides the provider (OpenRouter wins over the model string); match / protocol regexes pick the range and the door; a known host with no range is an explicit null shown as '\ud83d\udcd6 no documentation entry'. Companion tmThinkDocsVendorEntryFor(model) resolves the FIRST-PARTY range by model family regardless of route (the V of the match rule).,
   // ]
   function tmThinkDocsEntryFor(model, host, protocol) {
     try {
@@ -7320,91 +7436,166 @@
           var E = P.entries[j];
           if (E.match && !E.match.test(m)) continue;
           if (p && E.protocol && !E.protocol.test(p)) continue;
-          return { provider: P.provider, models: E.models, verified: E.verified || P.verified, partial: !!E.partial, pi: i, ei: j };
+          return { provider: P.provider, kind: P.kind, models: E.models, verified: E.verified || P.verified, partial: tmThinkDocsEntryIsPartial(E), gray: !!tmThinkDocsIsGrayRange(P.provider, E.models), pi: i, ei: j };
         }
         return null;
       }
       return null;
     } catch (e) { return null; }
   }
+  // The FIRST-PARTY range for a model, by family, whatever the route (openrouter 'anthropic/claude-fable-5.1' resolves to
+  // Anthropic's range). Protocol filters are ignored; the vendor's vocabulary does not depend on the door.
+  function tmThinkDocsVendorEntryFor(model) {
+    try {
+      var m = String(model || '').toLowerCase();
+      var fam = tmThinkChatFamily(model, '');
+      var pname = TM_THINK_FAMILY_PROVIDER[fam]; if (!pname) return null;
+      for (var i = 0; i < TM_THINK_DOCS_REGISTRY.length; i++) {
+        var P = TM_THINK_DOCS_REGISTRY[i]; if (P.provider !== pname) continue;
+        for (var j = 0; j < P.entries.length; j++) { var E = P.entries[j]; if (E.match && !E.match.test(m)) continue; return { provider: P.provider, kind: P.kind, models: E.models, verified: E.verified || P.verified, partial: tmThinkDocsEntryIsPartial(E), gray: !!tmThinkDocsIsGrayRange(P.provider, E.models), pi: i, ei: j, entry: E }; }
+        return null;
+      }
+      return null;
+    } catch (e) { return null; }
+  }
+  // The vendor vocabulary V of the match rule: {provider, models, verified, kind, levels[], canDisable, def, rules[],
+  // insufficient} from the first-party range's structured vocab; null when the family has no registry entry.
+  function tmThinkVendorVocabFor(model) {
+    var e = tmThinkDocsVendorEntryFor(model); if (!e) return null;
+    var v = e.entry.vocab || null;
+    return { provider: e.provider, models: e.models, verified: e.verified, gray: e.gray, pi: e.pi, ei: e.ei,
+      kind: v ? (v.kind || null) : null, levels: (v && v.levels) ? v.levels.slice() : [], canDisable: v ? v.canDisable : null, def: v ? (v.def || null) : null, rules: (v && v.rules) ? v.rules.slice() : [],
+      insufficient: v ? (v.insufficient || null) : 'no structured vocabulary on this registry entry' };
+  }
+  // Graylist verdicts for an identity: {provider (host not analyzed), alias (pick the dated id), range (model range set aside)}.
+  function tmThinkGraylistFor(model, host) {
+    var out = { provider: null, alias: null, range: null };
+    try {
+      var m = String(model || '').toLowerCase(), h = String(host || '').toLowerCase();
+      TM_THINK_GRAYLIST.providers.forEach(function(g) { var P = tmThinkDocsProviderByName(g.provider); if (P && P.hosts && P.hosts.test(h)) out.provider = g; });
+      TM_THINK_GRAYLIST.aliases.forEach(function(a) { if (a.match && a.match.test(m)) out.alias = a; });
+      var e = tmThinkDocsVendorEntryFor(model); if (e) out.range = tmThinkDocsIsGrayRange(e.provider, e.models);
+    } catch (e) {}
+    return out;
+  }
   // Short form of an entry's prose (the part before ' -- ') for cramped surfaces.
   function tmThinkDocsShortModels(models) { var s = String(models || ''); var k = s.indexOf(' -- '); if (k > 0) s = s.slice(0, k); return s.length > 72 ? (s.slice(0, 69) + '\u2026') : s; }
-  // Verification dates: per provider (= its oldest entry date), oldest / newest overall and the laggard. `providerNames`
-  // narrows to the providers in use (the audit banner); absent or empty = every provider (the map). ISO dates compare
-  // as strings.
+  // (v4.391) VALUE TOKENS AS CODE CHIPS (Dan: the vocabulary words are the point of the tables -- make them jump out).
+  // tmThinkChipHtml takes RAW text (escapes it) and wraps every vocabulary / mode / display token in a <code> chip;
+  // tmThinkChipText does the same with backticks for the plain-text and Markdown outputs.
+  var TM_THINK_CHIP_TOKENS = /\b(off|minimal|low|medium|high|xhigh|max|none|adaptive|enabled|disabled|summarized|omitted|true|false)\b/g;   // 'updates' (Anthropic display) deliberately absent: too common as prose
+  var TM_THINK_CHIP_STYLE = 'font-family:ui-monospace,Menlo,Consolas,monospace;font-size:10.5px;background:#2a2a3a;color:#ffe08a;border:1px solid #4a4a6a;border-radius:3px;padding:0 4px;white-space:nowrap;';
+  function tmThinkChipHtml(text) { return escapeHtml(String(text == null ? '' : text)).replace(TM_THINK_CHIP_TOKENS, function(w) { return '<code style="' + TM_THINK_CHIP_STYLE + '">' + w + '</code>'; }); }
+  function tmThinkChipText(text) { return String(text == null ? '' : text).replace(TM_THINK_CHIP_TOKENS, function(w) { return '`' + w + '`'; }); }
+  // Verification dates: per ANALYZED provider (= its oldest NON-graylisted entry date), oldest / newest overall and the
+  // laggard. `providerNames` narrows to the providers in use (the audit banner); absent or empty = every analyzed
+  // provider (the map). Graylisted ranges and not-analyzed providers never drive the date. ISO dates compare as strings.
   function tmThinkDocsDates(providerNames) {
     var per = [], oldest = null, newest = null, laggard = null;
     var narrow = (Array.isArray(providerNames) && providerNames.length) ? providerNames : null;
     for (var i = 0; i < TM_THINK_DOCS_REGISTRY.length; i++) {
       var P = TM_THINK_DOCS_REGISTRY[i];
+      if (tmThinkDocsIsGrayProvider(P.provider)) continue;
       if (narrow && narrow.indexOf(P.provider) < 0) continue;
-      var eff = null, partial = 0;
-      for (var j = 0; j < P.entries.length; j++) { var v = P.entries[j].verified || P.verified; if (!eff || v < eff) eff = v; if (P.entries[j].partial) partial++; }
+      var eff = null, partial = 0, n = 0;
+      for (var j = 0; j < P.entries.length; j++) { var E = P.entries[j]; if (tmThinkDocsIsGrayRange(P.provider, E.models)) continue; n++; var v = E.verified || P.verified; if (!eff || v < eff) eff = v; if (tmThinkDocsEntryIsPartial(E)) partial++; }
       eff = eff || P.verified;
-      per.push({ provider: P.provider, verified: eff, entries: P.entries.length, partial: partial });
+      per.push({ provider: P.provider, kind: P.kind, verified: eff, entries: n, partial: partial });
       if (!oldest || eff < oldest) { oldest = eff; laggard = P.provider; }
       if (!newest || eff > newest) newest = eff;
     }
     return { oldest: oldest, newest: newest, laggard: laggard, per: per, narrowed: !!narrow,
       headline: oldest ? ('verified ' + oldest + (newest !== oldest ? (' \u2192 ' + newest + ' (oldest: ' + laggard + ')') : '')) : 'unverified' };
   }
-  // The ONE hover for the whole banner (Dan: no hunting across ten links): every provider and every top link with its
-  // verification date, as a multi-line list. Always covers every provider, whatever the headline was narrowed to.
+  // The ONE hover for the whole banner (Dan: no hunting across ten links): every analyzed provider and every top link
+  // with its verification date, as a multi-line list; the not-analyzed providers named. Always covers every provider,
+  // whatever the headline was narrowed to.
   function tmThinkDocsVerifiedText(dates) {
     var all = tmThinkDocsDates();
     var byName = {}; all.per.forEach(function(p) { byName[p.provider] = p; });
     var L = ['DOCUMENTATION VERIFICATION DATES \u2014 when each provider\'s pages were last read against the registry (TM_THINK_DOCS_REGISTRY):'];
-    all.per.forEach(function(p) { L.push('  ' + p.verified + '  ' + p.provider + '  (' + p.entries + ' model range' + (p.entries === 1 ? '' : 's') + (p.partial ? ('; ' + p.partial + ' partially verified') : '') + ')'); });
+    all.per.forEach(function(p) { L.push('  ' + p.verified + '  ' + p.provider + '  [' + p.kind + ']  (' + p.entries + ' model range' + (p.entries === 1 ? '' : 's') + (p.partial ? ('; ' + p.partial + ' with not-enough-vendor-information cells') : '') + ')'); });
+    if (TM_THINK_GRAYLIST.providers.length) L.push('  not analyzed: ' + TM_THINK_GRAYLIST.providers.map(function(g) { return g.short + ' [' + g.kind + ']'; }).join(', '));
     L.push('');
     L.push('TOP LINKS:');
     TM_THINK_TOP_LINKS.forEach(function(l) { var p = byName[l.provider]; L.push('  ' + (p ? p.verified : '????-??-??') + '  ' + l.label + ' \u2014 ' + l.url); });
     L.push('');
-    L.push('Headline = ' + ((dates && dates.narrowed) ? 'the oldest date among the providers in use in this audit' : 'the oldest date across every provider') + '. Writer-table provenance is separate (TM_THINK_LOCAL_BASIS: ' + Object.keys(TM_THINK_LOCAL_BASIS).map(function(f) { return f + ' ' + TM_THINK_LOCAL_BASIS[f].date + (TM_THINK_LOCAL_BASIS[f].basis === 'docs-verified' ? '' : '*'); }).join(' \u00b7 ') + '; * = partial).');
+    L.push('Headline = ' + ((dates && dates.narrowed) ? 'the oldest date among the providers in use in this audit' : 'the oldest date across every analyzed provider') + '; graylisted ranges never drive it. Writer-table provenance is separate (TM_THINK_LOCAL_BASIS: ' + Object.keys(TM_THINK_LOCAL_BASIS).map(function(f) { return f + ' ' + TM_THINK_LOCAL_BASIS[f].date + (TM_THINK_LOCAL_BASIS[f].basis === 'docs-verified' ? '' : '*'); }).join(' \u00b7 ') + '; * = partial).');
     return L.join('\n');
   }
-  // Normalize one registry cell for rendering: {na, reason} or {url, path, values, note, noteFirst, noteMore}.
+  // Normalize one registry cell for rendering: {na, reason} | {insufficient, reason, url} | {url, path, values, note, noteFirst, noteMore}.
   function tmThinkDocsCellNorm(c) {
     if (!c) return { na: true, reason: 'REGISTRY GAP \u2014 no cell (the completeness test should have caught this)', missing: true };
     if (c.na) return { na: true, reason: String(c.reason || 'not applicable') };
+    if (c.insufficient) return { na: false, insufficient: true, reason: String(c.reason || 'not enough vendor information'), url: String(c.url || '') };
     var note = String(c.note || ''), nl = note.indexOf('\n');
     return { na: false, url: String(c.url || ''), path: String(c.path || ''), values: String(c.values || ''), note: note, noteFirst: nl >= 0 ? note.slice(0, nl) : note, noteMore: nl >= 0 ? note.slice(nl + 1) : '' };
   }
-  // Pure builder behind the 📖 sub-modal and its \u2318 Copy: {sections[{provider, hosts, verified, index_url, extra, pi,
-  // rows[{models, match, protocol, verified, partial, ei, cells[{id, label, group, cell}]}]}], dates, cells, na, text}.
-  // `text` is Markdown for pasting to an agent: every provider a '## ' heading, every range a '### ', every category a
-  // bullet -- 'n/a \u2014 reason' for every n/a cell.
+  // One structured-vocab summary line for a range (the map's first column and the audit's 'first-party vocabulary' line).
+  function tmThinkVocabSummary(v) {
+    if (!v) return 'no structured vocabulary';
+    if (v.insufficient) return 'not enough vendor information';
+    if (v.kind === 'budget') return 'token budget (no words)' + (v.canDisable ? ' + off' : '');
+    if (v.kind === 'toggle') return 'on / off only';
+    if (v.kind === 'gateway') return 'gateway vocabulary ' + (v.levels || []).join(', ') + (v.live ? ' \u2014 per-model list live' : '');
+    return (v.levels || []).join(', ') + (v.canDisable === true ? ' + off' : (v.canDisable === false ? ' (cannot disable)' : '')) + (v.def ? ('; default ' + v.def) : '');
+  }
+  // Pure builder behind the \ud83d\udcd6 sub-modal and its \u2318 Copy: {sections[...active providers...], gray[{provider, rows}],
+  // notAnalyzed[{provider, kind, reason, notes, extra}], aliases, dates, cells, na, insufficient, text}. `text` is
+  // Markdown for pasting to an agent: every analyzed provider a '## ' heading, every range a '### ', every category a
+  // bullet -- 'n/a \u2014 reason' for every n/a cell, 'not enough vendor information \u2014 reason' for every insufficient
+  // one -- then '## GRAYLIST' (ranges set aside, cells kept) and '## NOT ANALYZED'.
   // @beacon[
   //   id=fix24-think-docs-map,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.390) Pure builder of the Thinking documentation map from TM_THINK_DOCS_REGISTRY: normalized sections / rows / cells for the sub-modal plus a Markdown rendering (provider headings, model-range subheadings, one bullet per category with the JSON path, values, URL and dated note; 'n/a -- reason' stated positively) and the verification-date summary. Tested in the harness (U block).,
+  //   comment=(v4.390-v4.391) Pure builder of the Thinking documentation map from TM_THINK_DOCS_REGISTRY + TM_THINK_GRAYLIST: normalized sections / rows / cells for the sub-modal (active providers, then graylisted ranges, then not-analyzed providers and the alias list) plus a Markdown rendering (provider headings, model-range subheadings with the structured vocabulary, one bullet per category with the JSON path, values, URL and dated note; 'n/a -- reason' and 'not enough vendor information -- reason' stated positively) and the verification-date summary. Tested in the harness (U block).,
   // ]
   function tmBuildThinkDocsMap() {
     var dates = tmThinkDocsDates();
-    var sections = [], T = [], nNa = 0, nCells = 0;
+    var sections = [], gray = [], notAnalyzed = [], T = [], nNa = 0, nIns = 0, nCells = 0;
     T.push('# Thinking documentation map \u2014 v' + EXT_VERSION + ', built ' + new Date().toLocaleString() + ' \u2014 ' + dates.headline);
-    T.push('Per provider: ' + dates.per.map(function(p) { return p.provider + ' ' + p.verified + (p.partial ? '*' : ''); }).join(' \u00b7 ') + ' (* = a partially verified range)');
-    T.push('Link text = the JSON path on the wire; then vocabulary / default; then the dated comment. "n/a \u2014 reason" = the category does not exist on that API.');
+    T.push('Per provider: ' + dates.per.map(function(p) { return p.provider + ' [' + p.kind + '] ' + p.verified + (p.partial ? '*' : ''); }).join(' \u00b7 ') + ' (* = a range with not-enough-vendor-information cells)');
+    T.push('Our table is constructed from first-party documentation. Link text = the JSON path on the wire; then vocabulary / default; then the dated comment. "n/a \u2014 reason" = the category does not exist on that API. "not enough vendor information \u2014 reason" = it exists but the vendor\'s page could not be read cleanly.');
     T.push('');
     T.push('Categories: ' + TM_THINK_DOC_CATEGORIES.map(function(c) { return '**' + c.label + '** (' + TM_THINK_DOC_GROUPS[c.group] + '): ' + c.q; }).join(' \u00b7 '));
-    TM_THINK_DOCS_REGISTRY.forEach(function(P, pi) {
-      var sec = { provider: P.provider, hosts: String(P.hosts), verified: P.verified, index_url: P.index_url || null, extra: P.extra || [], pi: pi, rows: [] };
-      T.push(''); T.push('## ' + P.provider + ' \u2014 hosts ' + String(P.hosts) + ' \u2014 verified ' + P.verified + (P.index_url ? (' \u2014 index ' + P.index_url) : ''));
-      P.entries.forEach(function(E, ei) {
-        var row = { models: E.models, match: E.match ? String(E.match) : null, protocol: E.protocol ? String(E.protocol) : null, verified: E.verified || P.verified, partial: !!E.partial, ei: ei, cells: [] };
-        T.push(''); T.push('### ' + E.models + ' \u2014 ' + (E.partial ? 'partially verified ' : 'verified ') + row.verified + (row.match ? (' \u2014 match ' + row.match) : '') + (row.protocol ? (' \u2014 protocol ' + row.protocol) : ''));
-        TM_THINK_DOC_CATEGORIES.forEach(function(cat) {
-          var c = tmThinkDocsCellNorm(E.cells && E.cells[cat.id]); nCells++;
-          row.cells.push({ id: cat.id, label: cat.label, group: cat.group, cell: c });
-          if (c.na) { nNa++; T.push('- **' + cat.label + '**: n/a \u2014 ' + c.reason); }
-          else { T.push('- **' + cat.label + '**: `' + c.path + '` \u2014 ' + c.values + ' \u2014 ' + c.url); if (c.note) T.push('  ' + c.note.replace(/\n/g, '\n  ')); }
-        });
-        sec.rows.push(row);
+    function renderRow(P, E, ei, into, prefix) {
+      var row = { provider: P.provider, models: E.models, match: E.match ? String(E.match) : null, protocol: E.protocol ? String(E.protocol) : null, verified: E.verified || P.verified, partial: tmThinkDocsEntryIsPartial(E), vocab: E.vocab || null, vocabText: tmThinkVocabSummary(E.vocab), gray: tmThinkDocsIsGrayRange(P.provider, E.models), ei: ei, pi: TM_THINK_DOCS_REGISTRY.indexOf(P), cells: [] };
+      T.push(''); T.push('### ' + (prefix || '') + E.models + ' \u2014 verified ' + row.verified + (row.partial ? ' (some cells: not enough vendor information)' : '') + ' \u2014 vocabulary: ' + tmThinkChipText(row.vocabText) + (row.match ? (' \u2014 match ' + row.match) : '') + (row.protocol ? (' \u2014 protocol ' + row.protocol) : '') + (row.gray ? (' \u2014 GRAYLISTED: ' + row.gray.reason) : ''));
+      TM_THINK_DOC_CATEGORIES.forEach(function(cat) {
+        var c = tmThinkDocsCellNorm(E.cells && E.cells[cat.id]); nCells++;
+        row.cells.push({ id: cat.id, label: cat.label, group: cat.group, cell: c });
+        if (c.na) { nNa++; T.push('- **' + cat.label + '**: n/a \u2014 ' + tmThinkChipText(c.reason)); }
+        else if (c.insufficient) { nIns++; T.push('- **' + cat.label + '**: not enough vendor information \u2014 ' + tmThinkChipText(c.reason) + (c.url ? (' \u2014 ' + c.url) : '')); }
+        else { T.push('- **' + cat.label + '**: `' + c.path + '` \u2014 ' + tmThinkChipText(c.values) + ' \u2014 ' + c.url); if (c.note) T.push('  ' + tmThinkChipText(c.note).replace(/\n/g, '\n  ')); }
       });
+      into.push(row);
+      return row;
+    }
+    TM_THINK_DOCS_REGISTRY.forEach(function(P, pi) {
+      var gp = tmThinkDocsIsGrayProvider(P.provider);
+      if (gp) { notAnalyzed.push({ provider: P.provider, short: gp.short, kind: P.kind, reason: gp.reason, notes: P.notes || '', extra: P.extra || [], hosts: String(P.hosts), pi: pi }); return; }
+      var sec = { provider: P.provider, kind: P.kind, hosts: String(P.hosts), verified: P.verified, index_url: P.index_url || null, extra: P.extra || [], pi: pi, rows: [] };
+      var grayRows = [];
+      T.push(''); T.push('## ' + P.provider + ' [' + P.kind + '] \u2014 hosts ' + String(P.hosts) + ' \u2014 verified ' + P.verified + (P.index_url ? (' \u2014 index ' + P.index_url) : ''));
+      P.entries.forEach(function(E, ei) { if (tmThinkDocsIsGrayRange(P.provider, E.models)) grayRows.push({ E: E, ei: ei }); else renderRow(P, E, ei, sec.rows, ''); });
       if (sec.extra.length) { T.push(''); T.push('Also: ' + sec.extra.map(function(x) { return x.label + ' ' + x.url; }).join(' \u00b7 ')); }
       sections.push(sec);
+      if (grayRows.length) gray.push({ provider: P.provider, kind: P.kind, pi: pi, pending: grayRows, rows: [] });
     });
-    return { sections: sections, dates: dates, cells: nCells, na: nNa, text: T.join('\n') };
+    if (gray.length) {
+      T.push(''); T.push('## GRAYLIST \u2014 model ranges set aside (cells kept; they never drive the banner date)');
+      gray.forEach(function(g) { var P = TM_THINK_DOCS_REGISTRY[g.pi]; g.pending.forEach(function(x) { renderRow(P, x.E, x.ei, g.rows, P.provider + ' \u203a '); }); delete g.pending; });
+    }
+    if (notAnalyzed.length) {
+      T.push(''); T.push('## NOT ANALYZED \u2014 providers with no table rows');
+      notAnalyzed.forEach(function(n) { T.push('- **' + n.provider + '** [' + n.kind + '] \u2014 ' + tmThinkChipText(n.reason) + (n.notes ? ('\n  ' + tmThinkChipText(n.notes)) : '') + (n.extra.length ? ('\n  ' + n.extra.map(function(x) { return x.label + ' ' + x.url; }).join(' \u00b7 ')) : '')); });
+    }
+    if (TM_THINK_GRAYLIST.aliases.length) {
+      T.push(''); T.push('## ALIASES TO AVOID \u2014 generic ids whose intermediary catalogue row is not a superset of the vendor\'s vocabulary');
+      TM_THINK_GRAYLIST.aliases.forEach(function(a) { T.push('- **' + a.provider + '**: do not choose `' + a.avoid + '`; choose `' + a.prefer + '` \u2014 ' + tmThinkChipText(a.reason) + ' (found ' + a.found + ')'); });
+    }
+    return { sections: sections, gray: gray, notAnalyzed: notAnalyzed, aliases: TM_THINK_GRAYLIST.aliases, dates: dates, cells: nCells, na: nNa, insufficient: nIns, text: T.join('\n') };
   }
   // TM_THINK_VENDOR_DOCS is DERIVED: every URL the map cites, per provider, in registry order (cells first, then the
   // provider's extra links and its llms.txt index). One source of truth -- edit the registry, never this table. The
@@ -7464,12 +7655,16 @@
       return !!t[auditKey];
     } catch (e) { return false; }
   }
-  // (v4.388) The four line kinds -- ONE vocabulary for the report, the modal key and the plain text.
+  // (v4.388 -> v4.391) The line kinds -- ONE vocabulary for the report, the modal key and the plain text. v4.391 replaced
+  // the v4.386-v4.388 discrepancy kinds with the MATCH RULE's: a row's status comes from comparing the vendor's published
+  // vocabulary with the intermediary's catalogue; the writer dry-run is context, never counted.
   var TM_THINK_AUDIT_KINDS = {
-    map:  { icon: '\ud83d\udd01', label: 'MAPPED',               desc: 'The level on the LEFT is in our \ud83c\udf9b\ufe0f menu; if you pick it the writer REWRITES it before sending, and the value on the RIGHT is what actually goes over the wire. The parenthesis says who decided the mapping: OpenRouter\'s catalogue (OpenRouter identities) or the local capability table (direct identities).' },
-    asis: { icon: '\u27a1\ufe0f', label: 'SENT AS-IS, UNLISTED', desc: 'The level is in our menu and goes out VERBATIM -- nothing rewrites it -- but OpenRouter\'s catalogue does not list it for this model, so the host may reject it or silently reinterpret it. Check the vendor docs; the next row\'s \ud83c\udf9b\ufe0f/\ud83e\uddee glyphs show what really happened.' },
-    ok:   { icon: '\u2705', label: 'SENT AS-IS, LISTED',   desc: 'Levels in our menu that go out verbatim AND that OpenRouter lists as accepted for this model. Nothing to resolve.' },
-    info: { icon: '\u2139\ufe0f', label: 'INFO',                 desc: 'Not about a menu pick: levels OpenRouter lists that our menu never puts on the wire (a stale local table, or a deliberate clamp), OpenRouter\'s reported default, and the local table\'s provenance.' }
+    gap:  { icon: '\u26a0\ufe0f', label: 'UNKNOWN MAPPING',       desc: 'A word in the vendor\'s published vocabulary that the intermediary does not list for this model id: how the intermediary remaps it is undocumented. WARNING when the word is medium or higher, NOTE for off / minimal / low. Only possible on an intermediary route (OpenRouter).' },
+    ok:   { icon: '\u2705', label: 'MATCH / DIRECT',              desc: 'MATCH (intermediary route): every word in the vendor\'s published vocabulary is in the intermediary\'s list for this id, so every word we offer is forwarded verbatim. DIRECT: no intermediary on the wire -- the first-party vocabulary goes out as-is; nothing is mapped.' },
+    hint: { icon: '\ud83d\udd0e', label: 'ROT HINT',              desc: 'The two sources differ in a way that maps nothing: the intermediary lists a word the vendor\'s page does not (or, on a direct route, either side has a word the other lacks). Check the vendor page; if it changed, update the registry. Never a warning.' },
+    map:  { icon: '\ud83d\udd01', label: 'WRITER DRY-RUN',        desc: 'What today\'s fixed 7-level menu does to each pick before the wire (the real writer, dry-run). Context only -- never counted. Goes away once the menus are table-driven (v4.392).' },
+    gray: { icon: '\u2b1c', label: 'GRAYLISTED',                 desc: 'On TM_THINK_GRAYLIST: a generic alias id to avoid (pick the dated id), a model range Dan will not use, or a provider not analyzed.' },
+    info: { icon: '\u2139\ufe0f', label: 'INFO',                  desc: 'The first-party vocabulary with its verification date, the defaults both sources report, the writer table\'s provenance, and why a row is not comparable.' }
   };
   var TM_THINK_AUDIT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
@@ -7524,14 +7719,25 @@
     } catch (e) { return null; }
   }
   // Pure report builder (tested in the harness).
-  // rows: [{ model, host, proxy, route, idKey, auditKey, orId, orCaps, status, severity, tombstoned, levels[], lines[{kind, text, level, disc}] }]
-  // status: 'disagree' | 'agree' | 'not-in-catalogue' | 'not-loaded' | 'no-vocabulary' | 'unknown-family'.
-  // severity on 'disagree' rows: 'warn' when any DISCREPANT level is medium or higher, else 'note'.
+  // (v4.391) THE MATCH RULE. Two sources of truth about a model's thinking vocabulary: the vendor's own pages (the
+  // first-party table -- TM_THINK_DOCS_REGISTRY vocab, V) and, on an intermediary route, the intermediary's catalogue
+  // (OpenRouter /api/v1/models, I). 'off' is a member of either set when thinking can be disabled there (vendor:
+  // canDisable; OpenRouter: mandatory false or 'none' listed). V ⊆ I -> MATCH: every word we offer passes through
+  // verbatim (OpenRouter's documented rule). V \ I -> UNKNOWN MAPPING: the intermediary remaps those words by rules we
+  // do not know -- WARNING when a medium-or-higher word is involved, NOTE for off / minimal / low. I \ V -> a ROT HINT
+  // (info): the intermediary lists a word the first-party page does not -- check the page. Direct routes have no
+  // intermediary: nothing is mapped, never a mapping warning; the catalogue is a rot hint only. A missing piece
+  // (catalogue not loaded / id not in it / no per-model list / not enough vendor information / no first-party entry)
+  // -> NOT COMPARABLE with the reason; a graylisted provider -> NOT ANALYZED. The writer dry-run stays as one
+  // informational line (what today's menu does to each pick) until the menus are table-driven (v4.392).
+  // rows: [{ model, host, proxy, route, protocol, idKey, auditKey, orId, orCaps, vendor, gray, docs, status, reason,
+  //          severity, words[], hints, tombstoned, lines[{kind, text, level, disc}] }]
+  // status: 'unknown-mapping' (severity 'warn' | 'note') | 'match' | 'direct' | 'not-comparable' | 'not-analyzed'.
   // @beacon[
   //   id=fix24-think-audit-report,
   //   slice_labels=tm-thinking-control,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=(v4.386-v4.388) Pure builder behind the \u2696 Think Audit modal. For every identity actually used it DRY-RUNS the real writer for each of the 7 dropdown levels and reports per level what happens to the pick -- \ud83d\udd01 MAPPED (to what, by whom), \u27a1\ufe0f SENT AS-IS but unlisted by OpenRouter, \u2705 sent as-is and listed, \u2139\ufe0f info -- with WARNING/NOTE severity (medium+ involved), tombstones excluded from the live count, and a plain-text rendering.,
+  //   comment=(v4.386-v4.391) Pure builder behind the \u2696 Think Audit modal. v4.391: THE MATCH RULE -- per identity, the vendor's published vocabulary V (registry vocab, off included when it can be disabled) against the intermediary's catalogue list I (OpenRouter, off when mandatory is false): V subset of I = MATCH (forwarded verbatim), V minus I = UNKNOWN MAPPING (WARNING for medium+, NOTE otherwise), I minus V = rot hint; direct routes are never mapped (hints only); missing pieces = NOT COMPARABLE with the reason; graylisted providers = NOT ANALYZED; graylisted aliases / ranges are marked. The writer dry-run is one informational line. Tombstones excluded from the live count; plain-text rendering with value tokens in backticks.,
   // ]
   function tmBuildThinkAuditReport() {
     var st = tmReadOrReasoningCaps();
@@ -7543,99 +7749,119 @@
       var m = models[i];
       var isOR = /openrouter/i.test(m.host);
       var row = { model: m.model, host: m.host, proxy: m.proxy, idKey: m.idKey, auditKey: m.auditKey, route: (m.proxy ? 'proxy\u2192' : '') + m.host + (isOR ? ' (OpenRouter)' : ' (direct)'),
-        status: 'unknown-family', severity: null, tombstoned: !!tombs[m.auditKey], levels: [], lines: [], orId: null, orCaps: null, protocol: tmThinkAuditProtocolFor(m), vendorDocs: null };
-      function line(kind, text, level, disc) { row.lines.push({ kind: kind, text: text, level: level || null, disc: !!disc }); if (disc && level) row.levels.push(level); }
-      row.docs = tmThinkDocsEntryFor(m.model, m.host, row.protocol);   // (v4.390) the 📖 pointer: which documented range this identity resolves to (null = an explicit gap)
+        status: 'not-comparable', reason: '', severity: null, tombstoned: !!tombs[m.auditKey], words: [], hints: 0, lines: [], orId: null, orCaps: null, protocol: tmThinkAuditProtocolFor(m), vendorDocs: null, docs: null, vendor: null, gray: null };
+      function line(kind, text, level, disc) { row.lines.push({ kind: kind, text: text, level: level || null, disc: !!disc }); if (disc && level) row.words.push(level); }
+      row.docs = tmThinkDocsEntryFor(m.model, m.host, row.protocol);   // the \ud83d\udcd6 pointer for the ROUTE (OpenRouter's own entry on OR identities)
+      row.gray = tmThinkGraylistFor(m.model, m.host);
+      var V = tmThinkVendorVocabFor(m.model);                          // the FIRST-PARTY vocabulary, by family, whatever the route
+      row.vendor = V;
       // OpenRouter's view of this model (exact id on OR identities; mapped id on direct ones).
       var orc = null;
       if (isOR) { orc = tmOrReasoningCapsFor(m.model); row.orId = m.model; }
       else { var f = tmOrCapsForDirect(m.model, m.host); orc = f.caps; row.orId = f.orId; row.orCandidates = f.candidates; }
       row.orCaps = orc;
-      var loc = isOR ? null : tmThinkLocalCapsForDirect(m.model, m.host);
-      if (!isOR && !loc) { row.status = 'unknown-family'; line('info', 'no local capability table for this model family -- nothing to compare', null, false); rows.push(row); continue; }
-      if (!orc) {
-        row.status = cat.loaded ? 'not-in-catalogue' : 'not-loaded';
-        line('info', cat.loaded ? ('not in OpenRouter\'s catalogue' + (isOR ? '' : (' (tried ' + (row.orCandidates || []).join(', ') + ')')) + ' -- the menu falls back to the local table') : 'OpenRouter catalogue not loaded (fetch pending or failed)', null, false);
-      }
-      var orE = (orc && orc.efforts.length) ? orc.efforts.filter(function(e) { return e !== 'none'; }) : [];
-      // DRY-RUN every level through the real writer.
-      var sentSet = {}, okLevels = [];
-      for (var li = 0; li < TM_THINK_AUDIT_LEVELS.length; li++) {
-        var lv = TM_THINK_AUDIT_LEVELS[li];
-        var rep = tmThinkAuditDryRun(m, lv);
-        var cl = tmThinkAuditClampFor(rep, lv);
-        if (cl) {
-          var byOR = /OpenRouter/i.test(cl.reason) || /OpenRouter/i.test(cl.raw);
-          sentSet[cl.to.toLowerCase()] = 1;
-          // A local clamp of a level OpenRouter ALSO does not list is not a disagreement -- both sides agree it is
-          // unavailable. A local clamp of a level OpenRouter DOES list is (the table may be stale).
-          var discMap = isOR ? true : (orE.length ? (lv !== 'off' && orE.indexOf(lv) >= 0) || (lv === 'off' && orc && orc.mandatory === false) : false);
-          line('map', lv + ' \u2192 ' + cl.to + ' (' + (byOR ? 'mapped per OpenRouter\'s catalogue' : 'mapped by the local table') + (cl.reason ? ('; ' + cl.reason) : '') + ')' + (discMap && !isOR ? ' \u2014 but OpenRouter lists ' + lv + ' for this model; the local table may be stale' : ''), lv, discMap);
-          continue;
+      var orWords = (orc && orc.efforts.length) ? orc.efforts.filter(function(e) { return e !== 'none'; }) : [];
+      var orHasOff = !!orc && (orc.mandatory === false || orc.efforts.indexOf('none') >= 0);
+      var Ifull = orWords.concat(orHasOff ? ['off'] : []);
+      var Vfull = (V && !V.insufficient && V.kind === 'effort') ? V.levels.concat(V.canDisable ? ['off'] : []) : null;
+      // ---- status by the match rule ----
+      if (row.gray.provider) {
+        row.status = 'not-analyzed'; row.reason = row.gray.provider.short + ' [' + row.gray.provider.kind + '] is not analyzed';
+        line('info', 'provider not analyzed (graylisted): ' + row.gray.provider.reason + ' \u2014 no first-party comparison is attempted on this host', null, false);
+      } else if (!V) {
+        row.status = 'not-comparable'; row.reason = 'no first-party entry for this model family';
+        line('info', 'no first-party (vendor) entry for this model family in TM_THINK_DOCS_REGISTRY \u2014 nothing to compare; tell the agent to add one', null, false);
+      } else if (V.insufficient) {
+        row.status = 'not-comparable'; row.reason = 'not enough vendor information';
+        line('info', 'not enough vendor information for ' + V.provider + ' \u203a ' + tmThinkDocsShortModels(V.models) + ': ' + V.insufficient, null, false);
+        if (isOR && orc && orWords.length) line('info', 'OpenRouter lists [' + orWords.join(', ') + ']' + (orc.mandatory ? ' (mandatory)' : ' (+ off)') + ' for ' + row.orId + ' \u2014 the only vocabulary on this route until the vendor page is read', null, false);
+      } else if (V.kind !== 'effort') {
+        row.status = isOR ? 'not-comparable' : 'direct'; row.reason = isOR ? ('no word vocabulary to compare: the vendor uses ' + tmThinkVocabSummary(V)) : '';
+        line(isOR ? 'info' : 'ok', (isOR ? 'no word vocabulary to compare \u2014 ' : 'DIRECT: no intermediary \u2014 ') + V.provider + ' \u203a ' + tmThinkDocsShortModels(V.models) + ' uses ' + tmThinkVocabSummary(V) + (isOR ? '; OpenRouter converts effort words by its documented ratios / reasoning.enabled' : ''), null, false);
+      } else if (isOR) {
+        if (!orc) {
+          row.status = 'not-comparable'; row.reason = cat.loaded ? 'model id not in OpenRouter\'s catalogue' : 'OpenRouter catalogue not loaded';
+          line('info', cat.loaded ? ('not in OpenRouter\'s catalogue (' + row.orId + ') \u2014 no intermediary list to compare against; the writer falls back to the local table') : 'OpenRouter catalogue not loaded (fetch pending or failed) \u2014 no intermediary list yet', null, false);
+        } else if (orc.effortsAll) {
+          row.status = 'match'; row.reason = 'match by OpenRouter\'s general rule (no per-model list)';
+          line('ok', 'MATCH by OpenRouter\'s general rule: supported_efforts is null for ' + row.orId + ' (every gateway value accepted) \u2014 no per-model list to test; the first-party vocabulary (' + Vfull.join(', ') + ') is assumed forwarded verbatim', null, false);
+        } else if (!orWords.length) {
+          row.status = 'not-comparable'; row.reason = 'OpenRouter publishes no effort vocabulary for this id';
+          line('info', 'OpenRouter publishes no effort vocabulary for ' + row.orId + ' (mandatory=' + orc.mandatory + ') \u2014 no intermediary list to compare against', null, false);
+        } else {
+          var missing = Vfull.filter(function(w) { return Ifull.indexOf(w) < 0; });
+          var extra = Ifull.filter(function(w) { return Vfull.indexOf(w) < 0; });
+          if (missing.length) {
+            row.status = 'unknown-mapping'; row.severity = missing.some(tmThinkAuditIsWarnLevel) ? 'warn' : 'note'; row.reason = 'first-party words OpenRouter does not list: ' + missing.join(', ');
+            missing.forEach(function(w) { line('gap', w + ' is in ' + V.provider + '\'s published vocabulary but OpenRouter does not list it for ' + row.orId + ' (lists [' + Ifull.join(', ') + ']) \u2014 how OpenRouter remaps it is undocumented', w, true); });
+          } else {
+            row.status = 'match'; row.reason = 'first-party vocabulary \u2286 OpenRouter list';
+            line('ok', 'MATCH: every first-party word (' + Vfull.join(', ') + ') is in OpenRouter\'s list for ' + row.orId + ' \u2014 forwarded verbatim', null, false);
+          }
+          extra.forEach(function(w) { row.hints++; line('hint', 'OpenRouter also lists ' + w + ' for ' + row.orId + ', which ' + V.provider + '\'s page (verified ' + V.verified + ') does not \u2014 check the page; if the vendor now supports it, update the registry', w, false); });
         }
-        // Not clamped: the level goes out as-is.
-        sentSet[lv] = 1;
-        if (!orc || !orE.length) continue;                 // nothing to compare against
-        if (lv === 'off') { if (orc.mandatory) line('asis', 'off is sent as-is (thinking disabled) -- OpenRouter says reasoning is MANDATORY on this model; the host may reject it', 'off', true); else okLevels.push('off'); continue; }
-        if (orE.indexOf(lv) >= 0) okLevels.push(lv);
-        else line('asis', lv + ' is sent as-is -- OpenRouter does not list ' + lv + ' for ' + row.orId + ' (lists [' + orE.join(', ') + ']); the host may reject or silently reinterpret it', lv, true);
+      } else {
+        row.status = 'direct'; row.reason = 'no intermediary';
+        line('ok', 'DIRECT: no intermediary \u2014 the first-party vocabulary (' + Vfull.join(', ') + ') goes out as-is; nothing is mapped', null, false);
+        if (orc && orWords.length) {
+          var miss2 = Vfull.filter(function(w) { return Ifull.indexOf(w) < 0; });
+          var extra2 = Ifull.filter(function(w) { return Vfull.indexOf(w) < 0; });
+          miss2.forEach(function(w) { row.hints++; line('hint', 'OpenRouter\'s catalogue does not list ' + w + ' for ' + row.orId + ' though ' + V.provider + '\'s page does \u2014 irrelevant on this direct route; a hint that OpenRouter is narrower or stale there', w, false); });
+          extra2.forEach(function(w) { row.hints++; line('hint', 'OpenRouter also lists ' + w + ' for ' + row.orId + ', which ' + V.provider + '\'s page (verified ' + V.verified + ') does not \u2014 check the page; if the vendor now supports it, update the registry', w, false); });
+        } else if (orc && orc.effortsAll) line('info', 'OpenRouter: supported_efforts null for ' + row.orId + ' (accepts every gateway value) \u2014 no per-model list to cross-check', null, false);
+        else if (!orc) line('info', cat.loaded ? ('not in OpenRouter\'s catalogue (tried ' + (row.orCandidates || []).join(', ') + ') \u2014 no cross-check available') : 'OpenRouter catalogue not loaded \u2014 no cross-check available', null, false);
+        else line('info', 'OpenRouter publishes no effort vocabulary for ' + row.orId + ' \u2014 no cross-check available', null, false);
       }
-      if (okLevels.length) line('ok', 'sent as-is and listed by OpenRouter: ' + okLevels.join(', '), null, false);
-      if (orc && !orE.length) line('info', orc.effortsAll ? ('OpenRouter reports supported_efforts = null for ' + row.orId + ' (mandatory=' + orc.mandatory + '): it accepts ALL gateway effort values and maps them itself -- nothing to compare on levels') : ('OpenRouter publishes no effort vocabulary for ' + row.orId + ' (mandatory=' + orc.mandatory + ') -- every level goes out as the writer decides above; nothing to compare on levels'), null, false);
-      if (orE.length) {
-        // Levels OpenRouter lists that never reach the wire -- unless a flagged 🔁 line already said so for that level.
-        var coveredDisc = {};
-        row.lines.forEach(function(l) { if (l.kind === 'map' && l.disc && l.level) coveredDisc[l.level] = 1; });
-        var never = orE.filter(function(e) { return !sentSet[e] && !coveredDisc[e]; });
-        if (never.length) never.forEach(function(e) { line('info', 'OpenRouter lists ' + e + ' for this model, but our menu never puts ' + e + ' on the wire' + (isOR ? '' : ' (the local table may be stale)'), e, true); });
-      }
-      if (orc && orc.defaultEffort) line('info', (isOR ? 'OpenRouter-reported default: ' : 'vendor default per OpenRouter: ') + orc.defaultEffort, null, false);
-      if (loc) line('info', 'local table: ' + loc.source + ' \u00b7 basis: ' + loc.basis, null, false);
-      if (orc && !orE.length && row.status === 'unknown-family') row.status = 'no-vocabulary';
-      if (orc) {
-        var disc = row.lines.some(function(l) { return l.disc; });
-        if (!orE.length) row.status = 'no-vocabulary';
-        else row.status = disc ? 'disagree' : 'agree';
-      }
-      if (row.status === 'disagree') row.severity = row.levels.some(tmThinkAuditIsWarnLevel) ? 'warn' : 'note';
-      // Vendor docs for this family (the 'third menu' -- the honest maximum: default + docs link).
+      // ---- graylist markers ----
+      if (row.gray.alias) line('gray', 'GRAYLISTED ALIAS \u2014 ' + row.gray.alias.label + ': ' + row.gray.alias.reason + ' Pick ' + row.gray.alias.prefer + ' instead.', null, false);
+      if (row.gray.range) line('gray', 'graylisted range \u2014 ' + row.gray.range.provider + ' \u203a ' + tmThinkDocsShortModels(row.gray.range.models) + ': ' + row.gray.range.reason, null, false);
+      // ---- context ----
+      if (V && !V.insufficient) line('info', 'first-party vocabulary (' + V.provider + ', verified ' + V.verified + '): ' + tmThinkVocabSummary(V) + (V.rules && V.rules.length ? (' \u2014 ' + V.rules.join('; ')) : ''), null, false);
+      if (orc && orc.defaultEffort) line('info', (isOR ? 'OpenRouter-reported default: ' : 'default per OpenRouter: ') + orc.defaultEffort + (V && V.def ? ('; first-party default: ' + V.def) : ''), null, false);
+      var dry = [];
+      for (var li = 0; li < TM_THINK_AUDIT_LEVELS.length; li++) { var lv = TM_THINK_AUDIT_LEVELS[li]; var cl = tmThinkAuditClampFor(tmThinkAuditDryRun(m, lv), lv); if (cl) dry.push(lv + ' \u2192 ' + cl.to + (cl.reason ? (' (' + cl.reason + ')') : '')); }
+      line('map', 'writer dry-run (informational until the menus are table-driven, v4.392): ' + (dry.length ? dry.join(' \u00b7 ') : 'every menu level goes out as picked'), null, false);
+      var loc = tmThinkLocalCapsForDirect(m.model, m.host);
+      if (loc) line('info', 'writer table: ' + loc.source + ' \u00b7 basis: ' + loc.basis, null, false);
       row.vendorDocs = tmThinkAuditVendorDocsFor(m.model, m.host);
       rows.push(row);
     }
-    // Order: warnings, then notes, then not-comparable, then agree. Tombstoned rows keep their place.
-    var rank = { 'disagree:warn': 0, 'disagree:note': 1, 'not-in-catalogue': 2, 'not-loaded': 3, 'no-vocabulary': 4, 'unknown-family': 5, agree: 6 };
-    function rk(r) { var k = r.status === 'disagree' ? ('disagree:' + r.severity) : r.status; return Object.prototype.hasOwnProperty.call(rank, k) ? rank[k] : 9; }
+    // Order: unknown mapping (warn, then note), not comparable, not analyzed, match, direct. Tombstoned rows keep their place.
+    var rank = { 'unknown-mapping:warn': 0, 'unknown-mapping:note': 1, 'not-comparable': 2, 'not-analyzed': 3, match: 4, direct: 5 };
+    function rk(r) { var k = r.status === 'unknown-mapping' ? ('unknown-mapping:' + r.severity) : r.status; return Object.prototype.hasOwnProperty.call(rank, k) ? rank[k] : 9; }
     rows.sort(function(a, b) { var d = rk(a) - rk(b); return d || (a.model + a.host).localeCompare(b.model + b.host); });
-    var nWarn = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn'; }).length;
-    var nNote = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'note'; }).length;
-    var nWarnLive = rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn' && !r.tombstoned; }).length;
+    var nWarn = rows.filter(function(r) { return r.status === 'unknown-mapping' && r.severity === 'warn'; }).length;
+    var nNote = rows.filter(function(r) { return r.status === 'unknown-mapping' && r.severity === 'note'; }).length;
+    var nWarnLive = rows.filter(function(r) { return r.status === 'unknown-mapping' && r.severity === 'warn' && !r.tombstoned; }).length;
     var nTomb = rows.filter(function(r) { return r.tombstoned; }).length;
-    // (v4.390) Documentation dates for the banner: the providers these rows resolve to (all providers when none do).
-    var usedDocs = {}; rows.forEach(function(r) { if (r.docs) usedDocs[r.docs.provider] = 1; });
-    var usedNames = Object.keys(usedDocs);
+    var nHints = rows.reduce(function(n, r) { return n + r.hints; }, 0);
+    // Documentation dates for the banner: the providers these rows resolve to (all analyzed providers when none do).
+    var usedDocs = {}; rows.forEach(function(r) { if (r.docs) usedDocs[r.docs.provider] = 1; if (r.vendor) usedDocs[r.vendor.provider] = 1; });
+    var usedNames = Object.keys(usedDocs).filter(function(n) { return !tmThinkDocsIsGrayProvider(n); });
     var DD = tmThinkDocsDates(usedNames);
-    // Plain text for pasting to an agent.
+    // Plain text for pasting to an agent (value tokens in backticks).
     var T = [];
-    T.push('THINK AUDIT -- OpenRouter catalogue vs the \ud83c\udf9b\ufe0f Think dropdown (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
+    T.push('THINK AUDIT -- the match rule: vendor vocabulary vs intermediary catalogue (v' + EXT_VERSION + ', ' + new Date().toLocaleString() + ')');
     T.push('OpenRouter catalogue: ' + (cat.loaded ? (cat.count + ' models, fetched ' + cat.fetched + (cat.fresh ? '' : ' (STALE, refresh pending)')) : ('NOT LOADED' + (cat.failed ? (' -- last fetch failed: ' + cat.reason) : ''))));
-    T.push('BEST-KNOWN DOCUMENTATION ' + DD.headline + ' (TM_THINK_DOCS_REGISTRY: ' + TM_THINK_DOCS_REGISTRY.length + ' providers' + (usedNames.length ? ('; in use here: ' + usedNames.join(', ')) : '; none resolved from these rows, so every provider counts') + '): ' + TM_THINK_TOP_LINKS.map(function(l) { return l.label + ' ' + l.url; }).join(' \u00b7 '));
-    T.push('DOCS VERIFIED PER PROVIDER: ' + tmThinkDocsDates().per.map(function(p) { return p.provider + ' ' + p.verified + (p.partial ? '*' : ''); }).join(' \u00b7 ') + '  (* = a partially verified range; writer-table provenance is TM_THINK_LOCAL_BASIS, printed per row as basis:)');
-    T.push(rows.length + ' identities; ' + nWarnLive + ' live WARNING (medium or higher involved)' + (nWarn !== nWarnLive ? (' + ' + (nWarn - nWarnLive) + ' tombstoned') : '') + ', ' + nNote + ' note (off/minimal/low only), ' + nTomb + ' tombstoned.');
-    T.push('KEY: ' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { return TM_THINK_AUDIT_KINDS[k].icon + ' ' + TM_THINK_AUDIT_KINDS[k].label; }).join(' \u00b7 ') + '. Arrow lines: LEFT = the level you would pick in the dropdown; RIGHT = what actually goes over the wire.');
+    T.push('OUR TABLE IS CONSTRUCTED FROM FIRST-PARTY DOCUMENTATION. Intermediaries (OpenRouter) publish their own table. Vendor vocabulary a subset of the intermediary\'s = MATCH (forwarded verbatim); a vendor word the intermediary does not list = UNKNOWN MAPPING (warning); `off` just means no thinking and is never a warning; direct routes map nothing. Provider taxonomy: direct / intermediary / host. Not analyzed: ' + (TM_THINK_GRAYLIST.providers.map(function(g) { return g.short + ' [' + g.kind + ']'; }).join(', ') || 'none') + '. Aliases to avoid: ' + (TM_THINK_GRAYLIST.aliases.map(function(a) { return '`' + a.avoid + '` (pick `' + a.prefer + '`)'; }).join(', ') || 'none') + '.');
+    T.push('BEST-KNOWN DOCUMENTATION ' + DD.headline + ' (TM_THINK_DOCS_REGISTRY: ' + tmThinkDocsDates().per.length + ' analyzed providers' + (usedNames.length ? ('; in use here: ' + usedNames.join(', ')) : '; none resolved from these rows, so every analyzed provider counts') + '): ' + TM_THINK_TOP_LINKS.map(function(l) { return l.label + ' ' + l.url; }).join(' \u00b7 '));
+    T.push('DOCS VERIFIED PER PROVIDER: ' + tmThinkDocsDates().per.map(function(p) { return p.provider + ' ' + p.verified + (p.partial ? '*' : ''); }).join(' \u00b7 ') + '  (* = a range with not-enough-vendor-information cells; writer-table provenance is TM_THINK_LOCAL_BASIS, printed per row as basis:)');
+    T.push(rows.length + ' identities; ' + nWarnLive + ' live UNKNOWN-MAPPING WARNING (medium or higher word involved)' + (nWarn !== nWarnLive ? (' + ' + (nWarn - nWarnLive) + ' tombstoned') : '') + ', ' + nNote + ' note (off / minimal / low only), ' + nHints + ' rot hint' + (nHints === 1 ? '' : 's') + ', ' + nTomb + ' tombstoned.');
+    T.push('KEY: ' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { return TM_THINK_AUDIT_KINDS[k].icon + ' ' + TM_THINK_AUDIT_KINDS[k].label; }).join(' \u00b7 ') + '.');
     T.push('');
     var lastGroup = null;
     rows.forEach(function(r) {
-      var g = r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING -- discrepancies involving medium / high / xhigh / max' : 'NOTE -- discrepancies involving only off / minimal / low') : (r.status === 'agree' ? 'AGREE' : 'NOT COMPARABLE');
+      var g = r.status === 'unknown-mapping' ? (r.severity === 'warn' ? '\u26a0\ufe0f UNKNOWN MAPPING -- WARNING: a first-party word the intermediary does not list, medium or higher' : 'UNKNOWN MAPPING -- NOTE: only off / minimal / low') : (r.status === 'not-comparable' ? 'NOT COMPARABLE -- a source is missing' : (r.status === 'not-analyzed' ? 'NOT ANALYZED -- graylisted provider' : '\u2705 MATCH / DIRECT -- nothing is mapped'));
       if (g !== lastGroup) { T.push('== ' + g + ' =='); lastGroup = g; }
-      T.push((r.tombstoned ? '\ud83e\udea6 TOMBSTONED ' : '') + '[' + r.status.toUpperCase() + (r.severity ? ('/' + r.severity.toUpperCase()) : '') + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : '') + ' \u00b7 wire: ' + r.protocol);
-      r.lines.forEach(function(l) { T.push('   ' + (TM_THINK_AUDIT_KINDS[l.kind] || {}).icon + ' ' + l.text); });
-      T.push('   \ud83d\udcd6 docs: ' + (r.docs ? (r.docs.provider + ' \u203a ' + r.docs.models + ' (' + (r.docs.partial ? 'partially ' : '') + 'verified ' + r.docs.verified + ')') : ('no documentation entry for ' + r.model + ' @ ' + r.host + ' \u2014 add one to TM_THINK_DOCS_REGISTRY')));
-      if (r.orCaps && r.orCaps.efforts.length) T.push('   OpenRouter lists: [' + r.orCaps.efforts.join(', ') + ']' + (r.orCaps.defaultEffort ? (' default ' + r.orCaps.defaultEffort) : '') + (r.orCaps.mandatory ? ' mandatory' : ''));
+      T.push((r.tombstoned ? '\ud83e\udea6 TOMBSTONED ' : '') + '[' + r.status.toUpperCase() + (r.severity ? ('/' + r.severity.toUpperCase()) : '') + (r.hints ? (' \u00b7 ' + r.hints + ' hint' + (r.hints === 1 ? '' : 's')) : '') + '] ' + r.model + ' @ ' + r.route + (r.orId && r.orId !== r.model ? (' \u2194 ' + r.orId) : '') + ' \u00b7 wire: ' + r.protocol + (r.reason ? (' \u00b7 ' + tmThinkChipText(r.reason)) : ''));
+      r.lines.forEach(function(l) { T.push('   ' + (TM_THINK_AUDIT_KINDS[l.kind] || {}).icon + ' ' + tmThinkChipText(l.text)); });
+      T.push('   \ud83d\udcd6 docs: ' + (r.docs ? (r.docs.provider + ' \u203a ' + r.docs.models + ' (verified ' + r.docs.verified + (r.docs.partial ? '; some cells: not enough vendor information' : '') + ')') : (r.gray.provider ? ('provider not analyzed (' + r.gray.provider.short + ')') : ('no documentation entry for ' + r.model + ' @ ' + r.host + ' \u2014 add one to TM_THINK_DOCS_REGISTRY'))) + (r.vendor && r.docs && r.vendor.provider !== r.docs.provider ? (' \u00b7 first-party: ' + r.vendor.provider + ' \u203a ' + r.vendor.models + ' (verified ' + r.vendor.verified + ')') : ''));
+      if (r.orCaps && r.orCaps.efforts.length) T.push('   OpenRouter lists: [' + r.orCaps.efforts.map(function(e) { return '`' + e + '`'; }).join(', ') + ']' + (r.orCaps.defaultEffort ? (' default `' + r.orCaps.defaultEffort + '`') : '') + (r.orCaps.mandatory ? ' mandatory' : ''));
     });
     T.push('');
     T.push('VENDOR DOCUMENTATION (every URL the documentation map cites, per provider -- derived from TM_THINK_DOCS_REGISTRY; if a page looks stale, tell the agent):');
     TM_THINK_VENDOR_DOCS.forEach(function(v) { v.links.forEach(function(l) { T.push('   ' + v.vendor + ' -- ' + l.label + ': ' + l.url); }); });
-    var out = { catalogue: cat, rows: rows, disagreements: nWarn + nNote, warnings: nWarn, warningsLive: nWarnLive, notes: nNote, tombstoned: nTomb, docsDates: DD, docsProvidersInUse: usedNames, text: T.join('\n') };
+    var out = { catalogue: cat, rows: rows, disagreements: nWarn + nNote, warnings: nWarn, warningsLive: nWarnLive, notes: nNote, hints: nHints, tombstoned: nTomb, docsDates: DD, docsProvidersInUse: usedNames, text: T.join('\n') };
     tmThinkAuditMemo = { ts: Date.now(), warningsLive: nWarnLive };
     return out;
   }
@@ -7663,7 +7889,7 @@
     var style = warn
       ? 'font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#3a2f0f;color:#ffd166;border:1px solid #8a6d1a;border-radius:5px;cursor:pointer;text-shadow:0 0 3px rgba(255,209,102,0.35);'
       : 'font-size:12px;font-weight:700;line-height:1;padding:3px 9px;background:#23232c;color:#aab;border:1px solid #444;border-radius:5px;cursor:pointer;';
-    return '<button type="button" data-action="show-think-audit" title="Think Audit: what happens to every \ud83c\udf9b\ufe0f Think level you could pick, per model you have used -- mapped before sending, sent as-is but unlisted by OpenRouter, or sent as-is and listed -- plus the vendor documentation links. ' + (warn ? (n + ' live warning' + (n === 1 ? '' : 's') + ' (medium or higher involved, not tombstoned).') : 'No live warnings.') + '" style="' + style + '">\u2696 Think Audit' + (warn ? (' \u26a0\ufe0f ' + n) : '') + '</button>';
+    return '<button type="button" data-action="show-think-audit" title="Think Audit -- the match rule: the vendor\'s published thinking vocabulary against OpenRouter\'s catalogue, per model you have used. The count = UNKNOWN MAPPING warnings: first-party words OpenRouter does not list (medium or higher). Plus the first-party documentation map. ' + (warn ? (n + ' live unknown-mapping warning' + (n === 1 ? '' : 's') + ' (medium or higher, not tombstoned).') : 'No live warnings.') + '" style="' + style + '">\u2696 Think Audit' + (warn ? (' \u26a0\ufe0f ' + n) : '') + '</button>';
   }
   // Display-only copy of the REAL \ud83c\udf9b\ufe0f Think level menu for an identity (same builder, identity-neutral key so no
   // override or stamped row leaks in; data-action stripped so a change does nothing).
@@ -7699,64 +7925,78 @@
     box.style.cssText = 'width:88vw;max-width:1400px;height:88vh;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
     var cat = R.catalogue;
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
-    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 what happens to each \ud83c\udf9b\ufe0f Think level you could pick, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
+    var chip = tmThinkChipHtml;
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 the match rule: vendor vocabulary vs intermediary catalogue, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f unknown-mapping warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 ' + R.hints + ' \ud83d\udd0e rot hint' + (R.hints === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
       '<span style="white-space:nowrap;"><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
-    // (v4.389) The banner Dan asked for -- (v4.390) now DERIVED from TM_THINK_DOCS_REGISTRY: the date is the oldest
-    // verified date among the providers in use (range + laggard when they differ); ONE title on the whole banner lists
-    // every provider and every top link with its date (hover anywhere -- no per-link hunting); provider chips and a
-    // 📖 button open the documentation map (a chip lands on that provider).
+    // (v4.391) THE SEAMS -- five lines Dan asked for, above the brown banner, each exposing one thing that used to confuse.
+    var seam = 'padding:5px 0;border-bottom:1px dashed #2e2e3a;line-height:1.45;';
+    h += '<div style="font-size:12px;color:#c8ccd6;margin:0 0 8px;padding:6px 10px;border:1px solid #3a3a4a;border-radius:6px;background:#17171f;">' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">Our table is constructed from first-party documentation \u2014 each vendor\'s own pages, dated and linked below.</b> OpenRouter (and any intermediary we add later) publishes its own table of what <i>its</i> translation layer accepts per model. Where the vendor\'s vocabulary is a subset of the intermediary\'s, it is a 100% match: the dropdown offers exactly the vendor\'s vocabulary, every word passes through verbatim, and there is nothing to warn about. Where the vendor has a word the intermediary does not list, we do not know how it is mapped \u2014 that is a warning, and the word is disabled on that route. <span style="color:#6f7a8a;">[the table-driven menus land in v4.392; until then the writer\'s clamp applies \u2014 see each row\'s \ud83d\udd01 dry-run line]</span></div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">' + chip('off') + ' just means "no thinking."</b> Endpoints spell it differently \u2014 ' + chip('none') + ', <code style="' + TM_THINK_CHIP_STYLE + '">type: disabled</code>, <code style="' + TM_THINK_CHIP_STYLE + '">enable_thinking: false</code>, a zero budget \u2014 and the mapping is unambiguous, so it is never a warning. Some models cannot switch thinking off at all; there ' + chip('off') + ' is simply disabled in the menu, with the reason.</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">Provider taxonomy \u2014 three kinds.</b> <b>direct</b> = the model developer\'s own API (Anthropic, OpenAI, Moonshot, Google, xAI, DeepSeek, Z.ai, Alibaba). <b>intermediary</b> = routes to others and translates (OpenRouter) \u2014 the subset test applies. <b>host</b> = serves open-weight models on its own API with its own vocabulary (DeepInfra) \u2014 its docs are first-party for that route. The TypingMind proxy is a relay, not a provider: identities are resolved to the true host.</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">Not analyzed yet \u2014 no table rows below:</b> ' + (TM_THINK_GRAYLIST.providers.length ? TM_THINK_GRAYLIST.providers.map(function(g) { return '<b>' + escapeHtml(g.short) + '</b> (' + escapeHtml(g.kind) + ') \u2014 ' + chip(g.reason); }).join('; ') : 'none') + '. Identities on these show "provider not analyzed" in the audit.</div>' +
+      '<div style="padding:5px 0;line-height:1.45;"><b style="color:#e6e6ee;">Prefer the exact, dated model id over a generic alias.</b> ' + TM_THINK_GRAYLIST.aliases.map(function(a) { return escapeHtml(a.provider) + ': do not choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.avoid) + '</code> (no date suffix) \u2014 ' + chip(a.reason) + ' Choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.prefer) + '</code>.'; }).join(' ') + ' In general, choose the most granular id \u2014 the one with the version or date \u2014 never the alias.</div>' +
+      '</div>';
+    // The banner (v4.389 -> v4.390): derived date, ONE hover on the whole banner, provider chips + the \ud83d\udcd6 map button.
     var DD = R.docsDates || tmThinkDocsDates();
     var vtitle = escapeHtml(tmThinkDocsVerifiedText(DD));
     h += '<div title="' + vtitle + '" style="display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;font-size:12px;margin:0 0 8px;padding:7px 10px;border:1px solid #6b5a1e;border-radius:6px;background:#1e1a10;"><b style="color:#ffd166;">\ud83d\udccc Documentation ' + escapeHtml(DD.headline) + '</b>' + TM_THINK_TOP_LINKS.map(function(l) { return '<a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;font-weight:600;">' + escapeHtml(l.label) + ' \u2197</a>'; }).join('<span style="color:#6f7a8a;">\u00b7</span>') +
-      '<span style="color:#6f7a8a;">|</span>' + TM_THINK_DOCS_REGISTRY.map(function(P, i) { return '<button type="button" data-action="think-docs-map" data-pi="' + i + '" style="font-size:10.5px;padding:1px 7px;background:#2a2416;color:#ffd166;border:1px solid #6b5a1e;border-radius:10px;cursor:pointer;">' + escapeHtml(P.provider) + '</button>'; }).join('') +
+      '<span style="color:#6f7a8a;">|</span>' + TM_THINK_DOCS_REGISTRY.map(function(P, i) { var gp = tmThinkDocsIsGrayProvider(P.provider); return '<button type="button" data-action="think-docs-map" data-pi="' + i + '" style="font-size:10.5px;padding:1px 7px;background:' + (gp ? '#1f1f26' : '#2a2416') + ';color:' + (gp ? '#8b93a3' : '#ffd166') + ';border:1px solid ' + (gp ? '#3a3a4a' : '#6b5a1e') + ';border-radius:10px;cursor:pointer;">' + escapeHtml(gp ? gp.short + ' (not analyzed)' : P.provider) + '</button>'; }).join('') +
       '<button type="button" data-action="think-docs-map" style="font-size:11px;font-weight:700;padding:2px 9px;background:#3a2f0f;color:#ffd166;border:1px solid #8a6d1a;border-radius:5px;cursor:pointer;">\ud83d\udcd6 Documentation map</button>' +
       '<span style="color:#8b93a3;font-size:11px;">\u2014 hover anywhere on this banner for every verification date; a chip opens the field-by-field map at that provider; \ud83d\udcd6 on a row opens its exact entry. If a page looks stale, tell the agent (TM_THINK_DOCS_REGISTRY is the one edit).</span></div>';
-    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;">Every model you have actually used (session ledger + think overrides). For each one the REAL writer was dry-run on every level in the \ud83c\udf9b\ufe0f Think menu, so each line says exactly what happens to that pick. <b style="color:#e6e6ee;">Arrow lines: LEFT of \u2192</b> = the level you would pick in the menu; <b style="color:#e6e6ee;">RIGHT of \u2192</b> = what actually goes over the wire. <b style="color:#ffd166;">\u26a0\ufe0f WARNING</b> = a discrepancy with OpenRouter\'s catalogue involving medium / high / xhigh / max; <b style="color:#e6e6ee;">NOTE</b> = only off / minimal / low involved. <b style="color:#e6e6ee;">\ud83e\udea6 Tombstone</b> a row you do not care to resolve: it stays here, dimmed, and stops counting as a warning (click again to revive). Menus per row: <i>Our \ud83c\udf9b\ufe0f menu</i> is the actual dropdown as rendered for that model; <i>OpenRouter lists</i> is its catalogue (\u2605 = its default); <i>Vendor</i> is the honest maximum \u2014 no vendor publishes a machine-readable recommendation, so you get the default OpenRouter reports plus the vendor\'s docs link. <b style="color:#ffd166;">\ud83d\udcd6</b> under the menus = the documented model range this identity resolves to in the documentation map (click it to open the map at that row); <i>\ud83d\udcd6 no documentation entry</i> is an explicit gap to tell the agent about.</div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;">Every model you have actually used (session ledger + think overrides). Each row applies <b style="color:#e6e6ee;">the match rule</b>: the vendor\'s published vocabulary (' + chip('off') + ' included when thinking can be disabled) against the intermediary\'s catalogue list for that model id. <b style="color:#ffd166;">\u26a0\ufe0f UNKNOWN MAPPING</b> = a first-party word the intermediary does not list (WARNING when medium or higher, NOTE for off / minimal / low). <b style="color:#8ef0a0;">MATCH</b> = every first-party word is listed, forwarded verbatim. <b style="color:#8ef0a0;">DIRECT</b> = no intermediary, nothing is mapped. <b style="color:#8fc4ff;">\ud83d\udd0e rot hint</b> = the sources differ in a way that maps nothing \u2014 check the vendor page. <b style="color:#e6e6ee;">NOT COMPARABLE</b> names the missing piece. The <b style="color:#e6e6ee;">\ud83d\udd01 writer dry-run</b> line is context only: what today\'s fixed menu does to each pick. <b style="color:#e6e6ee;">\ud83e\udea6 Tombstone</b> a row you do not care to resolve: it stays here, dimmed, and stops counting (click again to revive). Menus per row: <i>Our \ud83c\udf9b\ufe0f menu</i> is the actual dropdown as rendered for that model; <i>OpenRouter lists</i> is its catalogue (\u2605 = its default); <b style="color:#ffd166;">\ud83d\udcd6</b> = the documented range(s) this identity resolves to (click to open the map there).</div>';
     h += '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11px;margin-bottom:8px;padding:6px 8px;border:1px solid #2a2a33;border-radius:6px;background:#191922;">' + Object.keys(TM_THINK_AUDIT_KINDS).map(function(k) { var K = TM_THINK_AUDIT_KINDS[k]; return '<span title="' + escapeHtml(K.desc) + '" style="white-space:nowrap;"><span style="font-size:13px;">' + K.icon + '</span> <b style="color:#e6e6ee;">' + escapeHtml(K.label) + '</b> <span style="color:#8b93a3;">\u2014 ' + escapeHtml(K.desc.split('.')[0]) + '.</span></span>'; }).join('') + '</div>';
     var body = '<div data-think-audit-body="1" style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
     function section(title, color) { return '<div style="font-weight:700;font-size:12px;color:' + (color || '#8ef0a0') + ';margin:10px 0 4px;border-bottom:1px solid #2e3a2e;padding-bottom:2px;">' + title + '</div>'; }
+    function statusLabel(r) { return r.status === 'unknown-mapping' ? (r.severity === 'warn' ? '\u26a0\ufe0f UNKNOWN MAPPING' : 'UNKNOWN MAPPING (note)') : (r.status === 'match' ? 'MATCH' : (r.status === 'direct' ? 'DIRECT' : (r.status === 'not-analyzed' ? 'NOT ANALYZED' : 'NOT COMPARABLE'))); }
     function rowsTable(list, color) {
       var t = '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
       list.forEach(function(r) {
         var tomb = r.tombstoned;
-        var stLabel = r.status === 'disagree' ? (r.severity === 'warn' ? '\u26a0\ufe0f WARNING' : 'NOTE') : r.status.toUpperCase().replace(/-/g, ' ');
+        var stLabel = statusLabel(r);
         var rowStyle = 'border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;' + (tomb ? 'opacity:0.45;outline:1px dashed #6f7a8a;outline-offset:-2px;' : '');
         var docs = r.vendorDocs;
         t += '<tr style="' + rowStyle + '">' +
-          '<td style="padding:5px 8px;white-space:nowrap;">' +
-            '<div style="color:' + (tomb ? '#9aa4b2' : color) + ';font-weight:700;">' + (tomb ? '\ud83e\udea6 TOMBSTONED' : escapeHtml(stLabel)) + '</div>' + (tomb ? ('<div style="color:#6f7a8a;font-size:10px;">(was ' + escapeHtml(stLabel) + ')</div>') : '') +
+          '<td style="padding:5px 8px;white-space:nowrap;max-width:210px;">' +
+            '<div style="color:' + (tomb ? '#9aa4b2' : color) + ';font-weight:700;">' + (tomb ? '\ud83e\udea6 TOMBSTONED' : escapeHtml(stLabel)) + (r.hints ? (' <span title="rot hints: the two sources differ in a way that maps nothing" style="color:#8fc4ff;font-weight:400;">\u00b7 \ud83d\udd0e ' + r.hints + '</span>') : '') + '</div>' + (tomb ? ('<div style="color:#6f7a8a;font-size:10px;">(was ' + escapeHtml(stLabel) + ')</div>') : '') +
+            (r.reason ? ('<div style="color:#8b93a3;font-size:10px;white-space:normal;margin-top:2px;">' + chip(r.reason) + '</div>') : '') +
+            (r.gray && r.gray.alias ? '<div style="color:#d9a441;font-size:10px;white-space:normal;margin-top:2px;">\u2b1c graylisted alias \u2014 pick the dated id</div>' : '') +
+            (r.gray && r.gray.range ? '<div style="color:#8b93a3;font-size:10px;white-space:normal;margin-top:2px;">\u2b1c graylisted range</div>' : '') +
             '<button data-action="think-audit-tomb" data-key="' + escapeHtml(r.auditKey) + '" title="' + (tomb ? 'Revive: count this identity again' : 'Tombstone: keep the row here, dimmed, and stop counting it as a warning') + '" style="margin-top:4px;font-size:10px;background:#2a2a33;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 6px;cursor:pointer;">' + (tomb ? '\u21a9 revive' : '\ud83e\udea6 tombstone') + '</button>' +
           '</td>' +
           '<td style="padding:5px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '<br>wire: ' + escapeHtml(r.protocol) + '</span></td>' +
-          '<td style="padding:5px 8px;color:#d0d0d8;min-width:320px;">' + r.lines.map(function(l) { var K = TM_THINK_AUDIT_KINDS[l.kind] || { icon: '', label: '' }; return '<div title="' + escapeHtml(K.label) + '" style="display:flex;gap:6px;align-items:flex-start;' + (l.disc ? '' : 'color:#9aa4b2;') + '"><span style="flex-shrink:0;width:16px;text-align:center;">' + K.icon + '</span><span>' + escapeHtml(l.text) + '</span></div>'; }).join('') + '</td>' +
+          '<td style="padding:5px 8px;color:#d0d0d8;min-width:320px;">' + r.lines.map(function(l) { var K = TM_THINK_AUDIT_KINDS[l.kind] || { icon: '', label: '' }; var dim = !(l.kind === 'gap' || l.kind === 'ok' || l.kind === 'gray'); return '<div title="' + escapeHtml(K.label) + '" style="display:flex;gap:6px;align-items:flex-start;' + (dim ? 'color:#9aa4b2;' : '') + (l.kind === 'map' ? 'font-size:10.5px;' : '') + '"><span style="flex-shrink:0;width:16px;text-align:center;">' + K.icon + '</span><span>' + chip(l.text) + '</span></div>'; }).join('') + '</td>' +
           '<td style="padding:5px 8px;white-space:nowrap;font-size:10px;color:#9aa4b2;">' +
             '<div style="margin-bottom:3px;">Our \ud83c\udf9b\ufe0f menu:<br>' + tmThinkAuditDemoMenuHtml(r.model, r.host, r.proxy) + '</div>' +
             '<div style="margin-bottom:3px;">OpenRouter lists:<br>' + tmThinkAuditOrMenuHtml(r) + '</div>' +
-            '<div>Vendor: ' + (r.orCaps && r.orCaps.defaultEffort ? ('default <b style="color:#e6e6ee;">' + escapeHtml(r.orCaps.defaultEffort) + '</b> (per OpenRouter)') : 'no default reported') + (docs ? (' \u00b7 <a href="' + escapeHtml(docs.links[0].url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + escapeHtml(docs.vendor) + ' docs \u2197</a>') : '') + '</div>' +
-            '<div style="margin-top:4px;white-space:normal;max-width:300px;">' + (r.docs ? ('<span data-action="think-docs-row" data-pi="' + r.docs.pi + '" data-ei="' + r.docs.ei + '" title="Open the documentation map at this entry: ' + escapeHtml(r.docs.provider + ' \u203a ' + r.docs.models) + '" style="color:#ffd166;font-weight:600;cursor:pointer;">\ud83d\udcd6 ' + escapeHtml(r.docs.provider) + ' \u203a ' + escapeHtml(tmThinkDocsShortModels(r.docs.models)) + '</span> <span style="color:#6f7a8a;">(' + (r.docs.partial ? 'partially verified ' : 'verified ') + escapeHtml(r.docs.verified) + ')</span>') : ('<span style="color:#d9a441;" title="No entry in TM_THINK_DOCS_REGISTRY matches this model + host (+ wire shape). An explicit gap, not silence: tell the agent to add one.">\ud83d\udcd6 no documentation entry for ' + escapeHtml(r.model) + ' @ ' + escapeHtml(r.host) + ' \u2014 add one</span>')) + '</div>' +
+            '<div>Vendor: ' + (r.orCaps && r.orCaps.defaultEffort ? ('default ' + chip(r.orCaps.defaultEffort) + ' (per OpenRouter)') : 'no default reported') + (r.vendor && r.vendor.def ? (' \u00b7 first-party default ' + chip(r.vendor.def)) : '') + (docs ? (' \u00b7 <a href="' + escapeHtml(docs.links[0].url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + escapeHtml(docs.vendor) + ' docs \u2197</a>') : '') + '</div>' +
+            '<div style="margin-top:4px;white-space:normal;max-width:300px;">' + (r.docs ? ('<span data-action="think-docs-row" data-pi="' + r.docs.pi + '" data-ei="' + r.docs.ei + '" title="Open the documentation map at this entry: ' + escapeHtml(r.docs.provider + ' \u203a ' + r.docs.models) + '" style="color:#ffd166;font-weight:600;cursor:pointer;">\ud83d\udcd6 ' + escapeHtml(r.docs.provider) + ' \u203a ' + escapeHtml(tmThinkDocsShortModels(r.docs.models)) + '</span> <span style="color:#6f7a8a;">(verified ' + escapeHtml(r.docs.verified) + (r.docs.partial ? '; some cells: not enough vendor information' : '') + ')</span>') : (r.gray && r.gray.provider ? ('<span style="color:#8b93a3;">\ud83d\udcd6 provider not analyzed (' + escapeHtml(r.gray.provider.short) + ') \u2014 no table rows</span>') : ('<span style="color:#d9a441;" title="No entry in TM_THINK_DOCS_REGISTRY matches this model + host (+ wire shape). An explicit gap, not silence: tell the agent to add one.">\ud83d\udcd6 no documentation entry for ' + escapeHtml(r.model) + ' @ ' + escapeHtml(r.host) + ' \u2014 add one</span>'))) +
+              (r.vendor && (!r.docs || r.vendor.provider !== r.docs.provider) ? ('<br><span data-action="think-docs-row" data-pi="' + r.vendor.pi + '" data-ei="' + r.vendor.ei + '" title="Open the documentation map at the FIRST-PARTY range: ' + escapeHtml(r.vendor.provider + ' \u203a ' + r.vendor.models) + '" style="color:#ffd166;cursor:pointer;">\ud83d\udcd6 first-party: ' + escapeHtml(r.vendor.provider) + ' \u203a ' + escapeHtml(tmThinkDocsShortModels(r.vendor.models)) + '</span> <span style="color:#6f7a8a;">(verified ' + escapeHtml(r.vendor.verified) + ')</span>') : '') + '</div>' +
           '</td></tr>';
       });
       return t + '</table>';
     }
-    var warnRows = R.rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'warn'; });
-    var noteRows = R.rows.filter(function(r) { return r.status === 'disagree' && r.severity === 'note'; });
-    var otherRows = R.rows.filter(function(r) { return r.status !== 'disagree' && r.status !== 'agree'; });
-    var agreeRows = R.rows.filter(function(r) { return r.status === 'agree'; });
-    if (!R.rows.length) body += section('DISCREPANCIES') + '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
+    var warnRows = R.rows.filter(function(r) { return r.status === 'unknown-mapping' && r.severity === 'warn'; });
+    var noteRows = R.rows.filter(function(r) { return r.status === 'unknown-mapping' && r.severity === 'note'; });
+    var ncRows = R.rows.filter(function(r) { return r.status === 'not-comparable'; });
+    var naRows = R.rows.filter(function(r) { return r.status === 'not-analyzed'; });
+    var okRows = R.rows.filter(function(r) { return r.status === 'match' || r.status === 'direct'; });
+    if (!R.rows.length) body += section('UNKNOWN MAPPING') + '<div style="color:#9aa4b2;padding:6px;">No identities yet \u2014 the session ledger is empty (send a turn on any model, then reopen).</div>';
     else {
-      body += section('\u26a0\ufe0f WARNING \u2014 discrepancies involving medium / high / xhigh / max (' + warnRows.length + (R.warnings !== R.warningsLive ? (', ' + (R.warnings - R.warningsLive) + ' tombstoned') : '') + ')', '#ffd166');
+      body += section('\u26a0\ufe0f UNKNOWN MAPPING \u2014 WARNING: a first-party word the intermediary does not list, medium or higher (' + warnRows.length + (R.warnings !== R.warningsLive ? (', ' + (R.warnings - R.warningsLive) + ' tombstoned') : '') + ')', '#ffd166');
       body += warnRows.length ? rowsTable(warnRows, '#ffd166') : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
-      body += section('NOTE \u2014 discrepancies involving only off / minimal / low (' + noteRows.length + ')', '#e6e6ee');
+      body += section('UNKNOWN MAPPING \u2014 NOTE: only off / minimal / low involved (' + noteRows.length + ')', '#e6e6ee');
       body += noteRows.length ? rowsTable(noteRows, '#e6e6ee') : '<div style="color:#9aa4b2;padding:4px 8px;">none</div>';
-      if (otherRows.length) { body += section('NOT COMPARABLE \u2014 not in the catalogue / no vocabulary published / no local table (' + otherRows.length + ')', '#9aa4b2'); body += rowsTable(otherRows, '#9aa4b2'); }
-      if (agreeRows.length) { body += section('AGREE (' + agreeRows.length + ')', '#8ef0a0'); body += rowsTable(agreeRows, '#8ef0a0'); }
+      if (ncRows.length) { body += section('NOT COMPARABLE \u2014 a source is missing: catalogue not loaded / id not in the catalogue / not enough vendor information / no first-party entry (' + ncRows.length + ')', '#9aa4b2'); body += rowsTable(ncRows, '#9aa4b2'); }
+      if (naRows.length) { body += section('NOT ANALYZED \u2014 graylisted provider (' + naRows.length + ')', '#6f7a8a'); body += rowsTable(naRows, '#6f7a8a'); }
+      if (okRows.length) { body += section('\u2705 MATCH / DIRECT \u2014 nothing is mapped (' + okRows.length + (R.hints ? ('; ' + R.hints + ' \ud83d\udd0e rot hint' + (R.hints === 1 ? '' : 's') + ' to read') : '') + ')', '#8ef0a0'); body += rowsTable(okRows, '#8ef0a0'); }
     }
     body += section('VENDOR DOCUMENTATION \u2014 every URL the \ud83d\udcd6 documentation map cites, per provider (derived from TM_THINK_DOCS_REGISTRY; click = new tab; \u2398 = copy)');
     body += '<table style="border-collapse:collapse;font-size:11px;width:100%;">';
     TM_THINK_VENDOR_DOCS.forEach(function(v) {
       v.links.forEach(function(l, i) {
         body += '<tr style="border-top:1px solid rgba(255,255,255,0.06);"><td style="padding:3px 8px;white-space:nowrap;color:#8fc4ff;font-weight:' + (i === 0 ? '700' : '400') + ';">' + (i === 0 ? escapeHtml(v.vendor) : '') + '</td>' +
-          '<td style="padding:3px 8px;color:#d0d0d8;">' + escapeHtml(l.label) + '</td>' +
+          '<td style="padding:3px 8px;color:#d0d0d8;">' + chip(l.label) + '</td>' +
           '<td style="padding:3px 8px;"><a href="' + escapeHtml(l.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;text-decoration:underline;word-break:break-all;">' + escapeHtml(l.url) + '</a></td>' +
           '<td style="padding:3px 8px;white-space:nowrap;"><button data-action="think-audit-copy-link" data-url="' + escapeHtml(l.url) + '" title="Copy URL" style="background:#2a2a33;color:#ccc;border:1px solid #444;border-radius:3px;padding:0 6px;font-size:11px;cursor:pointer;">\u2398</button></td></tr>';
       });
@@ -7792,47 +8032,80 @@
     if (keepScroll && prevScroll) { try { var nb = overlay.querySelector('[data-think-audit-body]'); if (nb) nb.scrollTop = prevScroll; } catch (eR) {} }
   }
 
-  // (v4.390) The \ud83d\udcd6 THINKING DOCUMENTATION MAP sub-modal (Glyph Map pattern: overlay above the audit, capture-phase
-  // Escape, click-away, tmPromptActive). One section per provider, a table per section: rows = documented model ranges,
-  // columns = the six categories (KNOBS | TRUST & COST, divided); a cell = link (text = JSON path) + values + the first
-  // line of the dated note (hover = whole note; click the grey line to expand); n/a cells read 'n/a -- reason' in dim
-  // italics. `focus` = {pi} scrolls to a provider, {pi, ei} to one range (flashed). \u2318 Copy emits the Markdown.
+  // (v4.390-v4.391) The \ud83d\udcd6 THINKING DOCUMENTATION MAP sub-modal (Glyph Map pattern: overlay above the audit, capture-phase
+  // Escape, click-away, tmPromptActive). One section per ANALYZED provider, a table per section: rows = documented model
+  // ranges (with their structured vocabulary), columns = the six categories (KNOBS | TRUST & COST, divided); a cell = link
+  // (text = JSON path) + values (tokens as chips) + the first line of the dated note (hover = whole note; click the grey
+  // line to expand); 'n/a -- reason' in dim italics; 'not enough vendor information -- reason' in amber. Then GRAYLIST
+  // (ranges set aside, cells kept, dimmed), NOT ANALYZED (providers, no rows) and ALIASES TO AVOID. `focus` = {pi}
+  // scrolls to a provider (or the NOT ANALYZED list for a graylisted provider), {pi, ei} to one range (flashed).
   function tmShowThinkDocsMapModal(focus) {
     if (typeof document === 'undefined') return;
     var old = document.getElementById('tm-think-docs-overlay'); if (old) old.parentNode.removeChild(old);
     var M = tmBuildThinkDocsMap();
     var vtitle = escapeHtml(tmThinkDocsVerifiedText(M.dates));
     var mono = 'font-family:ui-monospace,Menlo,Consolas,monospace;';
+    var chip = tmThinkChipHtml;
     var overlay = document.createElement('div'); overlay.id = 'tm-think-docs-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;';
     var box = document.createElement('div');
     box.style.cssText = 'width:94vw;max-width:1800px;height:92vh;background:#14141a;border:1px solid #6b5a1e;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
-    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\ud83d\udcd6 Thinking documentation map <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 provider \u203a documented model range \u203a six fixed categories \u00b7 ' + M.sections.length + ' providers \u00b7 ' + M.cells + ' cells (' + M.na + ' stated n/a) \u00b7 <span title="' + vtitle + '" style="color:#ffd166;cursor:default;">' + escapeHtml(M.dates.headline) + '</span></span></span>' +
+    var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\ud83d\udcd6 Thinking documentation map <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 first-party documentation: provider \u203a documented model range \u203a six fixed categories \u00b7 ' + M.sections.length + ' analyzed providers \u00b7 ' + M.cells + ' cells (' + M.na + ' stated n/a, ' + M.insufficient + ' not enough vendor information) \u00b7 <span title="' + vtitle + '" style="color:#ffd166;cursor:default;">' + escapeHtml(M.dates.headline) + '</span></span></span>' +
       '<span style="white-space:nowrap;"><button type="button" data-action="think-docs-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2318 Copy as Markdown</button><button type="button" data-action="close-think-docs" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
-    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;">One row per model range a vendor actually breaks its documentation on; one column per fixed question. In each cell the <b style="color:#7fd8ff;">link text is the JSON path</b> on the wire and opens the vendor page that documents it; beneath it the vocabulary and default; in grey the first line of the dated comment (hover a cell for the whole comment; click the grey line to expand it). <i style="color:#6f7a8a;">n/a \u2014 reason</i> means the category does not exist on that API \u2014 you are not missing anything. <b style="color:#ffd166;">KNOBS</b> = what you can set \u00b7 <b style="color:#8fc4ff;">TRUST &amp; COST</b> = what to expect back. Vendor documentation only: which rules OUR writers encode is TM_THINK_LOCAL_BASIS (the basis: line on each audit row).</div>';
+    h += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:6px;line-height:1.45;"><b style="color:#e6e6ee;">Our table is constructed from first-party documentation.</b> One row per model range a vendor actually breaks its documentation on; one column per fixed question. In each cell the <b style="color:#7fd8ff;">link text is the JSON path</b> on the wire and opens the vendor page that documents it; beneath it the vocabulary and default (value tokens as chips); in grey the first line of the dated comment (hover a cell for the whole comment; click the grey line to expand it). <i style="color:#6f7a8a;">n/a \u2014 reason</i> means the category does not exist on that API \u2014 you are not missing anything. <i style="color:#d9a441;">not enough vendor information \u2014 reason</i> means it exists but the page could not be read cleanly. The first column carries each range\'s <b style="color:#e6e6ee;">structured vocabulary</b> \u2014 the V of the match rule. <b style="color:#ffd166;">KNOBS</b> = what you can set \u00b7 <b style="color:#8fc4ff;">TRUST &amp; COST</b> = what to expect back. Which rules OUR writers encode is TM_THINK_LOCAL_BASIS (the basis: line on each audit row).</div>';
     h += '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;font-size:11px;margin-bottom:6px;padding:6px 8px;border:1px solid #2a2a33;border-radius:6px;background:#191922;">' + TM_THINK_DOC_CATEGORIES.map(function(c) { return '<span style="white-space:nowrap;"><b style="color:' + (c.group === 'knob' ? '#ffd166' : '#8fc4ff') + ';">' + escapeHtml(c.label) + '</b> <span style="color:#8b93a3;">\u2014 ' + escapeHtml(c.q) + '</span></span>'; }).join('') + '</div>';
-    h += '<div title="' + vtitle + '" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px;"><span style="color:#8b93a3;font-size:11px;margin-right:4px;">Jump to:</span>' + M.sections.map(function(s) { return '<button type="button" data-action="think-docs-jump" data-pi="' + s.pi + '" style="font-size:10.5px;padding:1px 7px;background:#2a2416;color:#ffd166;border:1px solid #6b5a1e;border-radius:10px;cursor:pointer;">' + escapeHtml(s.provider) + ' <span style="color:#8b93a3;">' + escapeHtml(s.verified) + '</span></button>'; }).join('') + '<span style="color:#6f7a8a;font-size:10.5px;margin-left:6px;">(hover this row for every verification date)</span></div>';
+    h += '<div title="' + vtitle + '" style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-bottom:8px;"><span style="color:#8b93a3;font-size:11px;margin-right:4px;">Jump to:</span>' + M.sections.map(function(s) { return '<button type="button" data-action="think-docs-jump" data-pi="' + s.pi + '" style="font-size:10.5px;padding:1px 7px;background:#2a2416;color:#ffd166;border:1px solid #6b5a1e;border-radius:10px;cursor:pointer;">' + escapeHtml(s.provider) + ' <span style="color:#8b93a3;">' + escapeHtml(s.kind) + ' \u00b7 ' + escapeHtml(s.verified) + '</span></button>'; }).join('') +
+      (M.gray.length ? '<button type="button" data-action="think-docs-jump" data-target="tm-think-docs-gray" style="font-size:10.5px;padding:1px 7px;background:#1f1f26;color:#8b93a3;border:1px solid #3a3a4a;border-radius:10px;cursor:pointer;">Graylist</button>' : '') +
+      (M.notAnalyzed.length ? '<button type="button" data-action="think-docs-jump" data-target="tm-think-docs-na" style="font-size:10.5px;padding:1px 7px;background:#1f1f26;color:#8b93a3;border:1px solid #3a3a4a;border-radius:10px;cursor:pointer;">Not analyzed</button>' : '') +
+      '<span style="color:#6f7a8a;font-size:10.5px;margin-left:6px;">(hover this row for every verification date)</span></div>';
+    function cellHtml(c, i) {
+      var style = 'padding:6px;word-wrap:break-word;' + (i === 3 ? 'border-left:2px solid #6b5a1e;' : '');
+      if (c.na) return '<td style="' + style + '"><span style="color:#6f7a8a;font-style:italic;">n/a \u2014 ' + chip(c.reason) + '</span></td>';
+      if (c.insufficient) return '<td style="' + style + '"><span style="color:#d9a441;font-style:italic;">not enough vendor information \u2014 ' + chip(c.reason) + '</span>' + (c.url ? ('<div style="margin-top:3px;"><a href="' + escapeHtml(c.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;font-size:10.5px;">the page we tried \u2197</a></div>') : '') + '</td>';
+      return '<td style="' + style + '" title="' + escapeHtml(c.note || c.values) + '"><a href="' + escapeHtml(c.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;font-size:10.5px;font-weight:600;' + mono + '">' + escapeHtml(c.path) + ' \u2197</a><div style="color:#d0d0d8;margin-top:3px;">' + chip(c.values) + '</div>' + (c.noteFirst ? ('<div data-action="think-docs-note" style="color:#8b93a3;font-size:10.5px;margin-top:3px;cursor:' + (c.noteMore ? 'pointer' : 'default') + ';">' + chip(c.noteFirst) + (c.noteMore ? ' <span style="color:#6f7a8a;">[+]</span>' : '') + '</div>' + (c.noteMore ? ('<div data-note-more="1" style="display:none;color:#9aa4b2;font-size:10.5px;margin-top:2px;white-space:pre-wrap;">' + chip(c.noteMore) + '</div>') : '')) : '') + '</td>';
+    }
+    function tableHead() {
+      return '<table style="border-collapse:collapse;font-size:11px;width:100%;table-layout:fixed;"><colgroup><col style="width:16%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"></colgroup>' +
+        '<thead><tr style="color:#8b93a3;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"><th rowspan="2" style="text-align:left;padding:3px 6px;vertical-align:bottom;">Model range \u00b7 vocabulary</th><th colspan="3" style="text-align:left;padding:3px 6px;color:#ffd166;border-bottom:1px solid #6b5a1e;">' + escapeHtml(TM_THINK_DOC_GROUPS.knob) + '</th><th colspan="3" style="text-align:left;padding:3px 6px;color:#8fc4ff;border-left:2px solid #6b5a1e;border-bottom:1px solid #2e3a4e;">' + escapeHtml(TM_THINK_DOC_GROUPS.trust) + '</th></tr>' +
+        '<tr style="color:#c8ccd6;font-size:10.5px;">' + TM_THINK_DOC_CATEGORIES.map(function(c, i) { return '<th title="' + escapeHtml(c.q) + '" style="text-align:left;padding:3px 6px;font-weight:600;' + (i === 3 ? 'border-left:2px solid #6b5a1e;' : '') + '">' + escapeHtml(c.label) + '</th>'; }).join('') + '</tr></thead><tbody>';
+    }
+    function rowHtml(r, withProvider) {
+      var s = '<tr id="tm-think-docs-r' + r.pi + '-' + r.ei + '" style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;">';
+      s += '<td style="padding:6px;color:#e6e6ee;font-weight:600;word-wrap:break-word;">' + (withProvider ? ('<span style="color:#8fc4ff;">' + escapeHtml(r.provider) + ' \u203a </span>') : '') + escapeHtml(r.models) +
+        '<div style="font-weight:400;font-size:10.5px;margin-top:4px;color:#d0d0d8;">vocabulary: ' + chip(r.vocabText) + (r.vocab && r.vocab.rules && r.vocab.rules.length ? ('<div style="color:#8b93a3;font-size:10px;">' + chip(r.vocab.rules.join('; ')) + '</div>') : '') + '</div>' +
+        '<div style="color:#8b93a3;font-weight:400;font-size:10px;margin-top:3px;">' + (r.partial ? '<span style="color:#d9a441;">verified ' + escapeHtml(r.verified) + ' \u2014 some cells: not enough vendor information</span>' : ('verified ' + escapeHtml(r.verified))) + (r.gray ? ('<br><span style="color:#8b93a3;">\u2b1c graylisted: ' + escapeHtml(r.gray.reason) + '</span>') : '') + (r.match ? ('<br><span style="' + mono + '">match ' + escapeHtml(r.match) + '</span>') : '') + (r.protocol ? ('<br><span style="' + mono + '">protocol ' + escapeHtml(r.protocol) + '</span>') : '') + '</div></td>';
+      r.cells.forEach(function(cc, i) { s += cellHtml(cc.cell, i); });
+      return s + '</tr>';
+    }
     var body = '<div data-think-docs-body="1" style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
     M.sections.forEach(function(s) {
       body += '<div id="tm-think-docs-p' + s.pi + '" style="margin:6px 0 16px;">';
-      body += '<div style="font-weight:700;font-size:13px;color:#8fc4ff;border-bottom:1px solid #2e3a4e;padding-bottom:3px;margin-bottom:4px;">' + escapeHtml(s.provider) + ' <span style="color:#6f7a8a;font-weight:400;font-size:10.5px;' + mono + '">hosts ' + escapeHtml(s.hosts) + '</span> <span style="color:#8b93a3;font-weight:400;font-size:11px;">\u00b7 verified ' + escapeHtml(s.verified) + (s.index_url ? (' \u00b7 <a href="' + escapeHtml(s.index_url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">llms.txt index \u2197</a>') : '') + '</span></div>';
-      body += '<table style="border-collapse:collapse;font-size:11px;width:100%;table-layout:fixed;"><colgroup><col style="width:16%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"><col style="width:14%"></colgroup>';
-      body += '<thead><tr style="color:#8b93a3;font-size:10px;text-transform:uppercase;letter-spacing:0.04em;"><th rowspan="2" style="text-align:left;padding:3px 6px;vertical-align:bottom;">Model range</th><th colspan="3" style="text-align:left;padding:3px 6px;color:#ffd166;border-bottom:1px solid #6b5a1e;">' + escapeHtml(TM_THINK_DOC_GROUPS.knob) + '</th><th colspan="3" style="text-align:left;padding:3px 6px;color:#8fc4ff;border-left:2px solid #6b5a1e;border-bottom:1px solid #2e3a4e;">' + escapeHtml(TM_THINK_DOC_GROUPS.trust) + '</th></tr>';
-      body += '<tr style="color:#c8ccd6;font-size:10.5px;">' + TM_THINK_DOC_CATEGORIES.map(function(c, i) { return '<th title="' + escapeHtml(c.q) + '" style="text-align:left;padding:3px 6px;font-weight:600;' + (i === 3 ? 'border-left:2px solid #6b5a1e;' : '') + '">' + escapeHtml(c.label) + '</th>'; }).join('') + '</tr></thead><tbody>';
-      s.rows.forEach(function(r) {
-        body += '<tr id="tm-think-docs-r' + s.pi + '-' + r.ei + '" style="border-top:1px solid rgba(255,255,255,0.08);vertical-align:top;">';
-        body += '<td style="padding:6px;color:#e6e6ee;font-weight:600;word-wrap:break-word;">' + escapeHtml(r.models) + '<div style="color:#8b93a3;font-weight:400;font-size:10px;margin-top:3px;">' + (r.partial ? '<span style="color:#d9a441;">partially verified</span> ' : 'verified ') + escapeHtml(r.verified) + (r.match ? ('<br><span style="' + mono + '">match ' + escapeHtml(r.match) + '</span>') : '') + (r.protocol ? ('<br><span style="' + mono + '">protocol ' + escapeHtml(r.protocol) + '</span>') : '') + '</div></td>';
-        r.cells.forEach(function(cc, i) {
-          var c = cc.cell, style = 'padding:6px;word-wrap:break-word;' + (i === 3 ? 'border-left:2px solid #6b5a1e;' : '');
-          if (c.na) body += '<td style="' + style + '"><span style="color:#6f7a8a;font-style:italic;">n/a \u2014 ' + escapeHtml(c.reason) + '</span></td>';
-          else body += '<td style="' + style + '" title="' + escapeHtml(c.note || c.values) + '"><a href="' + escapeHtml(c.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;font-size:10.5px;font-weight:600;' + mono + '">' + escapeHtml(c.path) + ' \u2197</a><div style="color:#d0d0d8;margin-top:3px;">' + escapeHtml(c.values) + '</div>' + (c.noteFirst ? ('<div data-action="think-docs-note" style="color:#8b93a3;font-size:10.5px;margin-top:3px;cursor:' + (c.noteMore ? 'pointer' : 'default') + ';">' + escapeHtml(c.noteFirst) + (c.noteMore ? ' <span style="color:#6f7a8a;">[+]</span>' : '') + '</div>' + (c.noteMore ? ('<div data-note-more="1" style="display:none;color:#9aa4b2;font-size:10.5px;margin-top:2px;white-space:pre-wrap;">' + escapeHtml(c.noteMore) + '</div>') : '')) : '') + '</td>';
-        });
-        body += '</tr>';
-      });
+      body += '<div style="font-weight:700;font-size:13px;color:#8fc4ff;border-bottom:1px solid #2e3a4e;padding-bottom:3px;margin-bottom:4px;">' + escapeHtml(s.provider) + ' <span style="color:#ffd166;font-weight:400;font-size:10.5px;">[' + escapeHtml(s.kind) + ']</span> <span style="color:#6f7a8a;font-weight:400;font-size:10.5px;' + mono + '">hosts ' + escapeHtml(s.hosts) + '</span> <span style="color:#8b93a3;font-weight:400;font-size:11px;">\u00b7 verified ' + escapeHtml(s.verified) + (s.index_url ? (' \u00b7 <a href="' + escapeHtml(s.index_url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">llms.txt index \u2197</a>') : '') + '</span></div>';
+      body += tableHead();
+      s.rows.forEach(function(r) { body += rowHtml(r, false); });
       body += '</tbody></table>';
-      if (s.extra.length) body += '<div style="color:#8b93a3;font-size:10.5px;margin-top:4px;">Also: ' + s.extra.map(function(x) { return '<a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + escapeHtml(x.label) + ' \u2197</a>'; }).join(' <span style="color:#6f7a8a;">\u00b7</span> ') + '</div>';
+      if (s.extra.length) body += '<div style="color:#8b93a3;font-size:10.5px;margin-top:4px;">Also: ' + s.extra.map(function(x) { return '<a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + chip(x.label) + ' \u2197</a>'; }).join(' <span style="color:#6f7a8a;">\u00b7</span> ') + '</div>';
       body += '</div>';
     });
+    if (M.gray.length) {
+      body += '<div id="tm-think-docs-gray" style="margin:18px 0 16px;opacity:0.7;">';
+      body += '<div style="font-weight:700;font-size:13px;color:#8b93a3;border-bottom:1px solid #3a3a4a;padding-bottom:3px;margin-bottom:4px;">\u2b1c GRAYLIST \u2014 model ranges set aside (TM_THINK_GRAYLIST.ranges; cells kept; they never drive the banner date)</div>';
+      body += tableHead();
+      M.gray.forEach(function(g) { g.rows.forEach(function(r) { body += rowHtml(r, true); }); });
+      body += '</tbody></table></div>';
+    }
+    if (M.notAnalyzed.length || M.aliases.length) {
+      body += '<div id="tm-think-docs-na" style="margin:18px 0 8px;">';
+      if (M.notAnalyzed.length) {
+        body += '<div style="font-weight:700;font-size:13px;color:#8b93a3;border-bottom:1px solid #3a3a4a;padding-bottom:3px;margin-bottom:4px;">\u2b1c NOT ANALYZED \u2014 providers with no table rows (TM_THINK_GRAYLIST.providers)</div>';
+        M.notAnalyzed.forEach(function(n) { body += '<div style="padding:4px 6px;color:#c8ccd6;"><b>' + escapeHtml(n.provider) + '</b> <span style="color:#ffd166;">[' + escapeHtml(n.kind) + ']</span> <span style="color:#6f7a8a;' + mono + 'font-size:10.5px;">hosts ' + escapeHtml(n.hosts) + '</span> \u2014 ' + chip(n.reason) + (n.notes ? ('<div style="color:#8b93a3;font-size:10.5px;margin-top:3px;">' + chip(n.notes) + '</div>') : '') + (n.extra.length ? ('<div style="font-size:10.5px;margin-top:3px;">' + n.extra.map(function(x) { return '<a href="' + escapeHtml(x.url) + '" target="_blank" rel="noopener noreferrer" style="color:#7fd8ff;">' + chip(x.label) + ' \u2197</a>'; }).join(' \u00b7 ') + '</div>') : '') + '</div>'; });
+      }
+      if (M.aliases.length) {
+        body += '<div style="font-weight:700;font-size:13px;color:#d9a441;border-bottom:1px solid #3a3a4a;padding-bottom:3px;margin:12px 0 4px;">\u2b1c ALIASES TO AVOID \u2014 generic ids whose intermediary catalogue row is not a superset of the vendor\'s vocabulary (TM_THINK_GRAYLIST.aliases)</div>';
+        M.aliases.forEach(function(a) { body += '<div style="padding:4px 6px;color:#c8ccd6;"><b>' + escapeHtml(a.provider) + '</b>: do not choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.avoid) + '</code>; choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.prefer) + '</code> \u2014 ' + chip(a.reason) + ' <span style="color:#6f7a8a;">(found ' + escapeHtml(a.found) + ')</span></div>'; });
+      }
+      body += '</div>';
+    }
     body += '</div>';
     box.innerHTML = h + body;
     overlay.appendChild(box);
@@ -7849,17 +8122,19 @@
       if (a === 'close-think-docs') close();
       else if (a === 'think-docs-copy') { try { navigator.clipboard.writeText(M.text).then(function() { flash(b, '\u2705 copied'); }); } catch (e) {} }
       else if (a === 'think-docs-note') { try { var more = b.nextElementSibling; if (more && more.dataset && more.dataset.noteMore) more.style.display = (more.style.display === 'none') ? 'block' : 'none'; } catch (e) {} }
-      else if (a === 'think-docs-jump') { tmThinkDocsScrollTo(overlay, { pi: parseInt(b.dataset.pi, 10) }); }
+      else if (a === 'think-docs-jump') { tmThinkDocsScrollTo(overlay, b.dataset.target ? { target: b.dataset.target } : { pi: parseInt(b.dataset.pi, 10) }); }
     });
     document.addEventListener('keydown', onKey, true);
     tmPromptActive = true;
     document.body.appendChild(overlay);
-    if (focus && focus.pi != null && !isNaN(focus.pi)) tmThinkDocsScrollTo(overlay, focus);
+    if (focus && (focus.target || (focus.pi != null && !isNaN(focus.pi)))) tmThinkDocsScrollTo(overlay, focus);
   }
   function tmThinkDocsScrollTo(overlay, focus) {
     try {
-      var id = (focus.ei != null && !isNaN(focus.ei)) ? ('tm-think-docs-r' + focus.pi + '-' + focus.ei) : ('tm-think-docs-p' + focus.pi);
-      var el = overlay.querySelector('#' + id); if (!el) return;
+      var id = focus.target ? focus.target : ((focus.ei != null && !isNaN(focus.ei)) ? ('tm-think-docs-r' + focus.pi + '-' + focus.ei) : ('tm-think-docs-p' + focus.pi));
+      var el = overlay.querySelector('#' + id);
+      if (!el && focus.pi != null) { var P = TM_THINK_DOCS_REGISTRY[focus.pi]; if (P && tmThinkDocsIsGrayProvider(P.provider)) el = overlay.querySelector('#tm-think-docs-na'); }
+      if (!el) return;
       el.scrollIntoView({ block: 'start' });
       var prev = el.style.outline; el.style.outline = '2px solid #ffd166'; el.style.outlineOffset = '-1px';
       setTimeout(function() { el.style.outline = prev || ''; }, 1800);
