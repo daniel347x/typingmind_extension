@@ -11,6 +11,21 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.371 Changes:
+ * - 🧱 STATUS TOOLBAR STRUCTURAL REFACTOR — removes the negative-margin overlay responsible for
+ *   four rounds of clipping/overlap. v3.369–v3.370 pulled a separate keyboard-indicator row
+ *   upward with margin-top:-17/-21px; that changed layout flow without changing paint bounds,
+ *   so the circles, 🕘 border, status descenders, and textarea painted through one another.
+ * - The status area is now one ordinary-flow `#deepgram-status-row`: 🕘 history button + status
+ *   text, aligned center, explicit min-height:24px. The text has line-height:18px,
+ *   min-height:22px, box-sizing:border-box, and safe 2px vertical padding. The outer block owns
+ *   4px bottom padding, so nothing can touch the textarea. Empty status text still preserves the
+ *   complete row and history button after refresh.
+ * - Removed the four colored keyboard-indicator circles from DOM/CSS (Dan no longer wants the
+ *   visual effect). Existing flashBell calls remain safely inert because flashBell already
+ *   null-checks the missing elements. Removed all bell repositioning from status visibility.
+ *   No negative margins, absolute positioning, or content-dependent height remain.
+ *
  * v3.370 Changes:
  * - 🔧 STATUS LINE CROP FIX (descenders clipped + bells overran the row's bottom edge): v3.369's
  *   bell overlay (margin-top:-17px) painted the keyboard bells over the row's lower border, and
@@ -1881,7 +1896,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.370',
+  VERSION: '3.371',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7507,11 +7522,6 @@
     const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
     block.style.display = hidden ? 'none' : '';
     btn.textContent = (hidden ? '\u25b8' : '\u25be') + ' Status';
-    // (v3.369) The keyboard bells overlay the status row's right end via CSS margin-top:-17px;
-    // when the status block is HIDDEN, restore their normal standalone position above the
-    // transcript (inline 0px overrides the stylesheet).
-    const bells = document.getElementById('keyboard-indicators');
-    if (bells) bells.style.marginTop = hidden ? '0px' : '';
     // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
     // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
     const recordRow = document.getElementById('deepgram-record-row');
@@ -7998,20 +8008,35 @@
         background: rgba(0, 0, 0, 0.05);
       }
       
-      /* (v3.368) Status-row block: explicitly marginless. v3.367 mistakenly ADDED margins here
-         (the block had no rule and zero margin) — that, not the pill, was the whole bug report. */
+      /* (v3.371) One normal-flow status toolbar. No overlays or negative margins: the row keeps
+         a stable box even when the status string is empty after refresh. Four pixels of internal
+         bottom padding separate the complete 🕘 border/text descenders from the textarea. */
       #deepgram-status-block {
+        box-sizing: border-box;
         margin: 0;
+        padding: 0 0 4px;
+      }
+
+      #deepgram-status-row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 24px;
       }
 
       /* Status Indicator */
       .deepgram-status {
-        padding: 1px 10px 3px;   /* (v3.370) tool-line + 2px bottom so 'p'/'y' descenders aren't clipped (v3.369) */
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 22px;
+        box-sizing: border-box;
+        padding: 2px 10px;
         border-radius: 8px;
         font-size: 13px;
+        line-height: 18px;
         font-weight: 500;
         text-align: center;
-        margin-bottom: 0;   /* (v3.369) was 2px — the bells overlay carries the gap below */
+        margin: 0;
       }
       
       .deepgram-status.connected {
@@ -8167,39 +8192,6 @@
       [data-theme="dark"] #deepgram-click-bar-label {
         color: #6b7280;
       }
-      
-      /* Keyboard Event Indicator Bells */
-      #keyboard-indicators {
-        display: flex;
-        gap: 6px;
-        justify-content: flex-end;
-        margin: -21px 0 0 0;   /* (v3.370) was −17px — the overlay now sits fully INSIDE the status
-                                   row (bottom edge flush with the pill's bottom) instead of
-                                   overrunning it and clipping against the transcript below.
-                                   applyStatusBlockVisibility sets inline margin-top:0 when the
-                                   status block is hidden (bells return above the transcript). */
-      }
-      
-      .keyboard-bell {
-        width: 12px;
-        height: 12px;
-        border-radius: 50%;
-        border: 2px solid transparent;
-        opacity: 0.3;
-        transition: all 0.1s ease;
-      }
-      
-      .keyboard-bell.flash {
-        opacity: 1;
-        border-color: white;
-        box-shadow: 0 0 8px currentColor;
-        transform: scale(1.3);
-      }
-      
-      .keyboard-bell.space { background: #28a745; }
-      .keyboard-bell.ctrl-space { background: #ffc107; }
-      .keyboard-bell.ultimate { background: #17a2b8; }
-      .keyboard-bell.ultimate-ultimate { background: #9b59b6; }
       
       /* Aux expander ribbon (v3.354) */
       #deepgram-aux-expander:hover { opacity: 0.85; background: rgba(128,128,128,0.12); }
@@ -9509,9 +9501,9 @@
         <!-- Transcription status block (Deepgram/Whisper) — toggled by the button in the title bar -->
         <div id="deepgram-status-block">
           <!-- Status (+ v3.325 history clicker to its left — the status line itself is untouched) -->
-          <div style="display:flex; align-items:center; gap:5px;">
+          <div id="deepgram-status-row">
             <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:1px 5px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
-            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:13px;"></div>
+            <div id="deepgram-status" class="deepgram-status"></div>
           </div>
           
           <!-- Queue Status (Always Visible) -->
@@ -9520,14 +9512,6 @@
         
         <!-- Transcript -->
         <div class="deepgram-section" style="margin-bottom: 0;">
-          
-          <!-- Keyboard Event Indicators -->
-          <div id="keyboard-indicators">
-            <div class="keyboard-bell space" title="Space" id="bell-space"></div>
-            <div class="keyboard-bell ctrl-space" title="Shift+Space" id="bell-ctrl-space"></div>
-            <div class="keyboard-bell ultimate" title="Ctrl+Shift+Enter" id="bell-ultimate"></div>
-            <div class="keyboard-bell ultimate-ultimate" title="Ctrl+Alt+Shift+Enter" id="bell-ultimate-ultimate"></div>
-          </div>
           
           <!-- Paragraph Warning (hidden by default) -->
           <div id="paragraph-warning" style="display: none; background: #ff4444; color: white; padding: 6px 10px; border-radius: 6px; font-size: 12px; margin-bottom: 8px; text-align: center; font-weight: 600;">
