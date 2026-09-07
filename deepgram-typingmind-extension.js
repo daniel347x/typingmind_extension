@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.368 Changes:
+ * - 📏 STATUS ROW — the REAL fix (v3.367 was wrong, net-zero by arithmetic): v3.367 ADDED
+ *   margin:4px 0 + a 2px sibling margin to #deepgram-status-block, which previously had NO
+ *   rule and ZERO margin — handing back all of v3.366's pill savings (~67px before AND after,
+ *   exactly why no visible change). The actual space-holders were never section margins:
+ *   (1) .deepgram-content's 20px TOP padding above the status row → now 10px;
+ *   (2) the pill's inline min-height:17px → 15px; (3) my bogus v3.367 margins → reverted to 0.
+ *   Net status-band height ~67px → ~45px. Fonts, colors, pill padding, bells unchanged.
+ *   (.deepgram-content bottom padding also 20px → 14px — same vertical-economy rationale.)
+ *
  * v3.367 Changes:
  * - 📏 STATUS ROW properly compacted — v3.366 tightened only the INNER .deepgram-status pill
  *   (padding 4→2px), which was already tight; the plain-as-day vertical band Dan saw is the
@@ -1851,7 +1861,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.367',
+  VERSION: '3.368',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7853,7 +7863,7 @@
       
       /* Panel Content */
       .deepgram-content {
-        padding: 20px;
+        padding: 10px 20px 14px;   /* (v3.368) was 20px all-round — top padding was the real status-row space-holder */
         overflow-y: auto;
         overflow-x: hidden; /* (v3.301) never x-scroll: a 1–2px rightward drift was shaving the left edge of every row */
         overflow-x: clip;   /* modern engines: also forbid programmatic/focus x-scroll */
@@ -7963,19 +7973,10 @@
         background: rgba(0, 0, 0, 0.05);
       }
       
-      /* (v3.367) Compact the status-row SANDWICH, not just the pill: the outer block was an
-         unstyled div, so the visible band came from surrounding section margins. Explicit compact
-         margins here reclaim that whitespace; the pill's own padding/fonts are untouched. */
+      /* (v3.368) Status-row block: explicitly marginless. v3.367 mistakenly ADDED margins here
+         (the block had no rule and zero margin) — that, not the pill, was the whole bug report. */
       #deepgram-status-block {
-        margin: 4px 0 4px 0;
-      }
-      #deepgram-status-block > div:first-child {
-        gap: 4px;
-      }
-      /* The transcript wrapper directly under the status row: default .deepgram-section
-         margin-bottom is 20px — halve it here so the status→transcript gap tightens. */
-      #deepgram-status-block + .deepgram-section {
-        margin-top: 2px;
+        margin: 0;
       }
 
       /* Status Indicator */
@@ -9481,7 +9482,7 @@
           <!-- Status (+ v3.325 history clicker to its left — the status line itself is untouched) -->
           <div style="display:flex; align-items:center; gap:5px;">
             <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:2px 6px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
-            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:17px;"></div>
+            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:15px;"></div>
           </div>
           
           <!-- Queue Status (Always Visible) -->
