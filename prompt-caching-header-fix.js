@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.406
+// Version: 4.407
 // Issues Fixed:
 //   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
 //     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
@@ -2261,7 +2261,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.406';
+  const EXT_VERSION = '4.407';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6243,6 +6243,37 @@
         '<span style="display:inline-block;width:11px;"></span>' + obsData +
         (hist ? tmThinkHistHtml(hist, 'obs', fs) : '') + '</div>';
       return '<div style="display:flex;flex-direction:column;min-width:0;">' + line1 + line2 + '</div>';
+    } catch (e) { return ''; }
+  }
+
+  // (v4.407) LEAN thinking row for the Sessions-in-Memory card -- the glyph wall replaced by two
+  // primary pieces per Dan: (1) THIS TURN's reasoning amount (the count + evidence glyph), and
+  // (2) the per-identity reasoning-token histogram. All other thinking detail (the REQ/OBS glyph
+  // vocabulary, per-band aggregates, visibility census, replay warn) lives in the row's report
+  // modal (tmSessionCtxReportHtml). Ring rows keep the full glyph treatment via tmThinkGlyphRowHtml.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmThinkRowLeanHtml-v407,
+  //   role=__lambdao_1.tmThinkRowLeanHtml,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.407) Lean SiM thinking row: this-turn reasoning count + evidence + per-identity histogram; the glyph wall moved to the row's report modal.,
+  // ]
+  function tmThinkRowLeanHtml(cap, idKey, fs) {
+    try {
+      if (!cap) return '';
+      fs = fs || '13px';
+      var obs = cap._think_obs;
+      var obsTok = (obs && obs.tokens && typeof obs.tokens.reasoning === 'number') ? obs.tokens.reasoning : null;
+      var obsSrc = (obs && obs.tokens && obs.tokens.source) || 'none';
+      var evGlyph = obsSrc === 'reported' ? '\u2705' : obsSrc === 'bytes-estimate' ? '\u2248' : obsSrc === 'heuristic' ? '~' : '\u2753';
+      var evColor = obsSrc === 'reported' ? '#8ef0a0' : obsSrc === 'none' ? '#9aa4b2' : '#ffd166';
+      var histoHtml = '';
+      try { if (idKey) { var info = tmSessionCtxHoverIdentities[idKey]; if (info) { var hist = tmGetThinkHistogram(info.sid || '', info.model || '', info.host, !!info.isProxy); if (hist) histoHtml = tmThinkRenderHistogram(hist.samples, fs); } } } catch (eH) {}
+      var parts = [];
+      parts.push('<span title="reasoning this turn (' + escapeHtml(obsSrc) + ')" style="color:' + evColor + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' + evGlyph + ' ' +
+        (obsTok != null ? ('\uD83E\uDDEE ' + escapeHtml(tmThinkFmtK(obsTok)) + ' tok') : (cap.response_status == null ? 'pending\u2026' : '\uD83E\uDDEE 0')) + '</span>');
+      if (histoHtml) parts.push(histoHtml);
+      return '<span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;">' + parts.join('') + '</span>';
     } catch (e) { return ''; }
   }
 
@@ -12130,71 +12161,263 @@
   //   kind=ast,
   // ]
   function tmSessionCtxLiveHtml(key, info, frame) {
+    // (v4.407) THE STATUS WORD. The old live zone (cumulative-rt span + per-turn timer + clear/tool
+    // badge + tool timer) and the busy spinner are replaced by ONE status, top-right of the row,
+    // in priority order: alerts > tools running > assistant in flight > last cache outcome > idle.
+    // Live timers still count up inside the busy states (1s tick unchanged); cumulative time moves
+    // to the row's report (tmSessionCtxReportText). Same function name/signature so the tick and
+    // the [data-live-key] zones need no rewiring.
     var now = frame ? frame.now : Date.now();
-    var parts = [];
     info = info || {};
-    // 1) Cumulative session round-trip total FIRST (gray aggregate, matching the widget/
-    //    ring-row canonical order: aggregate -> clear/timer -> badge -> tool timer).
+    var S = 'font-size:12px;white-space:nowrap;';
+    try { if (tmEndpointNotFound && tmEndpointNotFound.idKey === key) return '<span title="Provider/endpoint not found \u2014 see the alert line on this row" style="' + S + 'color:#ff9500;font-weight:700;">\u26d4 no endpoint</span>'; } catch (e0) {}
+    try { if (tmMostRecentError && tmMostRecentError.idKey === key) return '<span title="Most recent turn errored \u2014 click the alert line on this row for the raw JSON" style="' + S + 'color:#ff6b6b;font-weight:700;">\u26a0 err ' + escapeHtml(String(tmMostRecentError.code != null ? tmMostRecentError.code : '?')) + '</span>'; } catch (e1) {}
     try {
-      var rtKey = tmBuildSessionCostKey(info.sid || '', info.model || '', info.host || '', !!info.isProxy);
-      var rtRec = (frame ? frame.costs : tmGetSessionCosts())[rtKey] || null;
-      var rtTot = rtRec && Number(rtRec._rt_total_ms || 0);
-      if (rtTot > 0) {
-        parts.push('<span style="color:#9aa4b2;font-size:12px;white-space:nowrap;">\u03A3\u23F1 ' + tmFmtDuration(rtTot) + '</span>');
+      if (tmAgentManagementEnabled()) {
+        var st = tmAgentManagementDisplayState(info.sid);
+        if (st && st.pendingToolCall && st.responseFinishedAt) {
+          var stKey = tmToolStateIdentityKey(st, frame);
+          if (!stKey || stKey === key) return '<span title="Client-side tool executing \u2014 time so far" style="' + S + 'color:#d08b8b;font-weight:600;">\u2699 tools ' + tmFmtDuration(now - Number(st.responseFinishedAt)) + '</span>';
+        }
       }
-    } catch (eSum) {}
-    // 2) Round-trip: LIVE count-up when THIS identity owns the in-flight turn (the global
-    //    marker resolves back to its capture's identity); otherwise the latest completed
-    //    turn's duration for this identity.
+    } catch (e2) {}
     try {
-      // (v4.336) PER-IDENTITY map first: with parallel sessions streaming, EVERY in-flight
-      // session gets its own live count-up; the single global marker is the fallback.
       var liveMs = 0;
       var liveRec = tmInFlightByIdentity[key];
       if (liveRec && Number(liveRec.ts) > 0) {
-        if (now - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eDel) {} }
+        if (now - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eD) {} }
         else liveMs = now - Number(liveRec.ts);
       }
       if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
         var ifCap = frame ? frame.byId[tmInFlightTurn.captureId] : getCaptureById(tmInFlightTurn.captureId);
         if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = now - Number(tmInFlightTurn.ts);
       }
-      if (liveMs > 0) {
-        parts.push('<span style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">\u23F1 ' + tmFmtDuration(liveMs) + '</span>');
-      } else {
-        var rtCap = frame ? frame.rt[key] : tmLatestRoundTripEntryForIdentity(key);
-        if (rtCap && rtCap._rt_ms != null && Number(rtCap._rt_ms) > 0) {
-          parts.push('<span style="color:#7ec8e3;font-size:12px;white-space:nowrap;">\u23F1 ' + tmFmtDuration(Number(rtCap._rt_ms)) + '</span>');
-        }
-      }
-    } catch (eRt) {}
-    // 3) Agent-management badge + live tool-execution timer LAST (per-session ledger state).
+      if (liveMs > 0) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + tmFmtDuration(liveMs) + '</span>';
+    } catch (e3) {}
     try {
-      if (tmAgentManagementEnabled()) {
-        var st = tmAgentManagementDisplayState(info.sid);
-        var stPending = !!(st && st.pendingToolCall && st.responseFinishedAt);
-        // (v4.350) BADGE + TIMER identity-precise: after a model/endpoint switch, only the
-        // responding provider/model row shows the red tool state and count-up; every other
-        // row of the session shows the clear badge. Fallback to sid-wide only when the
-        // identity is genuinely unresolvable -- and that fallback logs once per capture.
-        var stKeyB = stPending ? tmToolStateIdentityKey(st, frame) : '';
-        if (stPending && !stKeyB) {
-          try {
-            var logK = String((st && st.captureId) || 'null');
-            if (!tmToolStateUnresolvedLogged[logK]) {
-              tmToolStateUnresolvedLogged[logK] = true;
-              console.warn('\uD83E\uDDF0 [v' + EXT_VERSION + '] Tool-busy state for ' + info.sid + ' could not resolve an identity key (captureId=' + logK + '); showing on ALL rows of the session (sid-wide fallback).');
-            }
-          } catch (eLog) {}
-        }
-        var showToolHere = stPending && (!stKeyB || stKeyB === key);
-        parts.push(showToolHere ? tmAgentManagementBadge(info.sid) : tmAgentManagementClearBadge());
-        if (showToolHere) {
-          parts.push('<span style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">\uD83E\uDDF0 ' + tmFmtDuration(now - Number(st.responseFinishedAt)) + '</span>');
-        }
+      var stats = (frame && frame.costs ? frame.costs[key] : null) || tmGetCacheOutcomeForIdentity(key);
+      if (stats && stats._cache_last === 'hit') {
+        var pct = tmSessionCtxCachePct((frame && frame.usage) ? frame.usage[key] : null);
+        return '<span title="Last turn: cache HIT' + (pct != null ? ' \u2014 ' + pct + '% of the prompt read from cache' : '') + '" style="' + S + 'color:#7dd67d;font-weight:600;">\u2713 hit' + (pct != null ? (' ' + pct + '%') : '') + '</span>';
       }
-    } catch (eTool) {}
-    return parts.join(' ');
+      if (stats && stats._cache_last === 'miss') return '<span title="Last turn: cache MISS" style="' + S + 'color:#ff6b6b;font-weight:600;">\u2717 miss</span>';
+    } catch (e4) {}
+    return '<span title="No turn in flight" style="' + S + 'color:#6a7280;">\u25cf idle</span>';
+  }
+
+  // (v4.407) cached% of the last usage-carrying turn for an identity (OpenAI-style and
+  // Anthropic-style fields) -- feeds the status word's '\u2713 hit NN%'.
+  function tmSessionCtxCachePct(cap) {
+    try {
+      if (!cap) return null;
+      var oru = cap.response_usage || null, au = cap.response_anthropic_usage || null;
+      var cached = null, prompt = null;
+      if (oru) { cached = oru.prompt_tokens_details && oru.prompt_tokens_details.cached_tokens; prompt = oru.prompt_tokens; }
+      if (cached == null && au) { cached = au.cache_read_input_tokens; var inp = Number(au.input_tokens || 0) + Number(au.cache_read_input_tokens || 0) + Number(au.cache_creation_input_tokens || 0); prompt = inp || null; }
+      cached = Number(cached); prompt = Number(prompt);
+      if (!(cached > 0) || !(prompt > 0)) return null;
+      return Math.round((cached / prompt) * 100);
+    } catch (e) { return null; }
+  }
+
+  // (v4.407) THE PER-ROW REPORT -- everything the glyph wall and the numeric rows used to show,
+  // as INI-style sectioned plain text. Read-only, copyable, opens via the \uD83D\uDCCB button on the
+  // gauges row. Reads the stores fresh (user-triggered), never the tick.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSessionCtxReportText-v407,
+  //   role=__lambdao_1.tmSessionCtxReportText,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  //   comment=(v4.407) Builds the per-identity Sessions-in-Memory report (INI-style sections: Session / Context / Cost / Cache / Time / Thinking / Keep-alive / Alerts) for the row's report modal.,
+  // ]
+  function tmSessionCtxReportText(idKey) {
+    var L = [];
+    function sec(t) { L.push('', '[ ' + t + ' ]'); }
+    function kv(k, v) { L.push('  ' + k + ': ' + v); }
+    try {
+      var info = (typeof tmSessionCtxHoverIdentities !== 'undefined' && tmSessionCtxHoverIdentities[idKey]) || {};
+      var kp = String(idKey || '').split('::');
+      var sid = info.sid || kp[0] || '', model = info.model || kp[1] || '', host = info.host || kp[2] || '';
+      var isProxy = (info.isProxy != null) ? !!info.isProxy : (kp[3] === 'proxy');
+      var name = '';
+      try { name = tmGetSessionName(sid) || ''; } catch (eN) {}
+      var ring = tmReadCaptureRing();
+      var latest = null, usageCap = null, ctxCap = null, thinkCap = null, provCap = null;
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var c = ring[i]; if (!c) continue;
+        var ck = c._identity && c._identity.key;
+        if (ck !== idKey) continue;
+        if (!latest) latest = c;
+        if (!usageCap && (c.response_usage || c.response_anthropic_usage)) usageCap = c;
+        if (!ctxCap && c._ctx_snapshot) ctxCap = c;
+        if (!thinkCap && c._think_req) thinkCap = c;
+        if (!provCap && c.response_provider) provCap = c;
+        if (latest && usageCap && ctxCap && thinkCap && provCap) break;
+      }
+
+      sec('Session');
+      if (name) kv('name', name);
+      kv('id', sid || '?');
+      kv('model', model || '?');
+      kv('route', (isProxy ? 'TypingMind proxy \u2192 ' : 'direct \u2192 ') + (host || '?'));
+      var prov = provCap ? String(provCap.response_provider) : '';
+      try { prov = tmResolveProviderLabel(idKey, prov || host || ''); } catch (eRL) {}
+      if (prov) kv('serving provider', prov + '  (the actual host serving this model on this route)');
+      kv('identity key', idKey);
+      if (latest) kv('last turn', latest.ts_local || (latest.ts ? new Date(latest.ts).toLocaleString() : '?'));
+
+      if (ctxCap && ctxCap._ctx_snapshot) {
+        var sn = ctxCap._ctx_snapshot;
+        sec('Context (last turn, provider-reported)');
+        var mr = null; try { mr = tmResolveModelMaxCtxCached(sn.model || model, ctxCap); } catch (eMR) {}
+        var maxC = (mr && mr.max != null) ? mr.max : sn.max_ctx;
+        kv('total', Number(sn.total || 0).toLocaleString() + ' tok' + (maxC ? (' / ' + Number(maxC).toLocaleString() + '  (' + (Math.round((sn.total / maxC) * 1000) / 10) + '%)') : ''));
+        if (sn.prompt != null) kv('prompt', Number(sn.prompt).toLocaleString());
+        if (sn.completion != null) kv('completion', Number(sn.completion).toLocaleString());
+        if (sn.reasoning != null) kv('reasoning', Number(sn.reasoning).toLocaleString());
+        if (sn.cached != null) kv('cached', Number(sn.cached).toLocaleString());
+        if (maxC) kv('max via', (mr && mr.source) || sn.max_ctx_source || 'stamped');
+      }
+
+      sec('Cost');
+      var sc = 0; try { sc = tmGetSessionCost(sid, model, host, isProxy); } catch (eSC) {}
+      kv('session total', sc > 0 ? ('$' + sc.toFixed(4)) : '(none yet)');
+      if (usageCap) {
+        var tcv = tmExtractCostVal(usageCap.response_anthropic_usage, usageCap.response_usage);
+        if (!(tcv > 0) && typeof usageCap._table_cost === 'number' && usageCap._table_cost > 0) tcv = usageCap._table_cost;
+        if (tcv > 0) kv('last turn', '$' + tcv.toFixed(4));
+      }
+
+      sec('Cache');
+      var stats = null; try { stats = tmGetCacheOutcomeForIdentity(idKey); } catch (eST) {}
+      stats = stats || {};
+      kv('last turn', stats._cache_last ? String(stats._cache_last).toUpperCase() : 'no data');
+      kv('streak', String(stats._cache_streak || 0));
+      kv('totals', (stats._cache_misses || 0) + ' misses / ' + (stats._cache_hits || 0) + ' hits');
+      if (latest && latest.system_tools_prefix_hash) kv('prefix hash', String(latest.system_tools_prefix_hash));
+
+      sec('Time (working time; idle excluded)');
+      var tt = { rt: 0, tool: 0, total: 0 };
+      try { tt = tmGetSessionTimeTotals(sid, model, host, isProxy); } catch (eTT) {}
+      kv('assistant (cumulative)', tmFmtDuration(tt.rt));
+      kv('tools (cumulative)', tmFmtDuration(tt.tool));
+      kv('total', tmFmtDuration(tt.total));
+      if (latest && latest._rt_ms != null) kv('last turn', tmFmtDuration(Number(latest._rt_ms)));
+      if (latest && latest._tool_exec_ms != null) kv('last tool exec', tmFmtDuration(Number(latest._tool_exec_ms)));
+
+      if (thinkCap) {
+        sec('Thinking');
+        try { kv('requested', tmThinkCompactReq(thinkCap._think_req) || '?'); } catch (eCR) {}
+        try { if (thinkCap._think_obs) kv('observed', tmThinkCompactObs(thinkCap._think_obs, thinkCap._think_req) || '?'); } catch (eCO) {}
+        var ovr = thinkCap._think_req && thinkCap._think_req.override;
+        if (ovr && ovr.applied) kv('override', 'level=' + ovr.level + ' \u00b7 display=' + ovr.display + (ovr.mode ? (' \u00b7 ' + ovr.mode) : ''));
+        var eff = null; try { eff = tmThinkEffectiveForIdentity(idKey); } catch (eEF) {}
+        if (eff && eff.sent) kv('in effect', (eff.sent.level || '?') + ' \u00b7 display ' + (eff.sent.display || '?') + (eff.overridden ? '  (extension override)' : '  (native)'));
+        var hist = null; try { hist = tmGetThinkHistogram(sid, model, host, isProxy); } catch (eH) {}
+        if (hist && Array.isArray(hist.samples) && hist.samples.length) {
+          kv('per-turn reasoning tokens (oldest first)', hist.samples.map(function (v) { return tmThinkFmtK(v); }).join('  '));
+        }
+        if (hist && hist.turns) kv('turns counted', String(hist.turns));
+        var ro = thinkCap._replay_out;
+        if (ro && (ro.raw_turns || ro.enc_turns)) kv('reasoning replayed in last payload', (ro.raw_turns || 0) + ' raw + ' + (ro.enc_turns || 0) + ' encrypted turn(s)');
+      }
+
+      sec('Keep-alive');
+      var ka = null; try { ka = tmGetKeepAliveEntry(idKey); } catch (eKA) {}
+      if (ka && ka.enabled) {
+        kv('state', 'ON \u2014 every ' + (ka.interval_min || '?') + 'm' + (ka.max_hours ? (' (max ' + ka.max_hours + 'h)') : ''));
+        var kst = (typeof tmKeepAliveStatus !== 'undefined') ? tmKeepAliveStatus[idKey] : null;
+        if (kst && kst.text) kv('sweeper', kst.text);
+        if (ka.ping_count) { try { kv('pings', tmKeepAliveSummaryText(ka)); } catch (eKS) { kv('pings', String(ka.ping_count)); } }
+        if (ka.broken) kv('BROKEN', 'last ping wrote ' + tmThinkFmtK(ka.broken.write_tokens) + ' cache tokens \u2014 auto-disabled');
+      } else {
+        kv('state', 'off');
+      }
+
+      var alertLines = [];
+      try {
+        if (tmMostRecentError && tmMostRecentError.idKey === idKey) {
+          alertLines.push('ERROR ' + (tmMostRecentError.code != null ? tmMostRecentError.code : '?') + (tmMostRecentError.provider ? (' ' + tmMostRecentError.provider) : '') + (tmMostRecentError.attempt > 0 ? (' (retried x' + tmMostRecentError.attempt + ')') : '') + (tmMostRecentError.message ? (' \u2014 ' + tmMostRecentError.message) : ''));
+        }
+        if (tmEndpointNotFound && tmEndpointNotFound.idKey === idKey) {
+          alertLines.push('ENDPOINT NOT FOUND' + (tmEndpointNotFound.provider ? (' for ' + tmEndpointNotFound.provider) : '') + ' \u2014 consider switching providers');
+        }
+        for (var wi = ring.length - 1; wi >= 0; wi--) {
+          var wc = ring[wi];
+          if (!wc || !Array.isArray(wc._warnings) || !wc._warnings.length) continue;
+          var wk = wc._identity && wc._identity.key;
+          if (wk !== idKey) continue;
+          for (var wj = wc._warnings.length - 1; wj >= 0; wj--) {
+            if (wc._warnings[wj] && wc._warnings[wj].severity === 'critical') { alertLines.push('WARNING: ' + (wc._warnings[wj].title || '') + ' \u2014 ' + (wc._warnings[wj].message || '')); break; }
+          }
+          break;
+        }
+      } catch (eAL) {}
+      if (alertLines.length) { sec('Alerts'); for (var ai = 0; ai < alertLines.length; ai++) L.push('  ' + alertLines[ai]); }
+    } catch (e) { L.push('', '[ error ]', '  ' + String(e)); }
+    return L.join('\n');
+  }
+
+  // (v4.407) The report modal: tmShowErrorPopup pattern (overlay + capture-phase Escape +
+  // click-away + self-uninstalling listener) plus a Copy All button. Read-only, selectable.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmShowSessionCtxReport-v407,
+  //   role=__lambdao_1.tmShowSessionCtxReport,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  //   comment=(v4.407) Per-identity Sessions-in-Memory report modal (INI-style text, Copy All, Escape/click-away close) opened from the row's report button.,
+  // ]
+  function tmShowSessionCtxReport(idKey) {
+    if (typeof document === 'undefined' || !idKey) return;
+    var text = '';
+    try { text = tmSessionCtxReportText(idKey); } catch (e) { text = 'report failed: ' + e; }
+    var existing = document.getElementById('tm-session-ctx-report-overlay');
+    if (existing) { existing.parentNode.removeChild(existing); }
+    var info = (typeof tmSessionCtxHoverIdentities !== 'undefined' && tmSessionCtxHoverIdentities[idKey]) || {};
+    var hdrLabel = '';
+    try {
+      var nm = tmGetSessionName(info.sid || String(idKey).split('::')[0] || '') || '';
+      hdrLabel = (nm || (info.sid || String(idKey).split('::')[0] || '')) + (info.model ? (' \u2014 ' + info.model) : '');
+    } catch (eH) { hdrLabel = idKey; }
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-session-ctx-report-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'max-width:80vw;max-height:80vh;overflow:auto;background:#14141a;border:1px solid #444;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);min-width:420px;';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px;';
+    var title = document.createElement('div');
+    title.style.cssText = 'color:#c8b4ff;font-weight:bold;font-size:13px;font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+    title.textContent = '\uD83D\uDCCB ' + hdrLabel;
+    var copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.textContent = '\u2318 Copy All';
+    copyBtn.style.cssText = 'font-size:11px;padding:2px 10px;border:1px solid #44515e;border-radius:4px;background:#20252e;color:#9ecce6;cursor:pointer;flex:none;';
+    copyBtn.addEventListener('click', function(ev) {
+      ev.stopPropagation();
+      try { copyTextToClipboard(text, 'session report'); } catch (eC) {}
+    });
+    hdr.appendChild(title); hdr.appendChild(copyBtn);
+    var pre = document.createElement('pre');
+    pre.style.cssText = 'color:#d0d0d8;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;user-select:text;line-height:1.5;';
+    pre.textContent = text;
+    var foot = document.createElement('div');
+    foot.style.cssText = 'color:#888;font-size:10px;margin-top:10px;';
+    foot.textContent = 'select + copy freely, or Copy All \u2014 click outside or press Esc to close';
+    box.appendChild(hdr); box.appendChild(pre); box.appendChild(foot);
+    overlay.appendChild(box);
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+    }
+    function onKey(ev) {
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); close(); }
+    }
+    overlay.addEventListener('click', function() { close(); });
+    box.addEventListener('click', function(ev) { ev.stopPropagation(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(overlay);
   }
 
   // (v4.378) One short-lived read snapshot per dashboard pass, never one ring parse per row.
@@ -12286,6 +12509,12 @@
       for (var cz = 0; cz < cacheZones.length; cz++) {
         tmSessionCtxPatchHtml(cacheZones[cz], tmRenderIdentityCacheCluster(cacheZones[cz].getAttribute('data-cache-key'), { frame: frame }));
       }
+      // (v4.407) The lean thinking rows tick too (this-turn count + histogram stay current).
+      var thinkZones = tmSessionCtxHoverEl.querySelectorAll('[data-think-key]');
+      for (var tz = 0; tz < thinkZones.length; tz++) {
+        var tKey = thinkZones[tz].getAttribute('data-think-key');
+        tmSessionCtxPatchHtml(thinkZones[tz], tmThinkRowLeanHtml(frame.think[tKey] || null, tKey, '13px'));
+      }
       tmSessionCtxRefreshAlerts(frame);
       tmRefreshSessionCtxKeepAlive(frame.keepalive);
     } catch (e) { console.warn('[Payload] Sessions-in-Memory tick failed:', e); }
@@ -12355,40 +12584,26 @@
       tmSessionCtxHoverIdentities[key] = { sid: info.sid || '', model: info.model || '', host: info.host || '', isProxy: !!info.isProxy };
       var hue = '#c8d0dc';
       try { hue = tmModelEndpointColor(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eH) {}
+      // (v4.407) DASHBOARD ROW: the glyph wall retired. Layout per row:
+      //   1) session name (+ fullness bulge) ......... STATUS WORD (top-right, was the live zone)
+      //   2) alert zone (unchanged, per-identity)
+      //   3) model \u00b7 route \u00b7 serving provider + cache cluster (now with a HIT/MISS chip)
+      //   4) BIG context dial (32px; absolute numbers on hover) + aggregate session cost + \uD83D\uDCCB report
+      //   5) thinking lean row: this-turn reasoning + the per-turn histogram
+      //   6) controls (Think / display / note)   7) keep-alive + provider routing
       var ctxDialHtml = '';
-      var ctxNumsHtml = '';
       var ctxCostHtml = '';
       var ctxCap = null;
       try { ctxCap = liveFrame.ctx[key] || null; } catch (eC) {}
       if (ctxCap && ctxCap._ctx_snapshot) {
-        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 16, noClick: true, cap: ctxCap });
-        ctxNumsHtml = '<span style="font-size:12px;color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmCtxHoverTotalMaxLabel(ctxCap._ctx_snapshot, ctxCap)) + '</span>';
-      } else {
-        ctxNumsHtml = '<span style="font-size:12px;color:#6a7280;white-space:nowrap;">no ctx snapshot</span>';
+        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 32, labelFs: '13px', noClick: true, cap: ctxCap });
       }
-      // (v4.332) Aggregate session cost at the right end (tm_session_costs_v2 ledger, the
-      // SAME tmGetSessionCost the widget '$' total and the Filter dropdown's ($total) read):
-      // 'how much is this session whamming me?' next to 'how full is its context?'.
       try {
         var hoverSessCost = tmGetSessionCost(info.sid || '', info.model || '', info.host, info.isProxy);
         if (hoverSessCost > 0) {
-          ctxCostHtml = '<span style="font-size:12px;font-weight:600;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
+          ctxCostHtml = '<span style="font-size:14px;font-weight:700;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
         }
       } catch (eCost) {}
-      // (v4.353) Session time triad (assistant / tool / total) from the ledger, live at render.
-      var ctxTimeHtml = '';
-      try {
-        var hoverTT = tmGetSessionTimeTotals(info.sid || '', info.model || '', info.host, info.isProxy);
-        if (hoverTT.total > 0) ctxTimeHtml = tmRenderSessionTimeTotals(hoverTT.rt, hoverTT.tool, { fontSize: '12px', gap: '6px' });
-      } catch (eTT) {}
-      // (v4.365) FULL-WIDTH STACKED ROWS: the fixed right-cluster grid is GONE. It floated
-      // half-a-row off vertically vs the left column, the thinking-badge line's nowrap children
-      // overflowed INTO it before flex-wrap engaged (Dan's overlap + rollover bug), and the
-      // keep-alive controls sat orphaned on their own bottom row. Every row is now full-width
-      // and left-justified; nothing can overlap, and any wrap wraps cleanly across the whole
-      // card width. Rows: 1) spinner + name (fullness bulge)  2) model + live  3+4) REQ/OBS
-      // thinking glyphs (13px)  5) gauges (dial + total/max + time triad + cost)  6) controls
-      // (Think dropdowns + note + keep-alive).
       var ctxPct = null;
       if (ctxCap && ctxCap._ctx_snapshot) {
         try {
@@ -12400,57 +12615,45 @@
       }
       var hueNum = null;
       try { hueNum = tmSessionHueNumber(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eHN) {}
-      // (v4.334) Name/model SPLIT: the label's ' -- model' tail drops to its OWN second line.
       var namePart = String(info.label || key);
       if (info.model && namePart.slice(-(info.model.length + 3)) === (' \u2014 ' + info.model)) {
         namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
       }
-      var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;">' +
-        '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key], liveFrame) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
-        '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
+      var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;justify-content:space-between;">' +
+        '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
+        '<span data-live-key="' + escapeHtml(key) + '" style="flex:none;padding-left:8px;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key], liveFrame) + '</span>' +
       '</div>';
-      var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:9px;">' +
+      // Row 3: model \u00b7 route \u00b7 serving provider + the cache cluster.
+      var routeTxt = (info.isProxy ? 'TypingMind proxy \u2192 ' : '') + (info.host || '');
+      var provLabel = (liveFrame.prov && liveFrame.prov[key]) || '';
+      if (provLabel) { try { provLabel = tmResolveProviderLabel(key, provLabel); } catch (eRL) {} }
+      var modelLiveRow = '<div style="display:flex;align-items:center;gap:8px;min-height:14px;flex-wrap:wrap;margin-top:9px;">' +
         (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
-        '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key], liveFrame) + '</span>' +
-        // (v4.405) The per-identity cache cluster (migrated from the retired persistent-widget top
-        // row; markup/palette/superscripts verbatim): right after the live timers, per Dan. The
-        // row's extra top margin is the room the cost superscripts need (they overhang upward).
-        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
+        (routeTxt ? ('<span style="font-size:11px;color:#6a7280;white-space:nowrap;" title="route: relay / intermediary host for this identity">' + escapeHtml(routeTxt) + '</span>') : '') +
+        (provLabel ? ('<span style="font-size:12px;color:#8ef0a0;white-space:nowrap;" title="serving provider: the actual host serving this model on this route">' + escapeHtml(provLabel) + '</span>') : '') +
+        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;margin-left:7px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
       '</div>';
-      // (v4.354/v4.365) Thinking Observatory rows: REQ/OBS stacked at 13px (was 11px); the
-      // note button moves off the badge and onto the controls row.
+      // Row 5: lean thinking (this turn + per-turn histogram), ticked live.
       var thinkRow = '';
       var tkCapH = null;
       try {
         tkCapH = liveFrame.think[key] || null;
-        if (tkCapH) {
-          var thinkBadge = tmRenderThinkBadge(tkCapH, { fontSize: '13px', noNote: true, hist: tmGetThinkHistogram(info.sid || '', info.model || '', info.host, info.isProxy) });
-          if (thinkBadge) thinkRow = '<div style="margin-top:3px;">' + thinkBadge + '</div>';
-        }
+        if (tkCapH) thinkRow = '<div style="margin-top:3px;"><span data-think-key="' + escapeHtml(key) + '">' + tmThinkRowLeanHtml(tkCapH, key, '13px') + '</span></div>';
       } catch (eTkH) {}
-      // Gauges row: dial + total/max + time triad + aggregate session cost, tight inline gaps.
-      var gaugesRow = '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-height:17px;margin-top:3px;">' +
+      // Row 4: BIG dial + aggregate cost + report button. Absolute context numbers: dial hover.
+      var reportBtn = '<span data-action="session-ctx-report" data-key="' + escapeHtml(key) + '" title="Session report \u2014 context, cost, cache, time, thinking, keep-alive: read-only, copyable" style="cursor:pointer;font-size:13px;opacity:0.85;">\uD83D\uDCCB</span>';
+      var gaugesRow = '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:34px;margin-top:3px;">' +
         '<span style="display:inline-flex;align-items:center;flex:none;">' + ctxDialHtml + '</span>' +
-        ctxNumsHtml +
-        ctxTimeHtml +
         ctxCostHtml +
+        '<span style="flex:1;"></span>' +
+        reportBtn +
       '</div>';
-      // Controls row: Think level/display dropdowns (shared builder, incl. the OpenRouter
-      // warning triangle) + thinking-note button. (v4.396) The keep-alive toggle/interval/status moved
-      // OFF this row onto its own dedicated row below -- in a flex-wrap the KA cluster wrapped to a second
-      // line on tight windows and slipped under the fold (Dan sized the window to two entries and lost the
-      // Fable row's button). No wrap on the KA row -> predictable height, the toggle is always where expected.
       var ctlParts = [];
       try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key, { selMaxWidth: '285px', selMaxWidthDisp: '255px' })); } catch (eCtl) {}
       if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
       var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
       var kaRowHtml = '';
       try {
-        // (v4.405) Provider routing dropdown MIGRATED here from the retired persistent-widget model
-        // row: it is per-IDENTITY (sid::model::host::proxy) by design, so it belongs on the
-        // identity's own dashboard row, right of the keep-alive controls. Shared builder + shared
-        // document-level change handler with the ring modal (nothing new to wire); the tick's
-        // focused-SELECT interaction guard covers it, so no flash-close.
         var kaRouteHtml = '';
         try {
           var _rm = String(info.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
@@ -12466,15 +12669,11 @@
         } catch (eRtH) {}
         kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;"><span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span>' + kaRouteHtml + '</div>';
       } catch (eKaH) {}
-      // (v4.405) Per-identity alert zone (error / endpoint-not-found / prompt-warning banners,
-      // migrated off the persistent widget): own line right under the name, before the model row.
       var alertRowHtml = '<div data-alert-key="' + escapeHtml(key) + '">' + tmSessionCtxAlertHtml(key, { ring: liveFrame.ring }) + '</div>';
       rows.push(
-        // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
         '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
           nameRow +
-          // (v4.366) Everything under the name row is inset 48px (outline-like hierarchy, per Dan).
-          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + thinkRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
+          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + gaugesRow + thinkRow + ctlRow + kaRowHtml + '</div>' +
         '</div>'
       );
     }
@@ -12703,6 +12902,14 @@
               if (alEl.dataset.action === 'open-error-popup') { try { tmShowErrorPopup(); } catch (eEP) {} }
               else if (alEl.dataset.action === 'dismiss-endpoint-not-found') { tmEndpointNotFound = null; tmSessionCtxRefreshAlerts(); }
               else { try { tmDismissWarningBanner(alEl.dataset.warningId || ''); } catch (eDW) {} tmSessionCtxRefreshAlerts(); }
+              return;
+            }
+            // (v4.407) Per-row session report (the glyph wall's detail, as sectioned copyable text).
+            var rpEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="session-ctx-report"]') : null;
+            if (rpEl && rpEl.dataset) {
+              ev.stopPropagation();
+              ev.preventDefault();
+              try { tmShowSessionCtxReport(rpEl.dataset.key); } catch (eRP) {}
               return;
             }
             var actEl = ev.target && ev.target.closest ? ev.target.closest('[data-hovercard-action]') : null;
@@ -13422,6 +13629,7 @@
       '<circle cx="' + cx + '" cy="' + cx + '" r="' + r + '" fill="none" stroke="#3a3f4a" stroke-width="' + sw + '"/>' + arc + '</svg>';
     var over = (pct != null && pct > 100);
     var label = pct != null ? String(Math.round(pct)) + '%' : ('tok ' + tmFmtTok(snap.total));
+    var labFs = opts.labelFs || '10px'; // (v4.407) SiM dashboard shows the dial big; ring rows keep 10px
     var NL = String.fromCharCode(10);
     var tip = [];
     tip.push('ctx ' + tmFmtTok(snap.total) + (maxCtx ? (' / ' + tmFmtTok(maxCtx) + (pct != null ? ' (' + (Math.round(pct * 10) / 10) + '%)' : '')) : ' / max unknown'));
@@ -13439,7 +13647,7 @@
     return sep + '<span ' + (clickable ? 'data-action="ctx-dial-set" data-model="' + escapeHtml(model) + '" data-provider="' + escapeHtml(provSlugForAttr) + '" ' : '') +
       'title="' + escapeHtml(tip.join(NL)) + '" style="display:inline-flex;align-items:center;gap:3px;margin-left:4px;cursor:' + (clickable ? 'pointer' : 'help') + ';vertical-align:middle;white-space:nowrap;">' +
       svg +
-      '<span style="font-size:10px;font-weight:600;color:' + color + ';pointer-events:none;line-height:1;">' + (over ? '⚠' : '') + label + '</span>' +
+      '<span style="font-size:' + labFs + ';font-weight:600;color:' + color + ';pointer-events:none;line-height:1;">' + (over ? '⚠' : '') + label + '</span>' +
       '</span>';
   }
 
@@ -13553,7 +13761,7 @@
             'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
               '$' + turnCostVal.toFixed(3) +
               (streak > 0
-                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-12px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
+                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
                 : '') +
               ((totalMisses > 0 || totalHits > 0)
                 ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
@@ -13562,7 +13770,14 @@
         : '';
       var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
       if (!cacheReportNoCost && !turnCostStr) return '';
-      return '<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr;
+      // (v4.407) Always-visible HIT/MISS chip leads the cluster (Dan: cache hit/miss is one of the
+      // most important things on the row). Reads the same ledger as the superscripts.
+      var chip = '';
+      if (stats._cache_last === 'hit' || stats._cache_last === 'miss') {
+        var isH = stats._cache_last === 'hit';
+        chip = '<span title="last turn: cache ' + (isH ? 'HIT' : 'MISS') + '" style="font-size:10px;font-weight:700;padding:0 5px;border-radius:3px;border:1px solid ' + (isH ? '#2a6a3a' : '#6a2a2a') + ';background:' + (isH ? '#173a22' : '#3a1717') + ';color:' + (isH ? '#7dd67d' : '#ff8080') + ';white-space:nowrap;">' + (isH ? 'HIT' : 'MISS') + '</span>';
+      }
+      return chip + '<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr;
     } catch (e) { return ''; }
   }
 
