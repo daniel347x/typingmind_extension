@@ -11,6 +11,18 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.369 Changes:
+ * - 📏 STATUS ROW → TRUE TOOL LINE (~69px → ~24px from content-top to transcript). The remaining
+ *   height after v3.368 was: the keyboard-bell row (16px of near-empty space BELOW the pill —
+ *   Dan's 'asymmetry, more below than above'), the 🕘 button's padding (sets row height), and
+ *   10px content top padding. Fix: (1) the bells row OVERLAYS the status row's right end via
+ *   margin-top:-17px — the pill's right region is always empty centered text, so the bells get
+ *   a zero-cost home; status bar now reads 🕘 left / status text center / signal bells right.
+ *   (2) applyStatusBlockVisibility restores margin-top:0 when the status block is hidden, so
+ *   bell flashes survive hiding the row. (3) pill padding 2px→1px, min-height 15→13, margin
+ *   2→0; 🕘 button padding 2px 6px→1px 5px; content top padding 10px→6px, bottom 14px→12px.
+ *   Fonts, bell size/colors, pill colors unchanged.
+ *
  * v3.368 Changes:
  * - 📏 STATUS ROW — the REAL fix (v3.367 was wrong, net-zero by arithmetic): v3.367 ADDED
  *   margin:4px 0 + a 2px sibling margin to #deepgram-status-block, which previously had NO
@@ -1861,7 +1873,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.368',
+  VERSION: '3.369',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7487,6 +7499,11 @@
     const hidden = localStorage.getItem(CONFIG.STATUS_BLOCK_HIDDEN_STORAGE) === '1';
     block.style.display = hidden ? 'none' : '';
     btn.textContent = (hidden ? '\u25b8' : '\u25be') + ' Status';
+    // (v3.369) The keyboard bells overlay the status row's right end via CSS margin-top:-17px;
+    // when the status block is HIDDEN, restore their normal standalone position above the
+    // transcript (inline 0px overrides the stylesheet).
+    const bells = document.getElementById('keyboard-indicators');
+    if (bells) bells.style.marginTop = hidden ? '0px' : '';
     // The legacy "Start Recording" button (Wispr Flow replaced it) rides along with the status
     // expander: shown only when the status block is expanded, hidden (space reclaimed) when collapsed.
     const recordRow = document.getElementById('deepgram-record-row');
@@ -7863,7 +7880,7 @@
       
       /* Panel Content */
       .deepgram-content {
-        padding: 10px 20px 14px;   /* (v3.368) was 20px all-round — top padding was the real status-row space-holder */
+        padding: 6px 20px 12px;   /* (v3.369) was 20px all-round → 10/20/14 (v3.368) — still tightening the status band */
         overflow-y: auto;
         overflow-x: hidden; /* (v3.301) never x-scroll: a 1–2px rightward drift was shaving the left edge of every row */
         overflow-x: clip;   /* modern engines: also forbid programmatic/focus x-scroll */
@@ -7981,12 +7998,12 @@
 
       /* Status Indicator */
       .deepgram-status {
-        padding: 2px 10px;   /* (v3.366) tight message line — was 4px 10px (v3.323) */
+        padding: 1px 10px;   /* (v3.369) tool-line — was 2px 10px (v3.366), 4px 10px (v3.323) */
         border-radius: 8px;
         font-size: 13px;
         font-weight: 500;
         text-align: center;
-        margin-bottom: 2px;   /* (v3.366) tight — was 4px (v3.323) */
+        margin-bottom: 0;   /* (v3.369) was 2px — the bells overlay carries the gap below */
       }
       
       .deepgram-status.connected {
@@ -8148,7 +8165,9 @@
         display: flex;
         gap: 6px;
         justify-content: flex-end;
-        margin-bottom: 2px;   /* (v3.367) was 4px — tightens the bells→transcript gap */
+        margin: -17px 0 0 0;   /* (v3.369) overlay the status row's right end at zero vertical cost.
+                                   applyStatusBlockVisibility sets inline margin-top:0 when the
+                                   status block is hidden (bells return above the transcript). */
       }
       
       .keyboard-bell {
@@ -9481,8 +9500,8 @@
         <div id="deepgram-status-block">
           <!-- Status (+ v3.325 history clicker to its left — the status line itself is untouched) -->
           <div style="display:flex; align-items:center; gap:5px;">
-            <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:2px 6px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
-            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:15px;"></div>
+            <button id="deepgram-status-history-btn" title="Status history — the last 100 status messages (newest first)" style="flex:0 0 auto; font-size:12px; padding:1px 5px; cursor:pointer; background:transparent; border:1px solid #b9c2cc; border-radius:6px; line-height:1.2; opacity:0.75;" onmouseenter="this.style.opacity='1'" onmouseleave="this.style.opacity='0.75'">🕘</button>
+            <div id="deepgram-status" class="deepgram-status" style="flex:1 1 auto; min-height:13px;"></div>
           </div>
           
           <!-- Queue Status (Always Visible) -->
