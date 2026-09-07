@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.403
+// Version: 4.404
 // Issues Fixed:
 //   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
 //     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
@@ -2261,7 +2261,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.403';
+  const EXT_VERSION = '4.404';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5870,6 +5870,10 @@
         // (v4.369) Outbound reasoning census: how many chat turns in THIS payload carried reasoning
         // (raw vs encrypted) + per-turn char min/max/avg -- the headline history-preserved check.
         replay_outbound: cap._replay_out || null,
+        // (v4.404) Cross-model carryover ESTIMATE (best-effort; per-origin ledger + family grouping):
+        // which prior-model reasoning turns are/aren't in this payload, path-scoped vs family-aggregated,
+        // foreign-carryover flag. Not a proof -- a heuristic report.
+        replay_estimate: cap._replay_est || null,
         usage: cap.response_anthropic_usage || cap.response_usage || null
       };
       var txt = JSON.stringify(report, null, 2);
@@ -8542,6 +8546,7 @@
       '<div style="' + seam + '"><b style="color:#e6e6ee;">What\'s static vs. dynamic.</b> The registry below is <b>static data</b> \u2014 written by hand in a session, dated per range; nothing re-reads a vendor page on its own. <b>Dynamic:</b> OpenRouter\'s catalogue is fetched live by the extension (12 h cache), and the wire itself is observed (the scanners read what each request sent and what came back) \u2014 neither ever edits the registry. A registry key names a documented model range by provider + prose, e.g. <code style="' + TM_THINK_CHIP_STYLE + '">Anthropic\u203aClaude Fable 5.1 \u2026</code>. DeepInfra is now FIRST-CLASS (v4.402): a host whose menu is the vendor ∩ host intersection (see the next line).</div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">A host menu is the vendor ∩ host INTERSECTION (DeepInfra).</b> DeepInfra documents its own ' + chip('reasoning_effort') + ' vocabulary (' + chip('none') + ' | ' + chip('low') + ' | ' + chip('medium') + ' | ' + chip('high') + ') for every reasoning model it hosts. We offer only the words supported <b>both</b> by DeepInfra <b>and</b> by the model developer\'s own page \u2014 so a DeepInfra Kimi-K3 row offers ' + chip('low') + ' | ' + chip('high') + ' | ' + chip('max') + ' (Moonshot), never DeepInfra-only ' + chip('minimal') + ' / ' + chip('medium') + ' / ' + chip('xhigh') + '; and ' + chip('off') + ' stays disabled where the developer says always-on even though DeepInfra lists ' + chip('none') + '. <span style="color:#8b93a3;">[This intersection is the rule we intend for every intermediary/host; DeepInfra is the first whose own list is not already a total superset of the vendor\'s.]</span></div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">Example: DeepInfra + Kimi K3, end to end.</b> You open the \ud83c\udf9b\ufe0f menu on a DeepInfra Kimi-K3 session. The menu asks two questions: what does the host document (DeepInfra: ' + chip('none') + ' | ' + chip('low') + ' | ' + chip('medium') + ' | ' + chip('high') + ' for every reasoning model it hosts) and what does the model developer document (Moonshot: ' + chip('low') + ' | ' + chip('high') + ' | ' + chip('max') + ', always-on)? It offers only the overlap \u2014 ' + chip('low') + ' | ' + chip('high') + ' | ' + chip('max') + ' \u2014 and ' + chip('off') + ' stays disabled, because Moonshot says K3 cannot stop thinking even though DeepInfra would accept ' + chip('none') + '. DeepInfra\'s extra words (' + chip('minimal') + ', ' + chip('medium') + ', ' + chip('xhigh') + ') are never offered. Your pick then goes out in DeepInfra\'s own wire shape (' + chip('reasoning_effort') + '), never Moonshot\'s. Nothing here is special-cased to Kimi or DeepInfra in code \u2014 the code only reads the registry entry; a new host gets the same treatment the day its rows are added.</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">Cross-model reasoning: how we measure it.</b> TypingMind does <b>not</b> carry reasoning from one model into another model\'s payload \u2014 measured live, Sept 2026 (Kimi\u2192Claude 0 turns, Kimi\u2192Gemini 0) \u2014 and we assume this holds regardless of the underlying provider <i>(not confirmed)</i>. So the tracker counts, per <b>origin</b> (a model \u00d7 the path serving it \u2014 Claude-via-OpenRouter and Claude-direct are two origins), each response that returned reasoning, raw vs encrypted. On the current payload it counts what\'s actually carried. The same model reached by more than one path is also grouped into a <b>family</b> (all paths to Claude = one family): a payload is checked against <b>both</b> its own origin\'s count and its family\'s total, and reported as whichever fits \u2014 path-scoped or family-aggregated \u2014 never assumed. A reading above the family total means another model\'s raw reasoning rode in (the only case flagged). Encrypted blobs are origin-sealed and never transfer \u2014 reported as fact, not estimate. <i>(Ambiguities get a best-effort guess; this is unusual.)</i></div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">One audited table, today.</b> The registry stores the <b>final, audited</b> vocabulary per model range (the intersection already computed), frozen with its date \u2014 the code reads it; it does not re-derive it. <span style="color:#8b93a3;">Future work: split vendor vs host/intermediary vocabularies into separate tables with a per-row compose rule (' + chip('intersect') + ' | ' + chip('superset') + ') and one generic composer, so a new host comes online by adding rows, not code.</span></div>' +
       '<div style="padding:5px 0;line-height:1.45;"><b style="color:#e6e6ee;">The registry is built by hand, kept as data.</b> Every first-party fact here was read from a vendor page by an agent in a session with Dan and saved into <code style="' + TM_THINK_CHIP_STYLE + '">TM_THINK_DOCS_REGISTRY</code> \u2014 a real data structure, dated per model range \u2014 but nothing re-reads vendor pages on its own: the contents are reviewed and refreshed only in a manual session, and the banner date says when that last happened. The OpenRouter side is different: its catalogue is fetched live by the extension (cached 12 h; <i>\u21bb Refresh catalogue</i> forces it; the fetch time is in the header above), so an UNKNOWN MAPPING or a rot hint can appear between sessions \u2014 that is the tripwire working, not a bug.</div>'
       )) +
@@ -9899,6 +9904,73 @@
     } catch (e) { return ''; }
   }
 
+  // ---------- v4.404: CROSS-MODEL CARRYOVER ESTIMATOR (read-only, best-effort) ----------
+  // Answers Dan's question: 'did reasoning from OTHER models ride into THIS payload?' Measured baseline (Fix 26,
+  // Sept 2026): TypingMind does NOT cross-transfer reasoning between model FAMILIES (Kimi->Claude 0 turns, Kimi->Gemini 0)
+  // -- and we assume family-independence (provider-independence not confirmed). So a foreign raw-text carryover is the
+  // EXCEPTION, and the estimator's job is to detect it honestly, flagging ambiguity rather than pretending precision.
+  //
+  // DATA (both durable; neither walks the ring): the Fix 26 ledger (tm_replay_ledger_v1) holds per-ORIGIN
+  // (sid::model::host) running counts of responses that produced reasoning, split raw vs encrypted; the live census
+  // (tmCountOutboundReasoning on the current body) is what THIS payload carries. Origins are grouped into model
+  // FAMILIES (strip the serving path: OR->Claude and direct->Claude share a family) so the estimator is robust to
+  // BOTH TypingMind behaviors we cannot distinguish a priori: path-scoped carriage vs family-aggregated carriage.
+  //   - C ~ current origin's own count      -> path-scoped carriage (only this path's reasoning present)
+  //   - C ~ family total (family > origin)  -> family-aggregated carriage (all same-model paths present)
+  //   - C > family total                    -> FOREIGN CARRYOVER (another family's raw text rode in) -- the flagged case
+  //   - C < current origin's count          -> partial drop (some of this origin's own reasoning is missing)
+  // Encrypted blobs are origin-sealed and NEVER transfer -- reported as exact fact, not estimated.
+  // Pure + read-only; consumed by the report surface and (later) the tooltip.
+  function tmThinkFamilyOf(model) {
+    var m = String(model || '').toLowerCase();
+    if (/claude|anthropic|fable|mythos/.test(m)) return 'Claude';
+    if (/kimi|moonshot/.test(m)) return 'Kimi';
+    if (/gemini|google/.test(m)) return 'Gemini';
+    if (/gpt|openai|^o[0-9]|chatgpt|sol/.test(m)) return 'OpenAI';
+    if (/deepseek/.test(m)) return 'DeepSeek';
+    if (/glm|zhipu|z-ai|zai/.test(m)) return 'GLM';
+    if (/qwen|dashscope|aliyun/.test(m)) return 'Qwen';
+    if (/grok|x-ai|xai/.test(m)) return 'Grok';
+    if (/minimax/.test(m)) return 'MiniMax';
+    return (m || 'unknown');
+  }
+  function tmReplayFamilyTotal(ledger, sidStr, fam) {
+    var t = 0, keys = Object.keys(ledger || {});
+    for (var i = 0; i < keys.length; i++) {
+      var e = ledger[keys[i]]; if (!e || String(e._session_id || '') !== sidStr) continue;
+      if (tmThinkFamilyOf(e.model) === fam) t += Number(e.turns || 0);
+    }
+    return t;
+  }
+  function tmBuildReplayEstimate(sid, curModel, curHost, counts) {
+    try {
+      if (!sid || !counts) return null;
+      var sidStr = String(sid), ledger = tmReplayLedgerRead();
+      var fam = tmThinkFamilyOf(curModel);
+      var C = Number(counts.rawTurns || 0), Cenc = Number(counts.encTurns || 0);
+      var ownKey = sidStr + '::' + curModel + '::' + curHost;
+      var own = (ledger[ownKey] && typeof ledger[ownKey] === 'object') ? Number(ledger[ownKey].turns || 0) : 0;
+      var famTotal = tmReplayFamilyTotal(ledger, sidStr, fam);
+      var keys = Object.keys(ledger), perOrigin = [], perOriginEnc = [];
+      for (var i = 0; i < keys.length; i++) {
+        var e = ledger[keys[i]]; if (!e || String(e._session_id || '') !== sidStr) continue;
+        var t = Number(e.turns || 0); if (!t) continue;
+        perOrigin.push({ model: e.model, host: e.host, fam: tmThinkFamilyOf(e.model), turns: t, own: keys[i] === ownKey });
+        if (Number(e.encBlocks || 0) > 0) perOriginEnc.push({ model: e.model, host: e.host, turns: Number(e.turns || 0), own: keys[i] === ownKey });
+      }
+      var verdict, kind;
+      if (C === 0 && own === 0 && famTotal === 0) { verdict = 'no reasoning yet in this conversation'; kind = 'none'; }
+      else if (C > famTotal && famTotal > 0) { verdict = 'FOREIGN CARRYOVER: this payload carries ~' + (C - famTotal) + ' more raw reasoning turn(s) than the whole ' + fam + ' family produced (' + famTotal + ') -- another family\'s raw text rode in'; kind = 'carryover'; }
+      else if (C < own) { verdict = 'PARTIAL: this payload carries ' + C + ' of this origin\'s ' + own + ' reasoning turn(s) -- some dropped'; kind = 'partial'; }
+      else if (famTotal > own && Math.abs(C - famTotal) <= Math.abs(C - own)) { verdict = 'consistent with FAMILY-aggregated carriage: payload ' + C + ' ~ all-paths ' + fam + ' total ' + famTotal; kind = 'family'; }
+      else if (Math.abs(C - own) <= Math.abs(C - famTotal)) { verdict = 'consistent with PATH-scoped carriage: payload ' + C + ' ~ this origin ' + own + (famTotal > own ? (' (family total ' + famTotal + ' not carried)') : ''); kind = 'path'; }
+      else { verdict = 'payload ' + C + ' turn(s); origin ' + own + ', family ' + famTotal; kind = 'info'; }
+      return { v: 1, sid: sidStr, model: curModel, host: curHost, fam: fam, carried_raw_turns: C, carried_enc_turns: Cenc,
+        own_origin_turns: own, family_total_turns: famTotal, perOrigin: perOrigin, perOriginEnc: perOriginEnc,
+        verdict: verdict, kind: kind };
+    } catch (e) { return null; }
+  }
+
   // (v4.370) Read-only REASONING-REPLAY SUPPORT MAP modal (sibling of the Glyph Map modal).
   function tmShowReplaySupportModal() {
     if (typeof document === 'undefined') return;
@@ -10088,6 +10160,13 @@
             raw_per_turn: { min: rpCounts.rawMin, max: rpCounts.rawMax, avg: rpCounts.rawAvg },
             enc_per_turn: { min: rpCounts.encMin, max: rpCounts.encMax, avg: rpCounts.encAvg } };
           record._replay_warn = tmComputeReplayWarning(url, headersNorm, parsed, record, rpCounts);
+          // (v4.404) cross-model carryover ESTIMATE (read-only, best-effort; family-grouped, origin-keyed ledger).
+          try {
+            var estSid = record.pasted_session_id || record.session_id;
+            var estModel = record._model || (parsed && parsed.model) || '';
+            var estHost = tmExtractEndpointHost({ url: url, headers: headersNorm || {} });
+            record._replay_est = tmBuildReplayEstimate(estSid, estModel, estHost, rpCounts);
+          } catch (eRE) {}
         } catch (eRW) {}
 
         // (Fix 25, v4.374) KEEP-ALIVE bookkeeping: every real turn advances the persisted idle
