@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.405
+// Version: 4.406
 // Issues Fixed:
 //   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
 //     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
@@ -2261,7 +2261,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.405';
+  const EXT_VERSION = '4.406';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -13553,7 +13553,7 @@
             'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
               '$' + turnCostVal.toFixed(3) +
               (streak > 0
-                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
+                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-12px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
                 : '') +
               ((totalMisses > 0 || totalHits > 0)
                 ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
