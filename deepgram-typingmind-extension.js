@@ -11,6 +11,14 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.370 Changes:
+ * - 🔧 STATUS LINE CROP FIX (descenders clipped + bells overran the row's bottom edge): v3.369's
+ *   bell overlay (margin-top:-17px) painted the keyboard bells over the row's lower border, and
+ *   the pill's padding-bottom:1px let 'p'/'y' descenders jam against the transcript. Fix: bells
+ *   overlay −17px → −21px (fully inside the row, bottom edge flush with the pill's bottom),
+ *   pill padding 1px 10px → 1px 10px 3px (descender room), content top padding 6px → 4px.
+ *   Net vs v3.369: same total height, no visual crowding. Fonts/colors unchanged.
+ *
  * v3.369 Changes:
  * - 📏 STATUS ROW → TRUE TOOL LINE (~69px → ~24px from content-top to transcript). The remaining
  *   height after v3.368 was: the keyboard-bell row (16px of near-empty space BELOW the pill —
@@ -1873,7 +1881,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.369',
+  VERSION: '3.370',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -7880,7 +7888,7 @@
       
       /* Panel Content */
       .deepgram-content {
-        padding: 6px 20px 12px;   /* (v3.369) was 20px all-round → 10/20/14 (v3.368) — still tightening the status band */
+        padding: 4px 20px 12px;   /* (v3.370) top 6px → 4px — trims 2px above the status line per Dan */
         overflow-y: auto;
         overflow-x: hidden; /* (v3.301) never x-scroll: a 1–2px rightward drift was shaving the left edge of every row */
         overflow-x: clip;   /* modern engines: also forbid programmatic/focus x-scroll */
@@ -7998,7 +8006,7 @@
 
       /* Status Indicator */
       .deepgram-status {
-        padding: 1px 10px;   /* (v3.369) tool-line — was 2px 10px (v3.366), 4px 10px (v3.323) */
+        padding: 1px 10px 3px;   /* (v3.370) tool-line + 2px bottom so 'p'/'y' descenders aren't clipped (v3.369) */
         border-radius: 8px;
         font-size: 13px;
         font-weight: 500;
@@ -8165,7 +8173,9 @@
         display: flex;
         gap: 6px;
         justify-content: flex-end;
-        margin: -17px 0 0 0;   /* (v3.369) overlay the status row's right end at zero vertical cost.
+        margin: -21px 0 0 0;   /* (v3.370) was −17px — the overlay now sits fully INSIDE the status
+                                   row (bottom edge flush with the pill's bottom) instead of
+                                   overrunning it and clipping against the transcript below.
                                    applyStatusBlockVisibility sets inline margin-top:0 when the
                                    status block is hidden (bells return above the transcript). */
       }
