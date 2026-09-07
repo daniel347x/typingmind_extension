@@ -1,6 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.401
+// Version: 4.402
 // Issues Fixed:
+//   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
+//     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
+//     model it hosts (Kimi K3 / GLM-5.3 / DeepSeek V4 / Qwen 3.8), whose vocab.levels IS the vendor ∩ host
+//     INTERSECTION frozen at audit time (Moonshot low|high|max ∩ DeepInfra none|low|medium|high = low|high|max, etc.) -
+//     every offered word is supported BOTH by the host AND by the model developer, and DeepInfra-only words the vendor
+//     does not document (minimal / medium / xhigh, and none where the vendor is always-on) are NEVER offered. DeepInfra
+//     leaves TM_THINK_GRAYLIST.providers. tmThinkVocabFor gains a host branch (out.route 'host' reads the HOST entry via
+//     the new generic tmThinkHostVocabFor, not the vendor family fallthrough; off follows the VENDOR's canDisable); the
+//     writers' clamp vocabulary comes from the same intersection via tmThinkRegistryVocab (host-aware) and a dedicated
+//     host writer branch in tmThinkWriteChatCompletions emits DeepInfra's OWN wire shape (top-level reasoning_effort;
+//     reasoning:{enabled:false} for off where the vendor allows disabling) -- NEVER the vendor-direct thinking:{type} /
+//     enable_thinking shapes the host does not speak (proved by harness: previously a DeepInfra Kimi-K3 leaked Moonshot's
+//     wire). The ⚖ Think Audit gives a host row status DIRECT (nothing is remapped) + a new orange ⚡ INTERSECTION line
+//     ('every offered word is supported BOTH by DeepInfra AND by the model developer'); TM_THINK_AUDIT_KINDS gains 'both'.
+//     Two new seam lines state the intersection rule (+ the bracketed generalization: it is the rule we intend for every
+//     intermediary/host) and the one-audited-table-today note (+ the future split-tables compose-rule refactor). Version
+//     in TWO places. Suite 368 ✅ / 0 ❌ (the ~15 stale 'not analyzed / full-list unverified' assertions rewritten to the
+//     new host behavior; +6 net new DeepInfra checks). WIRE CHANGE: DeepInfra chat-completions only.
 //   - v4.393: Fix 24 -- TABLE-DRIVEN 🎛️ / 👁 MENUS. The Think level dropdown now offers exactly the vocabulary the vendor
 //     publishes for the model (TM_THINK_DOCS_REGISTRY vocab, V) via tmThinkVocabFor(model, host, protocol): direct routes
 //     get V verbatim; OpenRouter routes get V with every word OpenRouter does not list for that id DISABLED with the
@@ -2243,7 +2261,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.401';
+  const EXT_VERSION = '4.402';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6892,9 +6910,13 @@
   // a writer now asks the registry what this model accepts instead of consulting its own copy. Clamps remain,
   // but only as the safety net for 'inherit' and stale persisted overrides, and they now point at the registry.
   // Returns { levels[], canDisable, def, kind, provider } or null when the family has no usable vocabulary.
+  // (v4.402) HOST ROUTE: on a host (DeepInfra) the writer's vocabulary is the host's registry entry -- the vendor ∩
+  // host intersection -- not the vendor family fallthrough (a DeepInfra Kimi-K3 must clamp to low|high|max, not to a
+  // family table that lacks the host's rule). Generic: any kind 'host' provider resolves here; nothing name-keyed.
   function tmThinkRegistryVocab(model, host) {
     try {
-      var V = tmThinkVendorVocabFor(model);
+      var HV = tmThinkHostVocabFor(model, host);
+      var V = HV || tmThinkVendorVocabFor(model);
       if (!V || V.insufficient) return null;
       return { levels: (V.levels || []).slice(), canDisable: V.canDisable, def: V.def || null, kind: V.kind, provider: V.provider };
     } catch (e) { return null; }
@@ -7242,6 +7264,10 @@
     gemini:   { basis: 'docs-verified', date: '2026-09-06', url: 'https://ai.google.dev/gemini-api/docs/thinking', note: 'Gemini 3.x: thinkingLevel low | medium | high (default medium, dynamic); Gemini 2.5: thinkingBudget (Flash may be 0, Pro floors at 128); includeThoughts for summaries' },
     grok:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://docs.x.ai/docs/guides/reasoning', note: 'reasoning_effort low | medium | high (default) | xhigh; some Grok models ignore the field' },
     qwen:     { basis: 'docs-verified', date: '2026-09-06', url: 'https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-dashscope', note: 'Qwen 3.8: reasoning_effort low | medium | xhigh (default xhigh); enable_thinking false disables; reasoning_effort and thinking_budget are mutually exclusive (auto-convert low=4096 / medium=16384 / xhigh=262144). Read from the first-party DashScope reference (Dan-pasted verbatim).' }
+    // NOTE (v4.402): there is deliberately NO 'deepinfra' key. tmThinkLocalBasisFor is keyed by the model FAMILY
+    // (claude / openai / kimi / ...); a host route's WRITER-table provenance stays the vendor family's basis, and the
+    // host's own wire-shape vocabulary (reasoning_effort none|low|medium|high + reasoning:{enabled:false}) is
+    // documented on the DeepInfra registry block + the writer's host-branch comment, not duplicated here.
   };
   function tmThinkLocalBasisFor(fam) {
     var b = TM_THINK_LOCAL_BASIS[fam];
@@ -7558,10 +7584,61 @@
             output_cap:  { url: TM_THINK_URL.qDeep, path: 'max_tokens / max_completion_tokens', values: 'model dependent; thinking shares the cap', note: 'Never cap output on a reasoning model.' }
           } }
       ] },
-    { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', hosts: /deepinfra/, verified: '2026-09-06',
-      notes: 'Not analyzed (TM_THINK_GRAYLIST.providers). What its Reasoning Models page says (read 2026-09-06): its OWN reasoning_effort vocabulary none | low | medium | high on DeepSeek-V4 Flash / Pro, GLM-5.2, Kimi-K3, Ling-3.0-flash (Kimi K3\'s native max is not in it); also a reasoning object; reasoning_content returned by default; usage reports reasoning tokens; "Not all models support reasoning; using unsupported parameters on a non-reasoning model has no effect." No verified verbatim-forwarding rule -- identical words may not mean identical behaviour, so no match test is attempted. Our writer treats DeepInfra as a flagged passthrough.',
-      extra: [ { label: 'Reasoning Models (its own reasoning_effort none | low | medium | high) -- not analyzed', url: TM_THINK_URL.iReasoning } ],
-      entries: [] }
+    // (v4.402) DeepInfra is now FIRST-CLASS: a host whose menu is the INTERSECTION of the model developer's
+    // published vocabulary and DeepInfra's own documented reasoning_effort vocabulary (none | low | medium | high;
+    // docs.deepinfra.com/chat/reasoning, verified 2026-09-06; DeepInfra's live schema endpoint publishes only a
+    // parameter-LEVEL enum, not a per-model vocabulary, so the registry below -- frozen at audit time -- is the
+    // authority, exactly like every other first-party range). Each entry's vocab.levels IS the intersection,
+    // recorded with its date; every offered word is supported BOTH by DeepInfra AND by the model developer.
+    // FUTURE (not this pass): normalize the registry into separate vendor vs host/intermediary vocabulary tables
+    // with a per-row compose rule ('intersect' | 'superset') and one generic composer, so a new host comes online
+    // by adding rows, not code. Today the intersection is baked into the data below, audited in a human-agent
+    // session -- that is the architecture working as designed, not a shortcut.
+    { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', hosts: /deepinfra/, verified: '2026-09-06', index_url: 'https://docs.deepinfra.com/llms.txt',
+      notes: 'A HOST (serves open-weight models on its own API with its own vocabulary). Menu = INTERSECTION of the vendor\'s published vocabulary and DeepInfra\'s documented reasoning_effort set (none | low | medium | high). DeepInfra-only words it lists that the vendor does not (minimal / medium / xhigh, and none where the vendor is always-on) are NOT offered. reasoning_content returned by default; "unsupported parameters on a non-reasoning model have no effect" (silent no-op, not a 400).',
+      extra: [ { label: 'Reasoning Models (its own reasoning_effort none | low | medium | high)', url: TM_THINK_URL.iReasoning } ],
+      entries: [
+        { models: 'Kimi K3 on DeepInfra (moonshotai/Kimi-K3)', match: /kimi-k3/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: false, def: 'high', rules: ['INTERSECTION: Moonshot documents low|high|max (always-on); DeepInfra documents none|low|medium|high. Offered = low|high|max, supported by BOTH. DeepInfra-only none/minimal/medium/xhigh NOT offered; Moonshot says K3 cannot switch thinking off, so off is disabled even though DeepInfra lists none.'] },
+          cells: {
+            mode:        { na: true, reason: 'no on/off field on this host; Kimi K3 always reasons (Moonshot). DeepInfra: reasoning_effort none disables reasoning where the model supports it, but K3 does not -- so off stays disabled by the vendor rule.' },
+            level:       { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort (top-level)', values: 'low | high | max (the INTERSECTION: Moonshot low|high|max ∩ DeepInfra none|low|medium|high). Each word is supported by DeepInfra AND by the model developer.', note: 'DeepInfra documents default high for reasoning models; Moonshot documents default max for K3. The menu offers only the intersection; DeepInfra-only words (minimal/medium/xhigh) are not offered.' },
+            display:     { na: true, reason: 'reasoning_content returned by default on this host; no separate display switch' },
+            per_message: { na: true, reason: 'not offered; a level change is a top-level field edit' },
+            usage:       { url: TM_THINK_URL.iReasoning, path: 'usage (reasoning tokens) + reasoning_content (text)', values: 'integer where reported; reasoning_content streamed by default', note: 'Evidence ✅/≈ on this host.' },
+            output_cap:  { url: TM_THINK_URL.iReasoning, path: 'max_tokens', values: 'thinking + answer share the cap', note: 'Never cap output on a reasoning model.' }
+          } },
+        { models: 'GLM-5.3 on DeepInfra (zai-org/GLM-5.3)', match: /glm-5[-.][3-9]/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: false, def: 'high', rules: ['INTERSECTION: Z.ai documents low|high|max (always-on); DeepInfra documents none|low|medium|high. Offered = low|high|max, supported by BOTH. DeepInfra-only none/minimal/medium/xhigh NOT offered; Z.ai says GLM-5.3 cannot switch thinking off, so off is disabled even though DeepInfra lists none.'] },
+          cells: {
+            mode:        { na: true, reason: 'GLM-5.3 always reasons (Z.ai: thinking.type disabled fails); no off on this model here either' },
+            level:       { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort (top-level)', values: 'low | high | max (the INTERSECTION: Z.ai low|high|max ∩ DeepInfra none|low|medium|high). Each word is supported by DeepInfra AND by the model developer.', note: 'DeepInfra documents default high; Z.ai documents default max. Menu offers only the intersection.' },
+            display:     { na: true, reason: 'reasoning_content returned by default; no display switch' },
+            per_message: { na: true, reason: 'not offered' },
+            usage:       { url: TM_THINK_URL.iReasoning, path: 'usage (reasoning tokens) + reasoning_content (text)', values: 'integer where reported', note: 'Evidence ✅/≈ on this host.' },
+            output_cap:  { url: TM_THINK_URL.iReasoning, path: 'max_tokens', values: 'thinking + answer share the cap', note: 'Never cap output on a reasoning model.' }
+          } },
+        { models: 'DeepSeek V4 on DeepInfra (deepseek-ai/DeepSeek-V4-Pro-0813 / -Flash-0731)', match: /deepseek/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'high', 'max'], canDisable: true, def: 'high', rules: ['INTERSECTION: DeepSeek documents low|high|max (thinking can be disabled); DeepInfra documents none|low|medium|high. Offered = low|high|max + off, all supported by BOTH. DeepInfra-only minimal/medium/xhigh NOT offered.'] },
+          cells: {
+            mode:        { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort none  (= reasoning:{enabled:false})', values: 'none disables reasoning on this host for a model that supports it; DeepSeek documents thinking.type disabled', note: 'off is OFFERED here (both sides allow disabling), unlike K3 / GLM-5.3.' },
+            level:       { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort (top-level)', values: 'low | high | max (the INTERSECTION: DeepSeek low|high|max ∩ DeepInfra none|low|medium|high) + off. Each word is supported by DeepInfra AND by the model developer.', note: 'DeepInfra documents default high; DeepSeek documents default high (on by default). Menu offers only the intersection.' },
+            display:     { na: true, reason: 'reasoning_content returned by default; no display switch' },
+            per_message: { na: true, reason: 'not offered' },
+            usage:       { url: TM_THINK_URL.iReasoning, path: 'usage (reasoning tokens) + reasoning_content (text)', values: 'integer where reported', note: 'Evidence ✅/≈ on this host.' },
+            output_cap:  { url: TM_THINK_URL.iReasoning, path: 'max_tokens', values: 'thinking + answer share the cap', note: 'Never cap output on a reasoning model.' }
+          } },
+        { models: 'Qwen 3.8 on DeepInfra (Qwen/Qwen3.8-Max)', match: /qwen/, verified: '2026-09-06',
+          vocab: { kind: 'effort', levels: ['low', 'medium', 'xhigh'], canDisable: true, def: 'high', rules: ['INTERSECTION: Alibaba documents low|medium|xhigh (enable_thinking:false disables); DeepInfra documents none|low|medium|high. Offered = low|medium|xhigh + off, all supported by BOTH. DeepInfra-only minimal/high/max NOT offered (high/max are not Qwen words).'] },
+          cells: {
+            mode:        { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort none  (= reasoning:{enabled:false})', values: 'none disables reasoning on this host for a model that supports it; Alibaba documents enable_thinking:false', note: 'off is OFFERED here (both sides allow disabling).' },
+            level:       { url: TM_THINK_URL.iReasoning, path: 'reasoning_effort (top-level)', values: 'low | medium | xhigh (the INTERSECTION: Alibaba low|medium|xhigh ∩ DeepInfra none|low|medium|high) + off. Each word is supported by DeepInfra AND by the model developer.', note: 'DeepInfra documents default high; Alibaba documents default xhigh. Menu offers only the intersection; DeepInfra-only minimal/high/max are not Qwen words and are not offered.' },
+            display:     { na: true, reason: 'reasoning_content returned by default; no display switch' },
+            per_message: { na: true, reason: 'not offered' },
+            usage:       { url: TM_THINK_URL.iReasoning, path: 'usage (reasoning tokens) + reasoning_content (text)', values: 'integer where reported', note: 'Evidence ✅/≈ on this host.' },
+            output_cap:  { url: TM_THINK_URL.iReasoning, path: 'max_tokens', values: 'thinking + answer share the cap', note: 'Never cap output on a reasoning model.' }
+          } }
+      ] }
   ];
   // (v4.391) THE GRAYLIST -- things set aside on purpose, so the map and the audit say so instead of leaving a gap.
   // Three buckets, each a flat, prose-identified list (the agent is the smart part; this is not a taxonomy):
@@ -7587,7 +7664,8 @@
       { provider: 'Z.ai (GLM)', models: 'GLM-5.2 and earlier (GLM-4.x / 5.0-5.2) -- thinking.type on / off', reason: 'superseded by GLM-5.3' }
     ],
     providers: [
-      { provider: 'DeepInfra (aggregator, OpenAI-compatible)', kind: 'host', short: 'DeepInfra', reason: 'not analyzed: its own reasoning_effort vocabulary (none | low | medium | high) and no verified verbatim-forwarding rule -- identical words may not mean identical behaviour; rarely used' }
+      // (v4.402) DeepInfra REMOVED: it is now a first-class host with per-model entries in TM_THINK_DOCS_REGISTRY
+      // (menu = the vendor ∩ DeepInfra intersection). Add a provider here only when it is genuinely not analyzed.
     ],
     aliases: [
       { provider: 'DeepSeek', label: 'DeepSeek undated aliases (deepseek-v4-pro / deepseek-v4-flash without the date suffix)', avoid: 'deepseek/deepseek-v4-pro', prefer: 'deepseek/deepseek-v4-pro-0813', match: /deepseek-v4-(pro|flash)(:[a-z]+)?$/, found: '2026-09-06',
@@ -7646,13 +7724,29 @@
   // The vendor vocabulary V of the match rule: {provider, models, verified, kind, levels[], canDisable, def, rules[],
   // insufficient} from the first-party range's structured vocab; null when the family has no registry entry.
   function tmThinkVendorVocabFor(model) {
-    var e = tmThinkDocsVendorEntryFor(model); if (!e) return null;
+    return tmThinkVocabShapeFromEntry(tmThinkDocsVendorEntryFor(model));
+  }
+  // (v4.402) Shared projector: entry -> the vocabulary shape the menus / writers / audit read. One place, so a vendor
+  // range and a HOST range produce identical shapes.
+  function tmThinkVocabShapeFromEntry(e) {
+    if (!e) return null;
     var v = e.entry.vocab || null;
     return { provider: e.provider, models: e.models, verified: e.verified, gray: e.gray, pi: e.pi, ei: e.ei,
       kind: v ? (v.kind || null) : null, levels: (v && v.levels) ? v.levels.slice() : [], canDisable: v ? v.canDisable : null, def: v ? (v.def || null) : null, rules: (v && v.rules) ? v.rules.slice() : [],
       insufficient: v ? (v.insufficient || null) : 'no structured vocabulary on this registry entry',
       // (v4.393) budget {min, max} bounds the numeric presets; fallback {use, since, note} is the registry EXCEPTION record.
       budget: (v && v.budget) ? v.budget : null, fallback: (v && v.fallback) ? v.fallback : null };
+  }
+  // (v4.402) The HOST vocabulary: on a host route (DeepInfra) the menu reads the HOST's own registry entry -- whose
+  // levels are ALREADY the vendor ∩ host intersection, frozen at audit time -- not the vendor family fallthrough.
+  // Generic: any provider with kind 'host' + a matching entry resolves here; nothing is keyed to DeepInfra's name.
+  function tmThinkHostVocabFor(model, host) {
+    try {
+      var P = tmThinkDocsProviderForHost(host); if (!P || P.kind !== 'host') return null;
+      var m = String(model || '').toLowerCase();
+      for (var j = 0; j < P.entries.length; j++) { var E = P.entries[j]; if (E.match && !E.match.test(m)) continue; return tmThinkVocabShapeFromEntry({ provider: P.provider, kind: P.kind, models: E.models, verified: E.verified || P.verified, gray: !!tmThinkDocsIsGrayRange(P.provider, E.models), pi: TM_THINK_DOCS_REGISTRY.indexOf(P), ei: j, entry: E }); }
+      return null;
+    } catch (e) { return null; }
   }
   // Graylist verdicts for an identity: {provider (host not analyzed), alias (pick the dated id), range (model range set aside)}.
   function tmThinkGraylistFor(model, host) {
@@ -7795,11 +7889,17 @@
       var P = tmThinkDocsProviderForHost(h);
       out.route = P ? P.kind : 'unknown';
       var isInt = out.route === 'intermediary';
+      var isHost = out.route === 'host';   // (v4.402) a first-class host route (DeepInfra): the menu reads the intersection
       out.gray = tmThinkGraylistFor(m, h);
+      // (v4.402) On a host route the menu's vocabulary is the HOST's own registry entry (already the vendor ∩ host
+      // intersection, frozen at audit time), NOT the vendor family fallthrough -- a DeepInfra Kimi-K3 row must not
+      // resolve to Moonshot's vocab. out.vendor keeps the vendor family for the audit's first-party context line.
       out.vendor = tmThinkVendorVocabFor(m);
+      var HV = isHost ? tmThinkHostVocabFor(m, h) : null;
+      out.host = HV;
       out.docs = tmThinkDocsEntryFor(m, h, protocol);
       out.orc = isInt ? tmOrReasoningCapsFor(m) : null;
-      var V = out.vendor, orc = out.orc;
+      var V = isHost ? HV : out.vendor, orc = out.orc;
       var orWords = (orc && Array.isArray(orc.efforts) && orc.efforts.length) ? orc.efforts.filter(function(e) { return e !== 'none'; }) : [];
       var orHasList = orWords.length > 0;
       var orOff = orc ? (orc.mandatory === false || (orc.efforts || []).indexOf('none') >= 0) : null;   // null = no catalogue view of this id
@@ -7843,6 +7943,17 @@
         out.notes.push('on / off only (' + shortV + ', verified ' + V.verified + '): no effort vocabulary on this range');
       } else if (V.kind !== 'effort') {
         fullList('unrecognized vocabulary kind "' + V.kind + '" on ' + shortV + ' \u2014 UNVERIFIED: the menu offers only the words our writer sends verbatim on this route (dry-run)');
+      } else if (isHost) {
+        // (v4.402) HOST ROUTE (DeepInfra): offer the intersection verbatim. The levels are already vendor ∩ host in the
+        // registry data; off follows canDisable (the vendor's always-on rule wins even where the host lists none). Every
+        // offered word is labelled as supported by BOTH the host and the model developer.
+        out.kind = 'effort'; out.source = 'vendor'; out.canDisable = V.canDisable; out.def = V.def || null;
+        var hLevels = tmThinkSortLevelsAsc(V.levels);
+        var offEnH = V.canDisable === true, offWhyH = '';
+        if (!offEnH) offWhyH = 'the model developer says this model cannot switch thinking off (' + (out.vendor ? out.vendor.provider : V.provider) + ', verified ' + (out.vendor ? out.vendor.verified : V.verified) + ') \u2014 DeepInfra\'s none is not offered' + (hLevels.length ? ('; lowest is ' + hLevels[0]) : '');
+        push('off', 'off', offEnH, offWhyH);
+        hLevels.forEach(function(w) { push(w, w, true, 'supported by DeepInfra and the model developer'); });
+        out.notes.push('HOST route (' + V.provider + '): the menu is the vendor \u2229 host INTERSECTION \u2014 ' + hLevels.join(', ') + (offEnH ? ' + off' : '') + '. DeepInfra lists none | low | medium | high for every reasoning model; words it lists that the model developer does not are NOT offered.');
       } else {
         out.kind = 'effort'; out.source = 'vendor'; out.canDisable = V.canDisable; out.def = V.def || null;
         var levels = tmThinkSortLevelsAsc(V.levels);
@@ -8018,7 +8129,8 @@
     map:  { icon: '\ud83d\udd01', label: 'WRITER REWRITE',       desc: 'The real writer, dry-run on an OFFERED menu option, would send something else. Should never appear: since v4.393 the menus are table-driven, so an offered word goes out as picked -- if this line shows, the registry and the writer disagree and the writer is corrected in v4.394. Never counted as a warning.' },
     gray: { icon: '\u2b1c', label: 'GRAYLISTED',                 desc: 'On TM_THINK_GRAYLIST: a generic alias id to avoid (pick the dated id), a model range Dan will not use, or a provider not analyzed.' },
     info: { icon: '\u2139\ufe0f', label: 'INFO',                  desc: 'The first-party vocabulary with its verification date, the defaults both sources report, what the table-driven menu offers and disables, the writer table\'s provenance, and why a row is not comparable.' },
-    exc:  { icon: '\ud83d\udfe5', label: 'EXCEPTION',             desc: 'A registry exception in force (TM_THINK_DOCS_REGISTRY vocab.fallback): this range has no usable first-party vocabulary and opts into the intermediary\'s catalogue list on intermediary routes, so the menu offers OpenRouter\'s words, labelled as OpenRouter\'s. Red on purpose -- review it whenever the table is revisited; delete the record once the vendor page is read.' }
+    exc:  { icon: '\ud83d\udfe5', label: 'EXCEPTION',             desc: 'A registry exception in force (TM_THINK_DOCS_REGISTRY vocab.fallback): this range has no usable first-party vocabulary and opts into the intermediary\'s catalogue list on intermediary routes, so the menu offers OpenRouter\'s words, labelled as OpenRouter\'s. Red on purpose -- review it whenever the table is revisited; delete the record once the vendor page is read.' },
+    both: { icon: '\u26a1', label: 'INTERSECTION',        desc: 'A HOST route (DeepInfra): the menu offers the vendor ∩ host INTERSECTION -- every offered word is supported BOTH by the host AND by the model developer. The host\'s extra words (those the developer does not document) are never offered. Never a warning.' }
   };
   var TM_THINK_AUDIT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
@@ -8117,6 +8229,11 @@
       if (isOR) { orc = tmOrReasoningCapsFor(m.model); row.orId = m.model; }
       else { var f = tmOrCapsForDirect(m.model, m.host); orc = f.caps; row.orId = f.orId; row.orCandidates = f.candidates; }
       row.orCaps = orc;
+      // (v4.402) A first-class HOST route (DeepInfra): HV is the host's own registry entry, whose levels are the
+      // vendor ∩ host intersection frozen at audit time. Detected by the route provider's registry kind, never by name.
+      var _routeP = tmThinkDocsProviderForHost(m.host);
+      var isHostRoute = !isOR && !!_routeP && _routeP.kind === 'host';
+      var HV = isHostRoute ? tmThinkHostVocabFor(m.model, m.host) : null;
       var orWords = (orc && orc.efforts.length) ? orc.efforts.filter(function(e) { return e !== 'none'; }) : [];
       var orHasOff = !!orc && (orc.mandatory === false || orc.efforts.indexOf('none') >= 0);
       var Ifull = orWords.concat(orHasOff ? ['off'] : []);
@@ -8135,6 +8252,16 @@
       } else if (V.kind !== 'effort') {
         row.status = isOR ? 'not-comparable' : 'direct'; row.reason = isOR ? ('no word vocabulary to compare: the vendor uses ' + tmThinkVocabSummary(V)) : '';
         line(isOR ? 'info' : 'ok', (isOR ? 'no word vocabulary to compare \u2014 ' : 'DIRECT: no intermediary \u2014 ') + V.provider + ' \u203a ' + tmThinkDocsShortModels(V.models) + ' uses ' + tmThinkVocabSummary(V) + (isOR ? '; OpenRouter converts effort words by its documented ratios / reasoning.enabled' : ''), null, false);
+      } else if (isHostRoute && !HV) {
+        // (v4.402) A first-class host with no matching entry in its registry block: an explicit gap, never a wrong table.
+        row.status = 'not-comparable'; row.reason = 'no DeepInfra entry matches this model';
+        line('info', 'this host is first-class (v4.402) but has no registry entry for ' + m.model + ' \u2014 add one to the DeepInfra block of TM_THINK_DOCS_REGISTRY (the vendor ∩ host intersection)', null, false);
+      } else if (isHostRoute) {
+        // (v4.402) HOST ROUTE (DeepInfra): the menu is the vendor ∩ host INTERSECTION, frozen in the registry. Status
+        // 'direct' -- nothing is remapped by a translation layer on a host; the only vocabulary is the intersection.
+        row.status = 'direct'; row.reason = 'host route \u2014 the vendor ∩ DeepInfra intersection';
+        line('ok', 'HOST (DeepInfra): no intermediary translation \u2014 the menu offers the vendor ∩ host INTERSECTION (' + Vfull.join(', ') + '); nothing is mapped', null, false);
+        line('both', 'Every word offered on this row is supported BOTH by DeepInfra AND by the model developer. DeepInfra-only words (none | minimal | medium | xhigh that the developer does not document) are NOT offered.' + (HV && HV.def ? (' DeepInfra-documented default: ' + HV.def + '.') : ''), null, false);
       } else if (isOR) {
         if (!orc) {
           row.status = 'not-comparable'; row.reason = cat.loaded ? 'model id not in OpenRouter\'s catalogue' : 'OpenRouter catalogue not loaded';
@@ -8183,7 +8310,7 @@
       var offeredOpts = VOC.options.filter(function(o) { return o.enabled; }), disabledOpts = VOC.options.filter(function(o) { return !o.enabled; });
       row.menu = { kind: VOC.kind, source: VOC.source, offered: offeredOpts.map(function(o) { return o.value; }), disabled: disabledOpts.map(function(o) { return o.value; }), custom: !!VOC.custom, exception: VOC.exception ? { since: VOC.exception.since, list: VOC.exception.list, text: VOC.exception.text } : null, display: VOC.display };
       if (VOC.exception) line('exc', 'EXCEPTION in force (TM_THINK_DOCS_REGISTRY vocab.fallback' + (VOC.exception.since ? (', since ' + VOC.exception.since) : '') + '): the menu offers OpenRouter\'s list [' + VOC.exception.list.join(', ') + '] for ' + row.orId + ' because ' + VOC.exception.note + ' \u2014 review whenever the table is revisited', null, false);
-      line('info', 'menu (table-driven, ' + (VOC.source === 'vendor' ? 'first-party vocabulary' : VOC.source === 'intermediary' ? 'OpenRouter\'s list' : VOC.source === 'none' ? 'no vocabulary' : 'full list, unverified') + '): offers ' + (row.menu.offered.length ? row.menu.offered.join(', ') : 'inherit only') + (VOC.custom ? ' + budget\u2026' : '') + (disabledOpts.length ? ('; disabled: ' + disabledOpts.map(function(o) { return o.value + ' (' + o.reason + ')'; }).join('; ')) : '') + '; display ' + (VOC.display.enabled ? 'offered' : ('not controllable \u2014 ' + VOC.display.reason)), null, false);
+      line('info', 'menu (table-driven, ' + (VOC.source === 'vendor' ? (isHostRoute ? 'vendor ∩ DeepInfra intersection' : 'first-party vocabulary') : VOC.source === 'intermediary' ? 'OpenRouter\'s list' : VOC.source === 'none' ? 'no vocabulary' : 'full list, unverified') + '): offers ' + (row.menu.offered.length ? row.menu.offered.join(', ') : 'inherit only') + (VOC.custom ? ' + budget\u2026' : '') + (disabledOpts.length ? ('; disabled: ' + disabledOpts.map(function(o) { return o.value + ' (' + o.reason + ')'; }).join('; ')) : '') + '; display ' + (VOC.display.enabled ? 'offered' : ('not controllable \u2014 ' + VOC.display.reason)), null, false);
       var dry = [];
       offeredOpts.forEach(function(o) { var cl = tmThinkAuditClampFor(tmThinkAuditDryRun(m, o.value), o.value); if (cl) dry.push(o.value + ' \u2192 ' + cl.to + (cl.reason ? (' (' + cl.reason + ')') : '')); });
       row.rewrites = dry;
@@ -8412,7 +8539,9 @@
       '<div style="' + seam + '"><b style="color:#e6e6ee;">Not analyzed yet \u2014 no table rows below:</b> ' + (TM_THINK_GRAYLIST.providers.length ? TM_THINK_GRAYLIST.providers.map(function(g) { return '<b>' + escapeHtml(g.short) + '</b> (' + escapeHtml(g.kind) + ') \u2014 ' + chip(g.reason); }).join('; ') : 'none') + '. Identities on these show "provider not analyzed" in the audit.</div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">Prefer the exact, dated model id over a generic alias.</b> ' + TM_THINK_GRAYLIST.aliases.map(function(a) { return escapeHtml(a.provider) + ': do not choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.avoid) + '</code> (no date suffix) \u2014 ' + chip(a.reason) + ' Choose <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(a.prefer) + '</code>.'; }).join(' ') + ' In general, choose the most granular id \u2014 the one with the version or date \u2014 never the alias.</div>' +
       '<div style="' + seam + '"><b style="color:#e6e6ee;">' + chip('inherit') + ' means we change nothing.</b> It is always the first option in the \ud83c\udf9b\ufe0f menu, and it is never sent on the wire: the writer (the function that edits the outbound payload) sees ' + chip('inherit') + ' and simply does not touch the thinking fields, so TypingMind\'s own per-model setting is what the provider receives. That default is TypingMind\'s, not ours \u2014 slightly opaque, but it is what "no override" means. You can always tell an identity is on ' + chip('inherit') + ' because the menu shows it (and the \ud83c\udf9b\ufe0f glyph does not light up).</div>' +
-      '<div style="' + seam + '"><b style="color:#e6e6ee;">What\'s static vs. dynamic.</b> The registry below is <b>static data</b> \u2014 written by hand in a session, dated per range; nothing re-reads a vendor page on its own. <b>Dynamic:</b> OpenRouter\'s catalogue is fetched live by the extension (12 h cache), and the wire itself is observed (the scanners read what each request sent and what came back) \u2014 neither ever edits the registry. A registry key names a documented model range by provider + prose, e.g. <code style="' + TM_THINK_CHIP_STYLE + '">Anthropic\u203aClaude Fable 5.1 \u2026</code>. DeepInfra is graylisted (a host, not analyzed) \u2014 its four-word vocabulary lives only in a note, and making a host behave like OpenRouter (reading its own table as the superset check) is a planned follow-up.</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">What\'s static vs. dynamic.</b> The registry below is <b>static data</b> \u2014 written by hand in a session, dated per range; nothing re-reads a vendor page on its own. <b>Dynamic:</b> OpenRouter\'s catalogue is fetched live by the extension (12 h cache), and the wire itself is observed (the scanners read what each request sent and what came back) \u2014 neither ever edits the registry. A registry key names a documented model range by provider + prose, e.g. <code style="' + TM_THINK_CHIP_STYLE + '">Anthropic\u203aClaude Fable 5.1 \u2026</code>. DeepInfra is now FIRST-CLASS (v4.402): a host whose menu is the vendor ∩ host intersection (see the next line).</div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">A host menu is the vendor ∩ host INTERSECTION (DeepInfra).</b> DeepInfra documents its own ' + chip('reasoning_effort') + ' vocabulary (' + chip('none') + ' | ' + chip('low') + ' | ' + chip('medium') + ' | ' + chip('high') + ') for every reasoning model it hosts. We offer only the words supported <b>both</b> by DeepInfra <b>and</b> by the model developer\'s own page \u2014 so a DeepInfra Kimi-K3 row offers ' + chip('low') + ' | ' + chip('high') + ' | ' + chip('max') + ' (Moonshot), never DeepInfra-only ' + chip('minimal') + ' / ' + chip('medium') + ' / ' + chip('xhigh') + '; and ' + chip('off') + ' stays disabled where the developer says always-on even though DeepInfra lists ' + chip('none') + '. <span style="color:#8b93a3;">[This intersection is the rule we intend for every intermediary/host; DeepInfra is the first whose own list is not already a total superset of the vendor\'s.]</span></div>' +
+      '<div style="' + seam + '"><b style="color:#e6e6ee;">One audited table, today.</b> The registry stores the <b>final, audited</b> vocabulary per model range (the intersection already computed), frozen with its date \u2014 the code reads it; it does not re-derive it. <span style="color:#8b93a3;">Future work: split vendor vs host/intermediary vocabularies into separate tables with a per-row compose rule (' + chip('intersect') + ' | ' + chip('superset') + ') and one generic composer, so a new host comes online by adding rows, not code.</span></div>' +
       '<div style="padding:5px 0;line-height:1.45;"><b style="color:#e6e6ee;">The registry is built by hand, kept as data.</b> Every first-party fact here was read from a vendor page by an agent in a session with Dan and saved into <code style="' + TM_THINK_CHIP_STYLE + '">TM_THINK_DOCS_REGISTRY</code> \u2014 a real data structure, dated per model range \u2014 but nothing re-reads vendor pages on its own: the contents are reviewed and refreshed only in a manual session, and the banner date says when that last happened. The OpenRouter side is different: its catalogue is fetched live by the extension (cached 12 h; <i>\u21bb Refresh catalogue</i> forces it; the fetch time is in the header above), so an UNKNOWN MAPPING or a rot hint can appear between sessions \u2014 that is the tripwire working, not a bug.</div>'
       )) +
       '</div>';
@@ -8444,7 +8573,7 @@
             '<button data-action="think-audit-tomb" data-key="' + escapeHtml(r.auditKey) + '" title="' + (tomb ? 'Revive: count this identity again' : 'Tombstone: keep the row here, dimmed, and stop counting it as a warning') + '" style="margin-top:4px;font-size:10px;background:#2a2a33;color:#ccc;border:1px solid #444;border-radius:3px;padding:1px 6px;cursor:pointer;">' + (tomb ? '\u21a9 revive' : '\ud83e\udea6 tombstone') + '</button>' +
           '</td>' +
           '<td style="padding:5px 8px;white-space:nowrap;"><span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span><br><span style="color:#6f7a8a;font-size:10px;">' + escapeHtml(r.route) + (r.orId && r.orId !== r.model ? (' \u2194 ' + escapeHtml(r.orId)) : '') + '<br>wire: ' + escapeHtml(r.protocol) + '</span></td>' +
-          '<td style="padding:5px 8px;color:#d0d0d8;min-width:320px;">' + r.lines.map(function(l) { var K = TM_THINK_AUDIT_KINDS[l.kind] || { icon: '', label: '' }; var dim = !(l.kind === 'gap' || l.kind === 'ok' || l.kind === 'gray' || l.kind === 'exc' || l.kind === 'map'); return '<div title="' + escapeHtml(K.label) + '" style="display:flex;gap:6px;align-items:flex-start;' + (dim ? 'color:#9aa4b2;' : '') + (l.kind === 'exc' ? 'color:#ff6b6b;font-weight:600;' : '') + (l.kind === 'map' ? 'color:#ffd166;font-weight:600;' : '') + '"><span style="flex-shrink:0;width:16px;text-align:center;">' + K.icon + '</span><span>' + chip(l.text) + '</span></div>'; }).join('') + '</td>' +
+          '<td style="padding:5px 8px;color:#d0d0d8;min-width:320px;">' + r.lines.map(function(l) { var K = TM_THINK_AUDIT_KINDS[l.kind] || { icon: '', label: '' }; var dim = !(l.kind === 'gap' || l.kind === 'ok' || l.kind === 'gray' || l.kind === 'exc' || l.kind === 'map' || l.kind === 'both'); return '<div title="' + escapeHtml(K.label) + '" style="display:flex;gap:6px;align-items:flex-start;' + (dim ? 'color:#9aa4b2;' : '') + (l.kind === 'exc' ? 'color:#ff6b6b;font-weight:600;' : '') + (l.kind === 'map' ? 'color:#ffd166;font-weight:600;' : '') + (l.kind === 'both' ? 'color:#ffa94d;font-weight:600;' : '') + '"><span style="flex-shrink:0;width:16px;text-align:center;">' + K.icon + '</span><span>' + chip(l.text) + '</span></div>'; }).join('') + '</td>' +
           '<td style="padding:5px 8px;white-space:nowrap;font-size:10px;color:#9aa4b2;">' +
             '<div style="margin-bottom:3px;">Our \ud83c\udf9b\ufe0f menu:<br>' + tmThinkAuditDemoMenuHtml(r.model, r.host, r.proxy) + '</div>' +
             '<div style="margin-bottom:3px;">OpenRouter lists:<br>' + tmThinkAuditOrMenuHtml(r) + '</div>' +
@@ -8952,6 +9081,31 @@
     }
     // ---- Direct OpenAI-compat hosts
     var ml = model.toLowerCase();
+    // (v4.402) HOST ROUTE (DeepInfra) -- checked BEFORE the vendor family branches, because a host speaks its OWN wire
+    // shape (DeepInfra: top-level reasoning_effort + reasoning:{enabled:false} for off; NEVER the vendor-direct shapes
+    // thinking:{type} / enable_thinking, which DeepInfra does not document). The clamp vocabulary is the vendor ∩ host
+    // intersection via tmThinkRegistryVocab(model, r.host) -- generic, keyed on route kind 'host', never on the name.
+    if (tmThinkDocsProviderForHost(r.host) && tmThinkDocsProviderForHost(r.host).kind === 'host') {
+      var HV = tmThinkHostVocabFor(model, r.host);   // the HOST's own entry only -- never the vendor family fallthrough
+      if (!HV || HV.insufficient) { rep.notes.push('host ' + r.host + ' has no registry entry for ' + model + ' -- nothing written (the vendor-direct shapes are not this host\'s wire)'); return; }
+      if (L.set) {
+        var eH = L.eff;
+        if (L.budget != null) { eH = tmThinkBudgetToEffort(L.budget); clamp('budget:' + L.budget + ' \u2192 effort ' + eH + ': chat-completions has no token budget on this host'); }
+        if (eH === 'on') eH = 'low';
+        if (L.off) {
+          if (HV.canDisable === false) { eH = 'low'; clamp('off \u2192 low: ' + model + ' always reasons (the model developer; the vendor \u2229 host intersection has no off)'); }
+          else { body.reasoning = { enabled: false }; change('reasoning = {enabled:false} (host off switch; reasoning_effort none equivalent)'); if (body.reasoning_effort !== undefined) { delete body.reasoning_effort; change('reasoning_effort removed (reasoning disabled)'); } if (body.thinking !== undefined) { delete body.thinking; change('vendor-direct thinking object removed (this host does not speak it)'); } if (body.enable_thinking !== undefined) { delete body.enable_thinking; change('enable_thinking removed (this host does not speak it)'); } return; }
+        }
+        var nearH = tmThinkRegistryNearest(eH, HV.levels);
+        if (nearH && nearH !== eH) { clamp(eH + ' \u2192 ' + nearH + ': ' + model + ' on ' + r.host + ' accepts ' + HV.levels.join(' | ') + ' (the vendor \u2229 host intersection, registry ' + TM_THINK_DOCS_AS_OF + '; nearest listed, tie \u2192 lower)'); eH = nearH; }
+        if (body.reasoning_effort !== eH) { var wasH = body.reasoning_effort; body.reasoning_effort = eH; change('reasoning_effort ' + (wasH || '(none)') + ' \u2192 ' + eH + ' (' + HV.provider + ', host route; vendor \u2229 host intersection)'); }
+        if (body.thinking !== undefined) { delete body.thinking; change('vendor-direct thinking object removed (this host does not speak it)'); }
+        if (body.enable_thinking !== undefined) { delete body.enable_thinking; change('enable_thinking removed (this host does not speak it)'); }
+        if (body.reasoning !== undefined && typeof body.reasoning === 'object') { delete body.reasoning; change('unified reasoning object removed (host uses reasoning_effort)'); }
+      }
+      if (disp === 'show' || disp === 'hide') rep.notes.push('reasoning_content is returned by default on this host; display is not controllable');
+      return;
+    }
     // (v4.389) Vendor docs re-read 2026-09-06 (TM_THINK_LOCAL_BASIS): Kimi K3, DeepSeek V4 and GLM-5.3 expose an EFFORT
     // vocabulary -- top-level reasoning_effort low | high | max. Moonshot: 'kimi-k3 always reasons and uses the top-level
     // reasoning_effort field (default max)' and 'does not support the thinking parameter' (the pre-v4.389 writer sent a
