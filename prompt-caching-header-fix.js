@@ -1,5 +1,5 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.404
+// Version: 4.405
 // Issues Fixed:
 //   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
 //     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
@@ -2261,7 +2261,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.404';
+  const EXT_VERSION = '4.405';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12200,7 +12200,7 @@
   // (v4.378) One short-lived read snapshot per dashboard pass, never one ring parse per row.
   // No additional persisted data and no cache retained between ticks.
   function tmBuildSessionCtxLiveFrame() {
-    var f = { now: Date.now(), ring: [], costs: {}, keepalive: {}, byId: Object.create(null), rt: Object.create(null), ctx: Object.create(null), think: Object.create(null) };
+    var f = { now: Date.now(), ring: [], costs: {}, keepalive: {}, byId: Object.create(null), rt: Object.create(null), ctx: Object.create(null), think: Object.create(null), usage: Object.create(null), prov: Object.create(null) };
     try { f.ring = tmReadCaptureRing() || []; } catch (e) {}
     try { f.costs = tmGetSessionCosts() || {}; } catch (eC) {}
     try { f.keepalive = tmGetKeepAliveStore() || {}; } catch (eK) {}
@@ -12212,6 +12212,11 @@
       if (c._rt_ms != null && !f.rt[k]) f.rt[k] = c;
       if (c._ctx_snapshot && !f.ctx[k]) f.ctx[k] = c;
       if (c._think_req && !f.think[k]) f.think[k] = c;
+      // (v4.405) newest usage-carrying entry + serving-provider label per identity: the per-row
+      // cache cluster (tmRenderIdentityCacheCluster) and the migrated provider-routing dropdown
+      // read these, so neither needs its own ring scan.
+      if (!f.usage[k] && (c.response_anthropic_usage || c.response_usage || (typeof c._table_cost === 'number' && c._table_cost > 0))) f.usage[k] = c;
+      if (c.response_provider && !f.prov[k]) f.prov[k] = String(c.response_provider);
     }
     return f;
   }
@@ -12275,6 +12280,13 @@
         var si = tmSessionCtxHoverIdentities[sk];
         tmSessionCtxPatchHtml(spins[j], si && tmSessionCtxIsBusy(sk, si, frame) ? '<span class="tm-hc-spin"></span>' : '');
       }
+      // (v4.405) The per-row cache clusters + alert zones tick too (patch-compare = no churn when
+      // nothing changed; the frame was already built for this tick).
+      var cacheZones = tmSessionCtxHoverEl.querySelectorAll('[data-cache-key]');
+      for (var cz = 0; cz < cacheZones.length; cz++) {
+        tmSessionCtxPatchHtml(cacheZones[cz], tmRenderIdentityCacheCluster(cacheZones[cz].getAttribute('data-cache-key'), { frame: frame }));
+      }
+      tmSessionCtxRefreshAlerts(frame);
       tmRefreshSessionCtxKeepAlive(frame.keepalive);
     } catch (e) { console.warn('[Payload] Sessions-in-Memory tick failed:', e); }
   }
@@ -12397,9 +12409,13 @@
         '<span data-spin-key="' + escapeHtml(key) + '" title="busy: tool call running or assistant turn in flight" style="display:inline-flex;align-items:center;justify-content:center;width:16px;flex:none;">' + (tmSessionCtxIsBusy(key, tmSessionCtxHoverIdentities[key], liveFrame) ? '<span class="tm-hc-spin"></span>' : '') + '</span>' +
         '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
       '</div>';
-      var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:2px;">' +
+      var modelLiveRow = '<div style="display:flex;align-items:center;gap:6px;min-height:14px;flex-wrap:wrap;margin-top:9px;">' +
         (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
         '<span data-live-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key], liveFrame) + '</span>' +
+        // (v4.405) The per-identity cache cluster (migrated from the retired persistent-widget top
+        // row; markup/palette/superscripts verbatim): right after the live timers, per Dan. The
+        // row's extra top margin is the room the cost superscripts need (they overhang upward).
+        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
       '</div>';
       // (v4.354/v4.365) Thinking Observatory rows: REQ/OBS stacked at 13px (was 11px); the
       // note button moves off the badge and onto the controls row.
@@ -12429,13 +12445,36 @@
       if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
       var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
       var kaRowHtml = '';
-      try { kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;"><span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span></div>'; } catch (eKaH) {}
+      try {
+        // (v4.405) Provider routing dropdown MIGRATED here from the retired persistent-widget model
+        // row: it is per-IDENTITY (sid::model::host::proxy) by design, so it belongs on the
+        // identity's own dashboard row, right of the keep-alive controls. Shared builder + shared
+        // document-level change handler with the ring modal (nothing new to wire); the tick's
+        // focused-SELECT interaction guard covers it, so no flash-close.
+        var kaRouteHtml = '';
+        try {
+          var _rm = String(info.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
+          var _rh = String(info.host || '');
+          if (_rm && (_rh.indexOf('openrouter') !== -1 || (!_rh && _rm.indexOf('/') !== -1))) {
+            try { tmMaybeFetchProviderEndpoints(_rm); } catch (ePF) {}
+          }
+          if (_rm && tmIsMultiProviderModel(_rm)) {
+            var _pl = (liveFrame.prov && liveFrame.prov[key]) || _rh || '';
+            try { _pl = tmResolveProviderLabel(key, _pl); } catch (eRL) {}
+            kaRouteHtml = tmBuildProviderRoutingDropdown(key, _rm, _pl);
+          }
+        } catch (eRtH) {}
+        kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;"><span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span>' + kaRouteHtml + '</div>';
+      } catch (eKaH) {}
+      // (v4.405) Per-identity alert zone (error / endpoint-not-found / prompt-warning banners,
+      // migrated off the persistent widget): own line right under the name, before the model row.
+      var alertRowHtml = '<div data-alert-key="' + escapeHtml(key) + '">' + tmSessionCtxAlertHtml(key, { ring: liveFrame.ring }) + '</div>';
       rows.push(
         // (v4.354) Brighter, sharper row dividers + more breathing room per Dan (was 0.06 alpha / 2px).
         '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
           nameRow +
           // (v4.366) Everything under the name row is inset 48px (outline-like hierarchy, per Dan).
-          '<div style="padding-left:48px;">' + modelLiveRow + thinkRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
+          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + thinkRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
         '</div>'
       );
     }
@@ -12654,6 +12693,18 @@
               if (tkCtxH) tmShowThinkNoteEditor(tkCtxH, null, null);
               return;
             }
+            // (v4.405) Alert-zone actions (migrated from the persistent widget): raw error JSON
+            // popup, endpoint-not-found dismiss, prompt-warning dismiss. Same stores/handlers as
+            // the widget versions; only the alert zone repaints, not the card.
+            var alEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="open-error-popup"],[data-action="dismiss-endpoint-not-found"],[data-action="dismiss-warning-banner"]') : null;
+            if (alEl && alEl.dataset) {
+              ev.stopPropagation();
+              ev.preventDefault();
+              if (alEl.dataset.action === 'open-error-popup') { try { tmShowErrorPopup(); } catch (eEP) {} }
+              else if (alEl.dataset.action === 'dismiss-endpoint-not-found') { tmEndpointNotFound = null; tmSessionCtxRefreshAlerts(); }
+              else { try { tmDismissWarningBanner(alEl.dataset.warningId || ''); } catch (eDW) {} tmSessionCtxRefreshAlerts(); }
+              return;
+            }
             var actEl = ev.target && ev.target.closest ? ev.target.closest('[data-hovercard-action]') : null;
             if (!actEl) return;
             var act = actEl.getAttribute('data-hovercard-action');
@@ -12751,7 +12802,10 @@
       // (v4.322) FIXED width, not a content-sized max: the v4.321 maxWidth let the widget
       // jump size as rows changed. Always 539px wide, right edge fixed at 262px; short rows
       // just leave dark space at the right end. maxWidth guard keeps it on-screen when narrow.
-      el.style.width = '539px';
+      // (v4.405) Slimmed 539px -> 320px: the widget is global-only now (version + total +
+      // Think Audit + two buttons + the settings footer); all session content lives on the
+      // Sessions-in-Memory rows. Fixed width retained so the two edge tabs never wander.
+      el.style.width = '320px';
       el.style.maxWidth = 'calc(100vw - 280px)';
       el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.35)';
       el.style.pointerEvents = 'auto';
@@ -12834,11 +12888,27 @@
           }
 
           // Open payload capture modal (ring buffer summary + per-entry copy)
-          // (v4.330) closest()-based: the 'Session ID' label's inner underline span has no
-          // data-action of its own, so a direct target.dataset check swallowed those clicks.
           if (target.closest && target.closest('[data-action="open-payload-capture-modal"]')) {
             openPayloadCaptureModal();
             ev.stopPropagation();
+            return;
+          }
+
+          // (v4.405) 🖥️ Sessions button: hover peeks the Sessions-in-Memory card (the delegated
+          // mouseover on data-hover handles that); CLICK pins it in place, click again closes.
+          // Note the handler's leading tmHideSessionCtxHover() is a no-op on a pinned card.
+          if (target.closest && target.closest('[data-action="toggle-sessions-panel"]')) {
+            try {
+              if (tmSessionCtxHoverPinned) {
+                tmClosePinnedSessionCtxHover();
+              } else {
+                var spBtn = target.closest('[data-action="toggle-sessions-panel"]');
+                tmShowSessionCtxHover(spBtn);
+                if (!tmSessionCtxHoverPinned) tmToggleSessionCtxHoverPin();
+              }
+            } catch (eSP) {}
+            ev.stopPropagation();
+            ev.preventDefault();
             return;
           }
 
@@ -13433,6 +13503,155 @@
 
   // @carto-group id=client-group-5 label="Client group 5"
 
+  // (v4.405) THE PER-IDENTITY CACHE CLUSTER -- the pre-v4.405 widget top-row cache report + turn
+  // cost with its superscripts (consecutive-streak upper-left, misses/hits upper-right), moved onto
+  // EACH Sessions-in-Memory row. Markup, palette and sizing are VERBATIM from the old widget
+  // cluster (Dan: 'don't change a thing'); only the data source changed: the widget showed the
+  // most-recent payload globally, each row here reads its OWN identity -- the newest usage-carrying
+  // ring entry for the identity (the live frame's `usage` map, or a passed ring) plus the
+  // per-identity cache-outcome ledger (tmGetCacheOutcomeForIdentity) for the superscripts.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmRenderIdentityCacheCluster-v405,
+  //   role=__lambdao_1.tmRenderIdentityCacheCluster,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,tm-payload-cost-visibility,
+  //   kind=ast,
+  //   comment=(v4.405) Per-identity cache cluster (cache report + turn cost + streak / misses-slash-hits superscripts), migrated verbatim from the pre-v4.405 widget top row onto each Sessions-in-Memory row; reads the live frame usage map + the per-identity cache-outcome ledger.,
+  // ]
+  function tmRenderIdentityCacheCluster(idKey, opts) {
+    try {
+      if (!idKey) return '';
+      opts = opts || {};
+      var cap = null;
+      try { if (opts.frame && opts.frame.usage) cap = opts.frame.usage[idKey] || null; } catch (eF) {}
+      if (!cap) {
+        var ring = opts.ring || tmReadCaptureRing();
+        for (var i = ring.length - 1; i >= 0; i--) {
+          var c = ring[i];
+          if (!c) continue;
+          var k = c._identity && c._identity.key;
+          if (k !== idKey) continue;
+          if (c.response_anthropic_usage || c.response_usage || (typeof c._table_cost === 'number' && c._table_cost > 0)) { cap = c; break; }
+        }
+      }
+      if (!cap) return '';
+      var au = cap.response_anthropic_usage || null;
+      var oru = cap.response_usage || null;
+      var tableCostFallback = (typeof cap._table_cost === 'number' && cap._table_cost > 0) ? cap._table_cost : 0;
+      var turnCostVal = tmExtractCostVal(au, oru);
+      if (!(turnCostVal > 0) && tableCostFallback > 0) turnCostVal = tableCostFallback;
+      var stats = tmGetCacheOutcomeForIdentity(idKey) || {};
+      var cacheHit = (stats._cache_last === 'hit');
+      var streak = Number(stats._cache_streak || 0);
+      var totalHits = Number(stats._cache_hits || 0);
+      var totalMisses = Number(stats._cache_misses || 0);
+      var missBorder = cacheHit
+        ? ''
+        : 'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;';
+      var supTopAdj = missBorder ? -7 : 0;
+      var turnCostStr = (turnCostVal > 0)
+        ? ' <span title="inference cost (this turn) \u2014 ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
+            'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
+              '$' + turnCostVal.toFixed(3) +
+              (streak > 0
+                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
+                : '') +
+              ((totalMisses > 0 || totalHits > 0)
+                ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
+                : '') +
+          '</span>'
+        : '';
+      var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
+      if (!cacheReportNoCost && !turnCostStr) return '';
+      return '<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr;
+    } catch (e) { return ''; }
+  }
+
+  // (v4.405) THE PER-IDENTITY ALERT ZONE -- the three banners that used to live on the persistent
+  // widget (red error row / orange endpoint-not-found / red prompt-ingestion warning), rendered ONLY
+  // on the Sessions-in-Memory row of their own identity (parallel-conversation safe by construction;
+  // the widget versions were identity-guarded globals). Same stores, same dismiss semantics:
+  // the error row rides tmMostRecentError (auto-clears on that identity's next success), the
+  // endpoint banner rides tmEndpointNotFound (stays until its X), the warning is re-derived from
+  // the ring per identity with the localStorage dismissal (tmIsWarningBannerDismissed). Actions are
+  // handled in the card's delegated click listener (open-error-popup / dismiss-endpoint-not-found /
+  // dismiss-warning-banner).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSessionCtxAlertHtml-v405,
+  //   role=__lambdao_1.tmSessionCtxAlertHtml,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  //   comment=(v4.405) Per-identity alert zone for a Sessions-in-Memory row: the error / endpoint-not-found / prompt-warning banners migrated off the persistent widget, each rendered only on the row of its own identity with the same stores and dismiss semantics.,
+  // ]
+  function tmSessionCtxAlertHtml(idKey, opts) {
+    var out = [];
+    try {
+      if (!idKey) return '';
+      opts = opts || {};
+      // (1) Red error row (was widget; auto-clears on the identity's next success).
+      if (tmMostRecentError && tmMostRecentError.idKey && tmMostRecentError.idKey === idKey) {
+        var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
+        var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
+        var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
+        out.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:10px;font-family:monospace;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;">\u26a0 err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' \u2014 click</div>');
+      }
+      // (2) Orange 'No endpoints found' banner (stays until its X).
+      if (tmEndpointNotFound && tmEndpointNotFound.idKey && tmEndpointNotFound.idKey === idKey) {
+        var enfProv = tmEndpointNotFound.provider ? (' for ' + escapeHtml(tmEndpointNotFound.provider)) : '';
+        out.push('<div style="display:flex;align-items:center;gap:6px;margin-top:2px;background:#3a2200;border:1px solid #ff9500;border-radius:4px;padding:3px 6px;">' +
+          '<span style="color:#ff9500;font-size:11px;font-weight:bold;line-height:1.3;flex:1;">\u26d4 Provider/endpoint not found' + enfProv + '. Consider switching providers.</span>' +
+          '<span data-action="dismiss-endpoint-not-found" title="Dismiss" style="cursor:pointer;color:#ff9500;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">\u00d7</span>' +
+          '</div>');
+      }
+      // (3) Prompt-ingestion warning: newest critical _warnings entry for THIS identity, ring-derived.
+      var ring = opts.ring || (opts.frame && opts.frame.ring) || [];
+      var newestWarn = null;
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var wCap = ring[i];
+        if (!wCap || !Array.isArray(wCap._warnings) || !wCap._warnings.length) continue;
+        var wKey = wCap._identity && wCap._identity.key;
+        if (!wKey) { try { wKey = tmCapIdentityKey(wCap); } catch (eK) {} }
+        if (wKey !== idKey) continue;
+        for (var w = wCap._warnings.length - 1; w >= 0; w--) {
+          var cand = wCap._warnings[w];
+          if (cand && cand.severity === 'critical') { newestWarn = cand; break; }
+        }
+        if (newestWarn) break;
+      }
+      if (newestWarn && !tmIsWarningBannerDismissed(newestWarn.id)) {
+        var wTitle = escapeHtml(newestWarn.title || 'Prompt warning');
+        var wMsg = escapeHtml(newestWarn.message || '');
+        var wDetail = '';
+        try {
+          var dd = newestWarn.details || {};
+          if (dd.reported_prompt_tokens != null && dd.estimated_prompt_tokens != null) {
+            wDetail = ' (~' + Math.round(dd.estimated_prompt_tokens / 1000) + 'K est vs ' + Math.round(dd.reported_prompt_tokens / 1000) + 'K reported)';
+          } else if (dd.model) {
+            wDetail = ' (' + escapeHtml(String(dd.model)) + ')';
+          }
+        } catch (eD) {}
+        out.push('<div style="display:flex;align-items:center;gap:6px;margin-top:2px;background:#3a0000;border:1px solid #ff3333;border-radius:4px;padding:3px 6px;">' +
+          '<span style="color:#ff4444;font-size:11px;font-weight:bold;font-family:monospace;line-height:1.3;flex:1;">\ud83d\udea8 ' + wTitle + wDetail + ' \u2014 ' + wMsg + '</span>' +
+          '<span data-action="dismiss-warning-banner" data-warning-id="' + escapeHtml(String(newestWarn.id || '')) + '" title="Dismiss (this turn only)" style="cursor:pointer;color:#ff4444;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">\u00d7</span>' +
+          '</div>');
+      }
+    } catch (e) {}
+    return out.join('');
+  }
+
+  // (v4.405) Repaint just the per-row alert zones (dismiss actions + the 1s tick); zones carry
+  // pre-rendered content, so a dismissed banner disappears without a full card rebuild.
+  function tmSessionCtxRefreshAlerts(frame) {
+    try {
+      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+      frame = frame || tmBuildSessionCtxLiveFrame();
+      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-alert-key]');
+      for (var i = 0; i < zones.length; i++) {
+        var key = zones[i].getAttribute('data-alert-key');
+        tmSessionCtxPatchHtml(zones[i], tmSessionCtxAlertHtml(key, { ring: frame.ring }));
+      }
+    } catch (e) {}
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildWidgetStatusLine-pmi7,
   //   role=__lambdao_1.tmBuildWidgetStatusLine,
@@ -13441,127 +13660,19 @@
   //   comment=Composes the widget's top status line from live status with ledger fallback.,
   // ]
   function tmBuildWidgetStatusLine() {
-    var st = tmMostRecentPayloadStatus || {};
-    var rt = st.repairTally || null;
-    var family = (rt && rt.family) ? rt.family : null;   // 'anthropic' | 'openai' | null
+    // (v4.405) SLIM WIDGET: the top line is global-only now -- version + running total + reset.
+    // Every session-specific element moved to the Sessions-in-Memory rows: the cache cluster
+    // (tmRenderIdentityCacheCluster), session cost / name / dial / timers, thinking glyphs and
+    // Think/display controls, the provider-routing dropdown, and the three alert banners
+    // (tmSessionCtxAlertHtml). The repair tally (R a/b/c/d + T n) retired from here too; its
+    // per-row home has always been the ring modal (tmRenderRepairBlocks).
     var parts = [];
     parts.push('<span style="opacity:0.7;">v' + EXT_VERSION + '</span>');
-
-    // v4.261: current most-recent payload required one or more Kimi tool-ID replacements.
-    // Bright only on the affected turn; the next status rebuild carries zero and clears it.
-    var idRepairCount = Number(st.toolIdRepairCount || 0);
-    if (idRepairCount > 0) {
-      var idRepairLast = st.toolIdRepairLast || {};
-      var idRepairTitle = 'Kimi tool-call ID repaired before TypingMind persistence';
-      if (idRepairLast.from || idRepairLast.to) {
-        idRepairTitle += ': ' + String(idRepairLast.from || '?') + ' → ' + String(idRepairLast.to || '?');
-      }
-      parts.push(
-        '<span title="' + escapeHtml(idRepairTitle) + '" ' +
-        'style="color:#ffd166;font-weight:bold;text-shadow:0 1px 2px #000;">ID↺' +
-        (idRepairCount > 1 ? (' ' + idRepairCount) : '') + '</span>'
-      );
-    }
-
-    // Anthropic-family repair block: R a/b/c/d. Full-bright when the most-recent payload was Anthropic
-    // family; dimmed (not applicable) otherwise. Bold + ⚠ only when active AND non-zero.
-    var rvals = rt
-      ? [rt.toolResultName || 0, rt.historicToolInputs || 0, rt.emptyMessageContent || 0, rt.missingToolResults || 0]
-      : [0, 0, 0, 0];
-    var rsum = rvals[0] + rvals[1] + rvals[2] + rvals[3];
-    var rActive = (family === 'anthropic');
-    var rTitle = 'Anthropic repairs: tool_result.name / historic tool_use.input / empty content / missing tool_result';
-    // slot 2 (historicToolInputs) is benign/common (no-arg tool calls like GLIMPSE), so it ALONE never
-    // raises the alarm; only slots 1/3/4 do. Calm slate when no real alarm; orange only when it matters.
-    var rAlarm = rvals[0] + rvals[2] + rvals[3];
-    var rStyle = 'color:' + ((rActive && rAlarm > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (rActive ? '' : 'opacity:0.3;');
-    if (rActive && rAlarm > 0) {
-      parts.push('<span title="' + rTitle + '" style="' + rStyle + 'font-weight:bold;">\u26a0 R ' + rvals.join('/') + '</span>');
-    } else {
-      parts.push('<span title="' + rTitle + '" style="' + rStyle + '">R ' + rvals.join('/') + '</span>');
-    }
-
-    // OpenAI-family repair block: T n (orphaned tool_call repair). Full-bright when the most-recent
-    // payload was OpenAI family; dimmed otherwise.
-    var tVal = rt ? (rt.orphanedToolCalls || 0) : 0;
-    var tActive = (family === 'openai');
-    var tTitle = 'OpenAI repairs: orphaned tool_call (injected missing preceding output_text)';
-    var tStyle = 'color:' + ((tActive && tVal > 0) ? '#ff9d3d' : '#9aa4b2') + ';' + (tActive ? '' : 'opacity:0.3;');
-    if (tActive && tVal > 0) {
-      parts.push('<span title="' + tTitle + '" style="' + tStyle + 'font-weight:bold;">\u26a0 T ' + tVal + '</span>');
-    } else {
-      parts.push('<span title="' + tTitle + '" style="' + tStyle + '">T ' + tVal + '</span>');
-    }
-
-    var au = st.anthropicUsage;
-    var oru = st.orUsage;
-    // (v4.236) Table-cost fallback for providers returning no API cost (e.g. Moonshot/DeepSeek direct).
-    var tableCostFallback = (st && typeof st.tableCost === 'number' && st.tableCost > 0) ? st.tableCost : 0;
-    // (v4.211) Fallback when the live status is empty (post-refresh, or the last turn was an
-    // error): use the most recent SUCCESSFUL turn's usage from the ring, so cost + cache report
-    // + badges still render instead of going blank.
-    if (!au && !oru) {
-      try {
-        var lastOk = tmLastSuccessfulUsage();
-        if (lastOk) { au = lastOk.au; oru = lastOk.oru; if (lastOk.tableCost > 0) tableCostFallback = lastOk.tableCost; }
-      } catch (e) {}
-    }
-    // v4.168: Per-turn cost is now rendered inline here (not via tmRenderCacheReport's tiny gray badge)
-    // so it can be the flashpoint — larger font, orange-red, bold.
-    var turnCostVal = tmExtractCostVal(au, oru);
-    // (v4.236) Fall back to table-calculated cost for providers with no API cost field.
-    if (!(turnCostVal > 0) && tableCostFallback > 0) turnCostVal = tableCostFallback;
-    // v4.169: Cache hit/miss badges around the cost.
-    // (v4.211) Read the per-identity cache-outcome LEDGER (survives refresh; error turns no
-    // longer stamp tmMostRecentPayloadStatus, so status.cacheStats alone would go stale/blank).
-    var ledgerStats = null;
-    try {
-      var identKey = (st.identity && st.identity.key) || '';
-      if (!identKey) {
-        var _r2 = tmReadCaptureRing();
-        var _l2 = _r2.length > 0 ? _r2[_r2.length - 1] : null;
-        if (_l2 && _l2._identity && _l2._identity.key) identKey = _l2._identity.key;
-      }
-      if (identKey) ledgerStats = tmGetCacheOutcomeForIdentity(identKey);
-    } catch (e) {}
-    var stats = ledgerStats || (st.cacheStats || {});
-    var cacheHit = (st.cacheHit != null) ? !!st.cacheHit : !!(stats && stats._cache_last === 'hit');
-    var streak = Number(stats._cache_streak || 0);
-    var totalHits = Number(stats._cache_hits || 0);
-    var totalMisses = Number(stats._cache_misses || 0);
-    var missBorder = cacheHit
-      ? ''
-      : 'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;';
-    // v4.190: when the fat miss border is present, raise both superscripts ~7px so they clear it
-    var supTopAdj = missBorder ? -7 : 0;
-    var turnCostStr = (turnCostVal > 0)
-      ? ' <span title="inference cost (this turn) — ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
-          'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
-            '$' + turnCostVal.toFixed(3) +
-            (streak > 0
-              ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
-              : '') +
-            // v4.189: hit/miss superscript readability — font 9px->11px, spaces around the slash
-            // v4.269: miss count in the MISS badge red (#ff6b6b) -- the system's one reserved
-            // red -- while slash + hits keep the legacy light green.
-            ((totalMisses > 0 || totalHits > 0)
-              ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
-              : '') +
-        '</span>'
-      : '';
-    // Build the cache report WITHOUT the cost badge (cost is rendered separately above).
-    var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
-    // (v4.321) One-step font bump for JUST the cache report portion (static 'cache' +
-    // read tokens + write tokens), per Dan; the shared tmRenderCacheReport is untouched so
-    // ring rows are unaffected.
-    parts.push('<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr);
-
-    // (v4.73) Running total cost — deeper purple (#8b6db5) for Σ$/reset; numeric value in even darker purple (#5d3f8e).
-    var totalCost = tmGetTotalCost();
-    parts.push('<span title="running total cost (session)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
+    var totalCost = 0;
+    try { totalCost = tmGetTotalCost(); } catch (eTC) {}
+    parts.push('<span title="running total cost (all sessions, until reset)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
       ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#5d3f8e;font-size:9px;opacity:0.6;">\u21ba</span>');
-
-    return parts.join(' <span style="opacity:0.4;">\u00b7</span> ');
+    return parts.join(' ');
   }
 
   // @beacon[
@@ -13574,8 +13685,8 @@
   function renderGpt51UsageWidget() {
     if (typeof document === 'undefined') return;
     const el = ensureGpt51UsageWidget();
-    // (v4.328) A re-render destroys the hovered 'Session ID:' span, so its mouseout may
-    // never fire; drop the hovercard rather than leave a stale one stuck on screen.
+    // (v4.328) A re-render destroys a hovered trigger span, so its mouseout may never fire;
+    // drop the hovercard rather than leave a stale one stuck on screen.
     try { tmHideSessionCtxHover(); } catch (eHovR) {}
     const store = getGpt51UsageStore();
     const convIds = Object.keys(store).filter(id => !store[id].hidden);
@@ -13591,15 +13702,15 @@
       '<button type="button" data-action="toggle-agent-management" title="Agent management mode — monitor tool-call sessions and auto-continue confirmed stalls" ' +
       'style="position:absolute;right:100%;top:0;margin-right:4px;width:28px;height:28px;padding:0;border-radius:7px 0 0 7px;z-index:3;cursor:pointer;pointer-events:auto;font-size:14px;font-weight:bold;line-height:26px;text-align:center;color:' + (managing ? '#fff' : '#e6a35c') + ';background:' + (managing ? '#b51515' : '#4b2b10') + ';border:1px solid ' + (managing ? '#ff6666' : '#9a5a22') + ';animation:' + (managing ? 'tmAgentManagePulse 1.4s ease-in-out infinite' : 'none') + ';">&#9881;</button>'
     );
-    // (v4.319) Manual auto-resume text button: bottom-left offshoot tab, white tinged yellow.
-    // Copies the machine-signposted continuation text to the clipboard -- NOTHING is submitted.
+    // (v4.405) Manual auto-resume text tab RELOCATED bottom-left -> top-right: the widget is slim
+    // now and the two left-edge tabs would collide. Same action, same styling, mirrored edge.
     lines.push(
       '<button type="button" data-action="copy-auto-resume-text" title="Click here to manually generate the automatic continuation text (copies it to your clipboard; paste it in and send it yourself — nothing is submitted)" ' +
-      'style="position:absolute;right:100%;bottom:0;margin-right:4px;width:20px;height:20px;padding:0;border-radius:6px 0 0 6px;cursor:pointer;pointer-events:auto;font-size:11px;line-height:18px;text-align:center;color:#6a6a4a;background:#fdfdf0;border:1px solid #d8d8a8;z-index:1;">&#128203;</button>'
+      'style="position:absolute;left:100%;top:0;margin-left:4px;width:20px;height:20px;padding:0;border-radius:0 6px 6px 0;cursor:pointer;pointer-events:auto;font-size:11px;line-height:18px;text-align:center;color:#6a6a4a;background:#fdfdf0;border:1px solid #d8d8a8;z-index:1;">&#128203;</button>'
     );
     const toggleIcon = collapsed ? '▸' : '▾';
     lines.push(
-      '<div data-action="copy-session-id" title="Click to copy Session ID to clipboard" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;flex-wrap:wrap;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;margin-bottom:2px;gap:6px;">' +
         '<span style="font-weight:normal;line-height:1.5;">' + tmBuildWidgetStatusLine() + '</span>' +
         '<span style="margin-left:auto;display:inline-flex;align-items:center;gap:8px;">' +
           // (v4.386/v4.388) ⚖ Think Audit: prominent, right-justified on the top row; amber + count only when LIVE warnings exist.
@@ -13609,398 +13720,120 @@
       '</div>'
     );
 
-    // (v4.134) Session ID row with name support.
-    var displaySessionId = tmGetDisplaySessionId();
-    var displayPastedId = tmGetDisplayPastedSessionId();
-    var displaySessionName = tmGetSessionName(displaySessionId || displayPastedId);
-    var displaySidColor = '#9aa4b2';
-    var displaySidTooltip = '';
-    // Determine hue for the most-recent-payload session.
-    // v4.157: prefer the identity stamped on tmMostRecentPayloadStatus (single source for BOTH
-    // hue and cost); fall back to the last ring entry's _identity; then per-field derivation.
-    var widgetIdentity = null;
-    try {
-      if (tmMostRecentPayloadStatus && tmMostRecentPayloadStatus.identity) {
-        widgetIdentity = tmMostRecentPayloadStatus.identity;
-      } else {
-        var ring = tmReadCaptureRing();
-        var last = ring.length > 0 ? ring[ring.length - 1] : null;
-        if (last && last._identity) {
-          widgetIdentity = last._identity;
-        } else if (last) {
-          var lastModel = '';
-          var lastHost = '';
-          var lastIsProxy = false;
-          var lastSid = last.session_id || null;
-          try { lastModel = tmCaptureModel(last); } catch (e) {}
-          try { lastHost = tmExtractEndpointHost(last); } catch (e) {}
-          try { lastIsProxy = tmIsProxyCapture(last); } catch (e) {}
-          widgetIdentity = { sid: lastSid, model: lastModel, host: lastHost, proxy: lastIsProxy, key: tmBuildIdentityKey(lastSid, lastModel, lastHost, lastIsProxy) };
-        }
-      }
-      if (widgetIdentity) {
-        displaySidColor = tmModelEndpointColor(widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy, widgetIdentity.sid);
-        displaySidTooltip = widgetIdentity.key || '';
-      }
-    } catch (e) {}
-    // (v4.297) Context dial for the widget's current identity: newest ring entry carrying a
-    // _ctx_snapshot for THIS identity (never another conversation's -- parallel-safe).
-    var widgetCtxDialHtml = '';
-    try {
-      var ctxCapForWidget = tmLatestCtxSnapshotEntryForIdentity(widgetIdentity && widgetIdentity.key);
-      if (ctxCapForWidget) widgetCtxDialHtml = tmRenderCtxDial(ctxCapForWidget._ctx_snapshot, { size: 16, cap: ctxCapForWidget });
-    } catch (eCtxW) { widgetCtxDialHtml = ''; }
-
-    // (v4.313/v4.314) Round-trip times for the widget's current identity, right of the dial:
-    // v4.314 adds the single most-recent turn's duration (blue) BEFORE the v4.313 cumulative
-    // total (gray), mirroring the ring-row layout.
-    var widgetRtHtml = '';
-    try {
-      var rtCapForWidget = tmLatestRoundTripEntryForIdentity(widgetIdentity && widgetIdentity.key);
-      // (v4.325) ORDER SWAP: cumulative session total (gray) FIRST, then the current
-      // payload's per-turn time (blue) -- per Dan. (v4.315 TWO-PHASE note unchanged: while a
-      // payload is in flight the blue value shows the LIVE elapsed time, ticking every
-      // second via the tm-rt-live-value span; the moment the v4.313 stamp lands it reverts
-      // to the latest completed turn's value.)
-      if (widgetIdentity && widgetIdentity.sid) {
-        // (v4.353) Full time triad from the ledger: Σ⏱ assistant · Σ🧰 tool · Σ total.
-        var ttW = tmGetSessionTimeTotals(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
-        if (ttW.total > 0) widgetRtHtml += ' ' + tmRenderSessionTimeTotals(ttW.rt, ttW.tool, { fontSize: '12px', gap: '6px' });
-      }
-      var rtLiveMs = (tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) ? (Date.now() - Number(tmInFlightTurn.ts)) : 0;
-      if (rtLiveMs > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time, LIVE (payload in flight)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtLiveMs) + '</span>';
-      } else if (rtCapForWidget && rtCapForWidget._rt_ms != null && Number(rtCapForWidget._rt_ms) > 0) {
-        widgetRtHtml += ' <span id="tm-rt-live-value" title="round-trip time for THIS turn (request to response end)" style="color:#7ec8e3;font-size:12px;font-weight:600;white-space:nowrap;">⏱ ' + tmFmtDuration(rtCapForWidget._rt_ms) + '</span>';
-      }
-    } catch (eRtWd) { widgetRtHtml = ''; }
-
-    if (displaySessionId || displayPastedId) {
-      var sidParts = [];
-      // (v4.328) Underline hugs 'Session ID' only (NOT the colon), and hovering the label
-      // opens the session-ctx hovercard (data-hover) in place of the row's old native
-      // 'identity: ...' tooltip. Click still opens the ring-buffer modal.
-      sidParts.push('<span data-action="open-payload-capture-modal" data-hover="session-ctx-list" style="opacity:0.5;cursor:pointer;pointer-events:auto;font-size:15px;"><span style="text-decoration:underline;">Session ID</span>:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displaySessionId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:10px;pointer-events:auto;">' + (displaySessionId || displayPastedId || '(none)') + '</span>');
-      if (displayPastedId) sidParts.push('<span data-action="open-payload-capture-modal" style="opacity:0.5;cursor:pointer;pointer-events:auto;">pasted:</span> <span data-action="set-session-name" data-session-id="' + escapeHtml(displayPastedId || '') + '" title="Click to name this session" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;pointer-events:auto;">' + displayPastedId + '</span>');
-      // (v4.146) Current session total at the left, before the labels.
-      // v4.157: reuse the single widgetIdentity resolved above for the cost lookup, so hue
-      // and cost come from ONE identity (no more mixing sources).
-      var displaySid = displaySessionId || displayPastedId;
-      var widgetSessionCost = 0;
-      try {
-        if (widgetIdentity && widgetIdentity.sid && widgetIdentity.model) {
-          widgetSessionCost = tmGetSessionCost(widgetIdentity.sid, widgetIdentity.model, widgetIdentity.host, widgetIdentity.proxy);
-        }
-      } catch (e) {}
-      if (widgetSessionCost > 0) {
-        sidParts.unshift('<span data-action="open-payload-capture-modal" title="Open payload capture history" style="cursor:pointer;color:' + displaySidColor + ';font-size:12px;font-weight:bold;pointer-events:auto;">$' + widgetSessionCost.toFixed(2) + '</span>');
-      }
-      // (v4.328) Native row tooltip REMOVED (redundant per Dan) -- the session-ctx
-      // hovercard on the 'Session ID:' label is now the row's hover surface.
-      lines.push('<div data-action="open-payload-capture-modal" style="cursor:pointer;font-size:8px;font-family:monospace;margin-bottom:2px;">' + sidParts.join(' | ') + '</div>');
-
-      // (v4.148) Session name gets its own full-width row so the session/status row does not wrap.
-      // Keep the same color/bold treatment and the same rename click action, but make the UX clearer.
-      var nameSid = displaySessionId || displayPastedId || '';
-      tmWidgetCurrentSid = nameSid; // (v4.323) feed the shared ticker's tool-timer target
-      // (v4.323) Live tool-execution timer: while a client-side tool call is in flight for
-      // the widget's session (the red TOOL badge state), show its elapsed time ticking.
-      var widgetToolHtml = '';
-      try {
-        var toolStateW = tmAgentManagementDisplayState(nameSid);
-        if (tmAgentManagementEnabled() && toolStateW && toolStateW.pendingToolCall && toolStateW.responseFinishedAt) {
-          try { tmEnsureRtLiveTicker(); } catch (eTk) {}
-          widgetToolHtml = ' <span id="tm-tool-live-value" title="client-side tool execution time, LIVE (tool call in flight)" style="color:#d08b8b;font-size:12px;font-weight:600;white-space:nowrap;">🧰 ' + tmFmtDuration(Date.now() - Number(toolStateW.responseFinishedAt)) + '</span>';
-        }
-      } catch (eToolW) { widgetToolHtml = ''; }
-      if (displaySessionName) {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to rename" style="cursor:pointer;color:' + displaySidColor + ';font-size:11px;font-weight:bold;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + displaySessionName + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + widgetToolHtml + '</div>');
-      } else {
-        lines.push('<div data-action="set-session-name" data-session-id="' + escapeHtml(nameSid) + '" title="Click to name this session" style="cursor:pointer;color:#ccc;font-size:9px;font-family:monospace;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">click to name session' + widgetCtxDialHtml + widgetRtHtml + tmAgentManagementBadge(nameSid) + widgetToolHtml + '</div>');
-      }
-      // (Fix 24, v4.352) Thinking Observatory line for THIS identity's newest stamped turn
-      // (identity-matched like the ctx dial; never leaks a parallel conversation). Click -> report.
-      try {
-        var tkCapW = tmLatestThinkEntryForIdentity(widgetIdentity && widgetIdentity.key);
-        if (tkCapW) lines.push('<div style="font-size:10px;margin-bottom:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + tmRenderThinkBadge(tkCapW, { noNote: true, fontSize: '10px', layout: 'inline' }) + '</div>');
-      } catch (eTkW) {}
-      // (Fix 24 Phase 2, v4.361) Thinking CONTROL for THIS identity's NEXT call (Anthropic-shaped
-      // routes in this increment). Identity-guarded like the badge above.
-      try {
-        var tkIdW = (widgetIdentity && widgetIdentity.key) || '';
-        if (tkIdW && tmThinkControlSupportedForIdentity(tkIdW)) lines.push('<div style="font-size:10px;margin-bottom:2px;white-space:nowrap;overflow:visible;">' + tmBuildThinkControlHtml(tkIdW) + '</div>');
-      } catch (eTkC) {}
-    } else {
-      tmWidgetCurrentSid = ''; // (v4.323) no displayed session -> tool timer goes quiet
-      // (v4.330) data-hover added: the hovercard must work in the blank post-refresh state
-      // too -- the ring buffer persists in localStorage, so 'where are my sessions at?'
-      // is answerable BEFORE any new payload warms the widget.
-      lines.push('<div data-action="open-payload-capture-modal" data-hover="session-ctx-list" title="Open payload capture history" style="cursor:pointer;font-size:12px;opacity:0.3;font-family:monospace;margin-bottom:2px;">Session ID: (none yet \u2014 click header to generate)</div>');
-    }
-
-    // v4.192: model row — active session's model string in the session identity color
-    // v4.198: + serving provider appended (pipe-separated, light green) so you can see WHICH
-    // OpenRouter endpoint (Moonshot vs Fireworks vs Baseten) served the most-recent turn at a
-    // glance, right in the persistent widget — no need to open the ring-buffer modal.
-    // v4.200: + provider routing dropdown (Fix 16) for multi-provider models. Shows lock state
-    // with a glyph and lets you switch/lock/float/unlock. Only renders for multi-provider models.
-    var modelForDisplay = '';
-    try {
-      if (widgetIdentity && widgetIdentity.model) modelForDisplay = widgetIdentity.model;
-    } catch (e) {}
-    var providerForDisplay = '';
-    try {
-      var _st = tmMostRecentPayloadStatus || {};
-      if (_st.provider) providerForDisplay = String(_st.provider);
-      else {
-        // (v4.205) Refresh fallback: read the SERVING provider off the last ring entry (captured
-        // since v4.197) before degrading to the bare endpoint host ('openrouter.ai').
-        try {
-          var _ring = tmReadCaptureRing();
-          var _last = _ring.length > 0 ? _ring[_ring.length - 1] : null;
-          if (_last && _last.response_provider) providerForDisplay = String(_last.response_provider);
-        } catch (e2) {}
-        if (!providerForDisplay && widgetIdentity && widgetIdentity.host) providerForDisplay = String(widgetIdentity.host);
-      }
-    } catch (e) {}
-    // (v4.214) When a lock exists, use its label (e.g. 'Fireworks Fast') instead of the bare
-    // response_provider ('Fireworks') so the distinction is visible in the widget.
-    try {
-      var _wIdKey = (widgetIdentity && widgetIdentity.key) || '';
-      if (_wIdKey) providerForDisplay = tmResolveProviderLabel(_wIdKey, providerForDisplay);
-    } catch (e) {}
-    if (modelForDisplay) {
-      var providerSuffix = providerForDisplay
-        ? (' <span style="opacity:0.5;">|</span> <span title="serving provider" style="color:#8ef0a0;">' + escapeHtml(providerForDisplay) + '</span>')
-        : '';
-      // (Fix 16, v4.200) Provider routing dropdown for multi-provider models.
-      var routingDropdown = '';
-      try {
-        var _rModel = String(modelForDisplay).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-        // (v4.205) Kick off a lazy Endpoints-API discovery for OpenRouter-routed models so new
-        // providers/models appear in the dropdown automatically (silent seed fallback).
-        try {
-          var _rHost2 = (widgetIdentity && widgetIdentity.host) || '';
-          if (_rHost2.indexOf('openrouter') !== -1 || (!_rHost2 && _rModel.indexOf('/') !== -1)) {
-            tmMaybeFetchProviderEndpoints(_rModel);
-          }
-        } catch (e) {}
-        if (tmIsMultiProviderModel(_rModel)) {
-          // (v4.201) canonical stamped identity key; (v4.206) shared dropdown builder (also used
-          // by the ring-buffer modal's most-recent entry per identity).
-          var _rIdKey = (widgetIdentity && widgetIdentity.key) || '';
-          routingDropdown = tmBuildProviderRoutingDropdown(_rIdKey, _rModel, providerForDisplay);
-        }
-      } catch (e) {}
-      // (v4.330) Model/provider row font 9px -> 11px (+2 per Dan).
-      lines.push('<div title="active model | serving provider" style="color:' + displaySidColor + ';font-size:11px;font-family:monospace;margin-bottom:2px;overflow:visible;text-overflow:ellipsis;white-space:nowrap;">' + escapeHtml(modelForDisplay) + providerSuffix + routingDropdown + '</div>');
-    }
-
-    // (Fix 17, v4.202) Error row: when the most-recent response carried an OpenRouter error,
-    // show a compact clickable red row. Click opens a popup with the full raw error JSON.
-    // Auto-cleared on the next successful response (see tmMaybeAutoRetry fast path).
-    // (v4.211) IDENTITY GUARD: only show the banner when the error's identity matches the
-    // identity the widget is currently displaying -- a parallel conversation's 429 must NOT
-    // append a red row to THIS session's widget. (If the widget shows no identity, show it.)
-    try {
-      if (tmMostRecentError) {
-        var errMatches = true;
-        try {
-          var wKey = (widgetIdentity && widgetIdentity.key) || '';
-          if (wKey && tmMostRecentError.idKey && tmMostRecentError.idKey !== wKey) errMatches = false;
-        } catch (e) {}
-        if (errMatches) {
-          var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
-          var errProv = tmMostRecentError.provider ? (' ' + escapeHtml(tmMostRecentError.provider)) : '';
-          var retryNote = (tmMostRecentError.attempt > 0) ? (' (retried x' + tmMostRecentError.attempt + ')') : '';
-          lines.push('<div data-action="open-error-popup" title="Click for full error JSON" style="cursor:pointer;font-size:9px;font-family:monospace;margin-bottom:2px;color:#ff6b6b;font-weight:bold;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">⚠ err ' + escapeHtml(String(errCode)) + errProv + retryNote + ' — click</div>');
-        }
-      }
-    } catch (e) {}
-
-    // (v4.236) Persistent orange banner for 'No endpoints found for <model>'. Unlike the red
-    // error row (auto-clears on success), this STAYS until the user clicks its X — so Dan can't
-    // forget that the remedy is to switch the provider routing. Identity-guarded like the error row.
-    try {
-      if (tmEndpointNotFound) {
-        var enfMatches = true;
-        try {
-          var wKey2 = (widgetIdentity && widgetIdentity.key) || '';
-          if (wKey2 && tmEndpointNotFound.idKey && tmEndpointNotFound.idKey !== wKey2) enfMatches = false;
-        } catch (e) {}
-        if (enfMatches) {
-          var enfProv = tmEndpointNotFound.provider ? (' for ' + escapeHtml(tmEndpointNotFound.provider)) : '';
-          lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;background:#3a2200;border:1px solid #ff9500;border-radius:4px;padding:3px 6px;">' +
-            '<span style="color:#ff9500;font-size:11px;font-weight:bold;font-family:monospace;line-height:1.3;flex:1;">⛔ Provider/endpoint not found' + enfProv + '. Consider switching providers.</span>' +
-            '<span data-action="dismiss-endpoint-not-found" title="Dismiss" style="cursor:pointer;color:#ff9500;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">×</span>' +
-            '</div>');
-        }
-      }
-    } catch (e) {}
-
-    // (v4.270) PROMPT-WARNING banner — the RING is the source of truth (survives refresh). Scan
-    // backward for the newest capture carrying a critical warning for THIS identity; suppress it
-    // only if that exact warning id was dismissed (a dismissal never hides a later turn's new
-    // warning). Identity-guarded like the error/endpoint banners so parallel conversations don't
-    // cross-contaminate.
-    try {
-      var wWidgetKey = (widgetIdentity && widgetIdentity.key) || '';
-      var newestWarn = null;
-      try {
-        var warnRing = tmReadCaptureRing();
-        for (var wri = warnRing.length - 1; wri >= 0; wri--) {
-          var wCap = warnRing[wri];
-          if (!wCap || !Array.isArray(wCap._warnings) || !wCap._warnings.length) continue;
-          if (wWidgetKey) { var wCapKey = tmCapIdentityKey(wCap); if (wCapKey && wCapKey !== wWidgetKey) continue; }
-          for (var wwi = wCap._warnings.length - 1; wwi >= 0; wwi--) {
-            var cand = wCap._warnings[wwi];
-            if (cand && cand.severity === 'critical') { newestWarn = cand; break; }
-          }
-          if (newestWarn) break;
-        }
-      } catch (eScan) {}
-      if (newestWarn && !tmIsWarningBannerDismissed(newestWarn.id)) {
-        var wTitle = escapeHtml(newestWarn.title || 'Prompt warning');
-        var wMsg = escapeHtml(newestWarn.message || '');
-        var wDetail = '';
-        try {
-          var dd = newestWarn.details || {};
-          if (dd.reported_prompt_tokens != null && dd.estimated_prompt_tokens != null) {
-            wDetail = ' (~' + Math.round(dd.estimated_prompt_tokens / 1000) + 'K est vs ' + Math.round(dd.reported_prompt_tokens / 1000) + 'K reported)';
-          } else if (dd.model) {
-            wDetail = ' (' + escapeHtml(String(dd.model)) + ')';
-          }
-        } catch (eD) {}
-        lines.push('<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px;background:#3a0000;border:1px solid #ff3333;border-radius:4px;padding:3px 6px;">' +
-          '<span style="color:#ff4444;font-size:11px;font-weight:bold;font-family:monospace;line-height:1.3;flex:1;">\uD83D\uDEA8 ' + wTitle + wDetail + ' — ' + wMsg + '</span>' +
-          '<span data-action="dismiss-warning-banner" data-warning-id="' + escapeHtml(String(newestWarn.id || '')) + '" title="Dismiss (this turn only)" style="cursor:pointer;color:#ff4444;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">×</span>' +
-          '</div>');
-      }
-    } catch (eWarn) {}
+    // (v4.405) Action buttons row: 📊 opens the ring-buffer modal · 🖥️ hover peeks Sessions in
+    // Memory, click pins/unpins it (delegated hover wiring in ensureGpt51UsageWidget picks up the
+    // data-hover exactly like the old 'Session ID:' label did). Replaces the static 'Session ID:'
+    // text that doubled as both triggers.
+    lines.push(
+      '<div style="display:flex;align-items:center;gap:12px;font-size:11px;margin-top:3px;">' +
+        '<span data-action="open-payload-capture-modal" title="Open the payload capture ring buffer modal" style="cursor:pointer;opacity:0.9;">📊 <span style="text-decoration:underline;">Payloads</span></span>' +
+        '<span data-action="toggle-sessions-panel" data-hover="session-ctx-list" title="Hover: peek Sessions in Memory · Click: pin the dashboard (drag it anywhere; it survives refresh) · Click again: unpin + close" style="cursor:pointer;opacity:0.9;">🖥️ <span style="text-decoration:underline;">Sessions</span></span>' +
+      '</div>'
+    );
 
     if (collapsed) {
       el.innerHTML = lines.join('');
       return;
     }
 
-    // Always show export/modal links (work for all vendors), even if no GPT-5.1 convs
-    if (!hasGpt51Convs) {
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:3px;display:flex;align-items:center;gap:4px;" title="Per-tool-result safety limit. GLIMPSE and Lightning Rod are whitelisted.">Guard KB:<input id="tm-tool-result-guard-kb" type="number" min="1" step="25" value="' + tmGetToolResultGuardKb() + '" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
-
-      const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
-      const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
-      const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
-      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
-
-      el.innerHTML = lines.join('');
-
-      // Wire up truncation input (needs change event, not click)
-      var truncInput = el.querySelector('#tm-trunc-input');
-      if (truncInput) {
-        truncInput.addEventListener('change', function() { tmSetTruncationLimit(this.value); });
-        truncInput.addEventListener('click', function(e) { e.stopPropagation(); });
-      }
-      var guardInput = el.querySelector('#tm-tool-result-guard-kb');
-      if (guardInput) {
-        guardInput.addEventListener('change', function() { this.value = tmSetToolResultGuardKb(this.value); });
-        guardInput.addEventListener('click', function(e) { e.stopPropagation(); });
-      }
-      return;
-    }
-
-    let totalCost = 0;
-
-    // Use up to the last 5 conversations, most recent first
-    const ordered = convIds.slice(-5).reverse();
-    const activeId = ordered[0];
-    const otherIds = ordered.slice(1);
-
-    let activeLine = null;
-    const otherLines = [];
-
-    ordered.forEach((convId, idx) => {
-      const s = store[convId];
-      const cachedPct = s.input > 0 ? ((s.cached / s.input) * 100).toFixed(1) : '0.0';
-      const safeId = convId.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const cost = s.cost || 0;
-      const ctxInput = s.lastContextInput || 0;
-      const ctxPct = s.lastContextPct != null ? s.lastContextPct : 0;
-      const ctxPctStr = ctxPct.toFixed ? ctxPct.toFixed(1) : ctxPct.toString();
-      const ctxColor = ctxPct >= 75 ? '#ff8080' : (ctxPct >= 50 ? '#ffcf80' : '#a0ffa0');
-      totalCost += cost;
-
-      const rowHtml =
-        '<div style="margin-bottom:3px;">' +
-          '<span style="float:right;cursor:pointer;color:#ffaaaa;margin-left:6px;" data-conv-id="' + safeId + '">×</span>' +
-          '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">' +
-            safeId +
-          '</div>' +
-          '<div style="font-size:10px;opacity:0.85;">' +
-            'in:' + s.input + ' cached:' + s.cached + ' (' + cachedPct + '%) out:' + s.output + ' · $' + cost.toFixed(4) +
-          '</div>' +
-          '<div style="font-size:10px;margin-top:1px;color:' + ctxColor + ';">' +
-            'ctx:' + ctxInput + ' (' + ctxPctStr + '% of 400k)' +
-          '</div>' +
-        '</div>';
-
-      if (idx === 0) {
-        activeLine = rowHtml; // Always-visible active conversation
-      } else {
-        otherLines.push(rowHtml); // Candidates for collapsible region
-      }
-    });
-
-    // Header + total are always visible
-    lines.push('<div style="font-weight:bold;font-size:10px;margin-bottom:2px;">GPT-5.1 Conversations (v' + EXT_VERSION + ')</div>');
-    lines.push('<div style="font-size:12px;opacity:0.9;margin-bottom:4px;">≈ Total cost: $' + totalCost.toFixed(4) + '</div>');
-
-    // Active conversation row is always visible (never collapsible)
-    if (activeLine) {
-      lines.push(activeLine);
-    }
-
-    // Collapsible region for all OTHER conversations
-    if (otherLines.length > 0) {
-      const collapsed = el.dataset.othersCollapsed === 'true' || !el.dataset.othersCollapsed;
-      const toggleLabel = collapsed
-        ? 'Show other conversations (' + otherLines.length + ')'
-        : 'Hide other conversations';
-
-      lines.push(
-        '<div style="font-size:10px;opacity:0.9;margin:2px 0 4px 0;cursor:pointer;text-decoration:underline;" data-toggle="others">' +
-          toggleLabel +
-        '</div>'
-      );
-
-      if (!collapsed) {
-        otherLines.forEach(line => lines.push(line));
-      }
-    }
-
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;" data-action="open-payload-capture-modal">Copy payload…</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;display:flex;align-items:center;gap:4px;">Trunc:<input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:3px;display:flex;align-items:center;gap:4px;" title="Per-tool-result safety limit. GLIMPSE and Lightning Rod are whitelisted.">Guard KB:<input id="tm-tool-result-guard-kb" type="number" min="1" step="25" value="' + tmGetToolResultGuardKb() + '" style="width:52px;font-size:10px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></div>');
-
+    // (v4.405) Settings footer — ONE small row (was three). All three are GLOBAL settings, never
+    // session-specific, so they stay on the widget: capture string truncation, the Fix 21
+    // oversized-tool-result guard threshold, and the Gemini thought-signature bootstrap (default ON).
     const repairEnabled = localStorage.getItem('tm_gemini_repair_enabled') !== 'false';
     const repairColor = repairEnabled ? '#a0ffa0' : '#ffaaaa';
-    const repairText = repairEnabled ? 'Gemini Repair: ON' : 'Gemini Repair: OFF';
-    lines.push('<div style="font-size:10px;opacity:0.9;margin-top:4px;cursor:pointer;text-decoration:underline;color:' + repairColor + ';" data-action="toggle-gemini-repair">' + repairText + '</div>');
+    lines.push('<div style="font-size:9px;opacity:0.85;margin-top:3px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+      '<span title="Per-string truncation in captured payloads (localStorage tm_payload_capture_truncation)">Trunc: <input id="tm-trunc-input" type="number" min="100" step="500" value="' + tmGetTruncationLimit() + '" data-action="set-truncation-limit" style="width:48px;font-size:9px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></span>' +
+      '<span title="Per-tool-result safety limit. GLIMPSE and Lightning Rod are whitelisted.">Guard KB: <input id="tm-tool-result-guard-kb" type="number" min="1" step="25" value="' + tmGetToolResultGuardKb() + '" style="width:44px;font-size:9px;background:#222;color:#fff;border:1px solid #555;border-radius:3px;padding:0 2px;" /></span>' +
+      '<span data-action="toggle-gemini-repair" style="cursor:pointer;text-decoration:underline;color:' + repairColor + ';" title="Gemini cross-model resume bootstrap (thought signatures). Default ON; only matters when resuming a non-Gemini conversation with Gemini 3.">Gemini Repair: ' + (repairEnabled ? 'ON' : 'OFF') + '</span>' +
+    '</div>');
+
+    // (v4.405) The widget no longer displays a session -- quiet the shared ticker's tool-timer
+    // target (its spans lived on the retired session rows).
+    tmWidgetCurrentSid = '';
+
+    // Legacy GPT-5.1 conversation list (the gpt51_conv_usage store; normally empty today).
+    // Kept intact minus its old duplicated footer links (the buttons/footer rows above cover them).
+    if (hasGpt51Convs) {
+      let legacyTotalCost = 0;
+      const ordered = convIds.slice(-5).reverse();
+      const activeId = ordered[0];
+      const otherIds = ordered.slice(1);
+      let activeLine = null;
+      const otherLines = [];
+      ordered.forEach((convId, idx) => {
+        const s = store[convId];
+        const cachedPct = s.input > 0 ? ((s.cached / s.input) * 100).toFixed(1) : '0.0';
+        const safeId = convId.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const cost = s.cost || 0;
+        const ctxInput = s.lastContextInput || 0;
+        const ctxPct = s.lastContextPct != null ? s.lastContextPct : 0;
+        const ctxPctStr = ctxPct.toFixed ? ctxPct.toFixed(1) : ctxPct.toString();
+        const ctxColor = ctxPct >= 75 ? '#ff8080' : (ctxPct >= 50 ? '#ffcf80' : '#a0ffa0');
+        legacyTotalCost += cost;
+
+        const rowHtml =
+          '<div style="margin-bottom:3px;">' +
+            '<span style="float:right;cursor:pointer;color:#ffaaaa;margin-left:6px;" data-conv-id="' + safeId + '">×</span>' +
+            '<div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:220px;">' +
+              safeId +
+            '</div>' +
+            '<div style="font-size:10px;opacity:0.85;">' +
+              'in:' + s.input + ' cached:' + s.cached + ' (' + cachedPct + '%) out:' + s.output + ' · $' + cost.toFixed(4) +
+            '</div>' +
+            '<div style="font-size:10px;margin-top:1px;color:' + ctxColor + ';">' +
+              'ctx:' + ctxInput + ' (' + ctxPctStr + '% of 400k)' +
+            '</div>' +
+          '</div>';
+
+        if (idx === 0) {
+          activeLine = rowHtml; // Always-visible active conversation
+        } else {
+          otherLines.push(rowHtml); // Candidates for collapsible region
+        }
+      });
+
+      // Header + total are always visible
+      lines.push('<div style="font-weight:bold;font-size:10px;margin-top:4px;margin-bottom:2px;">GPT-5.1 Conversations (v' + EXT_VERSION + ')</div>');
+      lines.push('<div style="font-size:12px;opacity:0.9;margin-bottom:4px;">≈ Total cost: $' + legacyTotalCost.toFixed(4) + '</div>');
+
+      // Active conversation row is always visible (never collapsible)
+      if (activeLine) {
+        lines.push(activeLine);
+      }
+
+      // Collapsible region for all OTHER conversations
+      if (otherLines.length > 0) {
+        const othersCollapsed = el.dataset.othersCollapsed === 'true' || !el.dataset.othersCollapsed;
+        const toggleLabel = othersCollapsed
+          ? 'Show other conversations (' + otherLines.length + ')'
+          : 'Hide other conversations';
+
+        lines.push(
+          '<div style="font-size:10px;opacity:0.9;margin:2px 0 4px 0;cursor:pointer;text-decoration:underline;" data-toggle="others">' +
+            toggleLabel +
+          '</div>'
+        );
+
+        if (!othersCollapsed) {
+          otherLines.forEach(line => lines.push(line));
+        }
+      }
+
+      lines.push('<div style="font-size:10px;opacity:0.9;margin-top:2px;cursor:pointer;text-decoration:underline;color:#ffaaaa;" data-action="clear-gpt51-conversations">Clear ALL GPT-5.1 conversations</div>');
+    }
 
     el.innerHTML = lines.join('');
 
-    // Wire up truncation input (needs change event, not click)
-    var truncInput2 = el.querySelector('#tm-trunc-input');
-    if (truncInput2) {
-      truncInput2.addEventListener('change', function() { tmSetTruncationLimit(this.value); });
-      truncInput2.addEventListener('click', function(e) { e.stopPropagation(); });
+    // Wire up the numeric inputs (change event, not click)
+    var truncInput = el.querySelector('#tm-trunc-input');
+    if (truncInput) {
+      truncInput.addEventListener('change', function() { tmSetTruncationLimit(this.value); });
+      truncInput.addEventListener('click', function(e) { e.stopPropagation(); });
     }
-    var guardInput2 = el.querySelector('#tm-tool-result-guard-kb');
-    if (guardInput2) {
-      guardInput2.addEventListener('change', function() { this.value = tmSetToolResultGuardKb(this.value); });
-      guardInput2.addEventListener('click', function(e) { e.stopPropagation(); });
+    var guardInput = el.querySelector('#tm-tool-result-guard-kb');
+    if (guardInput) {
+      guardInput.addEventListener('change', function() { this.value = tmSetToolResultGuardKb(this.value); });
+      guardInput.addEventListener('click', function(e) { e.stopPropagation(); });
     }
   }
 
