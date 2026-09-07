@@ -6343,6 +6343,10 @@
   //                            value labelled beneath when there is room);
   //   otherwise             -> equal-width bins, k = min(10, ceil(sqrt(n))) (square-root rule).
   // Turns with zero reasoning are real samples (a bar at 0). Every bar carries an exact tooltip.
+  // (v4.407) ZERO-DOMINANCE SPLIT: when >40% of turns have zero reasoning, a single-scale histogram
+  // crushes every non-zero bar to invisibility. Render TWO parts instead: a compact [zero | rest]
+  // two-bin gauge (shows the ratio), then the non-zero samples on their own full-height scale
+  // (so the distribution above zero is actually visible).
   function tmThinkRenderHistogram(samples, fs) {
     try {
       if (!Array.isArray(samples) || !samples.length) return '';
@@ -6350,8 +6354,13 @@
       for (var i = 0; i < samples.length; i++) { var v = Number(samples[i]); if (isFinite(v) && v >= 0) vals.push(v); }
       if (!vals.length) return '';
       var n = vals.length;
-      var sorted = vals.slice().sort(function(a, b) { return a - b; });
-      var mn = sorted[0], mx = sorted[n - 1];
+      var zeros = 0, nonZero = [];
+      for (var zi = 0; zi < n; zi++) { if (vals[zi] === 0) zeros++; else nonZero.push(vals[zi]); }
+      var zeroDominated = (zeros > 0 && nonZero.length > 0 && (zeros / n) > 0.4);
+      var work = zeroDominated ? nonZero : vals;
+      var nW = work.length;
+      var sorted = work.slice().sort(function(a, b) { return a - b; });
+      var mn = sorted[0], mx = sorted[nW - 1];
       var distinct = [], seenV = {};
       for (var d = 0; d < sorted.length; d++) { if (!seenV[sorted[d]]) { seenV[sorted[d]] = 1; distinct.push(sorted[d]); } }
       var bars = [], mode;
@@ -6359,17 +6368,17 @@
         mode = 'distinct';
         for (var k = 0; k < distinct.length; k++) {
           var c = 0;
-          for (var q = 0; q < vals.length; q++) if (vals[q] === distinct[k]) c++;
+          for (var q = 0; q < work.length; q++) if (work[q] === distinct[k]) c++;
           bars.push({ count: c, label: tmThinkFmtK(distinct[k]), tip: tmThinkFmtK(distinct[k]) + ' thinking tokens \u00d7 ' + c + ' turn' + (c === 1 ? '' : 's') });
         }
       } else {
         mode = 'binned';
-        var kb = Math.min(10, Math.ceil(Math.sqrt(n)));
+        var kb = Math.min(10, Math.ceil(Math.sqrt(nW)));
         var w = ((mx - mn) || 1) / kb;
         for (var b = 0; b < kb; b++) {
           var lo = mn + b * w, hi = (b === kb - 1) ? mx : (mn + (b + 1) * w), cc = 0;
-          for (var s = 0; s < vals.length; s++) {
-            var vv = vals[s];
+          for (var s = 0; s < work.length; s++) {
+            var vv = work[s];
             if (b === kb - 1 ? (vv >= lo && vv <= hi) : (vv >= lo && vv < hi)) cc++;
           }
           bars.push({ count: cc, label: '', tip: tmThinkFmtK(Math.round(lo)) + '\u2013' + tmThinkFmtK(Math.round(hi)) + ' thinking tokens: ' + cc + ' turn' + (cc === 1 ? '' : 's') });
@@ -6389,9 +6398,21 @@
         if (showLabels) svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + labH - 1) + '" font-size="7" fill="#9aa4b2" text-anchor="middle">' + escapeHtml(bars[bi].label) + '</text>';
       }
       svg += '</svg>';
-      var tip = 'Reasoning tokens per turn \u2014 ' + n + ' turn' + (n === 1 ? '' : 's') + ' this session; range ' + tmThinkFmtK(mn) + '\u2013' + tmThinkFmtK(mx) +
+      // The two-bin [zero | rest] gauge prepended when zeros dominate.
+      var prefix = '';
+      if (zeroDominated) {
+        var zH = Math.max(1, Math.round((zeros / n) * chartH)), nzH = Math.max(1, Math.round((nonZero.length / n) * chartH));
+        prefix = '<span title="zero-reasoning turns vs thinking turns: ' + zeros + ' zero \u00b7 ' + nonZero.length + ' thinking (' + n + ' total). The histogram to the right shows only the ' + nonZero.length + ' thinking turns, on their own scale." style="display:inline-flex;align-items:flex-end;margin-right:3px;">' +
+          '<svg width="' + (2 * (barW + 2)) + '" height="' + (chartH + 1) + '" viewBox="0 0 ' + (2 * (barW + 2)) + ' ' + (chartH + 1) + '" style="vertical-align:middle;">' +
+          '<rect x="0" y="' + (chartH - zH) + '" width="' + barW + '" height="' + zH + '" rx="1" fill="#5a5f6a"><title>' + zeros + ' zero-reasoning turns</title></rect>' +
+          '<rect x="' + (barW + 2) + '" y="' + (chartH - nzH) + '" width="' + barW + '" height="' + nzH + '" rx="1" fill="#c8b4ff"><title>' + nonZero.length + ' thinking turns</title></rect>' +
+          '</svg></span><span style="color:#4a4f5a;margin-right:2px;font-size:9px;">|</span>';
+      }
+      var tip = 'Reasoning tokens per turn \u2014 ' + n + ' turn' + (n === 1 ? '' : 's') + ' this session' +
+        (zeroDominated ? (' (histogram shows the ' + nonZero.length + ' thinking turns; ' + zeros + ' zero-reasoning turns in the grey bar)') : '') +
+        '; range ' + tmThinkFmtK(mn) + '\u2013' + tmThinkFmtK(mx) +
         (mode === 'binned' ? ('; ' + bars.length + ' equal-width bins (\u221an rule)') : '; one bar per distinct value, height = how many turns') + '. Hover a bar for its exact figures.';
-      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;margin-left:2px;">' + svg + '</span>';
+      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;margin-left:2px;">' + prefix + svg + '</span>';
     } catch (e) { return ''; }
   }
 
@@ -12169,7 +12190,7 @@
     // the [data-live-key] zones need no rewiring.
     var now = frame ? frame.now : Date.now();
     info = info || {};
-    var S = 'font-size:12px;white-space:nowrap;';
+    var S = 'font-size:14px;white-space:nowrap;'; // (v4.407b) 12px -> 14px per Dan
     try { if (tmEndpointNotFound && tmEndpointNotFound.idKey === key) return '<span title="Provider/endpoint not found \u2014 see the alert line on this row" style="' + S + 'color:#ff9500;font-weight:700;">\u26d4 no endpoint</span>'; } catch (e0) {}
     try { if (tmMostRecentError && tmMostRecentError.idKey === key) return '<span title="Most recent turn errored \u2014 click the alert line on this row for the raw JSON" style="' + S + 'color:#ff6b6b;font-weight:700;">\u26a0 err ' + escapeHtml(String(tmMostRecentError.code != null ? tmMostRecentError.code : '?')) + '</span>'; } catch (e1) {}
     try {
@@ -12268,7 +12289,7 @@
 
       if (ctxCap && ctxCap._ctx_snapshot) {
         var sn = ctxCap._ctx_snapshot;
-        sec('Context (last turn, provider-reported)');
+        sec('Context — last turn, as the provider reported it');
         var mr = null; try { mr = tmResolveModelMaxCtxCached(sn.model || model, ctxCap); } catch (eMR) {}
         var maxC = (mr && mr.max != null) ? mr.max : sn.max_ctx;
         kv('total', Number(sn.total || 0).toLocaleString() + ' tok' + (maxC ? (' / ' + Number(maxC).toLocaleString() + '  (' + (Math.round((sn.total / maxC) * 1000) / 10) + '%)') : ''));
@@ -12278,6 +12299,57 @@
         if (sn.cached != null) kv('cached', Number(sn.cached).toLocaleString());
         if (maxC) kv('max via', (mr && mr.source) || sn.max_ctx_source || 'stamped');
       }
+
+      // (v4.407b) LAST TURN — ACTUALS: derived from the last usage-carrying response for this
+      // identity. Semantically distinct from the section above: that one is the conversation's
+      // context fullness (a cumulative position the provider reports); this one is what THIS ONE
+      // TURN consumed/produced. Overlapping fields, different question.
+      if (usageCap) {
+        sec('Last turn — actuals (this turn itself)');
+        var aOru = usageCap.response_usage || null, aAu = usageCap.response_anthropic_usage || null;
+        var aGet = function (o, ks) { for (var gi = 0; gi < ks.length; gi++) { if (o && o[ks[gi]] != null && isFinite(Number(o[ks[gi]]))) return Number(o[ks[gi]]); } return null; };
+        var aPrompt = aGet(aOru, ['prompt_tokens']) || aGet(aAu, ['input_tokens']);
+        var aCached = aGet(aOru, ['cached_tokens']) || aGet(aAu, ['cache_read_input_tokens']);
+        var aWrite = aGet(aOru, ['cache_write_tokens']) || aGet(aAu, ['cache_creation_input_tokens']);
+        var aCompl = aGet(aOru, ['completion_tokens']) || aGet(aAu, ['output_tokens']);
+        var aReas = aGet(aOru, ['reasoning_tokens']) || aGet(aAu, ['thinking_tokens']);
+        if (aOru && aOru.completion_tokens_details) { if (aReas == null) aReas = aGet(aOru.completion_tokens_details, ['reasoning_tokens']); }
+        if (aAu && aAu.output_tokens_details) { if (aReas == null) aReas = aGet(aAu.output_tokens_details, ['thinking_tokens', 'reasoning_tokens']); }
+        if (aPrompt != null) kv('prompt in', aPrompt.toLocaleString() + ' tok' + (aCached ? ('  (' + aCached.toLocaleString() + ' from cache)') : ''));
+        if (aWrite) kv('cache write', aWrite.toLocaleString() + ' tok');
+        if (aCompl != null) kv('completion out', aCompl.toLocaleString() + ' tok');
+        if (aReas != null) kv('reasoning (in completion)', aReas.toLocaleString() + ' tok');
+        var aCost = tmExtractCostVal(aAu, aOru);
+        if (!(aCost > 0) && typeof usageCap._table_cost === 'number' && usageCap._table_cost > 0) aCost = usageCap._table_cost;
+        if (aCost > 0) kv('cost', '$' + aCost.toFixed(4));
+        if (usageCap._rt_ms != null) kv('duration', tmFmtDuration(Number(usageCap._rt_ms)));
+      }
+
+      // (v4.407b) CONVERSATION TOTALS for this identity: walk the identity's captures once and sum.
+      (function () {
+        var sumP = 0, sumC = 0, sumR = 0, sumCost = 0, turns = 0;
+        for (var ti = 0; ti < ring.length; ti++) {
+          var t = ring[ti]; if (!t) continue;
+          var tk = t._identity && t._identity.key;
+          if (tk !== idKey) continue;
+          var toru = t.response_usage || null, tau = t.response_anthropic_usage || null;
+          if (!toru && !tau) continue;
+          turns++;
+          sumP += Number((toru && toru.prompt_tokens) || (tau && tau.input_tokens) || 0);
+          sumC += Number((toru && toru.completion_tokens) || (tau && tau.output_tokens) || 0);
+          sumR += Number((toru && toru.reasoning_tokens) || (tau && tau.output_tokens_details && tau.output_tokens_details.thinking_tokens) || 0);
+          var tc = tmExtractCostVal(tau, toru);
+          if (!(tc > 0) && typeof t._table_cost === 'number' && t._table_cost > 0) tc = t._table_cost;
+          if (tc > 0) sumCost += tc;
+        }
+        if (turns > 0) {
+          sec('This conversation — totals (' + turns + ' turns, this model+route)');
+          kv('prompt tokens (all turns)', sumP.toLocaleString());
+          kv('completion tokens (all turns)', sumC.toLocaleString());
+          if (sumR > 0) kv('reasoning tokens (all turns)', sumR.toLocaleString());
+          kv('cost (summed)', '$' + sumCost.toFixed(4));
+        }
+      })();
 
       sec('Cost');
       var sc = 0; try { sc = tmGetSessionCost(sid, model, host, isProxy); } catch (eSC) {}
@@ -12315,11 +12387,45 @@
         if (eff && eff.sent) kv('in effect', (eff.sent.level || '?') + ' \u00b7 display ' + (eff.sent.display || '?') + (eff.overridden ? '  (extension override)' : '  (native)'));
         var hist = null; try { hist = tmGetThinkHistogram(sid, model, host, isProxy); } catch (eH) {}
         if (hist && Array.isArray(hist.samples) && hist.samples.length) {
-          kv('per-turn reasoning tokens (oldest first)', hist.samples.map(function (v) { return tmThinkFmtK(v); }).join('  '));
+          // (v4.407b) Run-length compress consecutive equal values: [0] ×23  1.2K  [0] ×7 — a long
+          // zero-run (most tool turns) no longer floods the line.
+          var sR = [];
+          for (var si = 0; si < hist.samples.length; si++) {
+            var sv = hist.samples[si];
+            var last = sR.length ? sR[sR.length - 1] : null;
+            if (last && last.v === sv) last.n++; else sR.push({ v: sv, n: 1 });
+          }
+          var sTxt = sR.map(function (r) { return r.n > 1 ? ('[' + tmThinkFmtK(r.v) + '] \u00d7' + r.n) : tmThinkFmtK(r.v); }).join('  ');
+          kv('per-turn reasoning tokens (oldest first)', sTxt);
         }
         if (hist && hist.turns) kv('turns counted', String(hist.turns));
         var ro = thinkCap._replay_out;
         if (ro && (ro.raw_turns || ro.enc_turns)) kv('reasoning replayed in last payload', (ro.raw_turns || 0) + ' raw + ' + (ro.enc_turns || 0) + ' encrypted turn(s)');
+        // (v4.407b) PER-LEVEL breakdown: bucket each turn by the thinking level recorded on its
+        // request (compact req), sum reasoning tokens per level. Accurate within the ring window.
+        (function () {
+          var byLevel = {}; var order = [];
+          for (var bi = 0; bi < ring.length; bi++) {
+            var b = ring[bi]; if (!b) continue;
+            var bk = b._identity && b._identity.key;
+            if (bk !== idKey) continue;
+            if (!b._think_req) continue;
+            var lvl = '?'; try { lvl = tmThinkCompactReq(b._think_req) || '?'; } catch (eL) {}
+            var rt2 = (b._think_obs && b._think_obs.tokens && typeof b._think_obs.tokens.reasoning === 'number') ? b._think_obs.tokens.reasoning : 0;
+            if (!byLevel[lvl]) { byLevel[lvl] = { turns: 0, toks: 0 }; order.push(lvl); }
+            byLevel[lvl].turns++; byLevel[lvl].toks += rt2;
+          }
+          if (!order.length) return;
+          if (order.length === 1) {
+            kv('levels', 'one thinking setting for the whole conversation on this model+route: ' + order[0]);
+          } else {
+            L.push('  by thinking level (this conversation, this model+route):');
+            for (var li = 0; li < order.length; li++) {
+              var bl = byLevel[order[li]];
+              L.push('    ' + order[li] + ': ' + bl.turns + ' turns \u00b7 ' + bl.toks.toLocaleString() + ' reasoning tok');
+            }
+          }
+        })();
       }
 
       sec('Keep-alive');
@@ -12631,7 +12737,7 @@
         (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
         (routeTxt ? ('<span style="font-size:11px;color:#6a7280;white-space:nowrap;" title="route: relay / intermediary host for this identity">' + escapeHtml(routeTxt) + '</span>') : '') +
         (provLabel ? ('<span style="font-size:12px;color:#8ef0a0;white-space:nowrap;" title="serving provider: the actual host serving this model on this route">' + escapeHtml(provLabel) + '</span>') : '') +
-        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;margin-left:7px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
+        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;padding-left:7px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
       '</div>';
       // Row 5: lean thinking (this turn + per-turn histogram), ticked live.
       var thinkRow = '';
@@ -12640,11 +12746,19 @@
         tkCapH = liveFrame.think[key] || null;
         if (tkCapH) thinkRow = '<div style="margin-top:3px;"><span data-think-key="' + escapeHtml(key) + '">' + tmThinkRowLeanHtml(tkCapH, key, '13px') + '</span></div>';
       } catch (eTkH) {}
-      // Row 4: BIG dial + aggregate cost + report button. Absolute context numbers: dial hover.
+      // Row 4: BIG dial + aggregate cost + lean thinking (merged) + report button at far right.
+      // (v4.407b) The thinking lean row merged INTO this row per Dan (no reason for two rows).
+      var thinkRow = '';
+      var tkCapH = null;
+      try {
+        tkCapH = liveFrame.think[key] || null;
+        if (tkCapH) thinkRow = '<span data-think-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;">' + tmThinkRowLeanHtml(tkCapH, key, '13px') + '</span>';
+      } catch (eTkH) {}
       var reportBtn = '<span data-action="session-ctx-report" data-key="' + escapeHtml(key) + '" title="Session report \u2014 context, cost, cache, time, thinking, keep-alive: read-only, copyable" style="cursor:pointer;font-size:13px;opacity:0.85;">\uD83D\uDCCB</span>';
       var gaugesRow = '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:34px;margin-top:3px;">' +
         '<span style="display:inline-flex;align-items:center;flex:none;">' + ctxDialHtml + '</span>' +
         ctxCostHtml +
+        thinkRow +
         '<span style="flex:1;"></span>' +
         reportBtn +
       '</div>';
@@ -12667,13 +12781,13 @@
             kaRouteHtml = tmBuildProviderRoutingDropdown(key, _rm, _pl);
           }
         } catch (eRtH) {}
-        kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;"><span data-ka-key="' + escapeHtml(key) + '">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span>' + kaRouteHtml + '</div>';
+        kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;">' + kaRouteHtml + '<span data-ka-key="' + escapeHtml(key) + '" style="margin-left:auto;">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span></div>';
       } catch (eKaH) {}
       var alertRowHtml = '<div data-alert-key="' + escapeHtml(key) + '">' + tmSessionCtxAlertHtml(key, { ring: liveFrame.ring }) + '</div>';
       rows.push(
         '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
           nameRow +
-          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + gaugesRow + thinkRow + ctlRow + kaRowHtml + '</div>' +
+          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
         '</div>'
       );
     }
@@ -13758,7 +13872,7 @@
       var supTopAdj = missBorder ? -7 : 0;
       var turnCostStr = (turnCostVal > 0)
         ? ' <span title="inference cost (this turn) \u2014 ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
-            'style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;' + missBorder + '">' +
+            'style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;' + missBorder + '">' +
               '$' + turnCostVal.toFixed(3) +
               (streak > 0
                 ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
@@ -13777,7 +13891,7 @@
         var isH = stats._cache_last === 'hit';
         chip = '<span title="last turn: cache ' + (isH ? 'HIT' : 'MISS') + '" style="font-size:10px;font-weight:700;padding:0 5px;border-radius:3px;border:1px solid ' + (isH ? '#2a6a3a' : '#6a2a2a') + ';background:' + (isH ? '#173a22' : '#3a1717') + ';color:' + (isH ? '#7dd67d' : '#ff8080') + ';white-space:nowrap;">' + (isH ? 'HIT' : 'MISS') + '</span>';
       }
-      return chip + '<span style="font-size:11px;">' + cacheReportNoCost + '</span>' + turnCostStr;
+      return chip + '<span style="font-size:13px;">' + cacheReportNoCost + '</span>' + turnCostStr;
     } catch (e) { return ''; }
   }
 
@@ -13887,7 +14001,7 @@
     try { totalCost = tmGetTotalCost(); } catch (eTC) {}
     parts.push('<span title="running total cost (all sessions, until reset)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
       ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#5d3f8e;font-size:9px;opacity:0.6;">\u21ba</span>');
-    return parts.join(' ');
+    return parts.join(' <span style="opacity:0.4;margin:0 4px;">\u00b7</span> '); // (v4.407b) extra air around the version/total separator
   }
 
   // @beacon[
