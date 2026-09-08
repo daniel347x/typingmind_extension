@@ -1,5 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.408
+// Version: 4.409
+// v4.409: Integrated Fix 24 durable reasoning analytics (four checkpoints, one release).
+// One terminal event records capped identity and uncapped lifetime buckets; forward-only,
+// unknown is never zero. SiM reads one ordinary _last, includes 24h ledger-only identities,
+// and provides fixed-bin histograms, gap/blind-route alerts, hide controls, reports and export.
+// Capture/identity/usage boundary corrections included; no new conversation-content rewrite.
 // Issues Fixed:
 //   - v4.402: Fix 24 -- DeepInfra is a FIRST-CLASS HOST (the baton's 'make a host behave like OpenRouter', Dan's
 //     intersection rule). TM_THINK_DOCS_REGISTRY gains a real DeepInfra block (kind host): one documented entry per
@@ -2261,7 +2266,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.408';
+  const EXT_VERSION = '4.409';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2329,6 +2334,7 @@
         var changed = false;
         var keys = Object.keys(map);
         for (var i = 0; i < keys.length; i++) {
+          if (storeKey === TM_SESSION_COSTS_KEY && !tmIsLedgerIdentityKey(keys[i])) continue;
           var entry = map[keys[i]];
           var ts = (entry && typeof entry === 'object') ? Number(entry._ts || 0) : 0;
           if ((ts && ts < cutoff) || (!ts && missingTsMeansOld)) {
@@ -2347,6 +2353,9 @@
     pruneMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361) per-identity thinking overrides
     pruneMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367) per-origin reasoning-replay ledger
     pruneMap('tm_keepalive_messages_v1', false); // v4.378 bounded message patterns
+    // (Fix 24 analytics S2, §6.4) SiM-hide tombstones ride the same week-old prune; they are
+    // deliberately NOT in tmTouchSessionScopedStores (a hide must not be refreshed into immortality).
+    pruneMap(typeof TM_SESSION_CTX_TOMBSTONE_KEY !== 'undefined' ? TM_SESSION_CTX_TOMBSTONE_KEY : 'tm_session_ctx_tombstones_v1', false);
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -3060,29 +3069,47 @@
   // (v4.233) Calculate cost from token usage × pricing table entry.
   // Uses the SAME response usage evidence that tmExtractKnownUsageEvidence / tmMergeUsageInto
   // produce (the response_usage object on the capture record).
-  // (v4.234) Also reads Anthropic-style fields: input_tokens as fallback for prompt_tokens,
-  // output_tokens as fallback for completion_tokens — so direct-Anthropic providers work.
+  // (Fix 24 analytics S1, §0.6) NUMERIC PRESENCE semantics: a REPORTED zero is data (an explicit
+  // completion_tokens: 0 bills zero output), and only ABSENCE triggers fallbacks. Input shape:
+  // an inclusive prompt count (prompt_tokens -- present, incl. 0) contains the cached prefix, so
+  // new input = prompt - read - write (OpenRouter-Claude: prompt = read + write + uncached);
+  // Anthropic's EXCLUSIVE shape (bare input_tokens, no prompt count) bills input_tokens directly.
   // Token determination:
   //   cached_tokens → cache_read_input_tokens / cached_tokens / prompt_tokens_details.cached_tokens
-  //   output_tokens → prefer completion_tokens; fallback total - prompt; ultimate fallback total - cached
-  //   new_input    → prompt_tokens - cached_tokens (only when NOT using the total-cached fallback)
+  //   output_tokens → explicit completion/output count INCLUDING zero; else total - full prompt
+  //                   (incl. zero) when both known; the legacy total - cached fallback ONLY when
+  //                   no prompt figure exists at all
+  //   new_input    → EXCLUSIVE: input_tokens · INCLUSIVE: prompt - read - write
   // Returns { cost: N, pricing_used: {...} } or { cost: null, reason: 'no_usage' }
   function tmCalculateCostFromTable(usageEvidence, pricing) {
     if (!usageEvidence || !pricing) return { cost: null, reason: 'no_usage' };
+    // Numeric PRESENCE (distinct from truthiness): null/undefined/''/non-finite -> null.
+    function numP(v) { if (v == null || v === '') return null; var n = Number(v); return isFinite(n) ? n : null; }
 
-    var cached = Number(
-      usageEvidence.cache_read_input_tokens ||
-      usageEvidence.cached_tokens ||
-      (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cached_tokens) || 0
-    );
-    var prompt = Number(usageEvidence.prompt_tokens || usageEvidence.input_tokens || 0);
-    var completion = Number(usageEvidence.completion_tokens || usageEvidence.output_tokens || 0);
-    var total = Number(usageEvidence.total_tokens || 0);
+    var cached = numP(usageEvidence.cache_read_input_tokens);
+    if (cached == null) cached = numP(usageEvidence.cached_tokens);
+    if (cached == null && usageEvidence.prompt_tokens_details) cached = numP(usageEvidence.prompt_tokens_details.cached_tokens);
+    cached = cached || 0;
 
-    // Can we determine ANY billable token usage? Completion-only segments can still be priced.
-    if (prompt == 0 && total == 0 && cached == 0 && completion == 0) {
-      return { cost: null, reason: 'no_usage' };
-    }
+    // (v4.236/v4.304) Cache creation billed at the table's cache_write price whenever write
+    // tokens exist and a price is set -- a pure-MISS turn has read 0 and the ENTIRE prompt in
+    // cache_creation (the old cached>0 precondition billed it ~$0.01 instead of ~$2.00).
+    var cacheWriteTokens = numP(usageEvidence.cache_creation_input_tokens);
+    if (cacheWriteTokens == null) cacheWriteTokens = numP(usageEvidence.cache_write_tokens);
+    if (cacheWriteTokens == null && usageEvidence.prompt_tokens_details) cacheWriteTokens = numP(usageEvidence.prompt_tokens_details.cache_write_tokens);
+    cacheWriteTokens = cacheWriteTokens || 0;
+
+    var prompt = numP(usageEvidence.prompt_tokens);   // INCLUSIVE shape when present (incl. 0)
+    var inputTok = numP(usageEvidence.input_tokens);  // EXCLUSIVE remainder when no prompt count
+    var completion = numP(usageEvidence.completion_tokens);
+    if (completion == null) completion = numP(usageEvidence.output_tokens);
+    var total = numP(usageEvidence.total_tokens);
+
+    // Can we determine ANY billable token usage? (§0.6: positive cache_creation participates --
+    // a cache-write-only usage is NOT no_usage.)
+    var anyUsage = (prompt != null && prompt > 0) || (total != null && total > 0) || cached > 0 ||
+                   (completion != null && completion > 0) || (inputTok != null && inputTok > 0) || cacheWriteTokens > 0;
+    if (!anyUsage) return { cost: null, reason: 'no_usage' };
 
     var cost = 0;
     var hasCalculableCost = false;
@@ -3092,42 +3119,38 @@
       cost += (cached * Number(pricing.cache_read)) / 1000000;
       hasCalculableCost = true;
     }
-
-    // (v4.236) Cache creation cost (billed at whatever cache_write price the table carries).
-    // (v4.304) GATE FIX: the old `cached > 0` precondition ('evidence of reuse implies active
-    // cache maintenance') silently ZEROED the single most expensive turn shape there is -- a
-    // pure cache-MISS turn (first turn of a conversation, or >1h TTL expiry), where cache_read
-    // is 0 and the ENTIRE prompt lands in cache_creation. Anthropic bills writes regardless of
-    // reads (1.25x input rate), so a ~551K-token miss recorded ~$0.01 instead of ~$2.00. Bill
-    // whenever write tokens exist and the table has a cache_write price; still silently
-    // skipped (by design) when no price is set.
-    var cacheWriteTokens = Number(
-      usageEvidence.cache_creation_input_tokens ||
-      usageEvidence.cache_write_tokens ||
-      (usageEvidence.prompt_tokens_details && usageEvidence.prompt_tokens_details.cache_write_tokens) || 0
-    );
     if (cacheWriteTokens > 0 && Number(pricing.cache_write) > 0) {
       cost += (cacheWriteTokens * Number(pricing.cache_write)) / 1000000;
       hasCalculableCost = true;
     }
 
-    // Determine output tokens: prefer completion_tokens, then total - prompt, then total - cached (fallback)
+    // Full prompt for this shape: the inclusive prompt count when present; else the exclusive
+    // Anthropic sum (uncached remainder + cache read + cache write).
+    var fullPrompt = null;
+    if (prompt != null) fullPrompt = prompt;
+    else if (inputTok != null) fullPrompt = inputTok + cached + cacheWriteTokens;
+
+    // Output determination (§0.6): (1) an explicit completion/output count, INCLUDING zero;
+    // (2) otherwise, when total AND a full prompt are both known and total >= prompt,
+    // output = total - prompt, INCLUDING zero; (3) the legacy total - cached fallback ONLY when
+    // no prompt figure exists at all.
     var outputTokens = null;
     var usingFallback = false;
-
-    if (completion > 0) {
+    if (completion != null) {
       outputTokens = completion;
-    } else if (total > 0 && prompt > 0 && total > prompt) {
-      outputTokens = total - prompt;
-    } else if (total > 0 && total > cached) {
+    } else if (total != null && fullPrompt != null && total >= fullPrompt) {
+      outputTokens = total - fullPrompt;
+    } else if (total != null && fullPrompt == null && total > cached) {
       outputTokens = total - cached;
       usingFallback = true; // Includes new input too — don't separately calculate new input
     }
 
-    // New input tokens: only if we have prompt_tokens AND not using the fallback
+    // New input tokens (§0.6): EXCLUSIVE shape -> input_tokens directly; INCLUSIVE shape ->
+    // prompt - read - write (the write tokens are a component of that prompt).
     var newInputTokens = null;
-    if (prompt > 0 && !usingFallback) {
-      newInputTokens = Math.max(0, prompt - cached);
+    if (!usingFallback) {
+      if (prompt != null) newInputTokens = Math.max(0, prompt - cached - cacheWriteTokens);
+      else if (inputTok != null) newInputTokens = Math.max(0, inputTok);
     }
 
     if (outputTokens != null && outputTokens > 0 && Number(pricing.output) > 0) {
@@ -3229,10 +3252,11 @@
       var ttl = rec.failed ? (60 * 60 * 1000) : TM_PROVIDER_LIVE_TTL;
       if (Date.now() - Number(rec.ts || 0) > ttl) return null;
       if (rec.failed === true) return [];
-      // (v4.237) SELF-HEAL: entries cached before maxContext was captured have NO maxContext field
-      // and would otherwise be served until the 12h TTL expires, hiding the context-window display.
-      // Treat such a record as stale (return null) so the caller refetches/rebuilds with the field.
-      if (!rec.entries.some(function(e) { return e && e.maxContext != null; })) return null;
+      // (v4.237→S1 §0.12) SELF-HEAL / freshness: a record is fresh when within TTL AND either it
+      // carries the v>=2 schema marker (capacity-aware fetch; a present-but-null maxContext is
+      // DATA) or -- UNMARKED legacy records only -- some entry has a non-null maxContext (a
+      // pre-maxContext record with NO marker is treated as stale so the caller refetches it once).
+      if (!(Number(rec.v) >= 2) && !(rec.v == null && rec.entries.some(function(e) { return e && e.maxContext != null; }))) return null;
       return rec.entries;
     } catch (e) { return null; }
   }
@@ -3271,23 +3295,15 @@
       // the user can see WHICH providers can serve a long conversation. This is the root cause of
       // 'No endpoints found' on long threads: the prompt exceeds a pinned provider's window and
       // allow_fallbacks:false leaves nowhere to go. OpenRouter Endpoints API returns context_length.
-      var maxCtx = (typeof ep.context_length === 'number' && ep.context_length > 0) ? ep.context_length : null;
+      // (Fix 24 analytics S1, §0.12) maxContext is populated ONLY from per-endpoint CAPACITY
+      // fields (context_length, a per-endpoint max_context); missing stays null -- a
+      // present-but-null capacity is DATA. The old p50/first-found backfill is REMOVED: a p50
+      // statistic is not a capacity, and borrowing another endpoint's window silently
+      // over-promises the dial's denominator.
+      var maxCtx = (typeof ep.context_length === 'number' && ep.context_length > 0) ? ep.context_length
+        : (typeof ep.max_context === 'number' && ep.max_context > 0) ? ep.max_context : null;
       if (maxCtx) parts.push('ctx ' + maxCtx);
       out.push({ slug: slug, label: label, cache: hasCache, note: parts.join(' · '), toxic: !hasCache, maxContext: maxCtx });
-    }
-    // (v4.237) Safety net: if NO endpoint carried context_length (older/leaner API shape), backfill
-    // from the model-level average so every entry still carries a maxContext (avoids the self-heal
-    // staleness gate spinning forever, and gives the user a ballpark window rather than nothing).
-    if (out.length && !out.some(function(e) { return e && e.maxContext != null; })) {
-      var avg = null;
-      try {
-        for (var ai = 0; ai < endpoints.length; ai++) {
-          var ep2 = endpoints[ai];
-          if (ep2 && ep2.stats && typeof ep2.stats.p50_context_length === 'number' && ep2.stats.p50_context_length > 0) { avg = Math.round(ep2.stats.p50_context_length); break; }
-          if (ep2 && typeof ep2.max_context === 'number' && ep2.max_context > 0) { avg = ep2.max_context; break; }
-        }
-      } catch (e) {}
-      if (avg) { for (var bi = 0; bi < out.length; bi++) out[bi].maxContext = avg; }
     }
     return out;
   }
@@ -3408,7 +3424,9 @@
         }
         var entries = tmMergeSeedKnowledge(m, tmBuildLiveProviderEntries(eps));
         var s2 = tmReadProviderLive();
-        s2[m] = { ts: Date.now(), entries: entries };
+        // (Fix 24 analytics S1, §0.12) schema marker v:2 -- this record was built by the
+        // capacity-aware builder (maxContext from capacity fields only, null when absent).
+        s2[m] = { ts: Date.now(), entries: entries, v: 2 };
         try { localStorage.setItem(TM_PROVIDER_LIVE_KEY, JSON.stringify(s2)); } catch (e) {}
         try { renderGpt51UsageWidget(); } catch (e) {}
       }).catch(function() {
@@ -3447,6 +3465,9 @@
   function tmExtractEndpointHost(cap) {
     // (v4.107) Extract a short host identifier from the capture URL for per-endpoint stratification.
     try {
+      // (Fix 24 analytics S3) a pre-resolved target host carried on the record (e.g. fed from the
+      // pending-turn record for the replay ledger) wins -- no URL/header re-parse needed.
+      if (cap && typeof cap._tmResolvedHost === 'string' && cap._tmResolvedHost) return cap._tmResolvedHost;
       var u = String(cap.url || '').toLowerCase();
       // For proxy traffic, prefer the target endpoint from the outbound headers.
       var hdrs = cap.headers || {};
@@ -3466,11 +3487,15 @@
   //   role=__lambdao_1.tmIsProxyCapture,
   //   slice_labels=tm-payload-cost-visibility,tm-payload-overview,
   //   kind=ast,
-  //   comment=Detects whether a capture was routed via TypingMind's cors-proxy.,
+  //   comment=Detects whether a capture was routed via TypingMind's cors-proxy. Host-agnostic on the /api/cors-proxy PATH (Fix 24 analytics S1 §0.8): relative URLs carry no host for a domain match; aligns with tmThinkClassifyRoute and the capture noise filter.,
   // ]
   function tmIsProxyCapture(cap) {
     try {
-      return !!(cap && cap.url && String(cap.url).toLowerCase().includes('typingmind.com/api/cors-proxy'));
+      // (Fix 24 analytics S1, §0.8) Match the cors-proxy PATH host-agnostically. TypingMind also
+      // reaches its proxy via SAME-ORIGIN RELATIVE URLs ('/api/cors-proxy?...'), which carry no
+      // host at all -- the old 'typingmind.com/api/cors-proxy' substring missed them, so the
+      // identity key, the thinking route classification and the noise filter disagreed.
+      return !!(cap && cap.url && String(cap.url).toLowerCase().indexOf('/api/cors-proxy') !== -1);
     } catch (e) { return false; }
   }
 
@@ -3525,7 +3550,12 @@
       costs[key] = entry;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
       return total;
-    } catch (e) {}
+    } catch (e) {
+      // (Fix 24 analytics S2, §4.5) accounting-writer failure: loud + in-memory counter. NEVER a
+      // reasoning gap, never lights the alert, never touches analytics.gap; arithmetic unchanged.
+      try { console.error('[tm] ledger cost write failed for ' + key + ':', e); } catch (eL) {}
+      try { if (typeof tmLedgerWriteFailures !== 'undefined') { var f = tmLedgerWriteFailures[key] || (tmLedgerWriteFailures[key] = { cost: 0, time: 0, tool: 0, cache: 0 }); f.cost++; } } catch (eF) {}
+    }
     return 0;
   }
 
@@ -3575,7 +3605,10 @@
       costs[key] = entry;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
       return entry._rt_total_ms;
-    } catch (e) {}
+    } catch (e) {
+      try { console.error('[tm] ledger round-trip write failed for ' + key + ':', e); } catch (eL) {}
+      try { if (typeof tmLedgerWriteFailures !== 'undefined') { var f = tmLedgerWriteFailures[key] || (tmLedgerWriteFailures[key] = { cost: 0, time: 0, tool: 0, cache: 0 }); f.time++; } } catch (eF) {}
+    }
     return 0;
   }
 
@@ -3602,7 +3635,10 @@
       costs[key] = entry;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
       return entry._tool_total_ms;
-    } catch (e) {}
+    } catch (e) {
+      try { console.error('[tm] ledger tool-exec write failed for ' + key + ':', e); } catch (eL) {}
+      try { if (typeof tmLedgerWriteFailures !== 'undefined') { var f = tmLedgerWriteFailures[key] || (tmLedgerWriteFailures[key] = { cost: 0, time: 0, tool: 0, cache: 0 }); f.tool++; } } catch (eF) {}
+    }
     return 0;
   }
 
@@ -3688,14 +3724,21 @@
       } catch (e) {}
     }, 1000);
   }
-  function tmNoteInFlightCapture(captureId, ts) {
+  function tmNoteInFlightCapture(captureId, ts, idKeyOverride) {
     try {
       tmInFlightTurn = { captureId: captureId, ts: Number(ts) || Date.parse(ts) || Date.now() };
       // (v4.336) Mirror into the per-identity map for the session dashboard.
+      // (Fix 24 analytics S3, §1.2) the per-identity in-flight marker is written from the PENDING
+      // RECORD's idKey at capture time (request-owned), NOT read back from the ring via
+      // getCaptureById -- the ring row can be evicted/compacted, the pending record cannot (its
+      // lifetime is the request's). The ring read is kept only as the legacy fallback.
       try {
-        var ifCap0 = getCaptureById(captureId);
-        var ifKey0 = ifCap0 ? tmCapIdentityKey(ifCap0) : '';
-        if (ifKey0) tmInFlightByIdentity[ifKey0] = { captureId: captureId, ts: tmInFlightTurn.ts };
+        var ifKey0 = (idKeyOverride != null && idKeyOverride !== '') ? String(idKeyOverride) : '';
+        if (!ifKey0) {
+          var ifCap0 = getCaptureById(captureId);
+          ifKey0 = ifCap0 ? tmCapIdentityKey(ifCap0) : '';
+        }
+        if (tmIsLedgerIdentityKey(ifKey0) && String(ifKey0).split('::')[1]) tmInFlightByIdentity[ifKey0] = { captureId: captureId, ts: tmInFlightTurn.ts };
       } catch (eIFM) {}
       tmEnsureRtLiveTicker();
     } catch (e) {}
@@ -3734,7 +3777,11 @@
       costs[key] = entry;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
       return entry;
-    } catch (e) { return null; }
+    } catch (e) {
+      try { console.error('[tm] ledger cache-outcome write failed for ' + key + ':', e); } catch (eL) {}
+      try { if (typeof tmLedgerWriteFailures !== 'undefined') { var f = tmLedgerWriteFailures[key] || (tmLedgerWriteFailures[key] = { cost: 0, time: 0, tool: 0, cache: 0 }); f.cache++; } } catch (eF) {}
+      return null;
+    }
   }
 
   // @beacon[
@@ -3791,7 +3838,10 @@
         if (changed) localStorage.setItem(storeKey, JSON.stringify(map));
       } catch (e) {}
     }
-    touchMap(TM_SESSION_COSTS_KEY, 'cost');
+    // (Fix 24 analytics S2, §6.1) TM_SESSION_COSTS_KEY REMOVED from this touch list: the
+    // identity record's _ts is now IDENTITY-SPECIFIC activity, written only by the exact-identity
+    // writers and tmLedgerTouchActivity. A session-wide touch here would inflate the _ts of every
+    // model identity sharing the session id and defeat the 7-day idle prune / 24h SiM window.
     touchMap('tm_session_names', 'name');
     touchMap(TM_SESSION_HUES_KEY, 'hue');
     touchMap('gpt51_conv_usage', 'gpt51');
@@ -3856,45 +3906,64 @@
   //   role=__lambdao_1.tmIsSignificantCacheHit,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=HIT/MISS determination from a capture's usage evidence (normalized usage first, raw-segment fallback).,
+  //   comment=HIT/MISS determination from a capture's usage evidence. (Fix 24 analytics S1 §0.11) TRI-STATE true|false|null: the FINAL normalized/Anthropic evidence is authoritative (raw SSE segments only when no final evidence exists -- never to overturn a valid negative); §0.6 denominators (inclusive prompt_tokens by presence, else exclusive input+read+write); null = unmeasured (no prompt denominator); a KNOWN denominator with ABSENT cached figure is a measured MISS (cached = 0).,
   // ]
   function tmIsSignificantCacheHit(cap) {
     try {
-      function num(v) {
-        var n = Number(v);
-        return isFinite(n) ? n : null;
+      // Numeric PRESENCE (§0.6): null/undefined/''/non-finite -> null; a real 0 stays 0.
+      function num(v) { if (v == null || v === '') return null; var n = Number(v); return isFinite(n) ? n : null; }
+      // The §0.6 prompt denominator: an inclusive prompt count when present (it already contains
+      // the cached prefix); else the EXCLUSIVE Anthropic sum input + cache_read + cache_creation.
+      function promptDenom(u) {
+        var p = num(u.prompt_tokens);
+        if (p != null) return p;
+        var i = num(u.input_tokens);
+        if (i != null) return i + (num(u.cache_read_input_tokens) || 0) + (num(u.cache_creation_input_tokens) || 0);
+        return null;
       }
-      function isSignificant(cached, total) {
-        cached = num(cached); total = num(total);
-        if (cached == null || total == null) return false;
-        if (cached <= 1000) return false;
-        if (total <= 0) return false;
-        return (cached / total) >= 0.5;
+      function cachedOf(u) {
+        var c = num(u.cache_read_input_tokens);
+        if (c == null && u.prompt_tokens_details) c = num(u.prompt_tokens_details.cached_tokens);
+        if (c == null && u.input_tokens_details) c = num(u.input_tokens_details.cached_tokens);
+        if (c == null) c = num(u.cached_tokens);
+        return c;
       }
-      function usageHit(u) {
-        if (!u || typeof u !== 'object') return false;
-        if (isSignificant(u.cache_read_input_tokens, u.input_tokens || u.prompt_tokens || u.total_tokens)) return true;
-        if (u.prompt_tokens_details && isSignificant(u.prompt_tokens_details.cached_tokens, u.prompt_tokens || u.total_tokens)) return true;
-        if (u.input_tokens_details && isSignificant(u.input_tokens_details.cached_tokens, u.input_tokens || u.prompt_tokens || u.total_tokens)) return true;
-        return false;
+      // Tri-state verdict for ONE usage representation: undefined = this representation has no
+      // prompt denominator at all (no evidence); true/false = measured.
+      function verdict(u) {
+        if (!u || typeof u !== 'object') return undefined;
+        var denom = promptDenom(u);
+        if (denom == null) return undefined;
+        var cached = cachedOf(u);
+        if (cached == null) cached = 0; // known denominator + absent cached = measured MISS
+        if (cached <= 1000 || denom <= 0) return false;
+        return (cached / denom) >= 0.5;
       }
-
-      if (usageHit(cap.response_anthropic_usage)) return true;
-      if (usageHit(cap.response_usage)) return true;
-
-      // Raw SSE usage-segment fallback. This catches rows captured before/without normalized prompt_tokens.
-      if (Array.isArray(cap.response_usage_segments)) {
+      // (§0.11) Precedence: the FINAL normalized / Anthropic evidence is authoritative. Raw
+      // segments are consulted ONLY when no final evidence exists (their purpose: rows captured
+      // before normalization) -- never to overturn a valid negative.
+      var v = verdict(cap.response_usage);
+      if (v !== undefined) return v;
+      v = verdict(cap.response_anthropic_usage);
+      if (v !== undefined) return v;
+      // Legacy raw-SSE-segment fallback: merge the segments' evidence IN ORDER, evaluate ONCE.
+      if (Array.isArray(cap.response_usage_segments) && cap.response_usage_segments.length) {
+        var mergedNorm = null, mergedRaw = null;
         for (var i = 0; i < cap.response_usage_segments.length; i++) {
           try {
             var parsed = JSON.parse(cap.response_usage_segments[i]);
-            if (usageHit(parsed && parsed.usage)) return true;
+            if (parsed && parsed.usage) mergedRaw = tmMergeUsageInto(mergedRaw, parsed.usage);
             var evidence = tmExtractKnownUsageEvidence(parsed);
-            if (usageHit(evidence)) return true;
+            if (evidence) mergedNorm = tmMergeUsageInto(mergedNorm, evidence);
           } catch (e) {}
         }
+        v = verdict(mergedNorm);
+        if (v !== undefined) return v;
+        v = verdict(mergedRaw);
+        if (v !== undefined) return v;
       }
-    } catch (e) {}
-    return false;
+      return null; // unmeasured: no prompt denominator anywhere
+    } catch (e) { return null; }
   }
 
   // (v4.131) Persistent per-session/model/endpoint hue map for well-separated colors.
@@ -4062,11 +4131,24 @@
 
   // (v4.72) Extract the per-turn cost from a usage object (same logic as tmRenderCacheReport).
   // (v4.78) Also check estimated_cost (DeepInfra's field name).
+  // (Fix 24 analytics S1, §0.6) THE once-per-turn cost selection: the first POSITIVE candidate
+  // across raw/normalized cost, estimated_cost and cost_details.upstream_inference_cost, in each
+  // usage object; zero only when every candidate is zero or absent. A raw {cost: 0} must not
+  // beat a normalized {cost: 1.25}. This value feeds accounting, _last.cost, the ring stamps and
+  // keep-alive pairing -- no consumer re-derives it.
   function tmExtractCostVal(au, oru) {
-    if (au && au.cost != null) return Number(au.cost) || 0;
-    if (oru && oru.cost != null) return Number(oru.cost) || 0;
-    if (oru && oru.estimated_cost != null) return Number(oru.estimated_cost) || 0;
-    if (au && au.estimated_cost != null) return Number(au.estimated_cost) || 0;
+    function posOf(o) {
+      if (!o || typeof o !== 'object') return null;
+      var n = Number(o.cost); if (isFinite(n) && n > 0) return n;
+      n = Number(o.estimated_cost); if (isFinite(n) && n > 0) return n;
+      if (o.cost_details && typeof o.cost_details === 'object') {
+        n = Number(o.cost_details.upstream_inference_cost); if (isFinite(n) && n > 0) return n;
+        n = Number(o.cost_details.upstreamInferenceCost); if (isFinite(n) && n > 0) return n;
+      }
+      return null;
+    }
+    var v = posOf(au); if (v != null) return v;
+    v = posOf(oru); if (v != null) return v;
     return 0;
   }
 
@@ -4425,14 +4507,19 @@
   //   role=__lambdao_1.tmDetectProtocol,
   //   slice_labels=tm-payload-overview,
   //   kind=ast,
-  //   comment=Classifies a capture as openai-chat / anthropic-messages / gemini / responses-api from URL+body shape; drives Summary and modal rendering.,
+  //   comment=Classifies a capture as openai-chat / anthropic-messages / gemini / responses-api from URL+body shape; drives Summary and modal rendering. (Fix 24 analytics S1 §0.13) ANY /chat/completions path is openai-chat-completions (Gemini OpenAI-compat door, Z.ai, DashScope) -- only the literal /v1/chat/completions matched before.,
   // ]
   function tmDetectProtocol(url, bodyObj) {
     const u = String(url || '');
     if (u.includes('/v1/responses')) return 'openai-responses';
     // (v4.78) DeepInfra hosts an OpenAI-compatible chat-completions endpoint at /v1/openai/chat/completions
     if (u.includes('api.deepinfra.com')) return 'deepinfra-chat-completions';
-    if (u.includes('/v1/chat/completions')) return 'openai-chat-completions';
+    // (Fix 24 analytics S1, §0.13) ANY /chat/completions path is the OpenAI-compat shape -- not
+    // just the literal '/v1/chat/completions': Gemini's OpenAI-compat door
+    // (generativelanguage.googleapis.com/v1beta/openai/chat/completions) and Z.ai
+    // (api.z.ai/api/paas/v4/chat/completions) otherwise fell through to the Anthropic messages[]
+    // heuristic below. Runs AFTER the Responses and DeepInfra checks, BEFORE the Anthropic one.
+    if (u.includes('/chat/completions')) return 'openai-chat-completions';
     // Anthropic-native: direct Anthropic OR OpenRouter Anthropic Skin (/api/v1/messages)
     if (u.includes('api.anthropic.com') || (u.includes('openrouter.ai') && u.includes('/v1/messages')) || (bodyObj && Array.isArray(bodyObj.messages) && !Array.isArray(bodyObj.input))) {
       return 'anthropic-messages';
@@ -5104,8 +5191,8 @@
       var readTok = Number(u.cache_read_input_tokens || u.cached_tokens || (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || (ou && (ou.cache_read_input_tokens || ou.cached_tokens || (ou.prompt_tokens_details && ou.prompt_tokens_details.cached_tokens))) || 0);
       var writeTok = Number(u.cache_creation_input_tokens || u.cache_write_tokens || (u.prompt_tokens_details && u.prompt_tokens_details.cache_write_tokens) || (ou && (ou.cache_creation_input_tokens || ou.cache_write_tokens)) || 0);
       var failed = !!(cap.error) || (Number(cap.response_status) >= 400);
-      var cost = null;
-      try { var cv = tmExtractCostVal(au, ou); if (cv > 0) cost = cv; } catch (eC) {}
+      var cost = typeof cap.cost_calculated === 'number' ? cap.cost_calculated : null;
+      try { var cv = tmExtractCostVal(au, ou); if (cost == null && cv > 0) cost = cv; } catch (eC) {}
       if (cost == null) { try { if (typeof cap.cost_calculated === 'number') cost = cap.cost_calculated; } catch (eC1) {} }
       if (cost == null) {
         try { var pr = tmKeepAliveFindPricing(e2.model || idModel, e2.host || idHost); if (pr) { var cc = tmCalculateCostFromTable(ou || au, pr); if (cc && typeof cc.cost === 'number') cost = cc.cost; } } catch (eC2) {}
@@ -5580,6 +5667,8 @@
   function tmThinkNewObsAccumulator() {
     return { raw_chars: 0, summary_chars: 0, encrypted_chars: 0, visible_chars: 0, signature_chars: 0,
              blocks: { thinking: 0, redacted: 0, reasoning_text: 0, reasoning_summary: 0, reasoning_encrypted: 0, reasoning_content: 0, reasoning_str: 0, responses_reasoning_items: 0, gemini_thought_parts: 0 },
+             tool_calls: 0, terminal: false,   // (Fix 24 analytics S1, §0.7) output evidence for §1.3
+             has_output_usage_beyond_message_start: false,   // (Fix 24 analytics S3, §1.3a) set when an event OTHER THAN message_start supplies a finite nonnegative completion/output count
              signature: false, events: 0, channels: {} };
   }
 
@@ -5592,9 +5681,12 @@
     try {
       for (var i = 0; i < blocks.length; i++) {
         var bl = blocks[i]; if (!bl) continue;
-        if (bl.type === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', bl.thinking); if (typeof bl.signature === 'string' && bl.signature.length) { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', bl.signature); } else if (bl.signature) acc.signature = true; }
-        else if (bl.type === 'redacted_thinking') { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', bl.data); }
+        // (Fix 24 analytics S1, §0.7) a block counts as content only when it CARRIES content --
+        // an empty thinking block (or redacted block with no data) is not output evidence.
+        if (bl.type === 'thinking') { if (typeof bl.thinking === 'string' && bl.thinking.length) { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', bl.thinking); } if (typeof bl.signature === 'string' && bl.signature.length) { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', bl.signature); } else if (bl.signature) acc.signature = true; }
+        else if (bl.type === 'redacted_thinking') { if (typeof bl.data === 'string' && bl.data.length) { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', bl.data); } }
         else if (bl.type === 'text') tmThinkAddChars(acc, 'visible_chars', bl.text);
+        else if (bl.type === 'tool_use' || bl.type === 'server_tool_use') acc.tool_calls++;
       }
     } catch (e) {}
   }
@@ -5610,12 +5702,29 @@
     } catch (e) {}
   }
 
+  // (Fix 24 analytics S1, §0.7) Responses output[] items (non-streaming body, or a streaming
+  // response.completed wrapper): count message content text, function_call items, and reasoning
+  // items. Guards prevent double counting when deltas/done-events already covered the items.
+  function tmThinkScanResponsesOutputItems(acc, items) {
+    try {
+      var reasoningCounted = acc.blocks.responses_reasoning_items > 0;
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i]; if (!it) continue;
+        if (it.type === 'reasoning') { if (!reasoningCounted) tmThinkScanResponsesReasoningItem(acc, it); }
+        else if (it.type === 'function_call' || it.type === 'function_tool_call') acc.tool_calls++;
+        else if (it.type === 'message' && Array.isArray(it.content) && !acc.channels.responses_output_text_delta) {
+          for (var ci = 0; ci < it.content.length; ci++) { var c = it.content[ci]; if (c && typeof c.text === 'string') tmThinkAddChars(acc, 'visible_chars', c.text); }
+        }
+      }
+    } catch (e) {}
+  }
+
   // @beacon[
   //   id=fix24-think-accumulate-event,
   //   role=__lambdao_1.tmThinkAccumulateEvent,
   //   slice_labels=tm-payload-overview,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=Fix 24 (v4.351): feeds ONE SSE event (or one non-streaming body) into the thinking accumulator -- Anthropic thinking/redacted_thinking blocks + thinking_delta/signature_delta; chat-completions delta.reasoning / reasoning_content (Kimi/DeepSeek/GLM/Grok) / reasoning_details[reasoning.text|summary|encrypted]; Responses reasoning items + summary/text deltas + encrypted_content; Gemini thought:true parts + thoughtSignature. Counts chars and blocks only -- never stores content; never throws.,
+  //   comment=Fix 24 (v4.351): feeds ONE SSE event (or one non-streaming body) into the thinking accumulator -- Anthropic thinking/redacted_thinking blocks + thinking_delta/signature_delta; chat-completions delta.reasoning / reasoning_content (Kimi/DeepSeek/GLM/Grok) / reasoning_details[reasoning.text|summary|encrypted]; Responses reasoning items + summary/text deltas + encrypted_content; Gemini thought:true parts + thoughtSignature. Counts chars and blocks only -- never stores content; never throws. (Fix 24 analytics S1 §0.7) OUTPUT-evidence coverage: non-streaming Responses message text, Anthropic content_block_start initial text, chat refusal; tool_calls counter (tool_calls/tool_use/functionCall/function_call); terminal flag (finish_reason/finishReason/message_stop/response.completed). A bare block-open with zero chars is NOT output evidence.,
   // ]
   function tmThinkAccumulateEvent(acc, ev) {
     if (!acc || !ev || typeof ev !== 'object') return;
@@ -5624,8 +5733,13 @@
       // ---- Anthropic streaming
       if (ev.type === 'content_block_start' && ev.content_block) {
         var cbt = ev.content_block.type;
-        if (cbt === 'thinking') { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', ev.content_block.thinking); }
-        else if (cbt === 'redacted_thinking') { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', ev.content_block.data); }
+        // (Fix 24 analytics S1, §0.7) a bare block-OPEN with zero chars is NOT output evidence:
+        // count the block only when the start event itself carries content; initial text on a
+        // block-start counts (it previously vanished).
+        if (cbt === 'thinking') { if (typeof ev.content_block.thinking === 'string' && ev.content_block.thinking.length) { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; tmThinkAddChars(acc, 'raw_chars', ev.content_block.thinking); } }
+        else if (cbt === 'redacted_thinking') { if (typeof ev.content_block.data === 'string' && ev.content_block.data.length) { acc.blocks.redacted++; acc.channels.anthropic_redacted = 1; tmThinkAddChars(acc, 'encrypted_chars', ev.content_block.data); } }
+        else if (cbt === 'text') { tmThinkAddChars(acc, 'visible_chars', ev.content_block.text); }
+        else if (cbt === 'tool_use' || cbt === 'server_tool_use') { acc.tool_calls++; }
       }
       if (ev.type === 'content_block_delta' && ev.delta) {
         var dt = ev.delta.type;
@@ -5633,14 +5747,34 @@
         else if (dt === 'signature_delta') { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', ev.delta && ev.delta.signature); }
         else if (dt === 'text_delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta.text); }
       }
+      // (Fix 24 analytics S1, §0.7) terminal signals (the §1.3(d) evidence): the actual
+      // message_stop / response.completed events, or a non-empty stop_reason / finish_reason.
+      if (ev.type === 'message_stop') acc.terminal = true;
+      if (ev.type === 'message_delta' && ev.delta && typeof ev.delta.stop_reason === 'string' && ev.delta.stop_reason) acc.terminal = true;
       // ---- Anthropic non-streaming message body (type:'message' with content[])
       if (ev.type === 'message' && Array.isArray(ev.content)) tmThinkScanAnthropicBlocks(acc, ev.content);
+      if (ev.type === 'message' && typeof ev.stop_reason === 'string' && ev.stop_reason) acc.terminal = true;
       // ---- Chat Completions / OpenRouter (streaming delta OR non-streaming message)
       if (Array.isArray(ev.choices)) {
         for (var ci = 0; ci < ev.choices.length; ci++) {
           var ch = ev.choices[ci]; if (!ch) continue;
+          // (§0.7) terminal: a non-null, non-empty finish_reason (a streamed null is NOT terminal)
+          if (ch.finish_reason != null && ch.finish_reason !== '') acc.terminal = true;
           var d = ch.delta || ch.message; if (!d || typeof d !== 'object') continue;
           if (typeof d.content === 'string') tmThinkAddChars(acc, 'visible_chars', d.content);
+          // (§0.7) a refusal is content
+          if (typeof d.refusal === 'string' && d.refusal.length) tmThinkAddChars(acc, 'visible_chars', d.refusal);
+          // (§0.7) tool-call output counter, deduped across streaming fragments by index/id
+          if (Array.isArray(d.tool_calls)) {
+            for (var ti = 0; ti < d.tool_calls.length; ti++) {
+              var tc = d.tool_calls[ti]; if (!tc) continue;
+              // (§0.7) streaming fragments for one call share `index` (the stable streaming key);
+              // the id arrives on the first fragment only. Prefer index, else id, else position.
+              var tcKey = ci + ':' + ((tc.index != null) ? ('i' + tc.index) : ((tc.id != null && tc.id !== '') ? tc.id : ('p' + ti)));
+              if (!acc._tc_seen) acc._tc_seen = {};
+              if (!acc._tc_seen[tcKey]) { acc._tc_seen[tcKey] = 1; acc.tool_calls++; }
+            }
+          }
           var rdTextChars = 0;
           if (Array.isArray(d.reasoning_details)) {
             for (var ri = 0; ri < d.reasoning_details.length; ri++) {
@@ -5661,26 +5795,40 @@
       if (typeof ev.type === 'string' && ev.type.indexOf('response.') === 0) {
         if (ev.type === 'response.reasoning_summary_text.delta' || ev.type === 'response.reasoning_summary.delta') { tmThinkAddChars(acc, 'summary_chars', typeof ev.delta === 'string' ? ev.delta : (ev.delta && ev.delta.text)); acc.channels.responses_summary = 1; acc.channels.responses_summary_delta = 1; }
         else if (ev.type === 'response.reasoning_text.delta' || ev.type === 'response.reasoning.delta') { tmThinkAddChars(acc, 'raw_chars', typeof ev.delta === 'string' ? ev.delta : (ev.delta && ev.delta.text)); acc.channels.responses_reasoning_text = 1; acc.channels.responses_reasoning_text_delta = 1; }
-        else if (ev.type === 'response.output_text.delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta); }
-        else if (ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'reasoning') { tmThinkScanResponsesReasoningItem(acc, ev.item); }
-        else if (ev.type === 'response.completed' && ev.response && Array.isArray(ev.response.output) && !acc.blocks.responses_reasoning_items) {
-          for (var oi = 0; oi < ev.response.output.length; oi++) { var it = ev.response.output[oi]; if (it && it.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, it); }
+        else if (ev.type === 'response.output_text.delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta); acc.channels.responses_output_text_delta = 1; }
+        else if (ev.type === 'response.output_item.done' && ev.item) {
+          acc.channels.responses_output_item_done = 1;
+          if (ev.item.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, ev.item);
+          else if (ev.item.type === 'function_call' || ev.item.type === 'function_tool_call') acc.tool_calls++;   // (§0.7) tool-call output
+        }
+        else if (ev.type === 'response.completed') {
+          acc.terminal = true;   // (§0.7) terminal signal
+          // (§0.7) the completed wrapper carries the full output[] -- count its items ONLY when
+          // no per-item done events streamed them already (the reasoning-item no-double-count
+          // guard inside tmThinkScanResponsesOutputItems covers the item scanner's own case).
+          if (ev.response && Array.isArray(ev.response.output) && !acc.channels.responses_output_item_done) {
+            tmThinkScanResponsesOutputItems(acc, ev.response.output);
+          }
         }
       }
-      // ---- OpenAI Responses non-streaming body
-      if (ev.object === 'response' && Array.isArray(ev.output) && !acc.blocks.responses_reasoning_items) {
-        for (var oj = 0; oj < ev.output.length; oj++) { var it2 = ev.output[oj]; if (it2 && it2.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, it2); }
+      // ---- OpenAI Responses non-streaming body (§0.7: message content text + function calls count)
+      if (ev.object === 'response' && Array.isArray(ev.output) && !acc.channels.responses_output_item_done) {
+        tmThinkScanResponsesOutputItems(acc, ev.output);
       }
       // ---- Gemini native (streaming chunks and non-streaming share the candidates[] shape)
       if (Array.isArray(ev.candidates)) {
         for (var gi = 0; gi < ev.candidates.length; gi++) {
-          var cand = ev.candidates[gi]; var parts = cand && cand.content && cand.content.parts;
+          var cand = ev.candidates[gi];
+          // (§0.7) terminal: a non-null, non-empty finishReason
+          if (cand && cand.finishReason != null && cand.finishReason !== '') acc.terminal = true;
+          var parts = cand && cand.content && cand.content.parts;
           if (!Array.isArray(parts)) continue;
           for (var pi = 0; pi < parts.length; pi++) {
             var pt = parts[pi]; if (!pt) continue;
             if (pt.thought === true) { acc.blocks.gemini_thought_parts++; acc.channels.gemini_thought = 1; tmThinkAddChars(acc, 'raw_chars', pt.text); }
             else if (typeof pt.text === 'string') tmThinkAddChars(acc, 'visible_chars', pt.text);
             if (pt.thoughtSignature || pt.thought_signature) { acc.signature = true; acc.channels.gemini_thought_signature = 1; tmThinkAddChars(acc, 'signature_chars', pt.thoughtSignature || pt.thought_signature); }
+            if (pt.functionCall || pt.function_call) acc.tool_calls++;   // (§0.7) tool-call output
           }
         }
       }
@@ -5691,12 +5839,19 @@
 
   function tmThinkFmtK(n) { if (n == null) return '?'; n = Number(n); return n >= 10000 ? (Math.round(n / 1000) + 'K') : n >= 1000 ? ((n / 1000).toFixed(1) + 'K') : String(Math.round(n)); }
 
+  // (Fix 24 analytics S1, §1.4) ONE chars-per-token divisor for the bytes-estimate tier: 3.5 --
+  // a deliberate upward bias (~+14% on prose, roughly unbiased on code) so the ring display, the
+  // Thinking Report and the analytics event carry the SAME estimate. Referenced by exactly ONE
+  // computation (the bytes-estimate tier below); every other chars/4 use in the file (the third
+  // tier's visible_chars/4, the census ~Nt display estimates) is untouched.
+  var TM_THINK_CHARS_PER_TOKEN = 3.5;
+
   // @beacon[
   //   id=fix24-think-finalize-obs,
   //   role=__lambdao_1.tmThinkFinalizeObs,
   //   slice_labels=tm-payload-overview,tm-thinking-observatory,
   //   kind=ast,
-  //   comment=Fix 24 (v4.351): turns the accumulator + final usage into _think_obs -- reasoning tokens with a trust tag (reported: every known usage spelling incl. output_tokens_details.thinking_tokens and thoughtsTokenCount | bytes-estimate: raw reasoning chars/4 | heuristic: completion - visible/4 | none), primary visibility (raw|summary|encrypted|hidden|none) + secondary modes, ratio of output, one-line summary.,
+  //   comment=Fix 24 (v4.351): turns the accumulator + final usage into _think_obs -- reasoning tokens with a trust tag (reported | bytes-estimate: raw reasoning chars / TM_THINK_CHARS_PER_TOKEN (3.5) | heuristic: completion - visible/4 | none), primary visibility (raw|summary|encrypted|hidden|none) + secondary modes, ratio of output, one-line summary. (Fix 24 analytics S1) §0.10: the NORMALIZED reasoning_tokens outranks raw nested aliases (a stale nested zero no longer beats the final count). §0.9: the heuristic tier is disabled on any turn that generated a tool call (tool arguments are paid but invisible to visible_chars) -- the observation stays unmeasured.,
   // ]
   function tmThinkFinalizeObs(acc, usage, anthropicUsage, model) {
     var obs = { v: 1, tokens: { reasoning: null, source: 'none', field: null }, visibility: 'none', also: [],
@@ -5708,23 +5863,35 @@
       obs.blocks = acc.blocks; obs.signature = !!acc.signature;
       for (var chk in acc.channels) { if (acc.channels[chk] && !/_delta$/.test(chk)) obs.channels.push(chk); }
       var u = usage || {}; var au = anthropicUsage || {};
+      // (Fix 24 analytics S1, §0.10) FINAL-count precedence: the NORMALIZED reasoning_tokens
+      // (last-wins merged across events by tmMergeUsageInto) is consulted FIRST, with the merged
+      // Anthropic usage's nested count (per-event replaced) beside it; the raw nested aliases are
+      // consulted only when the normalized field is absent -- a stale nested zero from an earlier
+      // event must not outrank the final count.
       var cands = [
+        ['reasoning_tokens', u.reasoning_tokens],
+        ['anthropic.output_tokens_details.thinking_tokens', au.output_tokens_details && au.output_tokens_details.thinking_tokens],
+        ['anthropic.output_tokens_details.reasoning_tokens', au.output_tokens_details && au.output_tokens_details.reasoning_tokens],
+        ['thinking_tokens', u.thinking_tokens],
+        ['thoughtsTokenCount', u.thoughtsTokenCount], ['thoughts_token_count', u.thoughts_token_count],
         ['completion_tokens_details.reasoning_tokens', u.completion_tokens_details && u.completion_tokens_details.reasoning_tokens],
         ['output_tokens_details.reasoning_tokens', u.output_tokens_details && u.output_tokens_details.reasoning_tokens],
         ['output_tokens_details.thinking_tokens', u.output_tokens_details && u.output_tokens_details.thinking_tokens],
-        ['anthropic.output_tokens_details.thinking_tokens', au.output_tokens_details && au.output_tokens_details.thinking_tokens],
-        ['anthropic.output_tokens_details.reasoning_tokens', au.output_tokens_details && au.output_tokens_details.reasoning_tokens],
-        ['completion_tokens_details.thinking_tokens', u.completion_tokens_details && u.completion_tokens_details.thinking_tokens],
-        ['reasoning_tokens', u.reasoning_tokens], ['thinking_tokens', u.thinking_tokens],
-        ['thoughtsTokenCount', u.thoughtsTokenCount], ['thoughts_token_count', u.thoughts_token_count]
+        ['completion_tokens_details.thinking_tokens', u.completion_tokens_details && u.completion_tokens_details.thinking_tokens]
       ];
       for (var i = 0; i < cands.length; i++) { var n = tmThinkNum(cands[i][1]); if (n != null) { obs.tokens.reasoning = n; obs.tokens.source = 'reported'; obs.tokens.field = cands[i][0]; break; } }
       var comp = tmThinkNum(u.completion_tokens); if (comp == null) comp = tmThinkNum(u.output_tokens); if (comp == null) comp = tmThinkNum(au.output_tokens);
       if (comp == null) { var candT = tmThinkNum(u.candidatesTokenCount); var thT = tmThinkNum(u.thoughtsTokenCount); if (candT != null) comp = candT + (thT || 0); }
       obs.completion_tokens = comp;
       if (obs.tokens.source === 'none') {
-        if (acc.raw_chars > 0) { obs.tokens.reasoning = Math.round(acc.raw_chars / 4); obs.tokens.source = 'bytes-estimate'; obs.tokens.field = 'raw_chars/4'; }
-        else if (comp != null && acc.visible_chars > 0) {
+        if (acc.raw_chars > 0) { obs.tokens.reasoning = Math.round(acc.raw_chars / TM_THINK_CHARS_PER_TOKEN); obs.tokens.source = 'bytes-estimate'; obs.tokens.field = 'raw_chars/' + TM_THINK_CHARS_PER_TOKEN; }
+        else if (comp != null && acc.visible_chars > 0 && !(acc.tool_calls > 0)) {
+          // (Fix 24 analytics S1, §0.9) the completion-minus-visible heuristic is DISABLED on any
+          // turn that generated a tool call: tool-call ARGUMENTS are paid completion tokens that
+          // are invisible to visible_chars, so every tool-call turn on a route that neither
+          // reports nor shows reasoning fabricated a large 'heuristic' count. The observation
+          // stays unmeasured ({reasoning: null, source: 'none'}). Counting tool-argument chars
+          // into the subtraction is deliberately NOT done in this release.
           var est = comp - Math.round(acc.visible_chars / 4);
           if (est > 200 && est / comp > 0.15) { obs.tokens.reasoning = est; obs.tokens.source = 'heuristic'; obs.tokens.field = 'completion - visible_chars/4'; }
         }
@@ -5746,14 +5913,52 @@
     try {
       if (!obs) return '?';
       var parts = [];
+      // (Fix 24 analytics S1, §0.1) unknown renders as UNMEASURED, never as a zero.
       if (obs.tokens && obs.tokens.reasoning != null) parts.push(tmThinkFmtK(obs.tokens.reasoning) + ' think (' + obs.tokens.source + ')');
       else if (obs.visibility === 'encrypted') parts.push('encrypted only (' + tmThinkFmtK(obs.encrypted_chars) + ' chars)');
-      else parts.push('0 think');
+      else parts.push('? think (unmeasured)');
       var v = obs.visibility + (obs.also && obs.also.length ? ('+' + obs.also.join('+')) : '');
       if (v !== 'none') parts.push(v);
       if (obs.ratio != null) parts.push(Math.round(obs.ratio * 100) + '% of output');
       return parts.join(' \u00b7 ');
     } catch (e) { return '?'; }
+  }
+
+  // (Fix 24 analytics S1, §1.4) THE ANALYTICS OBSERVATION BOUNDARY. One normalization between the
+  // ring's tmThinkFinalizeObs output and every durable analytics consumer; each consumer reads
+  // only this output: { reasoning: finite nonnegative number | null,
+  // source: 'reported' | 'bytes_estimate' | 'heuristic' | 'unknown' }. Admitted MEASUREMENTS are
+  // 'reported' (a provider count) and 'bytes_estimate' (the reasoning text's own length). The
+  // 'heuristic' tier (completion - visible/4) is EXCLUDED from durable analytics -- it fires only
+  // where no count was reported and no reasoning text streamed, and over-estimates on code / JSON
+  // / non-ASCII output. null is unknown; a real 0 is a MEASURED zero. The bucket source keys are
+  // exactly these four spellings ('heuristic' reserved, always 0 in this release). The ring's
+  // _think_obs, badges, tmThinkClassifyObs, tmThinkCompactObs and the Thinking Report keep the
+  // ORIGINAL tmThinkFinalizeObs shape (hyphenated 'bytes-estimate', heuristic number with ~) --
+  // normalize a copy; never flatten the stored object.
+  var tmAnalyticsObsBadSourceSeen = {};
+  function tmAnalyticsObservation(thinkObs) {
+    var out = { reasoning: null, source: 'unknown' };
+    try {
+      var t = thinkObs && thinkObs.tokens;
+      var n = t ? t.reasoning : null;
+      var src = t ? t.source : null;
+      var ok = (n != null && isFinite(Number(n)) && Number(n) >= 0);
+      if (src === 'reported' && ok) { out.reasoning = Number(n); out.source = 'reported'; }
+      else if (src === 'bytes-estimate' && ok) { out.reasoning = Number(n); out.source = 'bytes_estimate'; }
+      else if (src === 'heuristic') { /* excluded tier -> unknown */ }
+      else if (ok) {
+        // A finite number whose source string is none of the measured spellings (defensive;
+        // impossible today): unknown, with exactly one console.error per unrecognized string.
+        var key = String(src);
+        if (!tmAnalyticsObsBadSourceSeen[key]) {
+          tmAnalyticsObsBadSourceSeen[key] = 1;
+          try { console.error('[tm] tmAnalyticsObservation: unrecognized reasoning source "' + key + '" -- treated as unknown'); } catch (e) {}
+        }
+      }
+      // 'none' / null / non-finite / negative all remain { reasoning: null, source: 'unknown' }.
+    } catch (e) {}
+    return out;
   }
 
   // ---------- v4.352: compact formatters + the req<->obs JOIN layer (the badge/report brain) ----------
@@ -5837,9 +6042,10 @@
       var src = obs.tokens ? obs.tokens.source : 'none';
       var abbr = ({ reported: 'rep', 'bytes-estimate': 'est', heuristic: 'heur', none: '' })[src]; if (abbr === undefined) abbr = src;
       var p = [];
+      // (Fix 24 analytics S1, §0.1) unknown renders as UNMEASURED, never as a zero.
       if (tok != null) p.push(tmThinkFmtK(tok) + ' tok' + (abbr ? (' ' + abbr) : ''));
       else if (obs.visibility === 'encrypted') p.push('encrypted only');
-      else p.push('0 tok');
+      else p.push('? tok');
       var vis = obs.visibility;
       if ((vis === 'none' || vis === 'hidden') && (tDisplay === 'omitted' || rExclude === true || rExclude === 'true')) vis = 'omitted';
       if (vis === 'none' && tType === 'adaptive' && tok === 0) vis = 'none this turn';
@@ -6251,6 +6457,11 @@
   // (2) the per-identity reasoning-token histogram. All other thinking detail (the REQ/OBS glyph
   // vocabulary, per-band aggregates, visibility census, replay warn) lives in the row's report
   // modal (tmSessionCtxReportHtml). Ring rows keep the full glyph treatment via tmThinkGlyphRowHtml.
+  // (Fix 24 analytics S4, §7.2/§7.3) REWIRED to the durable ledger: the count + evidence come from
+  // the view's _last (the one completed ordinary turn) via tmLedgerViewLast, and the histogram
+  // renders the durable analytics.all bucket via tmThinkRenderBins (fixed log bins) -- NOT the
+  // retired 200-sample ring array. `view` carries the ledger record; `cap` is the legacy positional
+  // argument (kept for the ring-row call shape but no longer the data source on the dashboard).
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmThinkRowLeanHtml-v407,
   //   role=__lambdao_1.tmThinkRowLeanHtml,
@@ -6258,78 +6469,24 @@
   //   kind=ast,
   //   comment=(v4.407) Lean SiM thinking row: this-turn reasoning count + evidence + per-identity histogram; the glyph wall moved to the row's report modal.,
   // ]
-  function tmThinkRowLeanHtml(cap, idKey, fs) {
-    try {
-      if (!cap) return '';
-      fs = fs || '13px';
-      var obs = cap._think_obs;
-      var obsTok = (obs && obs.tokens && typeof obs.tokens.reasoning === 'number') ? obs.tokens.reasoning : null;
-      var obsSrc = (obs && obs.tokens && obs.tokens.source) || 'none';
-      var evGlyph = obsSrc === 'reported' ? '\u2705' : obsSrc === 'bytes-estimate' ? '\u2248' : obsSrc === 'heuristic' ? '~' : '\u2753';
-      var evColor = obsSrc === 'reported' ? '#8ef0a0' : obsSrc === 'none' ? '#9aa4b2' : '#ffd166';
-      var histoHtml = '';
-      try { if (idKey) { var info = tmSessionCtxHoverIdentities[idKey]; if (info) { var hist = tmGetThinkHistogram(info.sid || '', info.model || '', info.host, !!info.isProxy); if (hist) histoHtml = tmThinkRenderHistogram(hist.samples, fs); } } } catch (eH) {}
-      var parts = [];
-      parts.push('<span title="reasoning this turn (' + escapeHtml(obsSrc) + ')" style="color:' + evColor + ';font-size:' + fs + ';font-weight:600;white-space:nowrap;">' + evGlyph + ' ' +
-        (obsTok != null ? ('\uD83E\uDDEE ' + escapeHtml(tmThinkFmtK(obsTok)) + ' tok') : (cap.response_status == null ? 'pending\u2026' : '\uD83E\uDDEE 0')) + '</span>');
-      if (histoHtml) parts.push(histoHtml);
-      return '<span style="display:inline-flex;align-items:center;gap:6px;white-space:nowrap;">' + parts.join('') + '</span>';
-    } catch (e) { return ''; }
-  }
+  function tmThinkRowLeanHtml(view,idKey,fs) {
+  fs=fs||'13px';
+  // A capture-only call remains valid for the old formatter test; dashboard callers pass a view.
+  var last=view&&view.last,obs=last&&last.obs;
+  if(!last&&view&&view._think_obs)obs=tmAnalyticsObservation(view._think_obs);
+  var an=view&&view.analytics;
+  if(!last&&!obs&&!an)return '';
+  var measured=obs&&obs.reasoning!=null,source=obs&&obs.source;
+  var amount=measured?((source==='reported'?'✅':source==='heuristic'?'~':'≈')+' 🧮 '+tmThinkFmtK(obs.reasoning)+' tok'):'❓ unmeasured';
+  return '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:'+fs+';"><span title="Latest ordinary turn: '+escapeHtml(source||'unmeasured')+'">'+amount+'</span>'+(an&&an.v===TM_ANALYTICS_VERSION?tmThinkRenderBins(an.all,{widthPx:Math.max(120,tmGetSessionCtxHoverWidth()-560)}):'')+'</span>';
+}
 
   // ---------- v4.356: SESSION THINKING HISTOGRAM -- per-glyph turn counts, ledger-backed ----------
   // Lives on the SAME tm_session_costs_v2 identity record as cost / time (one identity, one row, one
   // anti-leak lifecycle), so it survives ring eviction on long sessions. Incremented once per turn at
   // response time; each state counted at most once per turn per side. Snapshotted onto the ring row
   // (_think_hist) so rows read as-of-that-turn; widget + hovercard read the ledger live.
-  // @beacon[
-  //   id=auto-beacon@__lambdao_1.tmRecordThinkHistogram-1avf,
-  //   role=__lambdao_1.tmRecordThinkHistogram,
-  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
-  //   kind=ast,
-  //   comment=Fix 24 (v4.356+): session thinking histogram ledger writer -- per-glyph turn counts + per-band token/sealed-byte sums (_think_hist on tm_session_costs_v2); the session-state surface Phase 2 control will build on.,
-  // ]
-  function tmRecordThinkHistogram(sessionId, model, endpointHost, isProxy, reqGlyphs, obsGlyphs, obsRec) {
-    if (!sessionId || !model) return null;
-    try {
-      var costs = tmGetSessionCosts();
-      var key = tmBuildSessionCostKey(sessionId, model, endpointHost, isProxy);
-      var entry = costs[key];
-      if (typeof entry !== 'object' || entry === null) entry = { _total: Number(entry) || 0 };
-      var h = (entry._think_hist && typeof entry._think_hist === 'object') ? entry._think_hist : { req: {}, obs: {}, turns: 0 };
-      if (!h.req) h.req = {}; if (!h.obs) h.obs = {};
-      h.turns = Number(h.turns || 0) + 1;
-      var seen = {};
-      (reqGlyphs || []).forEach(function(g) { if (g && g.state && g.state !== 'IGNORE' && !seen['r:' + g.state]) { seen['r:' + g.state] = 1; h.req[g.state] = Number(h.req[g.state] || 0) + 1; } });
-      (obsGlyphs || []).forEach(function(g) { if (g && g.state && !seen['o:' + g.state]) { seen['o:' + g.state] = 1; h.obs[g.state] = Number(h.obs[g.state] || 0) + 1; } });
-      // (v4.357) THINKING AMOUNTS per amount band: word tokens + sealed bytes (base64 chars -> bytes).
-      // Attributed to the turn's AMT band glyph; powers the parenthesized (tokens, KB) aggregates.
-      var amtState = null;
-      (obsGlyphs || []).forEach(function(g) { if (!amtState && g && /^AMT/.test(g.state)) amtState = g.state; });
-      if (amtState) {
-        if (!h.obsTok) h.obsTok = {}; if (!h.obsEnc) h.obsEnc = {};
-        var tt = (obsRec && obsRec.tokens && typeof obsRec.tokens.reasoning === 'number') ? obsRec.tokens.reasoning : 0;
-        var eb = (obsRec && obsRec.encrypted_chars) ? Math.round(Number(obsRec.encrypted_chars) * 3 / 4) : 0;
-        if (tt > 0) h.obsTok[amtState] = Number(h.obsTok[amtState] || 0) + tt;
-        if (eb > 0) h.obsEnc[amtState] = Number(h.obsEnc[amtState] || 0) + eb;
-      }
-      // (v4.372) Per-turn reasoning-token SAMPLES for the histogram. Ledger-ONLY and capped at
-      // 200: the row snapshot below deliberately strips them, because 500 ring rows each
-      // carrying an array would blow the localStorage budget.
-      if (!Array.isArray(h.samples)) h.samples = [];
-      h.samples.push((obsRec && obsRec.tokens && typeof obsRec.tokens.reasoning === 'number') ? obsRec.tokens.reasoning : 0);
-      if (h.samples.length > 200) h.samples = h.samples.slice(h.samples.length - 200);
-      entry._think_hist = h;
-      entry._session_id = String(sessionId);
-      entry._ts = Date.now();
-      costs[key] = entry;
-      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
-      var snapH = JSON.parse(JSON.stringify(h));
-      delete snapH.samples;
-      return snapH;
-    } catch (e) {}
-    return null;
-  }
+  // tmRecordThinkHistogram retired: durable analytics are event-driven; ring rows carry glyph counters only.
   function tmGetThinkHistogram(sessionId, model, endpointHost, isProxy) {
     try {
       if (!sessionId || !model) return null;
@@ -6337,6 +6494,1283 @@
       return (rec && typeof rec === 'object' && rec._think_hist && typeof rec._think_hist === 'object') ? rec._think_hist : null;
     } catch (e) { return null; }
   }
+
+  // ==================== Fix 24 durable reasoning analytics -- SESSION 2: the durable engine ====================
+  // The storage + aggregation machinery behind [ap:KYL4P1] §§2, 4, 5, 6.1-6.4. Built and tested
+  // DETERMINISTICALLY here; the live request/response wiring is Session 3, the dashboard adapter
+  // is Session 4. Nothing in this block runs at capture time yet EXCEPT the passive §6 pieces
+  // that are correct independent of the event stream (the touch-list narrowing, tombstone pruning,
+  // the identity-key predicate) and the loud-failure instrumentation on the existing writers.
+  //
+  // The ONE analytics writer is tmRecordThinkAnalytics(event). Identity and lifetime are TWO VIEWS
+  // OF THE SAME EVENT updated inside that writer and persisted with ONE TM_SESSION_COSTS_KEY
+  // setItem -- never two paths, never a ring walk, never a later rollup.
+
+  // ---- store keys / version / constants ----
+  var TM_ANALYTICS_LIFETIME_KEY = '__tm_reasoning_lifetime_v1'; // RESERVED ledger property (NOT an identity)
+  var TM_SESSION_CTX_TOMBSTONE_KEY = 'tm_session_ctx_tombstones_v1';
+  var TM_ANALYTICS_LAST_SWEEP_KEY = 'tm_analytics_last_sweep_ts_v1'; // scalar epoch ms; no measurements
+  var TM_ANALYTICS_IDLE_MS = 7 * 24 * 60 * 60 * 1000;  // identity retention: 7 idle days
+  var TM_ANALYTICS_SWEEP_GATE_MS = 60 * 60 * 1000;     // the hourly sweep gate
+  var TM_ANALYTICS_VERSION = 1;                         // also versions the bin boundaries
+  var TM_ANALYTICS_LEVEL_CAP = 16;                      // named by_level keys per scope (+ 'other')
+  var TM_ANALYTICS_PROVIDER_CAP = 16;                   // named by_provider keys per identity (+ 'other')
+
+  // (§2.4) The immutable histogram definition: exact-zero + 100 log bins over [1, 1048576) +
+  // overflow. Bin index = floor(5*log2(x)); implemented as a frozen boundary table binary-searched
+  // so exact powers of two never float-drift. B[k] = 2^(k/5), k = 0..100; x lands in the largest k
+  // with B[k] <= x. Boundaries: 1->0, 2->5, 3->7, 1023->49, 1024->50, 1048575->99, 1048576->overflow.
+  var TM_ANALYTICS_BIN_BOUNDS = (function() {
+    var b = [];
+    for (var k = 0; k <= 100; k++) b.push(Math.pow(2, k / 5));
+    return Object.freeze(b);
+  })();
+
+  // In-memory (never persisted) gap + loud-failure state. Pending identity gaps fold into the
+  // ledger on the next successful write for that identity; pending lifetime gaps fold on the next
+  // successful write for ANY identity. Accounting-writer failures are a SEPARATE loud-but-not-gap
+  // category (they never touch analytics.gap and never light the alert).
+  var tmPendingAnalyticsGap = {};        // idKey -> { count, first_at, last_at, reasons:{} }
+  var tmPendingLifetimeAnalyticsGap = null; // { count, first_at, last_at, reasons:{} } | null
+  var tmLedgerWriteFailures = {};        // idKey -> { cost, time, tool, cache }
+
+  // (§2.8 / §6.1) ONE shared predicate: true ONLY for canonical identity keys. The reserved
+  // lifetime property and any other non-identity key are excluded from every enumeration, prune,
+  // touch, legacy-conversion and audit/model listing. The discriminator is '::' beyond index 0 --
+  // the same shape tmThinkAuditCollectModels already uses -- so the reserved property (which has
+  // no '::') is skipped by construction.
+  function tmIsLedgerIdentityKey(k) {
+    try { return typeof k === 'string' && k.indexOf('::') > 0; } catch (e) { return false; }
+  }
+
+  // (§2.2) ONE Bucket shape at every level. Every scalar and all four source counts start at 0;
+  // bins is SPARSE (an absent key = 0). Constructor is the ONLY way a bucket is created, so
+  // source.heuristic (reserved, always 0 in this release) always exists and source-keyed reads
+  // can never touch an uninitialized key. NEVER dense arrays.
+  function tmNewBucket() {
+    return {
+      turns: 0, unknown: 0, zero: 0, nonzero: 0, reasoning_total: 0,
+      source: { reported: 0, bytes_estimate: 0, heuristic: 0, unknown: 0 },
+      bins: {}, overflow: 0
+    };
+  }
+  // A provider entry is a bucket PLUS its display label and a nested by_level map.
+  function tmNewProviderEntry(label) {
+    var b = tmNewBucket();
+    b.label = String(label == null ? '' : label);
+    b.by_level = {};
+    return b;
+  }
+
+  function tmAnalyticsNewAnalyticsBlock() {
+    return { v: TM_ANALYTICS_VERSION, since: null, ka_pings_excluded: 0,
+             all: tmNewBucket(), by_level: {}, by_provider: {},
+             gap: { count: 0, first_at: null, last_at: null, reasons: {} } };
+  }
+  function tmAnalyticsNewGap() { return { count: 0, first_at: null, last_at: null, reasons: {} }; }
+  function tmAnalyticsNewLifetime() {
+    return { kind: 'reasoning-lifetime', v: TM_ANALYTICS_VERSION, since: null,
+             ka_pings_excluded: 0, all: tmNewBucket(), by_path: {}, gap: tmAnalyticsNewGap() };
+  }
+
+  // (§2.4) Bin index for a positive integer n (already rounded by the accumulator). Returns 0..99
+  // for 1 <= n < 1048576, or 100 for n >= 1048576 (the caller routes 100 to `overflow`, not a bin).
+  function tmBinIndex(n) {
+    n = Number(n);
+    if (!isFinite(n) || n < 1) return -1;
+    if (n >= 1048576) return 100;
+    var lo = 0, hi = TM_ANALYTICS_BIN_BOUNDS.length - 1, ans = 0;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      if (TM_ANALYTICS_BIN_BOUNDS[mid] <= n) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+    }
+    return ans;
+  }
+
+  // (§4.2) THE shared accumulator. o is the §1.4 normalized observation
+  // { reasoning: finite nonnegative number | null, source: 'reported'|'bytes_estimate'|'unknown' }.
+  // An unknown reasoning increments ONLY turns + unknown + source.unknown. A measured observation
+  // increments zero (n===0) or nonzero (and a bin / overflow), adds to reasoning_total, and counts
+  // its source. Sparse-bin first-use is guarded so no count is ever NaN (a bare bins[i]++ on an
+  // absent key would serialize as null).
+  function tmBucketAdd(bucket, o) {
+    if (!bucket || !o) return bucket;
+    bucket.turns++;
+    if (o.reasoning == null) {
+      bucket.unknown++;
+      bucket.source.unknown = (bucket.source.unknown || 0) + 1;
+      return bucket;
+    }
+    var n = Math.round(Number(o.reasoning));
+    if (!isFinite(n) || n < 0) { bucket.unknown++; bucket.source.unknown = (bucket.source.unknown || 0) + 1; return bucket; }
+    if (n === 0) { bucket.zero++; } else {
+      bucket.nonzero++;
+      if (n >= 1048576) { bucket.overflow = (bucket.overflow || 0) + 1; }
+      else { var i = tmBinIndex(n); bucket.bins[i] = (bucket.bins[i] || 0) + 1; }
+    }
+    bucket.reasoning_total += n;
+    var s = o.source;
+    if (s === 'reported' || s === 'bytes_estimate' || s === 'heuristic') bucket.source[s] = (bucket.source[s] || 0) + 1;
+    else bucket.source.unknown = (bucket.source.unknown || 0) + 1;
+    return bucket;
+  }
+
+  // (§2.8) PURE merge: returns a NEW bucket summing counters, totals, source counts, sparse bins
+  // and overflow. Never calls the event accumulator, never increments a turn because a bucket was
+  // merged, never mutates an input. Refuses incompatible bin/analytics versions (returns null).
+  // Reads defensively (raw stored buckets) but does NOT mutate the inputs while normalizing.
+  function tmBucketMerge(a, b) {
+    if (!a && !b) return tmNewBucket();
+    if (!a) a = tmNewBucket(); if (!b) b = tmNewBucket();
+    if (a.v !== undefined && b.v !== undefined && a.v !== b.v) return null;
+    if (a.v !== undefined && a.v !== TM_ANALYTICS_VERSION) return null;
+    if (b.v !== undefined && b.v !== TM_ANALYTICS_VERSION) return null;
+    var out = tmNewBucket();
+    ['turns', 'unknown', 'zero', 'nonzero', 'reasoning_total', 'overflow'].forEach(function(k) {
+      out[k] = (Number(a[k] || 0) + Number(b[k] || 0));
+    });
+    ['reported', 'bytes_estimate', 'heuristic', 'unknown'].forEach(function(k) {
+      var av = (a.source && Number(a.source[k] || 0)) || 0;
+      var bv = (b.source && Number(b.source[k] || 0)) || 0;
+      out.source[k] = av + bv;
+    });
+    var i;
+    if (a.bins) { for (i in a.bins) { if (Object.prototype.hasOwnProperty.call(a.bins, i)) out.bins[i] = (out.bins[i] || 0) + Number(a.bins[i] || 0); } }
+    if (b.bins) { for (i in b.bins) { if (Object.prototype.hasOwnProperty.call(b.bins, i)) out.bins[i] = (out.bins[i] || 0) + Number(b.bins[i] || 0); } }
+    return out;
+  }
+
+  // (§4.2) Resolve a capped rollup key ONCE per event: reuse an existing key, admit a new named
+  // key only while fewer than `cap` named keys exist, else the reserved 'other'. 'other' never
+  // counts against the cap. The SAME resolved key is reused across every rollup of one event so
+  // the cross-axis partition invariant holds.
+  function tmAnalyticsResolveCappedKey(map, key, cap) {
+    if (!map || typeof map !== 'object') return key;
+    if (Object.prototype.hasOwnProperty.call(map, key)) return key;
+    var named = 0;
+    for (var k in map) { if (Object.prototype.hasOwnProperty.call(map, k) && k !== 'other') named++; }
+    if (named < cap) return key;
+    return 'other';
+  }
+
+  // ==================== §5.1 LEVEL KEY ====================
+  // @beacon[
+  //   id=fix24-s2-level-key,
+  //   role=__lambdao_1.tmThinkAnalyticsLevelKey,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 analytics S2 (§5.1): canonical thinking-level key from the FINAL _think_req scan. NOT tmThinkCompactReq (decorates with display), NOT tmThinkNativeFromReq.levelKey (collapses adaptive·high vs high). One primary amount/mode classification + a ·mode: suffix; the durable histogram axis.,
+  // ]
+  function tmThinkAnalyticsLevelKey(thinkReq) {
+    try {
+      if (!thinkReq) return 'unknown-setting';
+      var controls = Array.isArray(thinkReq.controls) ? thinkReq.controls : [];
+      var unrec = Array.isArray(thinkReq.unrecognized) ? thinkReq.unrecognized : [];
+      var implicit = Array.isArray(thinkReq.implicit) ? thinkReq.implicit : [];
+
+      // Step 1 -- normalize path aliases (camelCase<->snake, generation_config<->generationConfig,
+      // extra_body thinkingConfig<->thinking_config) and PARTITION: drop display + replay/context
+      // controls; keep only amount/mode controls in set A.
+      // Normalize ONLY the known spelling aliases (do NOT blanket snake->camel: `reasoning_effort`
+      // and `output_config.effort` are themselves canonical scanner paths and must survive).
+      function normPath(p) {
+        var s = String(p == null ? '' : p);
+        // container aliases
+        s = s.split('generation_config.thinking_config.').join('generationConfig.thinkingConfig.');
+        s = s.split('generationConfig.thinking_config.').join('generationConfig.thinkingConfig.');
+        s = s.split('extra_body.google.thinking_config.').join('extra_body.google.thinkingConfig.');
+        // leaf aliases (only inside a thinkingConfig container, never the top-level reasoning_effort
+        // / thinking_budget / output_config.effort paths, which the scanner emits in canonical form)
+        s = s.split('thinkingConfig.thinking_level').join('thinkingConfig.thinkingLevel');
+        s = s.split('thinkingConfig.thinking_budget').join('thinkingConfig.thinkingBudget');
+        s = s.split('thinkingConfig.include_thoughts').join('thinkingConfig.includeThoughts');
+        return s;
+      }
+      var A = [];
+      for (var ci = 0; ci < controls.length; ci++) {
+        var c = controls[ci]; if (!c) continue;
+        var np = normPath(c.path);
+        // DISPLAY knobs -- removed (not amount/mode). Paths compared in NORMALIZED (camel) form.
+        if (np === 'thinking.display' || np === 'reasoning.exclude' || np === 'reasoning.summary' ||
+            np === 'include_reasoning' || np === 'include[]' || np === 'generationConfig.thinkingConfig.includeThoughts' ||
+            np === 'extra_body.google.thinkingConfig.includeThoughts' || /\.includeThoughts$/.test(np)) continue;
+        // REPLAY / CONTEXT knobs -- removed. reasoning.* survives ONLY for effort / max_tokens /
+        // enabled / mode; thinking.keep is replay; reasoning.context is replay.
+        if (np === 'reasoning.context' || np === 'thinking.keep') continue;
+        if (np.indexOf('reasoning.') === 0 && ['reasoning.effort', 'reasoning.max_tokens', 'reasoning.enabled', 'reasoning.mode'].indexOf(np) === -1) continue;
+        A.push({ path: np, value: c.value });
+      }
+
+      // Step 2 -- classify A, first match wins.
+      if (!controls.length) {
+        // A body with no thinking controls at all: unrecognized thinking-ish keys -> unmapped,
+        // implicit model-name hints -> implicit, otherwise the provider's own default.
+        if (unrec.length) return 'unmapped';
+        if (implicit.length) return 'implicit';
+        return 'provider-default';
+      }
+      if (!A.length) {
+        // Controls present but ALL display/replay (e.g. {reasoning:{exclude:true}} alone, or an
+        // includeThoughts-only body). The scanner's verdict is 'explicit' whenever ANY control is
+        // present, so it is NOT the default test -- the remaining amount set A is.
+        if (unrec.length) return 'unmapped';
+        if (implicit.length) return 'implicit';
+        return 'provider-default';
+      }
+
+      function numVal(v) { var n = Number(v); return isFinite(n) ? n : NaN; }
+      function strVal(v) { return String(v == null ? '' : v).trim(); }
+      function truthyOff(v) { var s = strVal(v).toLowerCase(); return s === 'false' || s === '0' || s === 'disabled' || s === 'none' || s === 'off'; }
+      function truthyOn(v) { var s = strVal(v).toLowerCase(); return s === 'true' || s === '1' || s === 'enabled'; }
+
+      var i, p, v;
+      // explicit off (any spelling)
+      for (i = 0; i < A.length; i++) {
+        p = A[i].path; v = A[i].value;
+        if (p === 'thinking.type' && strVal(v).toLowerCase() === 'disabled') return 'off';
+        if ((p === 'reasoning_effort' || p === 'reasoning.effort') && strVal(v).toLowerCase() === 'none') return 'off';
+        if (p === 'reasoning.enabled' && truthyOff(v)) return 'off';
+        if (p === 'enable_thinking' && truthyOff(v)) return 'off';
+        if (p === 'chat_template_kwargs.enable_thinking' && truthyOff(v)) return 'off';
+        if ((p === 'generationConfig.thinkingConfig.thinkingBudget' || p === 'extra_body.google.thinkingConfig.thinkingBudget' || p === 'thinking_budget') && numVal(v) === 0) return 'off';
+      }
+
+      // reasoning.mode suffix (kept in A): 'standard' (or absent) shares one bucket; any other
+      // value is appended literally, never dropped, never 'unmapped'.
+      var modeSuffix = '';
+      for (i = 0; i < A.length; i++) {
+        if (A[i].path === 'reasoning.mode') {
+          var mv = strVal(A[i].value).toLowerCase();
+          if (mv && mv !== 'standard') modeSuffix = '\u00b7mode:' + mv;
+        }
+      }
+
+      // Anthropic adaptive: effort = per-message output_config.effort (the scanner reports the
+      // LAST one) ?? top-level output_config.effort ?? none.
+      var adaptive = false, i;
+      for (i = 0; i < A.length; i++) { if (A[i].path === 'thinking.type' && strVal(A[i].value).toLowerCase() === 'adaptive') { adaptive = true; break; } }
+      if (adaptive) {
+        var eff = null;
+        for (i = 0; i < A.length; i++) { if (A[i].path === 'messages[].output_config.effort') { eff = A[i].value; break; } }
+        if (eff == null) { for (i = 0; i < A.length; i++) { if (A[i].path === 'output_config.effort') { eff = A[i].value; break; } } }
+        return 'adaptive:' + (eff != null && strVal(eff) !== '' ? strVal(eff).toLowerCase() : 'none') + modeSuffix;
+      }
+
+      // effort word from ANY effort path.
+      var effortPaths = ['messages[].output_config.effort', 'output_config.effort', 'reasoning_effort', 'reasoning.effort', 'generationConfig.thinkingConfig.thinkingLevel', 'extra_body.google.thinkingConfig.thinkingLevel'];
+      for (i = 0; i < A.length; i++) {
+        if (effortPaths.indexOf(A[i].path) !== -1) {
+          var ew = strVal(A[i].value).toLowerCase();
+          if (ew) return 'effort:' + ew + modeSuffix;
+        }
+        if (A[i].path.indexOf('chat_template_kwargs.') === 0 && /effort/i.test(A[i].path)) {
+          var ew2 = strVal(A[i].value).toLowerCase();
+          if (ew2) return 'effort:' + ew2 + modeSuffix;
+        }
+      }
+
+      // dynamic budget (Gemini thinkingBudget = -1, native or extra_body) BEFORE the budget check.
+      for (i = 0; i < A.length; i++) {
+        p = A[i].path;
+        if (p === 'generationConfig.thinkingConfig.thinkingBudget' || p === 'extra_body.google.thinkingConfig.thinkingBudget' || p === 'thinking_budget') {
+          if (numVal(A[i].value) === -1) return 'budget:dynamic' + modeSuffix;
+        }
+      }
+
+      // budget (>0).
+      for (i = 0; i < A.length; i++) {
+        p = A[i].path; v = A[i].value;
+        if (p === 'thinking.budget_tokens' || p === 'reasoning.max_tokens' || p === 'thinking_budget' ||
+            p === 'generationConfig.thinkingConfig.thinkingBudget' || p === 'extra_body.google.thinkingConfig.thinkingBudget') {
+          var bn = numVal(v);
+          if (isFinite(bn) && bn > 0) return 'budget:' + bn + modeSuffix;
+        }
+      }
+
+      // on without a level.
+      for (i = 0; i < A.length; i++) {
+        p = A[i].path; v = A[i].value;
+        if (p === 'thinking.type' && strVal(v).toLowerCase() === 'enabled') return 'on' + modeSuffix;
+        if (p === 'enable_thinking' && truthyOn(v)) return 'on' + modeSuffix;
+        if (p === 'reasoning.enabled' && truthyOn(v)) return 'on' + modeSuffix;
+        if (p === 'chat_template_kwargs.enable_thinking' && truthyOn(v)) return 'on' + modeSuffix;
+      }
+
+      // Anything left in A matching no rule: a KNOWN path with an unexpected value. Never
+      // provider-default, never undefined -- the cue to extend TM_THINK_MAP and this classifier.
+      return 'unmapped';
+    } catch (e) { return 'unmapped'; }
+  }
+
+  // ==================== §5.2 PROVIDER KEY ====================
+  // @beacon[
+  //   id=fix24-s2-provider-key,
+  //   role=__lambdao_1.tmAnalyticsProviderKey,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 analytics S2 (§5.2): serving-provider attribution as THREE values kept apart -- key (tier-decorated analytics slug), label (historical display/pricing label), slug (BASE endpoint slug). Response provider string > request pin > direct host > unattributed; the lock store is NEVER read for historical attribution.,
+  // ]
+  function tmAnalyticsProviderKey(event) {
+    var out = { key: 'unattributed', label: 'unattributed (intermediary reported no provider)', slug: 'unattributed' };
+    try {
+      if (!event) return out;
+      var host = String(event.host || '').toLowerCase();
+      var isIntermediary = host.indexOf('openrouter.ai') !== -1;
+      var pin = event.requestPin && event.requestPin.slug ? event.requestPin : null;
+      var pinSlug = pin ? String(pin.slug) : null;
+      var pinLabel = pin ? String(pin.label || pin.slug) : null;
+      var pinBase = pinSlug ? pinSlug.split('/')[0] : null;
+
+      var respProv = (typeof event.response_provider === 'string' && event.response_provider) ? String(event.response_provider) : null;
+
+      var baseKey = null, baseLabel = null;
+      if (respProv) {
+        // Branch 1: the response's own provider string is authoritative for WHO served. Label =
+        // the response string, upgraded to the pin's variant label only on a matching base slug.
+        var respBase = String(tmProviderNameToSlug(respProv) || respProv.toLowerCase());
+        baseLabel = respProv;
+        baseKey = respBase; // alias hit, else the lowercased string
+        if (pin && pinBase && respBase === pinBase) {
+          baseKey = pinSlug; // the pin's EXACT slug (variant preserved) -- never re-derived from a decorated label
+          if (pinLabel) baseLabel = pinLabel;
+        }
+      } else if (pin) {
+        // Branch 2: no response provider -- the request pin proves the server.
+        baseKey = pinSlug;
+        baseLabel = pinLabel || pinSlug;
+      } else if (!isIntermediary && host) {
+        // Branch 3: a direct (non-intermediary) host names the server.
+        baseKey = host;
+        baseLabel = host;
+      } else {
+        // Branch 4: intermediary route, nothing identifiable. openrouter.ai names the ROUTE, not
+        // the server -- stay 'unattributed'.
+        baseKey = 'unattributed';
+        baseLabel = 'unattributed (intermediary reported no provider)';
+      }
+
+      // Service tier: decorate LABEL and KEY INDEPENDENTLY (the label via the existing helper, the
+      // key lowercased with the same rules); never derive the key by slugging the decorated label;
+      // default/auto add nothing; never twice. The SLUG is the base endpoint slug BEFORE tier.
+      var tierLike = { _service_tier: event.service_tier };
+      var label = tmAppendServiceTierToProviderKey(baseLabel, tierLike);
+      var key = String(tmAppendServiceTierToProviderKey(baseKey, tierLike) || baseKey).toLowerCase();
+      out.key = key;
+      out.label = label;
+      out.slug = baseKey; // base endpoint slug (or host on direct) -- undecorated by tier
+      return out;
+    } catch (e) { return out; }
+  }
+
+  // ==================== §6.1-6.4 activity / retention / tombstones ====================
+  // (§6.1) ONE activity clock. _ts on the identity record IS identity-specific activity. This is
+  // the ONE activity toucher; it stamps _ts = now + _activity_v = 2 (the marker that the record's
+  // _ts has only ever been written under the exact-identity contract). With create:true it makes
+  // the MINIMAL record (activity metadata only: no analytics, no since, no _last). Activity is
+  // broader than analytics: outbound requests, failed attempts, cancellations and KA pings all
+  // advance _ts; only eligible turns advance _last / since.
+  function tmLedgerTouchActivity(idKey, opts) {
+    try {
+      if (!tmIsLedgerIdentityKey(idKey)) return false;
+      var parts = String(idKey).split('::');
+      if (!parts[0] || !parts[1]) return false;
+      var create = !!(opts && opts.create);
+      var now = (opts && isFinite(Number(opts.ts))) ? Number(opts.ts) : Date.now();
+      var costs = tmGetSessionCosts();
+      var rec = costs[idKey];
+      if (!rec || typeof rec !== 'object') {
+        if (!create) return false;
+        var legacyTotal = (typeof rec === 'number' && isFinite(rec)) ? rec : 0;
+        rec = { _total: legacyTotal, _session_id: parts[0] };
+      }
+      rec._ts = now;
+      rec._activity_v = 2;
+      if (!rec._session_id) rec._session_id = parts[0];
+      costs[idKey] = rec;
+      localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // (§6.2) ONE-TIME legacy conversion / retention start. A legacy scalar cost, or an identity
+  // object without a valid positive finite _ts, is given a fresh retention timestamp ONCE on first
+  // maintenance encounter -- preserving its data -- so it is retained a full 7-day grace, not wiped
+  // immediately nor kept forever. Deliberately does NOT stamp _activity_v, start analytics coverage
+  // or create _last. Returns true when a conversion was persisted.
+  function tmAnalyticsEnsureRetention(costs, idKey, now) {
+    try {
+      if (!tmIsLedgerIdentityKey(idKey)) return false;
+      if (!Object.prototype.hasOwnProperty.call(costs, idKey)) return false;
+      var rec = costs[idKey];
+      var changed = false;
+      var sid = String(idKey).split('::')[0];
+      if (typeof rec === 'number') {
+        costs[idKey] = { _total: rec, _session_id: sid, _ts: now };
+        changed = true;
+      } else if (rec && typeof rec === 'object') {
+        var ts = Number(rec._ts);
+        if (!isFinite(ts) || ts <= 0) { rec._ts = now; changed = true; }
+        if (!rec._session_id) { rec._session_id = sid; changed = true; }
+      }
+      return changed;
+    } catch (e) { return false; }
+  }
+
+  // (§3 step 2 / §6.2) The per-identity stale check -- runs at REQUEST time (before routing) and
+  // again at response time before the first ledger writer. Applies the one-time legacy conversion
+  // first, then deletes an identity whose activity is older than 7 idle days (discarding any
+  // pending analytics gap for it). The reserved lifetime property is skipped by construction via
+  // tmIsLedgerIdentityKey. Returns true when the identity record was deleted (a fresh start).
+  // @beacon[
+//   id=fix24-durable-tmLedgerStaleCheck,
+//   slice_labels=tm-thinking-observatory,tm-sessions-in-memory,
+//   kind=ast,
+//   comment=Fix 24 retention: exact-identity stale check at outbound and terminal boundaries; seven idle days; lifetime archive and routing locks untouched.,
+// ]
+function tmLedgerStaleCheck(idKey, now) {
+    try {
+      if (!tmIsLedgerIdentityKey(idKey)) return false;
+      now = isFinite(Number(now)) ? Number(now) : Date.now();
+      var costs = tmGetSessionCosts();
+      if (!Object.prototype.hasOwnProperty.call(costs, idKey)) return false;
+      if (tmAnalyticsEnsureRetention(costs, idKey, now)) {
+        try { localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs)); } catch (eW) {}
+      }
+      var rec = costs[idKey];
+      var ts = (rec && typeof rec === 'object') ? Number(rec._ts) : 0;
+      if (isFinite(ts) && ts > 0 && (now - ts) > TM_ANALYTICS_IDLE_MS) {
+        delete costs[idKey];
+        try { delete tmPendingAnalyticsGap[idKey]; } catch (eG) {}
+        try { localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs)); } catch (eW2) {}
+        try { console.log('⏱ [v' + EXT_VERSION + '] analytics: identity ' + idKey + ' idle > 7d -- starting fresh'); } catch (eL) {}
+        return true;
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+
+  // (§3) The HOURLY sweep. At most once per hour (last-run epoch ms in TM_ANALYTICS_LAST_SWEEP_KEY):
+  // skips the reserved lifetime property FIRST, one-time-initializes legacy timestamp-less identity
+  // records, deletes identities idle > 7 days (discarding their pending gaps; pending LIFETIME gaps
+  // are never discarded), and sweeps tombstones older than 7 days. Returns true when it ran.
+  function tmAnalyticsHourlySweep(now) {
+    try {
+      now = isFinite(Number(now)) ? Number(now) : Date.now();
+      var last = 0;
+      try { last = Number(localStorage.getItem(TM_ANALYTICS_LAST_SWEEP_KEY) || 0); } catch (eR) {}
+      if (last && (now - last) < TM_ANALYTICS_SWEEP_GATE_MS) return false;
+      try { localStorage.setItem(TM_ANALYTICS_LAST_SWEEP_KEY, String(now)); } catch (eW) {}
+      var costs = tmGetSessionCosts();
+      var changed = false, converted = 0, deleted = 0;
+      var keys = Object.keys(costs);
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        if (!tmIsLedgerIdentityKey(k)) continue; // skips __tm_reasoning_lifetime_v1 + anything non-identity
+        if (tmAnalyticsEnsureRetention(costs, k, now)) { changed = true; converted++; }
+        var rec = costs[k];
+        var ts = (rec && typeof rec === 'object') ? Number(rec._ts) : 0;
+        if (isFinite(ts) && ts > 0 && (now - ts) > TM_ANALYTICS_IDLE_MS) {
+          delete costs[k];
+          try { delete tmPendingAnalyticsGap[k]; } catch (eG) {}
+          changed = true; deleted++;
+        }
+      }
+      if (changed) { try { localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs)); } catch (eW2) {} }
+      var tombsSwept = 0;
+      try {
+        var rawT = localStorage.getItem(TM_SESSION_CTX_TOMBSTONE_KEY);
+        var tmap = rawT ? JSON.parse(rawT) : {};
+        var tchanged = false;
+        for (var tk in tmap) {
+          if (!Object.prototype.hasOwnProperty.call(tmap, tk)) continue;
+          var tts = (tmap[tk] && typeof tmap[tk] === 'object') ? Number(tmap[tk]._ts) : Number(tmap[tk]);
+          if (isFinite(tts) && tts > 0 && (now - tts) > TM_ANALYTICS_IDLE_MS) { delete tmap[tk]; tchanged = true; tombsSwept++; }
+        }
+        if (tchanged) localStorage.setItem(TM_SESSION_CTX_TOMBSTONE_KEY, JSON.stringify(tmap));
+      } catch (eT) {}
+      try { console.log('⏱ [v' + EXT_VERSION + '] analytics hourly sweep: converted ' + converted + ', expired ' + deleted + ' identities, swept ' + tombsSwept + ' tombstones'); } catch (eL) {}
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // ---- tombstones (§6.4) ----
+  function tmTombstoneReadAll() {
+    try { var raw = localStorage.getItem(TM_SESSION_CTX_TOMBSTONE_KEY); var m = raw ? JSON.parse(raw) : {}; return (m && typeof m === 'object') ? m : {}; } catch (e) { return {}; }
+  }
+  function tmTombstoneWriteAll(map) {
+    try { localStorage.setItem(TM_SESSION_CTX_TOMBSTONE_KEY, JSON.stringify(map || {})); return true; } catch (e) { return false; }
+  }
+  function tmTombstoneSet(idKey, sessionId) {
+    try {
+      if (!tmIsLedgerIdentityKey(idKey)) return false;
+      var m = tmTombstoneReadAll();
+      m[idKey] = { _ts: Date.now(), _session_id: String(sessionId != null ? sessionId : String(idKey).split('::')[0]) };
+      return tmTombstoneWriteAll(m);
+    } catch (e) { return false; }
+  }
+  function tmTombstoneClear(idKey) {
+    try {
+      var m = tmTombstoneReadAll();
+      if (!Object.prototype.hasOwnProperty.call(m, idKey)) return false;
+      delete m[idKey];
+      return tmTombstoneWriteAll(m);
+    } catch (e) { return false; }
+  }
+  function tmTombstoneGet(idKey) {
+    try { var m = tmTombstoneReadAll(); return Object.prototype.hasOwnProperty.call(m, idKey) ? m[idKey] : null; } catch (e) { return null; }
+  }
+
+  // ==================== §1.2 PENDING-TURN METADATA (request-owned, Session 3) ====================
+  // Request metadata is owned by the REQUEST, never read back from the ring. At capture time
+  // (tmCaptureFetchCall, where the final body / headers / _think_req / session ids / _ka_ping /
+  // body.provider are all in scope) we stash a compact in-memory record keyed by captureId. It
+  // carries NO messages, tools, or reasoning text -- this is not a payload snapshot. Lifetime is
+  // tied to the REQUEST, not a clock: the entry is deleted when its fetch settles (body-read
+  // finalization, body-read rejection, or fetch rejection), NEVER while in flight (a request can
+  // legitimately run longer than any UI timeout). A leak guard removes entries whose fetch never
+  // settled after 6 h.
+  var tmPendingTurns = {};
+  var TM_PENDING_TURN_LEAK_MS = 6 * 60 * 60 * 1000; // 6 h leak guard
+  function tmPendingTurnPut(captureId, rec) {
+    try { if (captureId && rec) tmPendingTurns[captureId] = rec; } catch (e) {}
+  }
+  function tmPendingTurnGet(captureId) {
+    try { return (captureId && tmPendingTurns[captureId]) ? tmPendingTurns[captureId] : null; } catch (e) { return null; }
+  }
+  function tmPendingTurnDelete(captureId) {
+    try { if (captureId && Object.prototype.hasOwnProperty.call(tmPendingTurns, captureId)) delete tmPendingTurns[captureId]; } catch (e) {}
+  }
+  function tmPendingTurnsLeakGuard(now) {
+    try {
+      now = isFinite(Number(now)) ? Number(now) : Date.now();
+      for (var k in tmPendingTurns) {
+        if (!Object.prototype.hasOwnProperty.call(tmPendingTurns, k)) continue;
+        var rec = tmPendingTurns[k];
+        var ts = rec && isFinite(Number(rec.requestTs)) ? Number(rec.requestTs) : 0;
+        if (ts > 0 && (now - ts) > TM_PENDING_TURN_LEAK_MS) {
+          try { console.warn('[tm] pending-turn leak guard: releasing ' + k + ' after >6h with no settle'); } catch (eL) {}
+          try { delete tmPendingTurns[k]; } catch (eD) {}
+          try { tmClearInFlightByCapture(k); } catch (eC) {}
+        }
+      }
+    } catch (e) {}
+  }
+
+  // (§5.2) Capture a single-provider REQUEST PIN from the FINAL outbound routing fields. The
+  // FINAL outbound body is the authority -- a request pinned to A that finishes after the
+  // dropdown moved to B must be stamped A. Capture when (a) provider.only has exactly ONE
+  // non-empty slug (regardless of allow_fallbacks -- fallbacks stay inside the allowed set), or
+  // (b) provider.allow_fallbacks === false AND the final routing constraints identify ONE
+  // provider. A multi-provider order list alone is NOT a pin; conflicting constraints prove no
+  // pin. Label resolution NEVER reads the current lock for historical attribution: exact-slug
+  // match in tmGetProviderEntries(model), else the slug itself. Returns { slug, label } | null.
+  function tmCaptureRequestPin(body,model,idKey) {
+  if(!body||!body.provider)return null;
+  var p=body.provider;
+  function list(a){return Array.isArray(a)?a.map(function(x){return String(x==null?'':x).trim();}).filter(Boolean):[];}
+  var only=list(p.only),order=list(p.order),ignore=list(p.ignore),slug=only.length===1?only[0]:null;
+  if(!slug&&p.allow_fallbacks===false&&order.length===1)slug=order[0];
+  if(!slug)return null;
+  if(only.length&&only.indexOf(slug)<0)return null;
+  if(order.length&&order.indexOf(slug)<0)return null;
+  if(ignore.some(function(x){return x===slug||x===slug.split('/')[0];}))return null;
+  var label=slug,locked=idKey?tmGetProviderLock(idKey):null;
+  if(locked&&locked.slug===slug&&locked.label)label=locked.label;
+  else {var entries=tmGetProviderEntries(String(model||'').toLowerCase().replace(/:(nitro|floor|free)$/i,''));for(var i=0;i<entries.length;i++)if(entries[i].slug===slug){label=entries[i].label||slug;break;}}
+  return {slug:slug,label:label};
+}
+
+  // (§1.2 / §7.1) Build the bounded sent/native readout projection for the pending record and
+  // _last.think.readout. sent = tmThinkNativeFromReq on the FINAL scan (+obs); native = the
+  // override's native snapshot when one exists, else sent. Each carries the human-readable
+  // level/display AND the select-match keys levelKey/displayKey plus `none`.
+  function tmThinkBuildReadout(thinkReq, thinkObs) {
+    try {
+      if (!thinkReq) return null;
+      var sent = tmThinkNativeFromReq(thinkReq, thinkObs || null);
+      var ovr = thinkReq.override;
+      var native = (ovr && ovr.applied && ovr.native) ? ovr.native : sent;
+      function proj(r) {
+        if (!r) return null;
+        return { level: r.level, levelKey: (r.levelKey != null ? r.levelKey : null),
+                 display: r.display, displayKey: (r.displayKey != null ? r.displayKey : null),
+                 none: !!r.none };
+      }
+      return { sent: proj(sent), native: proj(native) };
+    } catch (e) { return null; }
+  }
+
+  // (§1.2) REQ glyph STATE ids from the full _think_req scan, computed ONCE at capture time and
+  // carried on the pending record -- the legacy glyph counters (§4.7) and the finalize-time
+  // tmThinkClassifyObs join both consume these (the compact event cannot regenerate them).
+  function tmThinkReqStatesFromScan(thinkReq) {
+    try {
+      var r = tmThinkClassifyReq(thinkReq);
+      var out = [];
+      (r.glyphs || []).forEach(function(g) { if (g && g.state) out.push(g.state); });
+      return out;
+    } catch (e) { return []; }
+  }
+
+  // (§4.7) Rebuild REQ glyph OBJECTS from carried state ids so tmThinkClassifyObs can join on
+  // them (the classifier reads only .state). OBS states are classified at FINALIZE time from the
+  // ORIGINAL tmThinkFinalizeObs object (before normalization).
+  function tmThinkGlyphsFromStates(states) {
+    try {
+      var out = [];
+      (states || []).forEach(function(s) { if (s) out.push(tmThinkGlyph(s)); });
+      return out;
+    } catch (e) { return []; }
+  }
+
+  // ==================== §1.3 OUTCOME CLASSIFIER (Session 3) ====================
+  // Evaluate IN ORDER. Returns one of: 'fetch-failed' | 'cancelled' | 'read-failed' | 'error' |
+  // 'success' | 'no-model-output'. 'success' requires model OUTPUT evidence -- one of:
+  //   (a) a positive FINAL merged completion/output count AND the accumulator-local
+  //       `has_output_usage_beyond_message_start` flag (Anthropic's message_start.usage.output_tokens
+  //       is an initial tokens-so-far figure -- typically 1 -- and must not alone satisfy (a));
+  //   (b) the accumulator saw content/reasoning/summary/encrypted CHARS > 0, or a block that
+  //       actually carried content (a bare block-open with zero chars is NOT evidence);
+  //   (c) tool-call output (the §0.7 tool_calls counter);
+  //   (d) a recognized terminal signal (non-null non-empty finish_reason/finishReason, or the
+  //       actual message_stop / response.completed event).
+  // `total_tokens` alone and `message_start` alone are NOT sufficient.
+  function tmClassifyTurnOutcome(o) {
+    try {
+      o = o || {};
+      if (o.fetchRejected) return 'fetch-failed';
+      if (o.bodyReadRejected) {
+        return (o.errName === 'AbortError') ? 'cancelled' : 'read-failed';
+      }
+      // error: HTTP >= 400, OR a provider error payload (JSON or any SSE chunk), OR the blocked
+      // OR->Gemini synthetic 422 (which arrives here with status 422 through body-read).
+      var status = Number(o.status);
+      if ((isFinite(status) && status >= 400) || o.providerErrorDetected) return 'error';
+      // success requires model OUTPUT evidence.
+      var usage = o.usage || {};
+      var au = o.anthropicUsage || {};
+      var acc = o.acc || {};
+      var completion = null;
+      try {
+        var c1 = usage.completion_tokens, c2 = usage.output_tokens, c3 = au.output_tokens, c4 = usage.candidatesTokenCount;
+        if (c1 != null && isFinite(Number(c1))) completion = Number(c1);
+        else if (c2 != null && isFinite(Number(c2))) completion = Number(c2);
+        else if (c3 != null && isFinite(Number(c3))) completion = Number(c3);
+        else if (c4 != null && isFinite(Number(c4))) completion = Number(c4);
+      } catch (eC) {}
+      // (a) positive FINAL completion/output count AND beyond-message_start usage.
+      if (completion != null && completion > 0 && acc.has_output_usage_beyond_message_start) return 'success';
+      // (b) content / reasoning / summary / encrypted CHARS > 0 (a bare block-open is not evidence).
+      var chars = Number(acc.raw_chars || 0) + Number(acc.summary_chars || 0) + Number(acc.encrypted_chars || 0) + Number(acc.visible_chars || 0);
+      if (chars > 0) return 'success';
+      // (c) tool-call output.
+      if (Number(acc.tool_calls || 0) > 0) return 'success';
+      // (d) a recognized terminal signal.
+      if (acc.terminal) return 'success';
+      return 'no-model-output';
+    } catch (e) { return 'no-model-output'; }
+  }
+
+  // (§1.3a) Mark the accumulator when an event OTHER THAN Anthropic's message_start supplies a
+  // finite nonnegative completion/output count. message_start.usage.output_tokens is an initial
+  // tokens-so-far figure (typically 1) and must not alone satisfy the (a) success clause; a
+  // non-streaming response or a message_delta qualifies. A later reported zero stays zero.
+  function tmThinkAccNoteOutputUsage(acc, eventType, usageObj) {
+    try {
+      if (!acc || !usageObj || typeof usageObj !== 'object') return;
+      if (eventType === 'message_start') return; // initial tokens-so-far, not output evidence
+      var v = usageObj.completion_tokens;
+      if (v == null) v = usageObj.output_tokens;
+      if (v == null) v = usageObj.candidatesTokenCount;
+      var n = Number(v);
+      if (v != null && isFinite(n) && n >= 0) acc.has_output_usage_beyond_message_start = true;
+    } catch (e) {}
+  }
+
+  // ==================== §4 the analytics writer ====================
+  // eligible event. New failures MERGE into the pending map; the pending object folds into
+  // analytics.gap on the next successful write and is cleared only AFTER the write succeeded.
+  function tmAnalyticsRecordGap(idKey, reason) {
+    try {
+      if (!tmIsLedgerIdentityKey(idKey)) return;
+      var now = Date.now();
+      var p = tmPendingAnalyticsGap[idKey];
+      if (!p) { p = { count: 0, first_at: null, last_at: null, reasons: {} }; tmPendingAnalyticsGap[idKey] = p; }
+      p.count += 1;
+      if (!p.first_at) p.first_at = now;
+      p.last_at = now;
+      p.reasons[reason] = (p.reasons[reason] || 0) + 1;
+      try { console.error('[tm] analytics gap (' + reason + ') for ' + idKey + ' -- an eligible reasoning result was lost'); } catch (eL) {}
+    } catch (e) {}
+  }
+  function tmAnalyticsRecordLifetimeGap(reason) {
+    try {
+      var now = Date.now();
+      if (!tmPendingLifetimeAnalyticsGap) tmPendingLifetimeAnalyticsGap = { count: 0, first_at: null, last_at: null, reasons: {} };
+      var p = tmPendingLifetimeAnalyticsGap;
+      p.count += 1;
+      if (!p.first_at) p.first_at = now;
+      p.last_at = now;
+      p.reasons[reason] = (p.reasons[reason] || 0) + 1;
+    } catch (e) {}
+  }
+  function tmAnalyticsMergeGapInto(target, pending) {
+    try {
+      if (!target || !pending) return;
+      target.count = Number(target.count || 0) + Number(pending.count || 0);
+      if (pending.first_at && (!target.first_at || pending.first_at < target.first_at)) target.first_at = pending.first_at;
+      if (pending.last_at && (!target.last_at || pending.last_at > target.last_at)) target.last_at = pending.last_at;
+      if (!target.reasons) target.reasons = {};
+      for (var r in (pending.reasons || {})) { if (Object.prototype.hasOwnProperty.call(pending.reasons, r)) target.reasons[r] = (target.reasons[r] || 0) + pending.reasons[r]; }
+    } catch (e) {}
+  }
+
+  // (§4.7) Legacy glyph counters are updated on the same events as the analytics buckets
+  // (success && !isKaPing). Inputs are STATE-ID arrays (the compact event cannot regenerate the
+  // glyph shapes): REQ states from the capture-time full scan, OBS states from the original
+  // tmThinkFinalizeObs at finalize. Each state counted at most once per turn per side.
+  function tmAnalyticsBumpGlyphCounts(h, reqStates, obsStates) {
+    try {
+      if (!h) return;
+      if (!h.req) h.req = {}; if (!h.obs) h.obs = {};
+      h.turns = Number(h.turns || 0) + 1;
+      var seen = {};
+      (reqStates || []).forEach(function(s) { if (s && s !== 'IGNORE' && !seen['r:' + s]) { seen['r:' + s] = 1; h.req[s] = Number(h.req[s] || 0) + 1; } });
+      (obsStates || []).forEach(function(s) { if (s && !seen['o:' + s]) { seen['o:' + s] = 1; h.obs[s] = Number(h.obs[s] || 0) + 1; } });
+    } catch (e) {}
+  }
+
+  // (§2.5) _last assembly -- the single latest completed ordinary turn, replaced ONLY on
+  // success && !isKaPing. Bounded; display/refinement happens at build time, never persisted back.
+  function tmAnalyticsBuildLast(ev) {
+    try {
+      var think = (ev && ev.think) || {};
+      var prov = (ev && ev.provider) || {};
+      return {
+        capture_id: (ev && ev.capture_id) || null,
+        ts: (ev && ev.ts) || Date.now(),
+        request_ts: (ev && ev.request_ts) || null,
+        rt_ms: (ev && ev.rt_ms != null) ? ev.rt_ms : null,
+        tool_exec_ms: (ev && ev.tool_exec_ms != null) ? ev.tool_exec_ms : null,
+        ctx: (ev && ev.ctx) || null,
+        cache: (ev && ev.cache) || { read: null, write: null, prompt: null, hit: null },
+        cost: (ev && ev.cost != null) ? ev.cost : null,
+        cost_source: (ev && ev.cost_source) || null,
+        provider: { key: prov.key || null, label: prov.label || null, slug: prov.slug || null },
+        think: {
+          level_key: think.level_key || null, summary: think.summary || null,
+          protocol: think.protocol || null, route: think.route || null,
+          override_applied: !!think.override_applied,
+          readout: think.readout || null
+        },
+        obs: (ev && ev.obs) || null,
+        service_tier: (ev && ev.service_tier != null) ? ev.service_tier : null
+      };
+    } catch (e) { return null; }
+  }
+
+  // @beacon[
+  //   id=fix24-s2-record-think-analytics,
+  //   role=__lambdao_1.tmRecordThinkAnalytics,
+  //   slice_labels=tm-payload-overview,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=Fix 24 analytics S2 (§4): THE one analytics writer. One read-modify-write of tm_session_costs_v2 updates the identity record AND the reserved lifetime archive from the SAME event, persisted with ONE setItem. Capped identity rollups (16 named + other); uncapped exact lifetime path/level keys. Returns the allowlisted {req, obs, turns} glyph snapshot only.,
+  // ]
+  function tmRecordThinkAnalytics(event) {
+    var ret = { req: {}, obs: {}, turns: 0 };
+    try {
+      if (!event) return ret;
+      var idKey = event.idKey;
+      if (!tmIsLedgerIdentityKey(idKey)) return ret; // identity guard: no placeholder, no empty-sid key
+      var parts = String(idKey).split('::');
+      if (!parts[0] || !parts[1]) return ret;
+
+      var now = isFinite(Number(event.ts)) ? Number(event.ts) : Date.now();
+      var costs = tmGetSessionCosts();
+      var archived=costs[TM_ANALYTICS_LIFETIME_KEY], previous=costs[idKey];
+      if ((archived && archived.v !== TM_ANALYTICS_VERSION) || (previous && previous._think_hist && previous._think_hist.analytics && previous._think_hist.analytics.v !== TM_ANALYTICS_VERSION)) {
+        console.error('[tm] Unsupported analytics version — recorder left stored data unchanged'); return ret;
+      }
+
+      // ---- identity record (activity touch for EVERY outcome) ----
+      var entry = costs[idKey];
+      if (!entry || typeof entry !== 'object') {
+        var legacyTotal = (typeof entry === 'number' && isFinite(entry)) ? entry : 0;
+        entry = { _total: legacyTotal };
+      }
+      entry._ts = now;
+      entry._session_id = String(parts[0]);
+      entry._activity_v = 2;
+
+      var hist = (entry._think_hist && typeof entry._think_hist === 'object') ? entry._think_hist : { req: {}, obs: {}, turns: 0 };
+      if (!hist.req) hist.req = {}; if (!hist.obs) hist.obs = {};
+      hist.turns = Number(hist.turns || 0);
+      // (§2.3) retired sample array + unused per-band sums are deleted on first write.
+      delete hist.samples; delete hist.obsTok; delete hist.obsEnc;
+      if (!hist.analytics || typeof hist.analytics !== 'object' || !hist.analytics.all) hist.analytics = tmAnalyticsNewAnalyticsBlock();
+      var an = hist.analytics;
+      if (!an.gap) an.gap = tmAnalyticsNewGap();
+      entry._think_hist = hist;
+
+      var outcome = event.outcome;
+      var isEligibleSuccess = (outcome === 'success') && !event.isKaPing;
+      var isKaSuccess = (outcome === 'success') && !!event.isKaPing;
+
+      // Fold any pending identity gap into analytics.gap BEFORE persisting (the pending object is
+      // cleared only AFTER the write succeeds).
+      var pendingIdentityGap = tmPendingAnalyticsGap[idKey] || null;
+      if (pendingIdentityGap) tmAnalyticsMergeGapInto(an.gap, pendingIdentityGap);
+
+      if (isEligibleSuccess) {
+        // (§4.2) capped identity rollups -- resolve the capped keys ONCE and reuse in every rollup.
+        var levelKey = String(event.level_key != null ? event.level_key : 'unknown-setting');
+        var provKey = String((event.provider && event.provider.key) || 'unattributed');
+        var L = tmAnalyticsResolveCappedKey(an.by_level, levelKey, TM_ANALYTICS_LEVEL_CAP);
+        var P = tmAnalyticsResolveCappedKey(an.by_provider, provKey, TM_ANALYTICS_PROVIDER_CAP);
+        var obs = event.observation || { reasoning: null, source: 'unknown' };
+
+        tmBucketAdd(an.all, obs);
+        if (!Object.prototype.hasOwnProperty.call(an.by_level,L)) an.by_level[L] = tmNewBucket();
+        tmBucketAdd(an.by_level[L], obs);
+        if (!Object.prototype.hasOwnProperty.call(an.by_provider,P)) an.by_provider[P] = tmNewProviderEntry(P === 'other' ? 'other (cap reached)' : ((event.provider && event.provider.label) || provKey));
+        tmBucketAdd(an.by_provider[P], obs);
+        if (!an.by_provider[P].by_level) an.by_provider[P].by_level = {};
+        if (!Object.prototype.hasOwnProperty.call(an.by_provider[P].by_level,L)) an.by_provider[P].by_level[L] = tmNewBucket();
+        tmBucketAdd(an.by_provider[P].by_level[L], obs); // SAME L -- the nested map never makes its own cap decision
+
+        if (an.since == null) an.since = now;
+        entry._last = tmAnalyticsBuildLast(event);
+        tmAnalyticsBumpGlyphCounts(hist, event.req_states, event.obs_states);
+      } else if (isKaSuccess) {
+        // (§4.3) KA exclusion: count it in BOTH scopes, change no bucket, start no coverage.
+        an.ka_pings_excluded = (an.ka_pings_excluded || 0) + 1;
+      }
+      // (§4.4) error / no-model-output / read-failed / cancelled / fetch-failed: activity touch
+      // only (already done); a qualifying read-failed gap is recorded by the CALLER via
+      // tmAnalyticsRecordGap before/around this write. Activity never starts reasoning coverage.
+
+      // ---- lifetime archive (same event; §4.8) ----
+      var lifetime = costs[TM_ANALYTICS_LIFETIME_KEY];
+      if (!lifetime || typeof lifetime !== 'object' || lifetime.kind !== 'reasoning-lifetime' || !lifetime.all) lifetime = tmAnalyticsNewLifetime();
+      if (!lifetime.gap) lifetime.gap = tmAnalyticsNewGap();
+      if (tmPendingLifetimeAnalyticsGap) tmAnalyticsMergeGapInto(lifetime.gap, tmPendingLifetimeAnalyticsGap);
+
+      if (isEligibleSuccess) {
+        var model = String(event.model || (parts[1] || ''));
+        var host = String(event.host || (parts[2] || ''));
+        var isProxy = (event.isProxy != null) ? !!event.isProxy : (parts[3] === 'proxy');
+        var protocol = String((event.think && event.think.protocol) || event.protocol || 'unknown');
+        var provKeyFull = String((event.provider && event.provider.key) || 'unattributed');
+        var pathKey = JSON.stringify([model, host, isProxy, protocol, provKeyFull]);
+        if (!lifetime.by_path) lifetime.by_path = {};
+        var pl = Object.prototype.hasOwnProperty.call(lifetime.by_path,pathKey) ? lifetime.by_path[pathKey] : null;
+        if (!pl) {
+          pl = { model: model, host: host, isProxy: isProxy, protocol: protocol,
+                 provider: { key: provKeyFull, label: (event.provider && event.provider.label) || provKeyFull },
+                 since: null, all: tmNewBucket(), by_level: {} };
+          lifetime.by_path[pathKey] = pl;
+        }
+        // Lifetime uses the ORIGINAL exact level_key + provider key -- never the identity-local
+        // capped L / P (a local 'other' would permanently destroy the detail this archive keeps).
+        var obsL = event.observation || { reasoning: null, source: 'unknown' };
+        var exactLevel = String(event.level_key != null ? event.level_key : 'unknown-setting');
+        tmBucketAdd(lifetime.all, obsL);
+        tmBucketAdd(pl.all, obsL);
+        if (!Object.prototype.hasOwnProperty.call(pl.by_level,exactLevel)) pl.by_level[exactLevel] = tmNewBucket();
+        tmBucketAdd(pl.by_level[exactLevel], obsL);
+        if (lifetime.since == null) lifetime.since = now;
+        if (pl.since == null) pl.since = now;
+      } else if (isKaSuccess) {
+        lifetime.ka_pings_excluded = (lifetime.ka_pings_excluded || 0) + 1;
+      }
+      costs[TM_ANALYTICS_LIFETIME_KEY] = lifetime;
+      costs[idKey] = entry;
+
+      // ---- ONE persistence for both scopes ----
+      var writeOk = true;
+      try {
+        localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
+      } catch (eSet) {
+        writeOk = false;
+        try { console.error('[tm] tmRecordThinkAnalytics persist failed:', eSet); } catch (eL2) {}
+        if (isEligibleSuccess) {
+          // (§4.5b / §4.8) a failed eligible persistence = ONE gap in EACH scope (one lost event
+          // seen from two views, never summed).
+          tmAnalyticsRecordGap(idKey, 'analytics_write_failed');
+          tmAnalyticsRecordLifetimeGap('analytics_write_failed');
+        }
+      }
+      if (writeOk) {
+        // Clear pending gaps only AFTER the successful write that folded them.
+        if (pendingIdentityGap) { try { delete tmPendingAnalyticsGap[idKey]; } catch (eC) {} }
+        if (tmPendingLifetimeAnalyticsGap) tmPendingLifetimeAnalyticsGap = null;
+      }
+      ret = { req: hist.req, obs: hist.obs, turns: hist.turns };
+      return ret;
+    } catch (e) {
+      try { console.error('[tm] tmRecordThinkAnalytics failed:', e); } catch (eL) {}
+      return ret;
+    }
+  }
+
+  // ==================== Fix 24 durable reasoning analytics -- SESSION 4: consumers ====================
+function tmPendingTurnForTerminal(captureId) {
+  var pending=tmPendingTurnGet(captureId);if(pending)return pending;
+  var c=getCaptureById(captureId);if(!c)return null;
+  var i=c._identity,req=c._think_req,sid=null,model=null,host=null,proxy=false;
+  if(i&&i.sid&&i.model&&i.host){sid=i.sid;model=i.model;host=i.host;proxy=!!i.proxy;}
+  else {sid=c.session_id;model=c._model||(req&&req.model);host=req&&req.host;proxy=req&&typeof req.proxy==='boolean'?req.proxy:tmIsProxyCapture(c);if(!host)host=tmExtractEndpointHost(c);}
+  if(!sid||!model||!host||host==='unknown'||(proxy&&(/typingmind/i.test(host)||!req&&!c.headers)))return null;
+  var body=c.body||c.body_skeleton;
+  return {idKey:tmBuildIdentityKey(sid,model,host,proxy),sid:sid,model:model,host:host,isProxy:proxy,requestTs:Date.parse(c.ts),tool_exec_ms:c._tool_exec_ms==null?null:c._tool_exec_ms,
+    think:{level_key:tmThinkAnalyticsLevelKey(req),summary:req&&String(req.summary||'').slice(0,200),protocol:req&&req.protocol,route:host==='openrouter.ai'?'intermediary':'direct',override_applied:!!(req&&req.override&&req.override.applied),req_states:req?tmThinkReqStatesFromScan(req):[],readout:tmThinkBuildReadout(req,null)},
+    isKaPing:!!c._ka_ping,pastedSid:c.pasted_session_id||null,requestPin:c._request_pin||(function(){var pin=tmCaptureRequestPin(body,model);return pin?{slug:pin.slug,label:pin.slug}:null;})()};
+}
+
+function tmTerminalCleanup(captureId) {
+  tmClearInFlightByCapture(captureId);tmPendingTurnDelete(captureId);
+}
+
+function tmFinalizeCapturedFailure(captureId,err,response,fetchFailed) {
+  try {
+    if(!captureId||!tmCaptureEnabled())return;
+    var p=tmPendingTurnForTerminal(captureId),status=response?Number(response.status):null;
+    var c=getCaptureById(captureId),outcome=fetchFailed?'fetch-failed':err&&err.name==='AbortError'?'cancelled':'read-failed';
+    if(p){
+      tmLedgerStaleCheck(p.idKey,Date.now());tmAnalyticsHourlySweep(Date.now());
+      if(outcome==='read-failed'&&status<400&&!(c&&c.error)&&!p.isKaPing){tmAnalyticsRecordGap(p.idKey,'response_read_failed');tmAnalyticsRecordLifetimeGap('response_read_failed');}
+      tmRecordThinkAnalytics({idKey:p.idKey,outcome:outcome,isKaPing:p.isKaPing,ts:Date.now()});
+    } else console.error('[tm] terminal identity unrecoverable',captureId);
+    if(!fetchFailed)tmUpdateCaptureRecord(captureId,{response_body_parse_error:String(err&&err.message||err)});
+  } finally {tmTerminalCleanup(captureId);}
+}
+
+var tmNoModelOutputLogged = Object.create(null);
+// @beacon[
+//   id=fix24-durable-tmFinalizeCapturedResponse,
+//   slice_labels=tm-thinking-observatory,tm-sessions-in-memory,
+//   kind=ast,
+//   comment=Fix 24 terminal integration: request-owned identity; once-selected cost; one analytics event for identity and lifetime; one best-effort core ring patch; finally cleanup.,
+// ]
+function tmFinalizeCapturedResponse(captureId,response,patch,thinkAcc,capHadError) {
+  try {
+    if(!tmCaptureEnabled())return;
+    var p=tmPendingTurnForTerminal(captureId),now=Date.now();
+    if(!p){console.error('[tm] terminal identity unrecoverable',captureId);tmUpdateCaptureRecord(captureId,patch);return;}
+    // Request metadata, measurements, attribution and cost stay in memory throughout finalization.
+    // No ledger writer depends on a ring write succeeding or a capture surviving eviction.
+    var u=patch.response_usage||null,a=patch.response_anthropic_usage||null;
+    var outcome=tmClassifyTurnOutcome({status:response.status,providerErrorDetected:capHadError,usage:u,anthropicUsage:a,acc:thinkAcc});
+    var provider=tmAnalyticsProviderKey({host:p.host,requestPin:p.requestPin,response_provider:patch.response_provider,service_tier:patch._service_tier});
+    var identity={sid:p.sid,model:p.model,host:p.host,proxy:p.isProxy,key:p.idKey};
+    var originalObs=tmThinkFinalizeObs(thinkAcc,u,a,p.model),observation=tmAnalyticsObservation(originalObs);
+    var like={id:captureId,session_id:p.sid,pasted_session_id:p.pastedSid,_model:p.model,_identity:identity,_tmResolvedHost:p.host,_provider_label:provider.label,_provider_slug:provider.slug,_service_tier:patch._service_tier,response_status:response.status,response_usage:u,response_anthropic_usage:a,error:patch.error,_ka_ping:p.isKaPing};
+    var ctx=tmComputeCtxSnapshot(u,a,p.model,like),hit=tmIsSignificantCacheHit(like);
+    var input=tmThinkNum(u&&u.input_tokens);if(input==null)input=tmThinkNum(a&&a.input_tokens);
+    var read=tmThinkNum(u&&u.cache_read_input_tokens);if(read==null)read=tmThinkNum(a&&a.cache_read_input_tokens);
+    var write=tmThinkNum(u&&u.cache_creation_input_tokens);if(write==null)write=tmThinkNum(a&&a.cache_creation_input_tokens);
+    var prompt=tmThinkNum(u&&u.prompt_tokens);if(prompt==null&&input!=null)prompt=input+(read||0)+(write||0);
+    var cache={read:read,write:write,prompt:prompt,hit:hit};
+    // These are the only response-side stale checks; they precede ALL cost/cache/time writers.
+    tmLedgerStaleCheck(p.idKey,now);tmAnalyticsHourlySweep(now);
+    var finalPatch=Object.assign({},patch,{_identity:identity,_model:p.model,_provider_label:provider.label,_provider_slug:provider.slug,_think_obs:originalObs,_ctx_snapshot:ctx,_cache_hit:hit});
+    var selected=tmExtractCostVal(a,u),source=selected>0?'api':null,table=null;
+    if(!(selected>0)) {
+      selected=null;
+      var priceModel=String(p.model).toLowerCase().replace(/:(nitro|floor|free)$/i,''),pricing=tmGetProviderCostEntry(priceModel,provider.label);
+      if(tmIsCostEntryPopulated(pricing)) {
+        var calculated=tmCalculateCostFromTable(u||a,pricing);
+        if(calculated.cost>0){selected=calculated.cost;source='table';table=pricing;Object.assign(finalPatch,{_cost_calculated:true,_table_cost:selected,_cost_pricing_used:pricing});}
+        else if(calculated.reason==='no_usage')finalPatch._cost_no_usage=true;
+      } else {finalPatch._cost_init_needed=true;var prices=tmGetProviderCosts();var priceKey=priceModel+'::'+provider.label;if(!Object.prototype.hasOwnProperty.call(prices,priceKey)){prices[priceKey]={input:0,output:0,cache_read:0,cache_write:null};tmSaveProviderCosts(prices);}}
+    }
+    if(selected>0){tmSetTotalCost(tmGetTotalCost()+selected);var total=tmRecordSessionCost(p.sid,p.model,p.host,p.isProxy,selected);if(total>0)finalPatch.session_cost_total=total;}
+    finalPatch._selected_cost=selected;finalPatch._cost_source=source;
+    if(outcome!=='error'&&hit!=null)tmRecordIdentityCacheOutcome(p.sid,p.model,p.host,p.isProxy,hit);
+    var rt=Number(p.requestTs)>0?Math.max(0,now-p.requestTs):null;
+    if(rt>0){finalPatch._rt_ms=rt;var rtt=tmRecordRoundTrip(p.sid,p.model,p.host,p.isProxy,rt);if(rtt>0)finalPatch._rt_total_ms=rtt;var times=tmGetSessionTimeTotals(p.sid,p.model,p.host,p.isProxy);if(times.tool>0)finalPatch._tool_total_ms=times.tool;}
+    if(p.tool_exec_ms!=null)finalPatch._tool_exec_ms=p.tool_exec_ms;
+    var reqStates=p.think&&p.think.req_states||[],obsStates=tmThinkClassifyObs(originalObs,tmThinkGlyphsFromStates(reqStates)).glyphs.map(function(g){return g.state;});
+    var think=JSON.parse(JSON.stringify(p.think||{}));delete think.req_states;think.route=p.host==='openrouter.ai'?'intermediary':'direct';
+    // Observation may refine ONLY an absent display request, and changes display + key together.
+    var sent=think.readout&&think.readout.sent;
+    if(sent&&sent.displayKey==null&&sent.display==='default'){
+      if(originalObs.visibility==='raw'||originalObs.visibility==='summary'){sent.display='default (streamed '+originalObs.visibility+')';sent.displayKey='show';}
+      else if(originalObs.visibility==='encrypted'||originalObs.tokens.reasoning>0){sent.display='default (nothing shown)';sent.displayKey='hide';}
+      if(!think.override_applied)think.readout.native=Object.assign({},sent);
+    }
+    var obs=Object.assign({},observation,{visibility:originalObs.visibility,raw_chars:originalObs.raw_chars,encrypted_chars:originalObs.encrypted_chars,completion_tokens:originalObs.completion_tokens});
+    var event={idKey:p.idKey,outcome:outcome,isKaPing:p.isKaPing,ts:now,observation:observation,level_key:think.level_key||'unknown-setting',provider:provider,model:p.model,host:p.host,isProxy:p.isProxy,protocol:think.protocol,capture_id:captureId,request_ts:p.requestTs,rt_ms:rt,tool_exec_ms:p.tool_exec_ms,ctx:ctx,cache:cache,cost:selected,cost_source:source,service_tier:patch._service_tier||null,think:think,obs:obs,req_states:reqStates,obs_states:obsStates};
+    finalPatch._think_hist=tmRecordThinkAnalytics(event);
+    // Replay is about produced replay material, not reasoning-analytics eligibility (KA included).
+    tmReplayLedgerBump({pasted_session_id:p.pastedSid,session_id:p.sid,_model:p.model,_tmResolvedHost:p.host},originalObs);
+    if(outcome==='success'&&patch.response_provider&&tmIsMultiProviderModel(p.model)&&!tmGetProviderLock(p.idKey))tmSetProviderLock(p.idKey,provider.slug,provider.label,false);
+    if(outcome!=='error'){
+      tmTouchSessionScopedStores(p.sid,now);
+      tmMostRecentPayloadStatus={ts:now,captureId:captureId,sessionId:p.sid,pastedSessionId:p.pastedSid,identity:identity,provider:provider.label,anthropicUsage:a,orUsage:u,cacheHit:hit,tableCost:source==='table'?selected:0};
+    }
+    // Independent warning evidence may use surviving outbound byte stamps; never drives analytics.
+    var cap=getCaptureById(captureId);
+    if(cap){var forWarning=Object.assign({},cap,finalPatch);var warning=tmDetectPromptIngestionMismatch(forWarning);if(warning){warning.id='prompt_ingestion_mismatch:'+captureId;finalPatch._warnings=(cap._warnings||[]).concat([warning]);}}
+    tmUpdateCaptureRecord(captureId,finalPatch);
+    // §9 exempt ring-window cost stamp, after the one consolidated core patch is visible.
+    if(cap){var block=tmGetCurrentBlockStart();tmUpdateCaptureRecord(captureId,{_cost_12h:tmComputeBlockCost(p.idKey,block),_cost_24h:tmComputeBlockCost(p.idKey,block-43200000)});}
+    if(p.isKaPing)tmKeepAliveRecordPingResult(Object.assign({},like,{cost_calculated:selected}),p.sid,p.model,p.host,p.isProxy);
+    if(outcome==='no-model-output'&&!tmNoModelOutputLogged[p.idKey]){tmNoModelOutputLogged[p.idKey]=true;console.debug('[tm] no-model-output',p.idKey);}
+    renderGpt51UsageWidget();
+  } catch(e){console.error('[tm] response finalization failed',captureId,e);} finally {tmTerminalCleanup(captureId);}
+}
+
+function tmThinkNoteContextForIdentity(idKey,frame) {
+  var v=tmLedgerRowView(idKey,frame),l=v.last;if(!l)return null;
+  var o=l.obs||{};
+  return {model:tmThinkNormModel(v.model),provider:v.provider.label||v.host,host:v.host,proxy:v.isProxy,session_id:v.sid,capture_id:l.capture_id,
+    req_summary:l.think&&l.think.level_key,req_full:l.think&&l.think.summary,req_verdict:null,obs_summary:o.reasoning==null?'unmeasured':o.reasoning+' reasoning tokens ('+o.source+')',obs_full:null};
+}
+
+function tmThinkNoteButtonForIdentity(view) {
+  if(!view.last)return '';
+  return '<button data-action="think-note" data-key="'+escapeHtml(view.idKey)+'" title="Add a Thinking Note for '+escapeHtml(view.model+' @ '+(view.provider.label||view.host))+'" style="cursor:pointer;">📝</button>';
+}
+
+function tmSessionCtxNameHtml(v,badge) {
+  var color=tmModelEndpointColor(v.model,v.host,v.isProxy,v.sid),hue=tmSessionHueNumber(v.model,v.host,v.isProxy,v.sid);
+  return '<span style="font-size:15px;color:'+color+';'+tmSessionFullnessBulgeStyle(v.pct,hue)+'">'+escapeHtml(tmGetSessionName(v.sid)||v.sid)+'</span>'+(badge?' <span style="font-size:9px;color:#8fb8ff;">not in ring buffer</span>':'');
+}
+
+function tmSessionCtxDialHtml(v) {
+  return v.ctx?tmRenderCtxDial(v.ctx,{model:v.model,provider:v.slug,mr:v.maxCtx,size:32,labelFs:'13px'}):'';
+}
+
+function tmSessionCtxCostHtml(v) {
+  return '<span title="Retained session cost (includes keep-alive and billed attempts)" style="font-size:14px;font-weight:700;color:#c8d0dc;">$'+Number(v.rec._total||0).toFixed(2)+'</span>';
+}
+
+function tmSessionCtxRowHtml(v,frame,badge) {
+  var k=escapeHtml(v.idKey);
+  function zone(name,html){return '<span data-'+name+'-key="'+k+'">'+html+'</span>';}
+  var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'285px',selMaxWidthDisp:'255px'}):'';
+  var route=v.isProxy?'TypingMind proxy → '+v.host:v.host;
+  var routing='';if(v.host==='openrouter.ai'){tmMaybeFetchProviderEndpoints(v.model);if(tmIsMultiProviderModel(v.model))routing=tmBuildProviderRoutingDropdown(v.idKey,v.model,v.provider.label||'');}
+  return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
+    '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:14px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</div>'+
+    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:6px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report">📋</button></div>'+
+    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">'+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
+    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">'+routing+zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive))+'</div></div>';
+}
+
+function tmThinkProtocolFromHost(model,host) {
+  if(/anthropic\.com/.test(host))return 'anthropic-messages';
+  if(/generativelanguage|googleapis/.test(host))return 'gemini-generatecontent';
+  if(/api\.openai\.com/.test(host)&&/sol|(^|[\/_-])o[1-9](-|$)/i.test(model))return 'openai-responses';
+  if(/deepinfra/.test(host))return 'deepinfra-chat-completions';
+  if(/openrouter\.ai|openai\.com|x\.ai|moonshot|deepseek|bigmodel|dashscope|z\.ai/.test(host))return 'openai-chat-completions';
+  return null;
+}
+
+function tmSessionCtxBlindState(view) {
+  var l=view&&view.last,an=view&&view.analytics;
+  var out={blind:false,label:l&&l.provider&&l.provider.label||'unattributed',bucket:null,pooled:false};
+  if(!l||!an||an.v!==TM_ANALYTICS_VERSION||!l.provider)return out;
+  var key=l.provider.key,map=an.by_provider||{};
+  var p=Object.prototype.hasOwnProperty.call(map,key)?key:'other',b=map[p];out.bucket=b;out.pooled=p==='other';
+  if(!b||!l.obs||l.obs.source!=='unknown')return out;
+  out.blind=out.pooled||(b.turns>=3&&b.unknown/b.turns>=0.5)||((b.source.reported||0)+(b.source.bytes_estimate||0)===0);
+  return out;
+}
+
+function tmLifetimeAnalyticsMeta(costs) {
+  var a=costs[TM_ANALYTICS_LIFETIME_KEY]||null,paths=a&&a.by_path||{},gap=tmAnalyticsNewGap(),leaves=0;
+  Object.keys(paths).forEach(function(k){leaves+=Object.keys(paths[k].by_level||{}).length;});
+  if(a&&a.gap)tmAnalyticsMergeGapInto(gap,a.gap);if(tmPendingLifetimeAnalyticsGap)tmAnalyticsMergeGapInto(gap,tmPendingLifetimeAnalyticsGap);
+  return {archive:a,supported:!a||a.v===TM_ANALYTICS_VERSION,since:a&&a.since,turns:a&&a.all&&a.all.turns||0,path_count:Object.keys(paths).length,leaf_count:leaves,serialized_bytes:a?new TextEncoder().encode(JSON.stringify(a)).length:0,gaps:gap};
+}
+
+  // The display/report/export layer for the durable engine: the single ledger->display adapter
+  // (tmLedgerRowView), the fixed-bin SVG/ASCII histogram renderers (tmThinkRenderBins /
+  // tmThinkBinsAscii), the SiM composition (tmSessionCtxComposeRows), the analytics-gap + blind-route
+  // alerts, and the analytics export. Every 'latest turn' field reads _last (the one completed
+  // ordinary response); retained counters stay on the ledger; the ring supplies only live/pending
+  // state. Ring = display/live only -- never an analytics source.
+
+  // ---- §7.1 ONE ledger->display adapter ----
+  // tmLedgerRowView(idKey, frame) projects the identity record + frame into ONE view shape shared
+  // by the SiM row (build + tick), the report, the Think/display readouts, and the note button.
+  // `_last` is the single source for 'latest completed ordinary turn'. The upgrade-day fallback
+  // (when _last is absent) projects the ONE newest completed ordinary ring capture for the
+  // identity -- display-only, never written to the ledger.
+  // @beacon[
+//   id=fix24-durable-tmLedgerRowView,
+//   slice_labels=tm-thinking-observatory,tm-sessions-in-memory,
+//   kind=ast,
+//   comment=Fix 24 §7.1: one frame-scoped ledger-to-display adapter; one ordinary _last; authoritative capacity; display-only upgrade fallback; no telemetry writes.,
+// ]
+function tmLedgerRowView(idKey, frame) {
+  frame=frame || tmBuildSessionCtxLiveFrame();
+  if(frame.views&&Object.prototype.hasOwnProperty.call(frame.views,idKey)) return frame.views[idKey];
+  var p=String(idKey||'').split('::'), valid=tmIsLedgerIdentityKey(idKey)&&!!p[1];
+  var raw=valid?frame.costs[idKey]:null, rec=raw&&typeof raw==='object'?raw:{_total:typeof raw==='number'?raw:0};
+  var v={idKey:idKey, sid:p[0]||'',model:p[1]||'',host:p[2]||'',isProxy:p[3]==='proxy',rec:rec,frame:frame,
+    analytics:rec._think_hist&&rec._think_hist.analytics||null,_last:rec._last||null,fallbackCap:null,inRing:!!(frame.latest&&frame.latest[idKey])};
+  if(!v._last&&frame.ordinary) v.fallbackCap=frame.ordinary[idKey]||null;
+  v.last=tmLedgerViewLast(v);
+  var last=v.last, think=last&&last.think;
+  v.protocol=(think&&think.protocol)||(frame.think&&frame.think[idKey]&&frame.think[idKey]._think_req.protocol)||tmThinkProtocolFromHost(v.model,v.host);
+  v.route=v.host==='openrouter.ai'?'intermediary':'direct';
+  v.provider=last&&last.provider||{key:null,label:null,slug:null};
+  v.slug=v.route==='direct'?v.host:(v.provider.slug||'');
+  if(!v.slug&&v.fallbackCap) v.slug=tmProviderNameToSlug(v.provider.label||'')||'';
+  v.ctx=last&&last.ctx||null;
+  v.maxCtx=v.ctx ? tmResolveModelMaxCtx(v.model,{slug:v.slug,host:v.host,route:v.route,stamp:v.ctx}) : {max:null,source:null};
+  v.pct=v.ctx&&v.ctx.total!=null&&v.maxCtx.max>0?100*v.ctx.total/v.maxCtx.max:null;
+  v.gap=tmAnalyticsNewGap();
+  if(v.analytics&&v.analytics.gap) tmAnalyticsMergeGapInto(v.gap,v.analytics.gap);
+  if(tmPendingAnalyticsGap[idKey]) tmAnalyticsMergeGapInto(v.gap,tmPendingAnalyticsGap[idKey]);
+  v.empty=!last&&!v.gap.count&&!['_total','_rt_total_ms','_tool_total_ms','_cache_hits','_cache_misses','_rt_count','_tool_count'].some(function(k){return Number(rec[k])>0;})&&
+    !(v.analytics&&((v.analytics.all&&v.analytics.all.turns>0)||v.analytics.ka_pings_excluded>0))&&
+    !(tmMostRecentError&&tmMostRecentError.idKey===idKey)&&!(tmEndpointNotFound&&tmEndpointNotFound.idKey===idKey)&&
+    !(frame.warnings&&frame.warnings[idKey])&&!tmSessionCtxIsBusy(idKey,v,frame);
+  if(frame.views) frame.views[idKey]=v;
+  return v;
+}
+
+  // The view's effective 'latest completed ordinary turn' -- _last when present, else the
+  // transitional ring capture projection (display-only). Returns a normalized snapshot shape.
+  function tmLedgerViewLast(view) {
+  if(!view) return null;
+  if(view._last) return view._last;
+  var c=view.fallbackCap; if(!c) return null;
+  var u=c.response_usage||{}, a=c.response_anthropic_usage||{}, sn=c._ctx_snapshot||null;
+  var read=tmThinkNum(u.cache_read_input_tokens); if(read==null)read=tmThinkNum(a.cache_read_input_tokens);
+  if(read==null)read=tmThinkNum(u.prompt_tokens_details&&u.prompt_tokens_details.cached_tokens);
+  var write=tmThinkNum(u.cache_creation_input_tokens); if(write==null)write=tmThinkNum(a.cache_creation_input_tokens);
+  var prompt=tmThinkNum(u.prompt_tokens);
+  if(prompt==null){var input=tmThinkNum(u.input_tokens);if(input==null)input=tmThinkNum(a.input_tokens);if(input!=null)prompt=input+(read||0)+(write||0);}
+  var api=tmExtractCostVal(a,u), table=typeof c._table_cost==='number'?c._table_cost:0, req=c._think_req;
+  var storedObs=c._think_obs, tok=storedObs&&storedObs.tokens;
+  // Upgrade-only projection preserves the capture's stamped estimate/provenance (no ingestion).
+  var o={reasoning:tok&&tok.reasoning!=null?tok.reasoning:null,source:tok&&tok.source==='bytes-estimate'?'bytes_estimate':tok&&tok.source==='none'?'unknown':tok&&tok.source||'unknown'};
+  return {capture_id:c.id,ts:Date.parse(c.ts),request_ts:Date.parse(c.ts),rt_ms:c._rt_ms,tool_exec_ms:c._tool_exec_ms,
+    ctx:sn,cache:{read:read,write:write,prompt:prompt,hit:tmIsSignificantCacheHit(c)},cost:api>0?api:(table>0?table:null),cost_source:api>0?'api':(table>0?'table':null),
+    provider:{key:null,label:c._provider_label||c.response_provider||null,slug:c._provider_slug||null},
+    think:{level_key:tmThinkAnalyticsLevelKey(req),summary:req&&req.summary,protocol:req&&req.protocol,route:req&&req.route,override_applied:!!(req&&req.override&&req.override.applied),readout:tmThinkBuildReadout(req,c._think_obs)},
+    obs:Object.assign({},o,{visibility:c._think_obs&&c._think_obs.visibility}),service_tier:c._service_tier||null};
+}
+
+  // ---- §7.3 fixed-bin renderers (the durable bucket is the ONLY data source) ----
+  // Merge the sparse 100-bin map into `cols` adjacent-merge groups (count-preserving). Returns
+  // [{lo, hi, count, label}] where lo/hi are token bounds. cols must divide 100 (10/20/50).
+  function tmThinkMergeBins(bucket,cols) {
+  cols=[10,20,50].indexOf(cols)>=0?cols:20;
+  var out=[],per=100/cols;
+  for(var c=0;c<cols;c++) {
+    var count=0;for(var i=c*per;i<(c+1)*per;i++)count+=Number((bucket.bins||{})[i]||0);
+    var lo=Math.ceil(TM_ANALYTICS_BIN_BOUNDS[c*per]),hi=Math.ceil(TM_ANALYTICS_BIN_BOUNDS[(c+1)*per])-1;
+    out.push({lo:lo,hi:hi,count:count,label:lo.toLocaleString('en-US')+'–'+hi.toLocaleString('en-US')});
+  }
+  return out;
+}
+
+  // Inline SVG for the lean SiM row: grey zero bar vs purple nonzero bar (ratio), then the nonzero
+  // distribution merged to 10/20/50 bins by width on its own scale, plus a distinct overflow bar.
+  // Unknown is NOT in the zero/nonzero denominator; it is shown as text beside the bars.
+  // @beacon[
+//   id=fix24-durable-tmThinkRenderBins,
+//   slice_labels=tm-thinking-observatory,tm-sessions-in-memory,
+//   kind=ast,
+//   comment=Fix 24 §7.3: sparse fixed-log-bin SVG; zero/nonzero split; empty bins retain spatial slots without bars; overflow and identity-wide unmeasured coverage.,
+// ]
+function tmThinkRenderBins(bucket,opts) {
+  if(!bucket||!bucket.turns)return '';
+  opts=opts||{};var cols=opts.cols||((opts.widthPx||220)<160?10:((opts.widthPx||220)<320?20:50));
+  var bars=tmThinkMergeBins(bucket,cols),zero=Number(bucket.zero||0),nonzero=Number(bucket.nonzero||0),unknown=Number(bucket.unknown||0),overflow=Number(bucket.overflow||0),h=24,w=4,gap=1;
+  var max=Math.max(overflow,1);bars.forEach(function(b){max=Math.max(max,b.count);});
+  var svg='<svg aria-label="Reasoning distribution" width="'+(27+bars.length*(w+gap)+(overflow?10:0))+'" height="26" style="vertical-align:middle;">';
+  function rect(x,count,scale,color,tip,kind){if(count<=0)return '';var bh=Math.max(1,Math.round(h*count/scale));return '<rect data-bin-kind="'+kind+'" x="'+x+'" y="'+(h-bh)+'" width="4" height="'+bh+'" fill="'+color+'"><title>'+escapeHtml(tip)+'</title></rect>';}
+  svg+=rect(0,zero,zero+nonzero,'#707783',zero+' zero-reasoning turns','zero')+rect(7,nonzero,zero+nonzero,'#c8b4ff',nonzero+' nonzero-reasoning turns','nonzero');
+  bars.forEach(function(b,i){svg+=rect(27+i*(w+gap),b.count,max,'#c8b4ff',b.label+' reasoning tokens: '+b.count+' turns','distribution');});
+  svg+=rect(30+bars.length*(w+gap),overflow,max,'#ff8080','≥ 1,048,576 reasoning tokens: '+overflow+' turns (overflow)','overflow')+'</svg>';
+  var hot=bucket.turns>=3&&unknown/bucket.turns>=0.5;
+  var text=unknown?'<span style="font-size:11px;color:'+(hot?'#ffd166':'#9aa4b2')+';font-weight:'+(hot?'700':'400')+';">❓ '+unknown+' unmeasured</span>':'';
+  return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">'+svg+text+'</span>';
+}
+
+  // Text-bar rendering for the report (the report is a <pre>; Copy All stays meaningful).
+  function tmThinkBinsAscii(bucket,cols) {
+  if(!bucket)return '';
+  var bars=tmThinkMergeBins(bucket,cols||50),max=Math.max(bucket.zero||0,bucket.nonzero||0,bucket.overflow||0,1),lines=[];
+  bars.forEach(function(b){max=Math.max(max,b.count);});
+  function line(label,count){lines.push('  '+label+': '+count+(count>0?' | '+new Array(Math.max(1,Math.round(count/max*32))+1).join('#'):''));}
+  line('zero',bucket.zero||0);line('nonzero',bucket.nonzero||0);lines.push('  unmeasured: '+(bucket.unknown||0));
+  bars.forEach(function(b){if(b.count>0)line(b.label+' reasoning tokens',b.count);});
+  if(bucket.overflow>0)line('>= 1,048,576 (overflow)',bucket.overflow);
+  return lines.join('\n');
+}
+
+  // ---- §7.4 alert: the in-memory blind-banner dismissal set (per identity, re-arms on the next
+  // unmeasured turn; nothing persisted) ----
+  var tmBlindBannerDismissed = {};  // idKey -> true (conversation-scoped)
+
+  // ⚑ Analytics-gap alert (4th alert): small, dim yellow, no red border/glow. Source = persisted
+  // ledger gap + the in-memory pending gap. Fires ONLY for response_read_failed /
+  // analytics_write_failed (WE lost a result). Persists for the conversation.
+  function tmSessionCtxAnalyticsGapCount(idKey,view) {
+  if(view&&view.gap)return view.gap.count;
+  return Number(view&&view.analytics&&view.analytics.gap&&view.analytics.gap.count||0)+Number(tmPendingAnalyticsGap[idKey]&&tmPendingAnalyticsGap[idKey].count||0);
+}
+
+  // 👁‍🗨 Blind-route banner (5th per-row banner, amber, full-width, same weight as the error row).
+  // Current-provider scoped: P = the identity-local capped key of _last.provider.key; B =
+  // analytics.by_provider[P]. Fire when _last.obs.source === 'unknown' AND (B.unknown/B.turns
+  // >= 0.5 once B.turns >= 3, OR B.source.reported + B.source.bytes_estimate === 0). Dismissible
+  // per identity in-memory (re-arms on the next unmeasured turn).
+  function tmSessionCtxBlindBanner(idKey,view) {
+  var b=tmSessionCtxBlindState(view),last=view&&view.last;
+  if(!b.blind||tmBlindBannerDismissed[idKey]===(last&&last.capture_id))return '';
+  var text='👁‍🗨 REASONING UNMEASURED on this route — '+view.model+' @ '+b.label+(b.pooled?' (statistics pooled — provider cap reached)':'')+' returned no reasoning count and no reasoning text on '+b.bucket.unknown+' of '+b.bucket.turns+' recorded turns; the reasoning histogram and totals for this row are blind to those turns.';
+  return '<div style="display:flex;gap:6px;background:#3a2a00;border:1px solid #ffb84d;border-radius:4px;padding:4px 6px;color:#ffb84d;font-size:11px;font-weight:700;"><span style="flex:1;">'+escapeHtml(text)+'</span><button data-action="dismiss-blind-banner" data-key="'+escapeHtml(idKey)+'" title="Dismiss until the next unmeasured turn">×</button></div>';
+}
+
+  // ---- §6.5 SiM composition (deterministic). Returns an ordered list of identity descriptors.
+  // (a) every distinct identity currently in the ring, newest first (no 40-cap drop); (b)
+  // ledger-only identities with _activity_v >= 2 and _ts within 24h, hide-empty, badge; (b′)
+  // pending-gap-only identities as transient rows; (c) dedupe by canonical key; (d) remove
+  // tombstoned identities (after the auto-untombstone resurrection); (e) optional safety cap on (b).
+  function tmSessionCtxComposeRows(frame) {
+  var out=[],seen=Object.create(null),tombs=tmTombstoneReadAll(),changed=false;
+  function add(k,source) {
+    if(!tmIsLedgerIdentityKey(k)||!String(k).split('::')[1]||seen[k])return;
+    seen[k]=true;
+    var t=tombs[k],c=frame.latest[k];
+    if(t&&c&&Date.parse(c.ts)>Number(t._ts)){delete tombs[k];changed=true;t=null;}
+    if(t)return;
+    out.push({idKey:k,source:source,badge:source==='ring'?'':'not in ring buffer'});
+  }
+  frame.order.forEach(function(k){add(k,'ring');});
+  Object.keys(frame.costs).filter(tmIsLedgerIdentityKey).filter(function(k){
+    var r=frame.costs[k];return !seen[k]&&r&&r._activity_v>=2&&Number(r._ts)>0&&frame.now-Number(r._ts)<=86400000&&!tmLedgerRowView(k,frame).empty;
+  }).sort(function(a,b){return frame.costs[b]._ts-frame.costs[a]._ts||a.localeCompare(b);}).forEach(function(k){add(k,'ledger');});
+  Object.keys(tmPendingAnalyticsGap).filter(tmIsLedgerIdentityKey).filter(function(k){return tmPendingAnalyticsGap[k].count>0;}).sort().forEach(function(k){add(k,'pending-gap');});
+  if(changed)tmTombstoneWriteAll(tombs);
+  return out;
+}
+
+  // ---- §7.6 analytics export (clipboard). One read snapshot of the stored ledger, emitted as
+  // pretty-printed JSON. No request/response bodies, no secrets; pending gaps included as
+  // explicitly UNPERSISTED metadata; lifetime and retained-identity sections OVERLAP and are
+  // labelled never to be summed. Export performs no accounting.
+  function tmBuildAnalyticsExport() {
+  var costs=tmGetSessionCosts(),identities=Object.create(null),meta=tmLifetimeAnalyticsMeta(costs);
+  Object.keys(costs).filter(tmIsLedgerIdentityKey).forEach(function(k){var r=costs[k];if(!r||typeof r!=='object')return;var p=k.split('::');identities[k]={sid:p[0],model:p[1],host:p[2],isProxy:p[3]==='proxy',activity_ts:r._ts||null,analytics:r._think_hist&&r._think_hist.analytics||null};});
+  return {exported_at:new Date().toISOString(),schema:{version:TM_ANALYTICS_VERSION,bin_definition:{zero:'exact zero',nonzero_bins:100,boundaries:TM_ANALYTICS_BIN_BOUNDS,overflow_min:1048576},overlap_warning:'Lifetime and retained identity analytics overlap: NEVER sum them.'},
+    lifetime:meta.archive,lifetime_meta:{supported_version:meta.supported,serialized_bytes:meta.serialized_bytes,path_count:meta.path_count,leaf_count:meta.leaf_count,total_gaps:meta.gaps.count},retained_identity_analytics:identities,
+    pending_gap_metadata:{persisted:false,identity:JSON.parse(JSON.stringify(tmPendingAnalyticsGap)),lifetime:tmPendingLifetimeAnalyticsGap?JSON.parse(JSON.stringify(tmPendingLifetimeAnalyticsGap)):null}};
+}
+  function tmExportAnalyticsJson() {
+  var text=JSON.stringify(tmBuildAnalyticsExport(),null,2);copyTextToClipboard(text,'analytics JSON');return text;
+}
+
   // (v4.372) SESSION REASONING-TOKEN HISTOGRAM (inline SVG). ONE rule for every n, so the
   // small-session case degrades gracefully with no mode switch and no 'warming up' decoration:
   //   <= 10 DISTINCT values -> one bar per distinct value (bar height = how many turns hit it,
@@ -6347,74 +7781,7 @@
   // crushes every non-zero bar to invisibility. Render TWO parts instead: a compact [zero | rest]
   // two-bin gauge (shows the ratio), then the non-zero samples on their own full-height scale
   // (so the distribution above zero is actually visible).
-  function tmThinkRenderHistogram(samples, fs) {
-    try {
-      if (!Array.isArray(samples) || !samples.length) return '';
-      var vals = [];
-      for (var i = 0; i < samples.length; i++) { var v = Number(samples[i]); if (isFinite(v) && v >= 0) vals.push(v); }
-      if (!vals.length) return '';
-      var n = vals.length;
-      var zeros = 0, nonZero = [];
-      for (var zi = 0; zi < n; zi++) { if (vals[zi] === 0) zeros++; else nonZero.push(vals[zi]); }
-      var zeroDominated = (zeros > 0 && nonZero.length > 0 && (zeros / n) > 0.4);
-      var work = zeroDominated ? nonZero : vals;
-      var nW = work.length;
-      var sorted = work.slice().sort(function(a, b) { return a - b; });
-      var mn = sorted[0], mx = sorted[nW - 1];
-      var distinct = [], seenV = {};
-      for (var d = 0; d < sorted.length; d++) { if (!seenV[sorted[d]]) { seenV[sorted[d]] = 1; distinct.push(sorted[d]); } }
-      var bars = [], mode;
-      if (distinct.length <= 10) {
-        mode = 'distinct';
-        for (var k = 0; k < distinct.length; k++) {
-          var c = 0;
-          for (var q = 0; q < work.length; q++) if (work[q] === distinct[k]) c++;
-          bars.push({ count: c, label: tmThinkFmtK(distinct[k]), tip: tmThinkFmtK(distinct[k]) + ' thinking tokens \u00d7 ' + c + ' turn' + (c === 1 ? '' : 's') });
-        }
-      } else {
-        mode = 'binned';
-        var kb = Math.min(10, Math.ceil(Math.sqrt(nW)));
-        var w = ((mx - mn) || 1) / kb;
-        for (var b = 0; b < kb; b++) {
-          var lo = mn + b * w, hi = (b === kb - 1) ? mx : (mn + (b + 1) * w), cc = 0;
-          for (var s = 0; s < work.length; s++) {
-            var vv = work[s];
-            if (b === kb - 1 ? (vv >= lo && vv <= hi) : (vv >= lo && vv < hi)) cc++;
-          }
-          bars.push({ count: cc, label: '', tip: tmThinkFmtK(Math.round(lo)) + '\u2013' + tmThinkFmtK(Math.round(hi)) + ' thinking tokens: ' + cc + ' turn' + (cc === 1 ? '' : 's') });
-        }
-      }
-      var maxC = 0;
-      for (var mI = 0; mI < bars.length; mI++) if (bars[mI].count > maxC) maxC = bars[mI].count;
-      if (!maxC) return '';
-      var showLabels = (mode === 'distinct' && bars.length <= 6);
-      var barW = showLabels ? 20 : 10, gap = 3, chartH = 16, labH = showLabels ? 9 : 0;
-      var W = bars.length * (barW + gap), H = chartH + labH + 1;
-      var svg = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '" style="vertical-align:middle;overflow:visible;">';
-      for (var bi = 0; bi < bars.length; bi++) {
-        var bh = Math.max(1, Math.round((bars[bi].count / maxC) * chartH));
-        var x = bi * (barW + gap);
-        svg += '<rect x="' + x + '" y="' + (chartH - bh) + '" width="' + barW + '" height="' + bh + '" rx="1" fill="#c8b4ff" opacity="0.85"><title>' + escapeHtml(bars[bi].tip) + '</title></rect>';
-        if (showLabels) svg += '<text x="' + (x + barW / 2) + '" y="' + (chartH + labH - 1) + '" font-size="7" fill="#9aa4b2" text-anchor="middle">' + escapeHtml(bars[bi].label) + '</text>';
-      }
-      svg += '</svg>';
-      // The two-bin [zero | rest] gauge prepended when zeros dominate.
-      var prefix = '';
-      if (zeroDominated) {
-        var zH = Math.max(1, Math.round((zeros / n) * chartH)), nzH = Math.max(1, Math.round((nonZero.length / n) * chartH));
-        prefix = '<span title="zero-reasoning turns vs thinking turns: ' + zeros + ' zero \u00b7 ' + nonZero.length + ' thinking (' + n + ' total). The histogram to the right shows only the ' + nonZero.length + ' thinking turns, on their own scale." style="display:inline-flex;align-items:flex-end;margin-right:3px;">' +
-          '<svg width="' + (2 * (barW + 2)) + '" height="' + (chartH + 1) + '" viewBox="0 0 ' + (2 * (barW + 2)) + ' ' + (chartH + 1) + '" style="vertical-align:middle;">' +
-          '<rect x="0" y="' + (chartH - zH) + '" width="' + barW + '" height="' + zH + '" rx="1" fill="#5a5f6a"><title>' + zeros + ' zero-reasoning turns</title></rect>' +
-          '<rect x="' + (barW + 2) + '" y="' + (chartH - nzH) + '" width="' + barW + '" height="' + nzH + '" rx="1" fill="#c8b4ff"><title>' + nonZero.length + ' thinking turns</title></rect>' +
-          '</svg></span><span style="color:#4a4f5a;margin-right:2px;font-size:9px;">|</span>';
-      }
-      var tip = 'Reasoning tokens per turn \u2014 ' + n + ' turn' + (n === 1 ? '' : 's') + ' this session' +
-        (zeroDominated ? (' (histogram shows the ' + nonZero.length + ' thinking turns; ' + zeros + ' zero-reasoning turns in the grey bar)') : '') +
-        '; range ' + tmThinkFmtK(mn) + '\u2013' + tmThinkFmtK(mx) +
-        (mode === 'binned' ? ('; ' + bars.length + ' equal-width bins (\u221an rule)') : '; one bar per distinct value, height = how many turns') + '. Hover a bar for its exact figures.';
-      return '<span title="' + escapeHtml(tip) + '" style="display:inline-flex;align-items:center;margin-left:2px;">' + prefix + svg + '</span>';
-    } catch (e) { return ''; }
-  }
+  // tmThinkRenderHistogram retired: durable analytics are event-driven; ring rows carry glyph counters only.
 
   // One side of the histogram as glyph+count runs, sorted like the live glyphs (rank, then order).
   // @beacon[
@@ -6434,7 +7801,7 @@
         if (side === 'obs' && stF.kind === 'amount') return false;
         return true;
       });
-      var histoHtml = (side === 'obs') ? tmThinkRenderHistogram(hist.samples, fs) : '';
+      var histoHtml = ''; // (Fix 24 analytics S4, §7.3) ring rows render GLYPH COUNTERS ONLY; the sample histogram is retired (the durable bucket renders on the SiM row).
       if (!keys.length && !histoHtml) return '';
       keys.sort(function(a, b) { var A = TM_THINK_STATES[a], B = TM_THINK_STATES[b]; return ((A.rank != null ? A.rank : A.order) - (B.rank != null ? B.rank : B.order)); });
       var small = 'font-size:' + (parseInt(fs, 10) - 1 || 9) + 'px;color:#b8b8c8;margin-left:1px;';
@@ -8153,7 +9520,7 @@
         out.push({ model: model, host: host, proxy: proxy, sid: p[0] || '', idKey: String(key), auditKey: k });
       } catch (e) {}
     }
-    try { var costs = tmGetSessionCosts(); for (var k1 in costs) if (Object.prototype.hasOwnProperty.call(costs, k1) && k1.indexOf('::') > 0) add(k1); } catch (e1) {}
+    try { var costs = tmGetSessionCosts(); for (var k1 in costs) if (Object.prototype.hasOwnProperty.call(costs, k1) && tmIsLedgerIdentityKey(k1)) add(k1); } catch (e1) {}
     try { var ovs = tmGetThinkOverrides(); for (var k2 in ovs) if (Object.prototype.hasOwnProperty.call(ovs, k2)) add(k2); } catch (e2) {}
     out.sort(function(a, b) { return (a.model + a.host).localeCompare(b.model + b.host); });
     return out;
@@ -8191,15 +9558,9 @@
   var TM_THINK_AUDIT_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
   function tmThinkAuditIsWarnLevel(lv) { var r = TM_OR_EFFORT_RANK[String(lv || '').toLowerCase()]; return r != null && r >= TM_OR_EFFORT_RANK.medium; }
   // Which wire shape does this identity use? Newest stamped row when there is one; host heuristics otherwise.
-  function tmThinkAuditProtocolFor(m) {
-    try { var e = tmLatestThinkEntryForIdentity(m.idKey); var p = e && e._think_req && e._think_req.protocol; if (p) return p; } catch (e0) {}
-    var h = String(m.host || '').toLowerCase(), mo = String(m.model || '').toLowerCase();
-    if (/openrouter/.test(h)) return 'openai-chat-completions';
-    if (/anthropic\.com/.test(h)) return 'anthropic-messages';
-    if (/generativelanguage|googleapis/.test(h)) return 'gemini-generatecontent';
-    if (/api\.openai\.com/.test(h) && /sol|(^|[\/_-])o[1-9](-|$)/.test(mo)) return 'openai-responses';
-    return 'openai-chat-completions';
-  }
+  function tmThinkAuditProtocolFor(m,frame) {
+  return tmLedgerRowView(m.idKey,frame).protocol||tmThinkProtocolFromHost(m.model||'',m.host||'')||'openai-chat-completions';
+}
   // DRY-RUN the real writer for one level on a synthetic body: returns the writer's report (clamps/changes/notes).
   // Nothing is persisted: the override object is throwaway, ctx.setHeader is a no-op, the body is discarded.
   function tmThinkAuditDryRun(m, level) {
@@ -8919,11 +10280,9 @@
       rep.route = r.label;
       var proto = 'unknown';
       try { proto = tmDetectProtocol(r.target || url, body); } catch (e) {}
-      // (v4.362) Any '/chat/completions' path is the OpenAI-compat shape even when the shared detector's
-      // '/v1/chat/completions' substring misses (e.g. Gemini's /v1beta/openai/chat/completions), which
-      // would otherwise fall through to anthropic-messages on the bare messages[] heuristic.
-      if (proto === 'anthropic-messages' && /\/chat\/completions/i.test(String(r.target || url || ''))) proto = 'openai-chat-completions';
       rep.protocol = proto;
+      // (Fix 24 analytics S1, §0.13) the v4.362 local '/chat/completions' guard here is REMOVED:
+      // the shared detector now matches ANY /chat/completions path, so the guard is redundant.
       // (v4.362) Non-Anthropic shapes dispatch to their own writers; Anthropic Messages continues below.
       if (proto === 'openai-chat-completions' || proto === 'deepinfra-chat-completions') { tmThinkWriteChatCompletions(r, body, ov, rep); tmThinkFinishReport(rep); return rep; }
       if (proto === 'openai-responses') { tmThinkWriteResponses(r, body, ov, rep); tmThinkFinishReport(rep); return rep; }
@@ -9463,16 +10822,11 @@
   //   slice_labels=tm-payload-overview,tm-thinking-observatory,tm-thinking-control,
   //   kind=ast,
   // ]
-  function tmThinkEffectiveForIdentity(idKey) {
-    try {
-      var cap = tmLatestThinkEntryForIdentity(idKey);
-      if (!cap || !cap._think_req) return null;
-      var sent = tmThinkNativeFromReq(cap._think_req, cap._think_obs);
-      var ovr = cap._think_req.override;
-      var native = (ovr && ovr.applied && ovr.native) ? ovr.native : sent;
-      return { native: native, sent: sent, overridden: !!(ovr && ovr.applied), ts: cap.ts_local || cap.ts || null };
-    } catch (e) { return null; }
-  }
+  function tmThinkEffectiveForIdentity(idKey, frame) {
+  var v=tmLedgerRowView(idKey,frame), l=v.last, r=l&&l.think&&l.think.readout;
+  if(!r||!r.sent)return null;
+  return {native:r.native||r.sent,sent:r.sent,overridden:!!l.think.override_applied,ts:l.ts?new Date(l.ts).toLocaleString():null,protocol:v.protocol};
+}
   function tmThinkIdentityIsOpenRouter(idKey) {
     try { var parts = String(idKey || '').split('::'); return /openrouter/i.test(parts[2] || ''); } catch (e) { return false; }
   }
@@ -9496,15 +10850,9 @@
   //   kind=ast,
   //   comment=Gate for rendering the 🎛️ Think / 👁 controls on a surface: admits every identity whose protocol has a Phase 2 writer (newest stamped row's protocol; host-regex fallback before any row exists). Anthropic-only in v4.361, every wire shape since v4.362.,
   // ]
-  function tmThinkControlSupportedForIdentity(idKey) {
-    try {
-      if (!idKey) return false;
-      var cap = tmLatestThinkEntryForIdentity(idKey);
-      if (cap && cap._think_req && cap._think_req.protocol) return !!TM_THINK_WRITER_PROTOCOLS[cap._think_req.protocol];
-      var host = String(idKey).split('::')[2] || '';
-      return /anthropic\.com|openrouter\.ai|openai\.com|x\.ai|moonshot|deepseek|deepinfra|generativelanguage|bigmodel|dashscope/.test(host);
-    } catch (e) { return false; }
-  }
+  function tmThinkControlSupportedForIdentity(idKey,frame) {
+  return !!TM_THINK_WRITER_PROTOCOLS[tmLedgerRowView(idKey,frame).protocol];
+}
 
   // (v4.372) Documented provider DEFAULT thinking levels -- what you actually GET when nothing is
   // sent on the wire. Heuristic table (verify live via the next row's glyphs); '' = truly unknown.
@@ -9571,7 +10919,7 @@
       var S = TM_THINK_STATES;
       var kParts = String(idKey).split('::'), kModel = kParts[1] || '', kHost = kParts[2] || '', kProxy = kParts[3] === 'proxy';
       // (v4.363) Readout: what TypingMind sends natively + what was LAST SENT on the wire for this identity.
-      var eff = tmThinkEffectiveForIdentity(idKey);
+      var eff = tmThinkEffectiveForIdentity(idKey, opts.frame);
       var nat = eff && eff.native, sent = eff && eff.sent;
       var natLvl = nat ? nat.level : null, natDisp = nat ? nat.display : null;
       var sentLvlKey = sent ? sent.levelKey : null, sentDispKey = sent ? sent.displayKey : null;
@@ -9583,7 +10931,7 @@
       var isORid = tmThinkIdentityIsOpenRouter(idKey);
       if (isORid) { try { tmMaybeFetchOrReasoningCaps(); } catch (eF) {} }
       // (v4.393) THE ROUTE VOCABULARY -- the menu is built from the registry (and, on OpenRouter, the live catalogue).
-      var proto = tmThinkAuditProtocolFor({ idKey: idKey, model: kModel, host: kHost, proxy: kProxy });
+      var proto = tmThinkAuditProtocolFor({ idKey: idKey, model: kModel, host: kHost, proxy: kProxy }, opts.frame);
       var VOC = tmThinkVocabFor(kModel, kHost, proto);
       var orc = VOC.orc;
       var exc = !!VOC.exception;
@@ -10106,6 +11454,7 @@
     const headersNorm = tmMaybeRedactHeaders(tmNormalizeHeaders(options && options.headers));
 
     const now = new Date();
+    var tmParsedForPending = null; // (Fix 24 analytics S3) function-scope reference to the parsed FINAL body, set inside the body-string branch and consumed by the pending-record build at the tail.
     const record = {
       id,
       ts: now.toISOString(),
@@ -10147,6 +11496,7 @@
             : bodyRaw.length;
         } catch (eBytes) { record.body_bytes_utf8 = bodyRaw.length; }
         const parsed = JSON.parse(bodyRaw);
+        try { tmParsedForPending = parsed; } catch (ePP) {} // (Fix 24 analytics S3) expose the parsed FINAL body at function scope for the pending-record build below (const parsed is block-scoped to this if).
         record.protocol = tmDetectProtocol(url, parsed);
         // (v4.305) Scan for NON-TEXT inline-data parts (images/documents) NOW, while the full
         // body is guaranteed present -- a skeletonized record would strip the very base64 we
@@ -10262,6 +11612,7 @@
     }
 
     const ring = tmReadCaptureRing();
+    record._request_pin = tmCaptureRequestPin(tmParsedForPending, record._model, tmComputeRoutingIdentityKey(tmParsedForPending, url, options));
     ring.push(record);
     while (ring.length > TM_PAYLOAD_CAPTURE_MAX_ENTRIES) {
       ring.shift();
@@ -10308,12 +11659,89 @@
     }
 
     // (v4.315) Mark the newest outbound payload as in-flight for the live widget ticker.
-    try { tmNoteInFlightCapture(record.id, record.ts); } catch (eIF) {}
+    // (Fix 24 analytics S3, §1.2) Build the request-OWNED pending-turn record FIRST, then write
+    // the in-flight marker from its idKey (never from the ring). This is the request-side home of
+    // the identity / think / pin metadata the response-side terminal paths consume.
+    var tmPendingIdKey = null;
+    try {
+      // (§3 step 4) Identity is derived HERE at request time via tmDeriveStableSessionId (never
+      // body.session_id -- that field is a routing hint the extension itself injects, not an
+      // identity source). model falls back to the URL /models/ path (Gemini native).
+      var _pdBody = tmParsedForPending;
+      var _pdSid = null, _pdModel = null, _pdHost = null, _pdIsProxy = false;
+      try { _pdSid = _pdBody ? tmDeriveStableSessionId(_pdBody) : null; } catch (eS) {}
+      if (!_pdSid) { try { _pdSid = record.session_id; } catch (eS2) {} }
+      try { _pdModel = record._model || (_pdBody && _pdBody.model) || null; } catch (eM) {}
+      try { _pdHost = tmExtractEndpointHost({ url: url, headers: headersNorm }); } catch (eH) {}
+      try { _pdIsProxy = tmIsProxyCapture({ url: url, headers: headersNorm }); } catch (eP) {}
+      try { tmPendingTurnsLeakGuard(Date.now()); } catch (eLG) {}
+      if (_pdSid && _pdModel) {
+        tmPendingIdKey = tmBuildIdentityKey(_pdSid, _pdModel, _pdHost, _pdIsProxy);
+        var _pdThinkReq = record._think_req || null;
+        var _pdRec = {
+          idKey: tmPendingIdKey, sid: _pdSid, model: _pdModel, host: _pdHost, isProxy: _pdIsProxy,
+          requestTs: Date.now(),
+          tool_exec_ms: null,   // filled by tmAgentManagementNoteOutbound (§3 step 4)
+          think: {
+            level_key: tmThinkAnalyticsLevelKey(_pdThinkReq),
+            summary: (_pdThinkReq && _pdThinkReq.summary) ? String(_pdThinkReq.summary).slice(0, 200) : null,
+            protocol: (_pdThinkReq && _pdThinkReq.protocol) || null,
+            route: _pdHost === 'openrouter.ai' ? 'intermediary' : 'direct',
+            override_applied: !!(_pdThinkReq && _pdThinkReq.override && _pdThinkReq.override.applied),
+            req_states: tmThinkReqStatesFromScan(_pdThinkReq),
+            readout: tmThinkBuildReadout(_pdThinkReq, null)
+          },
+          isKaPing: !!record._ka_ping,
+          pastedSid: record.pasted_session_id || null,
+          requestPin: record._request_pin || null
+        };
+        tmPendingTurnPut(record.id, _pdRec);
+        // (§3 step 4) Outbound traffic is identity activity whether or not a response arrives:
+        // touch the ledger (creating a MINIMAL activity record if absent) and clear any tombstone
+        // for this exact identity (auto-untombstone on NEW outbound, no isKaPing exemption).
+        try { tmLedgerTouchActivity(tmPendingIdKey, { create: true, ts: Date.now() }); } catch (eTA) {}
+        try { tmTombstoneClear(tmPendingIdKey); } catch (eTC) {}
+      }
+    } catch (ePend) {}
+    try { tmNoteInFlightCapture(record.id, record.ts, tmPendingIdKey); } catch (eIF) {}
 
     return id;
   }
 
   // @carto-group id=client-group-3 label="Client group 3"
+
+  // (Fix 24 analytics S1, §0.5) THE TELEMETRY ENVELOPE BOUNDARY. Usage extraction
+  // (tmExtractKnownUsageEvidence) and error detection (tmFindProviderErrorPayload) read the
+  // provider ENVELOPE only -- two subtree classes are never walked for telemetry:
+  //   (a) model-GENERATED content, by block type / container wherever the envelope places it:
+  //       Anthropic content[] blocks (text / thinking / redacted_thinking / tool_use / tool_result
+  //       / image / document -- including a streaming content_block_start's content_block);
+  //       chat-completions message/delta content, tool_calls, reasoning* and refusal; Responses
+  //       output[] item content / arguments / summary (including response.output_item.added|done
+  //       item payloads); Gemini candidates[].content.parts. (The thinking/output ACCUMULATOR
+  //       still reads those blocks -- that is its job. A tool call's ARGUMENTS are never a usage
+  //       figure; an assistant DESCRIBING an error is not an API error.)
+  //   (b) echoed REQUEST configuration, by container: tools[] / tool_choice / text.format. A tool
+  //       definition or a JSON schema is never telemetry (a schema property NAMED 'error', or a
+  //       schema default carrying cost-like keys, is not an API error or a charge).
+  // The unfamiliar-provider fallback keeps walking everything else.
+  var TM_TELEMETRY_CONTENT_BLOCK_TYPES = { text: 1, thinking: 1, redacted_thinking: 1, tool_use: 1, server_tool_use: 1, tool_result: 1, image: 1, document: 1 };
+  function tmTelemetryIsContentBlock(node) {
+    return !!(node && typeof node === 'object' && !Array.isArray(node) &&
+      typeof node.type === 'string' && TM_TELEMETRY_CONTENT_BLOCK_TYPES[node.type] === 1);
+  }
+  function tmTelemetrySkipChild(inKey, k) {
+    // Echoed request configuration (wherever the envelope places it).
+    if (k === 'tools' || k === 'tool_choice') return true;
+    if (inKey === 'text' && k === 'format') return true;                                  // Responses text.format
+    // Model-generated content (by container).
+    if (inKey === 'candidates' && k === 'content') return true;                           // Gemini candidate parts
+    if ((inKey === 'message' || inKey === 'delta') &&
+        (k === 'content' || k === 'tool_calls' || k === 'refusal' || k.indexOf('reasoning') === 0)) return true;
+    if ((inKey === 'output' || inKey === 'item') &&
+        (k === 'content' || k === 'arguments' || k === 'summary')) return true;           // Responses items
+    return false;
+  }
 
   // (v4.86) Provider-agnostic response-usage fallback. Unknown normal endpoints are already
   // captured; this reads known cache/cost field variants anywhere in JSON or SSE event objects,
@@ -10350,21 +11778,36 @@
     function inspect(obj) {
       if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return;
       var details = obj.prompt_tokens_details || obj.promptTokensDetails || obj.input_tokens_details || obj.inputTokensDetails || null;
-      var read = firstNum(obj, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cache_read_tokens', 'cacheReadTokens', 'cached_tokens', 'cachedTokens', 'cached_content_token_count', 'cachedContentTokenCount', 'cache_hit_tokens', 'cacheHitTokens']);
+      // (Fix 24 analytics S1, §0.14) DeepSeek direct spellings: prompt_cache_hit_tokens is cached
+      // INPUT -- a cache READ (DeepSeek's prompt_tokens = hit + miss, INCLUSIVE).
+      // prompt_cache_miss_tokens is the UNCACHED remainder: it is deliberately on NO list here --
+      // never cache CREATION (DeepSeek bills no write fee), never the read figure.
+      var read = firstNum(obj, ['cache_read_input_tokens', 'cacheReadInputTokens', 'cache_read_tokens', 'cacheReadTokens', 'cached_tokens', 'cachedTokens', 'cached_content_token_count', 'cachedContentTokenCount', 'cache_hit_tokens', 'cacheHitTokens', 'prompt_cache_hit_tokens', 'promptCacheHitTokens']);
       if (read == null && details) read = firstNum(details, ['cached_tokens', 'cachedTokens', 'cached_content_token_count', 'cachedContentTokenCount', 'cache_read_tokens', 'cacheReadTokens']);
       var write = firstNum(obj, ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens', 'cache_write_input_tokens', 'cacheWriteInputTokens']);
       if (write == null && details) write = firstNum(details, ['cache_write_tokens', 'cacheWriteTokens', 'cache_creation_tokens', 'cacheCreationTokens']);
-      var cost = firstNum(obj, ['cost', 'estimated_cost', 'estimatedCost']);
-      // (v4.218) OpenRouter can report cost:0 at the top level when the real charge is nested in
-      // cost_details.upstream_inference_cost (observed on a 502 streamed error with real usage).
-      // Prefer the real upstream cost over a zero top-level cost so error responses still log cost.
-      if ((cost == null || cost === 0) && obj.cost_details) {
+      // (Fix 24 analytics S1, §0.6) COST SELECTION, first POSITIVE candidate across the known
+      // cost keys (cost / estimated_cost / cost_details.upstream_inference_cost); zero stands
+      // only when every candidate is zero or absent. (Was: first non-null, so
+      // {cost:0, estimated_cost:1.25} normalized to 0; the v4.218 upstream rescue below it only
+      // fired on a zero/missing top-level cost.)
+      var cost = null;
+      var costKeys = ['cost', 'estimated_cost', 'estimatedCost'];
+      for (var costKi = 0; costKi < costKeys.length; costKi++) {
+        var costN = num(obj[costKeys[costKi]]);
+        if (costN != null && costN > 0) { cost = costN; break; }
+      }
+      if (cost == null && obj.cost_details) {
         var uic = firstNum(obj.cost_details, ['upstream_inference_cost', 'upstreamInferenceCost']);
         if (uic != null && uic > 0) cost = uic;
       }
+      if (cost == null) cost = firstNum(obj, ['cost', 'estimated_cost', 'estimatedCost']);
       setIfAbsent('cache_read_input_tokens', read);
       setIfAbsent('cache_creation_input_tokens', write);
-      setIfAbsent('cost', cost);
+      // (Fix 24 analytics S1, §0.6) across the WALK the first POSITIVE cost wins too: a zero is
+      // kept only while nothing positive has been seen (an outer cost:0 must not mask a nested
+      // usage.cost:1.25 -- setIfAbsent would freeze the 0).
+      if (cost != null && (out.cost == null || (out.cost === 0 && cost > 0))) { out.cost = cost; found = true; }
       // (v4.120) Preserve prompt_tokens / total_tokens so the hit/miss ratio check works.
       // (v4.244) GEMINI-NATIVE SPELLINGS. The Google generativelanguage API reports
       // promptTokenCount / totalTokenCount / candidatesTokenCount inside usageMetadata. Only its
@@ -10376,8 +11819,21 @@
       // Preserve input_tokens as its own canonical fallback rather than forcing it into
       // prompt_tokens: some segmented APIs use input_tokens while OpenAI-style APIs use
       // prompt_tokens. Downstream cost logic already accepts either spelling.
-      setIfAbsent('input_tokens', firstNum(obj, ['input_tokens', 'inputTokens', 'inputTokenCount']));
+      // (Fix 24 analytics S1, §0.6) input_tokens SHAPE rule. A prompt-family count
+      // (prompt_tokens / promptTokens / promptTokenCount) is INCLUSIVE -- it already contains the
+      // cached prefix -- and takes precedence. Responses-API usage carries input_tokens_details,
+      // which proves its input_tokens is the FULL input (cached included): the extractor then ALSO
+      // sets prompt_tokens = input_tokens, so every downstream consumer keys the inclusive shape
+      // off prompt_tokens NUMERIC PRESENCE (including 0), never || truthiness. Anthropic's bare
+      // input_tokens (literal sibling cache_read/cache_creation, NO prompt count) stays
+      // EXCLUSIVE: consumers sum input + read + write for the full prompt and bill input_tokens
+      // as the new-input figure. The NORMALIZED cache_read_input_tokens name is never itself
+      // evidence of exclusivity.
+      var inpTok = firstNum(obj, ['input_tokens', 'inputTokens', 'inputTokenCount']);
+      setIfAbsent('input_tokens', inpTok);
       setIfAbsent('prompt_tokens', firstNum(obj, ['prompt_tokens', 'promptTokens', 'promptTokenCount']));
+      var inpDetails = obj.input_tokens_details || obj.inputTokensDetails || null;
+      if (inpDetails && inpTok != null) setIfAbsent('prompt_tokens', inpTok);
       setIfAbsent('total_tokens', firstNum(obj, ['total_tokens', 'totalTokens', 'totalTokenCount']));
       // (v4.244) completion/output tokens were never extracted for ANY provider spelling, so
       // tmCalculateCostFromTable could only reach output via its total-minus-prompt fallback (and
@@ -10407,23 +11863,27 @@
         if (write != null) out.prompt_tokens_details.cache_write_tokens = write;
       }
     }
-    function walk(node, depth) {
+    function walk(node, depth, inKey) {
       if (!node || typeof node !== 'object' || depth > 8) return;
       try {
         if (seen) { if (seen.has(node)) return; seen.add(node); }
       } catch (e) {}
       if (Array.isArray(node)) {
-        for (var ai = 0; ai < node.length; ai++) walk(node[ai], depth + 1);
+        for (var ai = 0; ai < node.length; ai++) walk(node[ai], depth + 1, inKey);
         return;
       }
+      // (Fix 24 analytics S1, §0.5a) a model-generated content BLOCK is never telemetry.
+      if (tmTelemetryIsContentBlock(node)) return;
       inspect(node);
       var keys = Object.keys(node);
       for (var ki = 0; ki < keys.length; ki++) {
+        // (Fix 24 analytics S1, §0.5) skip generated-content containers and echoed request config.
+        if (tmTelemetrySkipChild(inKey, keys[ki])) continue;
         var value = node[keys[ki]];
-        if (value && typeof value === 'object') walk(value, depth + 1);
+        if (value && typeof value === 'object') walk(value, depth + 1, keys[ki]);
       }
     }
-    walk(root, 0);
+    walk(root, 0, '');
     return found ? out : null;
   }
 
@@ -10457,17 +11917,21 @@
 
   function tmFindProviderErrorPayload(root) {
     if (root == null || typeof root !== 'object') return null;
-    var queue = [{ value: root, depth: 0 }];
+    var queue = [{ value: root, depth: 0, inKey: '' }];
     var seen = (typeof WeakSet !== 'undefined') ? new WeakSet() : null;
     var scanned = 0;
     while (queue.length && scanned < 200) {
       var item = queue.shift();
       var node = item.value;
       var depth = item.depth;
+      var inKey = item.inKey;
       if (!node || typeof node !== 'object') continue;
       scanned++;
       try { if (seen) { if (seen.has(node)) continue; seen.add(node); } } catch (e) {}
       if (!Array.isArray(node)) {
+        // (Fix 24 analytics S1, §0.5a) model-generated content is never an API error (an
+        // assistant DESCRIBING an error in a text/thinking/tool block is not one).
+        if (tmTelemetryIsContentBlock(node)) continue;
         if (Object.prototype.hasOwnProperty.call(node, 'error') && node.error != null && node.error !== false && node.error !== '') {
           return node.error;
         }
@@ -10476,9 +11940,20 @@
             (node.message != null || node.detail != null || node.code != null)) return node;
       }
       if (depth >= 6) continue;
-      var vals = Array.isArray(node) ? node : Object.keys(node).map(function(k) { return node[k]; });
-      for (var i = 0; i < vals.length && queue.length < 200; i++) {
-        if (vals[i] && typeof vals[i] === 'object') queue.push({ value: vals[i], depth: depth + 1 });
+      // (Fix 24 analytics S1, §0.5b) echoed request config (tools[] / tool_choice / text.format)
+      // is never an API error either: a schema declaring an 'error' PROPERTY must not trip this.
+      if (Array.isArray(node)) {
+        for (var i = 0; i < node.length && queue.length < 200; i++) {
+          if (node[i] && typeof node[i] === 'object') queue.push({ value: node[i], depth: depth + 1, inKey: inKey });
+        }
+      } else {
+        var eKeys = Object.keys(node);
+        for (var ki = 0; ki < eKeys.length && queue.length < 200; ki++) {
+          var ek = eKeys[ki];
+          if (tmTelemetrySkipChild(inKey, ek)) continue;
+          var ev = node[ek];
+          if (ev && typeof ev === 'object') queue.push({ value: ev, depth: depth + 1, inKey: ek });
+        }
       }
     }
     return null;
@@ -10880,147 +12355,11 @@
   //   kind=ast,
   //   comment=Response receipt = the ONE identity/cost/metadata stamping event (usage extraction, cost recording, _identity stamp, store touch, widget render).,
   // ]
-  function tmCaptureResponse(captureId, response) {
-    if (!tmCaptureEnabled() || !captureId || !response) return;
-
-    try {
-      const hdrs = tmMaybeRedactHeaders(tmNormalizeHeaders(response.headers));
-      tmUpdateCaptureRecord(captureId, {
-        response_status: response.status,
-        response_ok: response.ok,
-        response_headers: hdrs
-      });
-    } catch (e) {
-      // ignore
-    }
-
-    // Best-effort response body capture (can be large / streaming)
-    try {
-      const clone = response.clone();
-      clone.text().then(
-        function(text) {
-          const patch = { response_body_chars: (typeof text === 'string' ? text.length : null) };
-          // (v4.211) Track whether this response carried an ERROR (HTTP>=400 or an error chunk),
-          // so the widget-feed gate below can leave the last SUCCESSFUL turn's values untouched.
-          var capHadError = false;
-          try { capHadError = (Number(response.status) >= 400); } catch (e) {}
-          // (Fix 24, v4.351) THINKING OBSERVATORY -- per-turn observed-thinking accumulator. Fed by
-          // every SSE data event (or the one non-streaming body); finalized after the patch below.
-          var thinkAcc = tmThinkNewObsAccumulator();
-          try {
-            // Try JSON parse first (non-streaming responses)
-            const parsed = JSON.parse(text);
-            try { tmThinkAccumulateEvent(thinkAcc, parsed); } catch (eTk) {}
-            var storedResponse = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
-            if (JSON.stringify(storedResponse).length <= TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS) {
-              patch.response_body = storedResponse;
-            } else {
-              patch.response_body = tmBuildCompactResponseSkeleton(parsed);
-              patch.response_body_compacted = true;
-            }
-            // Non-streaming provider responses: surface any known cache/cost evidence too.
-            var jsonUsage = tmExtractKnownUsageEvidence(parsed);
-            if (jsonUsage) patch.response_usage = jsonUsage;
-            // (v4.197) Capture the top-level provider string for inline modal display.
-            if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
-              patch.response_provider = parsed.provider;
-            }
-            // (v4.311) Non-streaming: capture service_tier for per-tier cost keying
-            // (Responses API: top level; chat-completions: top level).
-            var jsonTier = (parsed && typeof parsed.service_tier === 'string' && parsed.service_tier)
-              || (parsed && parsed.response && typeof parsed.response.service_tier === 'string' && parsed.response.service_tier) || null;
-            if (jsonTier) patch._service_tier = jsonTier;
-            // (v4.275) Persist the provider's actual error separately from response_body. For an
-            // HTTP failure without a conventional nested `error`, preserve the whole JSON body.
-            var jsonErrorPayload = tmFindProviderErrorPayload(parsed);
-            if (jsonErrorPayload == null && Number(response.status) >= 400) jsonErrorPayload = parsed;
-            if (jsonErrorPayload != null) {
-              patch.error = tmBuildCapturedProviderError(jsonErrorPayload, response.status, 'json');
-              capHadError = true;
-            }
-          } catch (e) {
-            // SSE/streaming: store head for context
-            var s = String(text || '');
-            var headLimit = Math.min(tmGetTruncationLimit(), TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS);
-            patch.response_body_head = s.slice(0, headLimit) +
-              (s.length > headLimit ? ('... [tm_truncated +' + (s.length - headLimit) + ' chars]') : '');
-
-            // Extract usage from SSE stream by scanning all data: lines
-            try {
-              var lines = s.split('\n');
-              var lastUsage = null;
-              var anthropicUsage = null;
-              var usageSegments = [];
-              var sseProvider = null; // (v4.197) top-level provider string carried by each SSE chunk
-              var respServiceTier = null; // (v4.311) service_tier from Responses/chat chunks (fast='priority' vs default)
-              for (var li = 0; li < lines.length; li++) {
-                var line = lines[li].trim();
-                if (!line.startsWith('data: ')) continue;
-                var jsonStr = line.slice(6).trim();
-                if (jsonStr === '[DONE]') continue;
-                try {
-                  var parsed2 = JSON.parse(jsonStr);
-                  var hit = false;
-                  // (Fix 24, v4.351) Feed the thinking accumulator (counts only; never stores content).
-                  try { tmThinkAccumulateEvent(thinkAcc, parsed2); } catch (eTk) {}
-                  // Generic fallback for unfamiliar providers / field nesting. This is read-only:
-                  // it merely promotes cache read/write + cost evidence into the capture/widget.
-                  var genericUsage = tmExtractKnownUsageEvidence(parsed2);
-                  if (genericUsage) {
-                    lastUsage = tmMergeUsageInto(lastUsage, genericUsage);
-                    hit = true;
-                  }
-                  // OpenRouter-style: usage in root of chunk
-                  if (!genericUsage && parsed2 && parsed2.usage) {
-                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.usage);
-                    hit = true;
-                  }
-                  // OpenAI Responses-style: usage in response.completed -> response.usage
-                  if (parsed2 && parsed2.response && parsed2.response.usage) {
-                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.response.usage);
-                    hit = true;
-                  }
-                  // Anthropic-style: usage in message_start
-                  if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
-                    anthropicUsage = parsed2.message.usage; hit = true;
-                  }
-                  // Anthropic-style: additional usage in message_delta
-                  if (parsed2 && parsed2.type === 'message_delta' && parsed2.usage) {
-                    anthropicUsage = anthropicUsage || {};
-                    var du = parsed2.usage;
-                    for (var k in du) { if (Object.prototype.hasOwnProperty.call(du, k)) { anthropicUsage[k] = du[k]; } }
-                    hit = true;
-                  }
-                  // (v4.197) Capture the top-level provider string (e.g. 'Moonshot AI', 'Baseten')
-                  // so the modal row can show it inline without opening the raw segment.
-                  if (!sseProvider && parsed2 && typeof parsed2.provider === 'string' && parsed2.provider) {
-                    sseProvider = parsed2.provider;
-                  }
-                  // (v4.311) Capture service_tier so cost keys can split fast (priority) vs
-                  // default tiers. Responses API carries it inside `response`; chat chunks
-                  // may carry it top-level. Last-wins: response.completed (which resolves
-                  // 'auto' -> 'default'/'priority') arrives last, so it is authoritative.
-                  if (parsed2 && parsed2.response && typeof parsed2.response.service_tier === 'string' && parsed2.response.service_tier) {
-                    respServiceTier = parsed2.response.service_tier;
-                  } else if (parsed2 && typeof parsed2.service_tier === 'string' && parsed2.service_tier) {
-                    respServiceTier = parsed2.service_tier;
-                  }
-                  // (v4.198) ALSO preserve ERROR-bearing segments (provider 400s / schema rejections),
-                  // which carry NO usage. Previously these were dropped, so a crashed turn showed a
-                  // provider (extracted above) but had NO Raw Seg button — you couldn't see the error
-                  // without opening the network tab. A chunk with an `error` field is exactly the
-                  // diagnostic you want, so mark it as worth keeping.
-                  // (v4.275) Persist the first actual streamed error as a compact first-class field.
-                  // Keep the raw segment too (v4.198), but `error` survives old-entry compaction.
-                  var sseErrorPayload = tmFindProviderErrorPayload(parsed2);
-                  if (sseErrorPayload != null) {
-                    hit = true;
-                    capHadError = true;
-                    if (!patch.error) patch.error = tmBuildCapturedProviderError(sseErrorPayload, response.status, 'sse');
-                  }
-                  // (v4.258) Build a compact skeleton for an oversized SSE segment: preserve usage/cost/error
+  // (v4.258) Build a compact skeleton for an oversized SSE segment: preserve usage/cost/error
   // verbatim, strip the giant echoed fields (tools, large output arrays, reasoning content).
-  // Returns a JSON string capped near TM_RAW_SEG_SKELETON_MAX. Never throws.
+  // Returns a JSON string capped near TM_RAW_SEG_MAX_CHARS. Never throws.
+  // (Fix 24 analytics S1: HOISTED out of tmCaptureResponse to function scope -- it was a nested
+  // declaration inside the body-read closure.)
   const TM_RAW_SEG_MAX_CHARS = 24 * 1024;
   function tmSlimRawSegment(jsonStr) {
     try {
@@ -11080,6 +12419,171 @@
     }
   }
 
+  function tmCaptureResponse(captureId,response) {
+  if(!captureId||!response)return;
+  if(!tmCaptureEnabled()){tmTerminalCleanup(captureId);return;}
+  try { tmUpdateCaptureRecord(captureId,{response_status:response.status,response_ok:response.ok,response_headers:tmMaybeRedactHeaders(tmNormalizeHeaders(response.headers))}); } catch(e) {}
+  try {
+    return response.clone().text().then(function(text){
+      if(!tmCaptureEnabled()){tmTerminalCleanup(captureId);return;}
+          const patch = { response_body_chars: (typeof text === 'string' ? text.length : null) };
+          // (v4.211) Track whether this response carried an ERROR (HTTP>=400 or an error chunk),
+          // so the widget-feed gate below can leave the last SUCCESSFUL turn's values untouched.
+          var capHadError = false;
+          try { capHadError = (Number(response.status) >= 400); } catch (e) {}
+          // (Fix 24, v4.351) THINKING OBSERVATORY -- per-turn observed-thinking accumulator. Fed by
+          // every SSE data event (or the one non-streaming body); finalized after the patch below.
+          var thinkAcc = tmThinkNewObsAccumulator();
+          try {
+            // Try JSON parse first (non-streaming responses)
+            const parsed = JSON.parse(text);
+            // (Fix 24 analytics S1, §0.3) a JSON-ARRAY body is a sequence of successive events
+            // (a JSON-concatenated stream): iterate its elements IN ORDER through the SAME
+            // complete per-event consumer the SSE loop uses below -- usage merge (last wins),
+            // the thinking accumulator, provider string, service tier and error detection.
+            if (Array.isArray(parsed)) {
+              var arrUsage = null, arrProvider = null, arrTier = null, arrHadErr = false;
+              var arrSegs = [];
+              for (var ai = 0; ai < parsed.length; ai++) {
+                var evEl = parsed[ai];
+                if (!evEl || typeof evEl !== 'object') continue;
+                var elHadErr = false;
+                try { tmThinkAccumulateEvent(thinkAcc, evEl); } catch (eTk) {}
+                var evUsage = tmExtractKnownUsageEvidence(evEl);
+                if (evUsage) { arrUsage = tmMergeUsageInto(arrUsage, evUsage); tmThinkAccNoteOutputUsage(thinkAcc, evEl && evEl.type, evUsage); }   // last wins
+                if (!arrProvider && typeof evEl.provider === 'string' && evEl.provider) arrProvider = evEl.provider;
+                var evTier = (evEl.response && typeof evEl.response.service_tier === 'string' && evEl.response.service_tier)
+                  || (typeof evEl.service_tier === 'string' && evEl.service_tier) || null;
+                if (evTier) arrTier = evTier;
+                var evErr = tmFindProviderErrorPayload(evEl);
+                if (evErr != null) {
+                  elHadErr = true;
+                  if (!patch.error) patch.error = tmBuildCapturedProviderError(evErr, response.status, 'json-array');
+                }
+                if (evUsage || elHadErr) arrSegs.push(tmSlimRawSegment(JSON.stringify(evEl)));
+                if (elHadErr) arrHadErr = true;
+              }
+              if (arrSegs.length) patch.response_usage_segments = arrSegs;
+              if (arrUsage) patch.response_usage = arrUsage;
+              if (arrProvider) patch.response_provider = arrProvider;
+              if (arrTier) patch._service_tier = arrTier;
+              if (arrHadErr) capHadError = true;
+            } else {
+            try { tmThinkAccumulateEvent(thinkAcc, parsed); } catch (eTk) {}
+            var storedResponse = tmTruncateStringsDeep(parsed, tmGetTruncationLimit());
+            if (JSON.stringify(storedResponse).length <= TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS) {
+              patch.response_body = storedResponse;
+            } else {
+              patch.response_body = tmBuildCompactResponseSkeleton(parsed);
+              patch.response_body_compacted = true;
+            }
+            // Non-streaming provider responses: surface any known cache/cost evidence too.
+            var jsonUsage = tmExtractKnownUsageEvidence(parsed);
+            if (jsonUsage) { patch.response_usage = jsonUsage; tmThinkAccNoteOutputUsage(thinkAcc, parsed && parsed.type, jsonUsage); }
+            // (v4.197) Capture the top-level provider string for inline modal display.
+            if (parsed && typeof parsed.provider === 'string' && parsed.provider) {
+              patch.response_provider = parsed.provider;
+            }
+            // (v4.311) Non-streaming: capture service_tier for per-tier cost keying
+            // (Responses API: top level; chat-completions: top level).
+            var jsonTier = (parsed && typeof parsed.service_tier === 'string' && parsed.service_tier)
+              || (parsed && parsed.response && typeof parsed.response.service_tier === 'string' && parsed.response.service_tier) || null;
+            if (jsonTier) patch._service_tier = jsonTier;
+            // (v4.275) Persist the provider's actual error separately from response_body. For an
+            // HTTP failure without a conventional nested `error`, preserve the whole JSON body.
+            var jsonErrorPayload = tmFindProviderErrorPayload(parsed);
+            if (jsonErrorPayload == null && Number(response.status) >= 400) jsonErrorPayload = parsed;
+            if (jsonErrorPayload != null) {
+              patch.error = tmBuildCapturedProviderError(jsonErrorPayload, response.status, 'json');
+              capHadError = true;
+            }
+            } // (Fix 24 analytics S1, §0.3) end non-array single-body branch
+          } catch (e) {
+            // SSE/streaming: store head for context
+            var s = String(text || '');
+            var headLimit = Math.min(tmGetTruncationLimit(), TM_PAYLOAD_CAPTURE_MAX_RESPONSE_CHARS);
+            patch.response_body_head = s.slice(0, headLimit) +
+              (s.length > headLimit ? ('... [tm_truncated +' + (s.length - headLimit) + ' chars]') : '');
+
+            // Extract usage from SSE stream by scanning all data: lines
+            try {
+              var lines = s.split('\n');
+              var lastUsage = null;
+              var anthropicUsage = null;
+              var usageSegments = [];
+              var sseProvider = null; // (v4.197) top-level provider string carried by each SSE chunk
+              var respServiceTier = null; // (v4.311) service_tier from Responses/chat chunks (fast='priority' vs default)
+              for (var li = 0; li < lines.length; li++) {
+                var dataM = /^data:\s?/.exec(lines[li].trim());
+                if (!dataM) continue;
+                var jsonStr = lines[li].trim().slice(dataM[0].length).trim();
+                if (jsonStr === '[DONE]') continue;
+                try {
+                  var parsed2 = JSON.parse(jsonStr);
+                  var hit = false;
+                  // (Fix 24, v4.351) Feed the thinking accumulator (counts only; never stores content).
+                  try { tmThinkAccumulateEvent(thinkAcc, parsed2); } catch (eTk) {}
+                  // Generic fallback for unfamiliar providers / field nesting. This is read-only:
+                  // it merely promotes cache read/write + cost evidence into the capture/widget.
+                  var genericUsage = tmExtractKnownUsageEvidence(parsed2);
+                  if (genericUsage) {
+                    lastUsage = tmMergeUsageInto(lastUsage, genericUsage);
+                    hit = true;
+                  }
+                  // OpenRouter-style: usage in root of chunk
+                  if (!genericUsage && parsed2 && parsed2.usage) {
+                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.usage);
+                    hit = true;
+                  }
+                  // OpenAI Responses-style: usage in response.completed -> response.usage
+                  if (parsed2 && parsed2.response && parsed2.response.usage) {
+                    lastUsage = tmMergeUsageInto(lastUsage, parsed2.response.usage);
+                    hit = true;
+                  }
+                  // Anthropic-style: usage in message_start
+                  if (parsed2 && parsed2.type === 'message_start' && parsed2.message && parsed2.message.usage) {
+                    anthropicUsage = parsed2.message.usage; hit = true;
+                  }
+                  // Anthropic-style: additional usage in message_delta
+                  if (parsed2 && parsed2.type === 'message_delta' && parsed2.usage) {
+                    anthropicUsage = anthropicUsage || {};
+                    var du = parsed2.usage;
+                    for (var k in du) { if (Object.prototype.hasOwnProperty.call(du, k)) { anthropicUsage[k] = du[k]; } }
+                    hit = true;
+                  }
+                  // (Fix 24 analytics S3, §1.3a) track output-usage evidence from any non-
+                  // message_start source (SSE chunk usage / response.usage / message_delta).
+                  try {
+                    var _srcUsage = genericUsage || (parsed2 && parsed2.usage) || (parsed2 && parsed2.response && parsed2.response.usage) || ((parsed2 && parsed2.type === 'message_delta') ? parsed2.usage : null);
+                    if (_srcUsage) tmThinkAccNoteOutputUsage(thinkAcc, parsed2 && parsed2.type, _srcUsage);
+                  } catch (eNOU) {}
+                  // (v4.197) Capture the top-level provider string (e.g. 'Moonshot AI', 'Baseten')
+                  // so the modal row can show it inline without opening the raw segment.
+                  if (!sseProvider && parsed2 && typeof parsed2.provider === 'string' && parsed2.provider) {
+                    sseProvider = parsed2.provider;
+                  }
+                  // (v4.311) Capture service_tier so cost keys can split fast (priority) vs
+                  // default tiers. Responses API carries it inside `response`; chat chunks
+                  // may carry it top-level. Last-wins: response.completed (which resolves
+                  // 'auto' -> 'default'/'priority') arrives last, so it is authoritative.
+                  if (parsed2 && parsed2.response && typeof parsed2.response.service_tier === 'string' && parsed2.response.service_tier) {
+                    respServiceTier = parsed2.response.service_tier;
+                  } else if (parsed2 && typeof parsed2.service_tier === 'string' && parsed2.service_tier) {
+                    respServiceTier = parsed2.service_tier;
+                  }
+                  // (v4.198) ALSO preserve ERROR-bearing segments (provider 400s / schema rejections),
+                  // which carry NO usage. Previously these were dropped, so a crashed turn showed a
+                  // provider (extracted above) but had NO Raw Seg button — you couldn't see the error
+                  // without opening the network tab. A chunk with an `error` field is exactly the
+                  // diagnostic you want, so mark it as worth keeping.
+                  // (v4.275) Persist the first actual streamed error as a compact first-class field.
+                  // Keep the raw segment too (v4.198), but `error` survives old-entry compaction.
+                  var sseErrorPayload = tmFindProviderErrorPayload(parsed2);
+                  if (sseErrorPayload != null) {
+                    hit = true;
+                    capHadError = true;
+                    if (!patch.error) patch.error = tmBuildCapturedProviderError(sseErrorPayload, response.status, 'sse');
+                  }
                   if (hit) { usageSegments.push(tmSlimRawSegment(jsonStr)); }
                 } catch (parseErr) {}
               }
@@ -11095,343 +12599,11 @@
               }
             } catch (usageErr) {}
           }
-          tmUpdateCaptureRecord(captureId, patch);
 
-          // (Fix 24, v4.351) THINKING OBSERVATORY -- finalize OBSERVED thinking evidence for this turn
-          // and stamp it beside the requested level. One console line per turn: requested -> observed.
-          try {
-            var _tkRec = getCaptureById(captureId);
-            var _tkObs = tmThinkFinalizeObs(thinkAcc,
-              patch.response_usage || (_tkRec && _tkRec.response_usage) || null,
-              patch.response_anthropic_usage || (_tkRec && _tkRec.response_anthropic_usage) || null,
-              _tkRec && _tkRec._model);
-            tmUpdateCaptureRecord(captureId, { _think_obs: _tkObs });
-            // (Fix 26, v4.367) Accumulate this turn's replayable reasoning into the per-origin ledger.
-            try { tmReplayLedgerBump(_tkRec, _tkObs); } catch (eRL) {}
-            var _tkReq = _tkRec && _tkRec._think_req;
-            console.log('\ud83e\udde0 [v' + EXT_VERSION + '] ' + ((_tkRec && _tkRec._model) || '?') + ' via ' + ((_tkReq && _tkReq.route) || '?') +
-              ' [' + ((_tkReq && _tkReq.protocol) || '?') + ']: requested ' + ((_tkReq && _tkReq.summary) || '?') + ' \u2192 observed ' + (_tkObs && _tkObs.summary));
-          } catch (eTk) {}
-
-          // (v4.63) Feed the always-visible widget header with this (most-recent) payload's status.
-          try {
-            var capRec = getCaptureById(captureId);
-            // (v4.211) WIDGET-FEED GATE: on ERROR responses (HTTP>=400 or an error chunk in the
-            // body) the persistent widget must keep showing the LAST SUCCESSFUL turn's values.
-            // capWidgetFeed gates the status rebuild, store-touch, status identity/provider
-            // assignment, cache-outcome ledger write, cost accumulation, and widget render below.
-            // (The capture's own _identity stamp further down stays UNGATED: the ring modal
-            // and provider dropdowns want identity even on error captures.)
-            var capWidgetFeed = !capHadError;
-            tmMostRecentPayloadStatus = capWidgetFeed ? {
-              ts: Date.now(),
-              captureId: captureId,
-              toolIdRepairCount: Number(capRec && capRec._tool_id_repair_count || 0),
-              toolIdRepairLast: (capRec && capRec._tool_id_repair_last) || null,
-              repairTally: (capRec && capRec.repair_tally) || null,
-              anthropicUsage: patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null,
-              orUsage: patch.response_usage || (capRec && capRec.response_usage) || null,
-              sessionId: (capRec && capRec.session_id) || (function() {
-                try {
-                  var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
-                  if (reqBody) return tmDeriveStableSessionId(reqBody);
-                } catch (e) {}
-                return null;
-              })(),
-              pastedSessionId: (capRec && capRec.pasted_session_id) || (function() {
-                try {
-                  var reqBody = (capRec && capRec.stored_as_skeleton) ? capRec.body_skeleton : (capRec && capRec.body);
-                  if (reqBody) return deriveConversationIdFromBody(reqBody);
-                } catch (e) {}
-                return null;
-              })()
-            } : tmMostRecentPayloadStatus;
-            // Touch any stored session-derived metadata for this session, even if this
-            // particular response carries no billable cost.
-            try {
-              if (capWidgetFeed) tmTouchSessionScopedStores(tmMostRecentPayloadStatus.sessionId || tmMostRecentPayloadStatus.pastedSessionId, Date.now());
-            } catch (e) {}
-            // v4.157: Resolve + stamp identity UNCONDITIONALLY (independent of cost), so every
-            // response — zero-cost, no-usage, or errored — carries a canonical identity for hue/cost.
-            // Also hang it on tmMostRecentPayloadStatus so the widget uses ONE identity for both
-            // hue and cost (no more mixing most-recent-response session with last-ring-entry model).
-            // (v4.230) Hoist identity fields so the unconditional 12h/24h block-cost stamp below
-            // can always see them (previously they were try-block locals only).
-            var idSid = null, idModel = '', idHost = '', idIsProxy = false, idKey = null;
-            try {
-              if (capRec) {
-                idSid = capRec.session_id || tmMostRecentPayloadStatus.sessionId || null;
-                try { idModel = tmCaptureModel(capRec); } catch (e) {}
-                try { idHost = tmExtractEndpointHost(capRec); } catch (e) {}
-                try { idIsProxy = tmIsProxyCapture(capRec); } catch (e) {}
-                idKey = tmBuildIdentityKey(idSid, idModel, idHost, idIsProxy);
-                var identity = { sid: idSid, model: idModel, host: idHost, proxy: idIsProxy, key: idKey };
-                if (capWidgetFeed) tmMostRecentPayloadStatus.identity = identity;
-                // (v4.198) Carry the serving provider onto the most-recent status so the persistent
-                // widget can show it next to the model name. Prefer the captured provider string;
-                // fall back to the endpoint host so something useful shows for older/edge captures.
-                if (capWidgetFeed) tmMostRecentPayloadStatus.provider = tmAppendServiceTierToProviderKey(patch.response_provider || (capRec && capRec.response_provider) || idHost || null, capRec);
-                tmUpdateCaptureRecord(captureId, { _identity: identity });
-                // (Fix 16, v4.200) AUTO-STAMP provider lock. If this is a multi-provider model, the
-                // response had a real provider (not an error-only chunk), and no lock exists yet for
-                // this conversation identity, stamp one now. From this point on, every subsequent
-                // turn hard-pins to this provider -- no more silent bouncing to a $0.65 miss.
-                try {
-                  var lockProvider = patch.response_provider || (capRec && capRec.response_provider) || null;
-                  var lockSlug = lockProvider ? tmProviderNameToSlug(lockProvider) : null;
-                  // Only stamp if the response was NOT an error (check for error-only chunks:
-                  // choices is empty and error field present in response_body_head or segments).
-                  var hadError = false;
-                  try {
-                    if (capRec && capRec.response_usage_segments) {
-                      for (var si = 0; si < capRec.response_usage_segments.length; si++) {
-                        try {
-                          var seg = JSON.parse(capRec.response_usage_segments[si]);
-                          if (seg && seg.error) { hadError = true; break; }
-                        } catch (e) {}
-                      }
-                    }
-                  } catch (e2) {}
-                  if (lockSlug && !hadError && tmIsMultiProviderModel(idModel)) {
-                    var existingLock = tmGetProviderLock(idKey);
-                    // (v4.201 AUDIT FIX E) stamp ONLY when no lock exists. A Float lock entry EXISTS,
-                    // so this single check simultaneously (a) never overwrites a real lock and
-                    // (b) never re-stamps after the user chose Float. GLM's '__auto' sentinel was
-                    // dead code -- nothing ever stores it.
-                    if (!existingLock) {
-                      tmSetProviderLock(idKey, lockSlug, lockProvider, false);
-                      console.log('🔒 [v' + EXT_VERSION + '] Auto-stamped provider lock: ' + lockProvider + ' (' + lockSlug + ') for ' + idKey);
-                    }
-                  }
-                } catch (lockErr) {}
-                // (v4.219) Stamp the serving-provider label onto the capture record itself, so the
-                // ring-modal badge can show per-turn HISTORY instead of resolving every row through
-                // the CURRENT lock (v4.214's side effect: changing the lock rewrote every historical
-                // row's provider label, making per-provider hit/miss comparison impossible). Rule: a
-                // pinned single provider's lock.label IS what served (allow_fallbacks:false); for
-                // SET / FLOAT / no-lock the response's own provider string names what actually
-                // served (for SET, the actual member). Underscore fields survive rich->compact
-                // stripping (same as _model / _identity).
-                try {
-                  var _histProvLabel = null;
-                  var _histLock = idKey ? tmGetProviderLock(idKey) : null;
-                  if (_histLock && _histLock.mode !== 'set' && _histLock.slug && _histLock.slug !== '__float' && _histLock.label) {
-                    _histProvLabel = _histLock.label;
-                  }
-                  if (!_histProvLabel) {
-                    _histProvLabel = patch.response_provider || (capRec && capRec.response_provider) || idHost || null;
-                  }
-                  if (_histProvLabel) tmUpdateCaptureRecord(captureId, { _provider_label: tmAppendServiceTierToProviderKey(_histProvLabel, capRec) });
-                } catch (e) {}
-                // (v4.297) CONTEXT-WINDOW SNAPSHOT. Stamp this turn's provider-REPORTED token
-                // totals onto the ring entry (snapshot-in-time; underscore field survives
-                // rich->compact stripping). Per-entry truth regardless of error status (an errored
-                // turn still consumed real context); the WIDGET dial separately identity-matches,
-                // so error rows never leak into another conversation's display.
-                try {
-                  var _ctxUsage = patch.response_usage || (capRec && capRec.response_usage) || null;
-                  var _ctxAu = patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null;
-                  var _ctxSnap = tmComputeCtxSnapshot(_ctxUsage, _ctxAu, idModel, capRec);
-                  if (_ctxSnap) tmUpdateCaptureRecord(captureId, { _ctx_snapshot: _ctxSnap });
-                } catch (eCtx) {}
-                // v4.169: Record cache hit/miss for the identity ledger, then attach to status.
-                // (v4.211) GATED: an error response is NOT a cache miss -- it must not break the
-                // hit streak or inflate the miss total, so the ledger is never touched on errors.
-                if (capWidgetFeed) try {
-                  var cacheHit = tmIsSignificantCacheHit(capRec);
-                  var cacheStats = tmRecordIdentityCacheOutcome(idSid, idModel, idHost, idIsProxy, cacheHit);
-                  tmMostRecentPayloadStatus.cacheHit = cacheHit;
-                  tmMostRecentPayloadStatus.cacheStats = cacheStats;
-                  tmUpdateCaptureRecord(captureId, { _cache_hit: cacheHit });
-                } catch (e) {}
-              }
-            } catch (e) {}
-            // (v4.270) PROMPT-INGESTION MISMATCH (generic, heuristic). Runs for EVERY provider
-            // (not just Gemini) once response_usage is stamped above. Compares the exact outbound
-            // byte count against the provider-reported prompt tokens; a sub-50% ratio means far
-            // fewer tokens reached the model than the payload size predicts -- possibly silently
-            // dropped / transformed content. Soft warning (code 'prompt_ingestion_mismatch'); it
-            // does NOT assert data was dropped, only that the counts diverge suspiciously. The
-            // widget banner is recomputed from the ring at render time; here we only persist the
-            // warning onto the ring entry so it survives reload and shows in the modal row.
-            try {
-              var capForMismatch = getCaptureById(captureId);
-              var mmWarn = tmDetectPromptIngestionMismatch(capForMismatch);
-              if (mmWarn) {
-                var mmArr = (capForMismatch && Array.isArray(capForMismatch._warnings)) ? capForMismatch._warnings.slice() : [];
-                var mmId = 'prompt_ingestion_mismatch:' + captureId;
-                var mmDup = false;
-                for (var mmi = 0; mmi < mmArr.length; mmi++) { if (mmArr[mmi] && mmArr[mmi].id === mmId) { mmDup = true; break; } }
-                if (!mmDup) {
-                  mmWarn.id = mmId;
-                  mmArr.push(mmWarn);
-                  tmUpdateCaptureRecord(captureId, { _warnings: mmArr });
-                  console.warn('\uD83D\uDEA8 [v' + EXT_VERSION + '] Prompt-ingestion mismatch: reported ' + mmWarn.details.reported_prompt_tokens + ' prompt tokens vs ~' + mmWarn.details.estimated_prompt_tokens + ' estimated (' + Math.round(mmWarn.details.reported_to_estimated_ratio * 100) + '%). Investigate possible silent content drop.');
-                }
-              }
-            } catch (eMm) {}
-
-            // (v4.72) Accumulate per-turn cost into the running total.
-            // (v4.218) UNGATED: error responses can carry real usage/cost (e.g. a 502 streamed
-            // error with upstream_inference_cost). The tokens were consumed and the provider
-            // charged for them regardless of error status. Widget STATUS rebuild and cache-ledger
-            // write stay gated on capWidgetFeed (above), but cost accumulation must not be.
-            // Read from the CURRENT capture's patch (not tmMostRecentPayloadStatus, which keeps
-            // the last successful turn's values on error).
-            try {
-              var errTurnCost = tmExtractCostVal(patch.response_anthropic_usage, patch.response_usage);
-              if (errTurnCost > 0) {
-                tmSetTotalCost(tmGetTotalCost() + errTurnCost);
-                try {
-                  if (capRec) {
-                    var errSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, errTurnCost);
-                    var errCostStamp = { _model: idModel };
-                    if (errSessionTotal > 0) errCostStamp.session_cost_total = errSessionTotal;
-                    tmUpdateCaptureRecord(captureId, errCostStamp);
-                  }
-                } catch (e) {}
-              }
-            } catch (e) {}
-            // Also accumulate cost on successful responses (original path, gated).
-            if (capWidgetFeed) try {
-              var turnCost = tmExtractCostVal(tmMostRecentPayloadStatus.anthropicUsage, tmMostRecentPayloadStatus.orUsage);
-              if (turnCost > 0) {
-                // Avoid double-counting: the ungated block above already recorded this cost.
-                // Only record if the ungated block missed it (e.g. patch had no usage but
-                // tmMostRecentPayloadStatus did from a prior capture in this same response).
-                var alreadyRecorded = (patch.response_usage && tmExtractCostVal(null, patch.response_usage) === turnCost) ||
-                                      (patch.response_anthropic_usage && tmExtractCostVal(patch.response_anthropic_usage, null) === turnCost);
-                if (!alreadyRecorded) {
-                  tmSetTotalCost(tmGetTotalCost() + turnCost);
-                  try {
-                    if (capRec) {
-                      var newSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, turnCost);
-                      var okCostStamp = { _model: idModel };
-                      if (newSessionTotal > 0) okCostStamp.session_cost_total = newSessionTotal;
-                      tmUpdateCaptureRecord(captureId, okCostStamp);
-                    }
-                  } catch (e) {}
-                }
-              }
-            } catch (e) {}
-            // (v4.233) Client-side cost calculation from the global cost table.
-            // If no cost was returned by the API, look up the model+provider in the cost table
-            // and calculate cost from token usage × pricing. Three flags are stamped on the
-            // ring buffer entry: _cost_calculated, _cost_no_usage, _cost_init_needed.
-            try {
-              var apiTurnCost = tmExtractCostVal(
-                (capWidgetFeed ? tmMostRecentPayloadStatus.anthropicUsage : patch.response_anthropic_usage),
-                (capWidgetFeed ? tmMostRecentPayloadStatus.orUsage : patch.response_usage)
-              );
-              if (apiTurnCost == 0 && capRec && idModel) {
-                var tcModel = String(idModel).toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-                var tcProvider = tmObservedProviderKey(capRec);
-
-                if (tcProvider) {
-                  var tcEntry = tmGetProviderCostEntry(tcModel, tcProvider);
-                  var tcPopulated = tmIsCostEntryPopulated(tcEntry);
-
-                  if (!tcPopulated) {
-                    // Entry doesn't exist or has all zeros — ensure entry exists, set init flag
-                    if (!tmGetProviderCosts()[tcModel + '::' + tcProvider]) {
-                      var tcCosts = tmGetProviderCosts();
-                      tcCosts[tcModel + '::' + tcProvider] = { input: 0, output: 0, cache_read: 0, cache_write: null };
-                      tmSaveProviderCosts(tcCosts);
-                    }
-                    tmUpdateCaptureRecord(captureId, { _cost_init_needed: true });
-                  } else {
-                    // Entry is populated — try to calculate cost from token usage
-                    // (v4.234) Fall back to response_anthropic_usage for direct-Anthropic providers
-                    var tcUsage = patch.response_usage || (capRec && capRec.response_usage) || patch.response_anthropic_usage || (capRec && capRec.response_anthropic_usage) || null;
-                    if (tcUsage) {
-                      var tcResult = tmCalculateCostFromTable(tcUsage, tcEntry);
-                      if (tcResult.cost != null && tcResult.cost > 0) {
-                        tmSetTotalCost(tmGetTotalCost() + tcResult.cost);
-                        try {
-                          var tcSessionTotal = tmRecordSessionCost(idSid, idModel, idHost, idIsProxy, tcResult.cost);
-                          var tcCostStamp = { _model: idModel, _cost_calculated: true, _table_cost: tcResult.cost, _cost_pricing_used: tcEntry };
-                          if (tcSessionTotal > 0) tcCostStamp.session_cost_total = tcSessionTotal;
-                          tmUpdateCaptureRecord(captureId, tcCostStamp);
-                          // (v4.236) Stamp table cost onto the status object for the widget flashpoint.
-                          if (capWidgetFeed) { try { tmMostRecentPayloadStatus.tableCost = tcResult.cost; } catch (e2) {} }
-                        } catch (e) {}
-                      } else if (tcResult.reason === 'no_usage') {
-                        tmUpdateCaptureRecord(captureId, { _cost_no_usage: true });
-                      }
-                    } else {
-                      tmUpdateCaptureRecord(captureId, { _cost_no_usage: true });
-                    }
-                  }
-                }
-              }
-            } catch (e) {}
-            // (v4.230) ALWAYS snapshot 12h/24h block costs when identity is known — independent
-            // of hit/miss, and independent of whether this turn added a new cost delta. Previously
-            // these were only written inside the turnCost>0 branches, so some miss/zero-delta rows
-            // never received the fields. Runs AFTER cost accumulation so the current turn's usage
-            // is already on the ring entry that tmComputeBlockCost walks.
-            try {
-              if (capRec && idKey) {
-                var blockStart = tmGetCurrentBlockStart();
-                tmUpdateCaptureRecord(captureId, {
-                  _cost_12h: tmComputeBlockCost(idKey, blockStart),
-                  _cost_24h: tmComputeBlockCost(idKey, blockStart - (12 * 60 * 60 * 1000))
-                });
-              }
-            } catch (e) {}
-            // (v4.313) ROUND-TRIP TIMER: this turn's request -> response-end duration, plus the
-            // session's cumulative total snapshotted onto the entry (mirrors session_cost_total).
-            // Ungated (same rationale as v4.218 cost): an errored round trip still consumed time.
-            try {
-              // (v4.316) record.ts is an ISO STRING ('2026-08-28T09:29:45.568Z'), not epoch
-              // ms: Number() yields NaN and silently killed every stamp (v4.313/4.315 showed
-              // nothing anywhere). Date.parse handles ISO; Number stays the fast path.
-              var rtReqTs = Number(capRec && capRec.ts) || Date.parse(capRec && capRec.ts) || 0;
-              var rtMs = rtReqTs > 0 ? (Date.now() - rtReqTs) : 0;
-              // (v4.315) The per-turn stamp no longer requires a session id -- _rt_ms stamps on
-              // EVERY completed round trip (a null idSid used to skip the whole stamp). Only the
-              // cumulative ledger needs the session id. Also clears the live in-flight ticker.
-              if (rtMs > 0) {
-                var rtStamp = { _rt_ms: rtMs };
-                if (idSid) {
-                  var rtTotal = tmRecordRoundTrip(idSid, idModel, idHost, idIsProxy, rtMs);
-                  if (rtTotal > 0) rtStamp._rt_total_ms = rtTotal;
-                  // (v4.353) Snapshot the session's cumulative TOOL time too, so every ring row
-                  // carries the full time triad (assistant / tool / total) as of this turn.
-                  try { var ttSnap = tmGetSessionTimeTotals(idSid, idModel, idHost, idIsProxy); if (ttSnap.tool > 0) rtStamp._tool_total_ms = ttSnap.tool; } catch (eTT) {}
-                }
-                tmUpdateCaptureRecord(captureId, rtStamp);
-              }
-              // (v4.356) THINKING HISTOGRAM: count this turn's REQ/OBS glyph states into the
-              // session ledger and snapshot the running histogram onto the row.
-              try {
-                var thRec = getCaptureById(captureId);
-                if (idSid && thRec && thRec._think_req) {
-                  var thR = tmThinkClassifyReq(thRec._think_req);
-                  var thO = thRec._think_obs ? tmThinkClassifyObs(thRec._think_obs, thR.glyphs) : { glyphs: [] };
-                  var thHist = tmRecordThinkHistogram(idSid, idModel, idHost, idIsProxy, thR.glyphs, thO.glyphs, thRec._think_obs || null);
-                  if (thHist) tmUpdateCaptureRecord(captureId, { _think_hist: thHist });
-                }
-              } catch (eTH) {}
-              // (Fix 25, v4.374) KEEP-ALIVE PING RESULT: this row was the sentinel turn -- pair its
-              // usage/cost with the awaiting entry, run the paid-a-WRITE health check, refresh the UI.
-              try {
-                var kaRec = getCaptureById(captureId);
-                if (kaRec && kaRec._ka_ping) tmKeepAliveRecordPingResult(kaRec, idSid, idModel, idHost, idIsProxy);
-              } catch (eKaR) {}
-              try { tmClearInFlightByCapture(captureId); } catch (eIF) {}
-            } catch (eRt) {}
-            if (capWidgetFeed) renderGpt51UsageWidget();
-          } catch (e) {}
-        },
-        function(err) {
-          tmUpdateCaptureRecord(captureId, { response_body_parse_error: String(err && err.message ? err.message : err) });
-        }
-      );
-    } catch (e) {
-      tmUpdateCaptureRecord(captureId, { response_body_parse_error: String(e && e.message ? e.message : e) });
-    }
-  }
+      tmFinalizeCapturedResponse(captureId,response,patch,thinkAcc,capHadError);
+    },function(err){tmFinalizeCapturedFailure(captureId,err,response,false);});
+  }catch(err){tmFinalizeCapturedFailure(captureId,err,response,false);}
+}
 
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmExportPayloadCapturesToClipboard-vb49,
@@ -12080,7 +13252,7 @@
     try {
       var model = snap.model || (cap && cap._identity && cap._identity.model) || '';
       var mr = tmResolveModelMaxCtxCached(model, cap || null);
-      var maxCtx = (mr && mr.max != null) ? mr.max : ((snap.max_ctx != null) ? snap.max_ctx : null);
+      var maxCtx = (mr && mr.max != null) ? mr.max : null;
       return tmFmtTok(snap.total) + ' / ' + (maxCtx != null ? tmFmtTok(maxCtx) : '?');
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
@@ -12159,8 +13331,10 @@
     } catch (e) {}
     try {
       var rec = tmInFlightByIdentity[key];
+      // (Fix 24 analytics S3, §1.2) the in-flight marker's lifetime is the REQUEST's, not a clock:
+      // it is cleared ONLY on the attempt's terminal path (or the 6h leak guard). No 30-minute
+      // render-time expiry -- a request can legitimately run longer (Fable can think for minutes).
       if (rec && Number(rec.ts) > 0) {
-        if (Date.now() - Number(rec.ts) > 30 * 60 * 1000) { delete tmInFlightByIdentity[key]; return false; }
         return true;
       }
     } catch (e2) {}
@@ -12205,23 +13379,31 @@
     try {
       var liveMs = 0;
       var liveRec = tmInFlightByIdentity[key];
+      // (Fix 24 analytics S3, §1.2) the in-flight marker is settlement-scoped (cleared only on the
+      // terminal path / 6h leak guard), NOT render-time-expired -- a request can legitimately run
+      // longer than any UI timeout. The marker simply counts up from its request timestamp.
       if (liveRec && Number(liveRec.ts) > 0) {
-        if (now - Number(liveRec.ts) > 30 * 60 * 1000) { try { delete tmInFlightByIdentity[key]; } catch (eD) {} }
-        else liveMs = now - Number(liveRec.ts);
+        liveMs = now - Number(liveRec.ts);
       }
       if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
         var ifCap = frame ? frame.byId[tmInFlightTurn.captureId] : getCaptureById(tmInFlightTurn.captureId);
         if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = now - Number(tmInFlightTurn.ts);
       }
-      if (liveMs > 0) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + tmFmtDuration(liveMs) + '</span>';
+      if (liveMs > 0) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + Math.floor(liveMs / 60000) + ':' + String(Math.floor(liveMs / 1000) % 60).padStart(2, '0') + '</span>';
     } catch (e3) {}
     try {
-      var stats = (frame && frame.costs ? frame.costs[key] : null) || tmGetCacheOutcomeForIdentity(key);
-      if (stats && stats._cache_last === 'hit') {
-        var pct = tmSessionCtxCachePct((frame && frame.usage) ? frame.usage[key] : null);
+      // (Fix 24 analytics S4, §7.1) the idle cache outcome reads _last.cache.hit (the latest
+      // COMPLETED ORDINARY turn's tri-state verdict), NOT the ledger's _cache_last (which KA pings
+      // update). On null (unmeasured) the idle branch skips hit/miss and shows '\u25cf idle'.
+      var _view = null;
+      try { _view = tmLedgerRowView(key, frame || null); } catch (eV) { _view = null; }
+      var _last = _view ? tmLedgerViewLast(_view) : null;
+      var _lastHit = (_last && _last.cache) ? _last.cache.hit : null;
+      if (_lastHit === true) {
+        var pct = _last.cache.prompt > 0 && _last.cache.read != null ? Math.round(100 * _last.cache.read / _last.cache.prompt) : null;
         return '<span title="Last turn: cache HIT' + (pct != null ? ' \u2014 ' + pct + '% of the prompt read from cache' : '') + '" style="' + S + 'color:#7dd67d;font-weight:600;">\u2713 hit' + (pct != null ? (' ' + pct + '%') : '') + '</span>';
       }
-      if (stats && stats._cache_last === 'miss') return '<span title="Last turn: cache MISS" style="' + S + 'color:#ff6b6b;font-weight:600;">\u2717 miss</span>';
+      if (_lastHit === false) return '<span title="Last turn: cache MISS" style="' + S + 'color:#ff6b6b;font-weight:600;">\u2717 miss</span>';
     } catch (e4) {}
     return '<span title="No turn in flight" style="' + S + 'color:#6a7280;">\u25cf idle</span>';
   }
@@ -12252,217 +13434,44 @@
   //   comment=(v4.407) Builds the per-identity Sessions-in-Memory report (INI-style sections: Session / Context / Cost / Cache / Time / Thinking / Keep-alive / Alerts) for the row's report modal.,
   // ]
   function tmSessionCtxReportText(idKey) {
-    var L = [];
-    function sec(t) { L.push('', '[ ' + t + ' ]'); }
-    function kv(k, v) { L.push('  ' + k + ': ' + v); }
-    try {
-      var info = (typeof tmSessionCtxHoverIdentities !== 'undefined' && tmSessionCtxHoverIdentities[idKey]) || {};
-      var kp = String(idKey || '').split('::');
-      var sid = info.sid || kp[0] || '', model = info.model || kp[1] || '', host = info.host || kp[2] || '';
-      var isProxy = (info.isProxy != null) ? !!info.isProxy : (kp[3] === 'proxy');
-      var name = '';
-      try { name = tmGetSessionName(sid) || ''; } catch (eN) {}
-      var ring = tmReadCaptureRing();
-      var latest = null, usageCap = null, ctxCap = null, thinkCap = null, provCap = null;
-      for (var i = ring.length - 1; i >= 0; i--) {
-        var c = ring[i]; if (!c) continue;
-        var ck = c._identity && c._identity.key;
-        if (ck !== idKey) continue;
-        if (!latest) latest = c;
-        if (!usageCap && (c.response_usage || c.response_anthropic_usage)) usageCap = c;
-        if (!ctxCap && c._ctx_snapshot) ctxCap = c;
-        if (!thinkCap && c._think_req) thinkCap = c;
-        if (!provCap && c.response_provider) provCap = c;
-        if (latest && usageCap && ctxCap && thinkCap && provCap) break;
-      }
-
-      sec('Session');
-      if (name) kv('name', name);
-      kv('id', sid || '?');
-      kv('model', model || '?');
-      kv('route', (isProxy ? 'TypingMind proxy \u2192 ' : 'direct \u2192 ') + (host || '?'));
-      var prov = provCap ? String(provCap.response_provider) : '';
-      try { prov = tmResolveProviderLabel(idKey, prov || host || ''); } catch (eRL) {}
-      if (prov) kv('serving provider', prov + '  (the actual host serving this model on this route)');
-      kv('identity key', idKey);
-      if (latest) kv('last turn', latest.ts_local || (latest.ts ? new Date(latest.ts).toLocaleString() : '?'));
-
-      if (ctxCap && ctxCap._ctx_snapshot) {
-        var sn = ctxCap._ctx_snapshot;
-        sec('Context — last turn, as the provider reported it');
-        var mr = null; try { mr = tmResolveModelMaxCtxCached(sn.model || model, ctxCap); } catch (eMR) {}
-        var maxC = (mr && mr.max != null) ? mr.max : sn.max_ctx;
-        kv('total', Number(sn.total || 0).toLocaleString() + ' tok' + (maxC ? (' / ' + Number(maxC).toLocaleString() + '  (' + (Math.round((sn.total / maxC) * 1000) / 10) + '%)') : ''));
-        if (sn.prompt != null) kv('prompt', Number(sn.prompt).toLocaleString());
-        if (sn.completion != null) kv('completion', Number(sn.completion).toLocaleString());
-        if (sn.reasoning != null) kv('reasoning', Number(sn.reasoning).toLocaleString());
-        if (sn.cached != null) kv('cached', Number(sn.cached).toLocaleString());
-        if (maxC) kv('max via', (mr && mr.source) || sn.max_ctx_source || 'stamped');
-      }
-
-      // (v4.407b) LAST TURN — ACTUALS: derived from the last usage-carrying response for this
-      // identity. Semantically distinct from the section above: that one is the conversation's
-      // context fullness (a cumulative position the provider reports); this one is what THIS ONE
-      // TURN consumed/produced. Overlapping fields, different question.
-      if (usageCap) {
-        sec('Last turn — actuals (this turn itself)');
-        var aOru = usageCap.response_usage || null, aAu = usageCap.response_anthropic_usage || null;
-        var aGet = function (o, ks) { for (var gi = 0; gi < ks.length; gi++) { if (o && o[ks[gi]] != null && isFinite(Number(o[ks[gi]]))) return Number(o[ks[gi]]); } return null; };
-        var aPrompt = aGet(aOru, ['prompt_tokens']) || aGet(aAu, ['input_tokens']);
-        var aCached = aGet(aOru, ['cached_tokens']) || aGet(aAu, ['cache_read_input_tokens']);
-        var aWrite = aGet(aOru, ['cache_write_tokens']) || aGet(aAu, ['cache_creation_input_tokens']);
-        var aCompl = aGet(aOru, ['completion_tokens']) || aGet(aAu, ['output_tokens']);
-        var aReas = aGet(aOru, ['reasoning_tokens']) || aGet(aAu, ['thinking_tokens']);
-        if (aOru && aOru.completion_tokens_details) { if (aReas == null) aReas = aGet(aOru.completion_tokens_details, ['reasoning_tokens']); }
-        if (aAu && aAu.output_tokens_details) { if (aReas == null) aReas = aGet(aAu.output_tokens_details, ['thinking_tokens', 'reasoning_tokens']); }
-        if (aPrompt != null) kv('prompt in', aPrompt.toLocaleString() + ' tok' + (aCached ? ('  (' + aCached.toLocaleString() + ' from cache)') : ''));
-        if (aWrite) kv('cache write', aWrite.toLocaleString() + ' tok');
-        if (aCompl != null) kv('completion out', aCompl.toLocaleString() + ' tok');
-        if (aReas != null) kv('reasoning (in completion)', aReas.toLocaleString() + ' tok');
-        var aCost = tmExtractCostVal(aAu, aOru);
-        if (!(aCost > 0) && typeof usageCap._table_cost === 'number' && usageCap._table_cost > 0) aCost = usageCap._table_cost;
-        if (aCost > 0) kv('cost', '$' + aCost.toFixed(4));
-        if (usageCap._rt_ms != null) kv('duration', tmFmtDuration(Number(usageCap._rt_ms)));
-      }
-
-      // (v4.407b) CONVERSATION TOTALS for this identity: walk the identity's captures once and sum.
-      (function () {
-        var sumP = 0, sumC = 0, sumR = 0, sumCost = 0, turns = 0;
-        for (var ti = 0; ti < ring.length; ti++) {
-          var t = ring[ti]; if (!t) continue;
-          var tk = t._identity && t._identity.key;
-          if (tk !== idKey) continue;
-          var toru = t.response_usage || null, tau = t.response_anthropic_usage || null;
-          if (!toru && !tau) continue;
-          turns++;
-          sumP += Number((toru && toru.prompt_tokens) || (tau && tau.input_tokens) || 0);
-          sumC += Number((toru && toru.completion_tokens) || (tau && tau.output_tokens) || 0);
-          sumR += Number((toru && toru.reasoning_tokens) || (tau && tau.output_tokens_details && tau.output_tokens_details.thinking_tokens) || 0);
-          var tc = tmExtractCostVal(tau, toru);
-          if (!(tc > 0) && typeof t._table_cost === 'number' && t._table_cost > 0) tc = t._table_cost;
-          if (tc > 0) sumCost += tc;
-        }
-        if (turns > 0) {
-          sec('This conversation — totals (' + turns + ' turns, this model+route)');
-          kv('prompt tokens (all turns)', sumP.toLocaleString());
-          kv('completion tokens (all turns)', sumC.toLocaleString());
-          if (sumR > 0) kv('reasoning tokens (all turns)', sumR.toLocaleString());
-          kv('cost (summed)', '$' + sumCost.toFixed(4));
-        }
-      })();
-
-      sec('Cost');
-      var sc = 0; try { sc = tmGetSessionCost(sid, model, host, isProxy); } catch (eSC) {}
-      kv('session total', sc > 0 ? ('$' + sc.toFixed(4)) : '(none yet)');
-      if (usageCap) {
-        var tcv = tmExtractCostVal(usageCap.response_anthropic_usage, usageCap.response_usage);
-        if (!(tcv > 0) && typeof usageCap._table_cost === 'number' && usageCap._table_cost > 0) tcv = usageCap._table_cost;
-        if (tcv > 0) kv('last turn', '$' + tcv.toFixed(4));
-      }
-
-      sec('Cache');
-      var stats = null; try { stats = tmGetCacheOutcomeForIdentity(idKey); } catch (eST) {}
-      stats = stats || {};
-      kv('last turn', stats._cache_last ? String(stats._cache_last).toUpperCase() : 'no data');
-      kv('streak', String(stats._cache_streak || 0));
-      kv('totals', (stats._cache_misses || 0) + ' misses / ' + (stats._cache_hits || 0) + ' hits');
-      if (latest && latest.system_tools_prefix_hash) kv('prefix hash', String(latest.system_tools_prefix_hash));
-
-      sec('Time (working time; idle excluded)');
-      var tt = { rt: 0, tool: 0, total: 0 };
-      try { tt = tmGetSessionTimeTotals(sid, model, host, isProxy); } catch (eTT) {}
-      kv('assistant (cumulative)', tmFmtDuration(tt.rt));
-      kv('tools (cumulative)', tmFmtDuration(tt.tool));
-      kv('total', tmFmtDuration(tt.total));
-      if (latest && latest._rt_ms != null) kv('last turn', tmFmtDuration(Number(latest._rt_ms)));
-      if (latest && latest._tool_exec_ms != null) kv('last tool exec', tmFmtDuration(Number(latest._tool_exec_ms)));
-
-      if (thinkCap) {
-        sec('Thinking');
-        try { kv('requested', tmThinkCompactReq(thinkCap._think_req) || '?'); } catch (eCR) {}
-        try { if (thinkCap._think_obs) kv('observed', tmThinkCompactObs(thinkCap._think_obs, thinkCap._think_req) || '?'); } catch (eCO) {}
-        var ovr = thinkCap._think_req && thinkCap._think_req.override;
-        if (ovr && ovr.applied) kv('override', 'level=' + ovr.level + ' \u00b7 display=' + ovr.display + (ovr.mode ? (' \u00b7 ' + ovr.mode) : ''));
-        var eff = null; try { eff = tmThinkEffectiveForIdentity(idKey); } catch (eEF) {}
-        if (eff && eff.sent) kv('in effect', (eff.sent.level || '?') + ' \u00b7 display ' + (eff.sent.display || '?') + (eff.overridden ? '  (extension override)' : '  (native)'));
-        var hist = null; try { hist = tmGetThinkHistogram(sid, model, host, isProxy); } catch (eH) {}
-        if (hist && Array.isArray(hist.samples) && hist.samples.length) {
-          // (v4.407b) Run-length compress consecutive equal values: [0] ×23  1.2K  [0] ×7 — a long
-          // zero-run (most tool turns) no longer floods the line.
-          var sR = [];
-          for (var si = 0; si < hist.samples.length; si++) {
-            var sv = hist.samples[si];
-            var last = sR.length ? sR[sR.length - 1] : null;
-            if (last && last.v === sv) last.n++; else sR.push({ v: sv, n: 1 });
-          }
-          var sTxt = sR.map(function (r) { return r.n > 1 ? ('[' + tmThinkFmtK(r.v) + '] \u00d7' + r.n) : tmThinkFmtK(r.v); }).join('  ');
-          kv('per-turn reasoning tokens (oldest first)', sTxt);
-        }
-        if (hist && hist.turns) kv('turns counted', String(hist.turns));
-        var ro = thinkCap._replay_out;
-        if (ro && (ro.raw_turns || ro.enc_turns)) kv('reasoning replayed in last payload', (ro.raw_turns || 0) + ' raw + ' + (ro.enc_turns || 0) + ' encrypted turn(s)');
-        // (v4.407b) PER-LEVEL breakdown: bucket each turn by the thinking level recorded on its
-        // request (compact req), sum reasoning tokens per level. Accurate within the ring window.
-        (function () {
-          var byLevel = {}; var order = [];
-          for (var bi = 0; bi < ring.length; bi++) {
-            var b = ring[bi]; if (!b) continue;
-            var bk = b._identity && b._identity.key;
-            if (bk !== idKey) continue;
-            if (!b._think_req) continue;
-            var lvl = '?'; try { lvl = tmThinkCompactReq(b._think_req) || '?'; } catch (eL) {}
-            var rt2 = (b._think_obs && b._think_obs.tokens && typeof b._think_obs.tokens.reasoning === 'number') ? b._think_obs.tokens.reasoning : 0;
-            if (!byLevel[lvl]) { byLevel[lvl] = { turns: 0, toks: 0 }; order.push(lvl); }
-            byLevel[lvl].turns++; byLevel[lvl].toks += rt2;
-          }
-          if (!order.length) return;
-          if (order.length === 1) {
-            kv('levels', 'one thinking setting for the whole conversation on this model+route: ' + order[0]);
-          } else {
-            L.push('  by thinking level (this conversation, this model+route):');
-            for (var li = 0; li < order.length; li++) {
-              var bl = byLevel[order[li]];
-              L.push('    ' + order[li] + ': ' + bl.turns + ' turns \u00b7 ' + bl.toks.toLocaleString() + ' reasoning tok');
-            }
-          }
-        })();
-      }
-
-      sec('Keep-alive');
-      var ka = null; try { ka = tmGetKeepAliveEntry(idKey); } catch (eKA) {}
-      if (ka && ka.enabled) {
-        kv('state', 'ON \u2014 every ' + (ka.interval_min || '?') + 'm' + (ka.max_hours ? (' (max ' + ka.max_hours + 'h)') : ''));
-        var kst = (typeof tmKeepAliveStatus !== 'undefined') ? tmKeepAliveStatus[idKey] : null;
-        if (kst && kst.text) kv('sweeper', kst.text);
-        if (ka.ping_count) { try { kv('pings', tmKeepAliveSummaryText(ka)); } catch (eKS) { kv('pings', String(ka.ping_count)); } }
-        if (ka.broken) kv('BROKEN', 'last ping wrote ' + tmThinkFmtK(ka.broken.write_tokens) + ' cache tokens \u2014 auto-disabled');
-      } else {
-        kv('state', 'off');
-      }
-
-      var alertLines = [];
-      try {
-        if (tmMostRecentError && tmMostRecentError.idKey === idKey) {
-          alertLines.push('ERROR ' + (tmMostRecentError.code != null ? tmMostRecentError.code : '?') + (tmMostRecentError.provider ? (' ' + tmMostRecentError.provider) : '') + (tmMostRecentError.attempt > 0 ? (' (retried x' + tmMostRecentError.attempt + ')') : '') + (tmMostRecentError.message ? (' \u2014 ' + tmMostRecentError.message) : ''));
-        }
-        if (tmEndpointNotFound && tmEndpointNotFound.idKey === idKey) {
-          alertLines.push('ENDPOINT NOT FOUND' + (tmEndpointNotFound.provider ? (' for ' + tmEndpointNotFound.provider) : '') + ' \u2014 consider switching providers');
-        }
-        for (var wi = ring.length - 1; wi >= 0; wi--) {
-          var wc = ring[wi];
-          if (!wc || !Array.isArray(wc._warnings) || !wc._warnings.length) continue;
-          var wk = wc._identity && wc._identity.key;
-          if (wk !== idKey) continue;
-          for (var wj = wc._warnings.length - 1; wj >= 0; wj--) {
-            if (wc._warnings[wj] && wc._warnings[wj].severity === 'critical') { alertLines.push('WARNING: ' + (wc._warnings[wj].title || '') + ' \u2014 ' + (wc._warnings[wj].message || '')); break; }
-          }
-          break;
-        }
-      } catch (eAL) {}
-      if (alertLines.length) { sec('Alerts'); for (var ai = 0; ai < alertLines.length; ai++) L.push('  ' + alertLines[ai]); }
-    } catch (e) { L.push('', '[ error ]', '  ' + String(e)); }
-    return L.join('\n');
+  var frame=tmBuildSessionCtxLiveFrame(),v=tmLedgerRowView(idKey,frame),l=v.last,r=v.rec,an=v.analytics,L=[];
+  function sec(s){L.push('','[ '+s+' ]');}function kv(k,x){L.push('  '+k+': '+x);}function n(x){return x==null?'unmeasured':Number(x).toLocaleString('en-US');}
+  function bucket(b){kv('analytics turns',n(b.turns));kv('unknown / zero / nonzero',[b.unknown,b.zero,b.nonzero].map(n).join(' / '));kv('reasoning total',n(b.reasoning_total)+' tokens');kv('evidence composition',Object.keys(b.source||{}).map(function(k){return k+' '+b.source[k];}).join(' · '));L.push(tmThinkBinsAscii(b,50));}
+  sec('Session');kv('name',tmGetSessionName(v.sid)||v.sid);kv('id',v.sid);kv('model',v.model);kv('route',(v.isProxy?'TypingMind proxy → ':'')+v.host);kv('identity key',idKey);if(l)kv('latest ordinary response',new Date(l.ts).toLocaleString());
+  sec('Current context position — latest provider report');
+  if(v.ctx){var s=v.ctx;kv('total',n(s.total)+' / '+(v.maxCtx.max==null?'unknown':n(v.maxCtx.max)));['prompt','completion','reasoning','cached','cache_write'].forEach(function(k){kv(k,n(s[k]));});kv('capacity source',v.maxCtx.source||'unknown');if(v.maxCtx.note||v.maxCtx.reason)kv('capacity',v.maxCtx.note||v.maxCtx.reason);}
+  else L.push('  no provider context report recorded yet');
+  L.push("  The provider reported these values for the latest request, which carries the model's current understanding of the full conversation history, system instructions, and tools. This is the authoritative current context position — not a sum of charges or reasoning across prior API calls.");
+  sec('Latest turn — reliable observations');
+  if(l){var o=l.obs||{},c=l.cache||{};kv('reasoning tokens',o.reasoning==null?'unmeasured':n(o.reasoning)+' ('+o.source+')');kv('cost',l.cost==null?'unpriced':'$'+l.cost.toFixed(4)+' ('+l.cost_source+')');kv('response duration',l.rt_ms==null?'unmeasured':tmFmtDuration(l.rt_ms));kv('cache',c.hit===true?'HIT':c.hit===false?'MISS':'unmeasured (no prompt denominator)');kv('cache read / write',n(c.read)+' / '+n(c.write));if(l.tool_exec_ms!=null)kv('tool execution',tmFmtDuration(l.tool_exec_ms));kv('serving provider',v.provider.label||'unattributed');kv('thinking setting',l.think&&l.think.summary||l.think&&l.think.level_key||'unknown-setting');}
+  else L.push('  no completed ordinary response recorded yet');
+  L.push('  Incremental prompt content is not calculated. Consecutive prompt totals cannot be safely differenced because the system prompt, tool definitions, model, endpoint, serving provider, proxy route, history compaction, and other payload content may change between requests.');
+  sec('Ledger totals — retained while the identity is active (7-day idle prune)');
+  kv('session cost','$'+Number(r._total||0).toFixed(4));kv('assistant time',tmFmtDuration(r._rt_total_ms));kv('tool time',tmFmtDuration(r._tool_total_ms));kv('cache hits / misses / streak',[r._cache_hits||0,r._cache_misses||0,r._cache_streak||0].join(' / '));kv('round-trip count',r._rt_count||0);
+  L.push('  These totals predate and are broader than the reasoning analytics below: they include keep-alive pings, and cost/time include failed attempts that were billed or timed. Total token usage is intentionally not summed here — it varies by model and provider and is most reliably read from the latest provider report; see [ Current context position ] above.');
+  var failures=tmLedgerWriteFailures[idKey];if(failures){var count=['cost','time','tool','cache'].reduce(function(a,k){return a+Number(failures[k]||0);},0);if(count)L.push('  '+count+' ledger write(s) failed since this page load (cost '+failures.cost+' · time '+failures.time+' · tool '+failures.tool+' · cache '+failures.cache+') — the totals above may be low by those turns.');}
+  sec('Reasoning analytics'+(an&&an.since!=null?' — since '+new Date(an.since).toLocaleString():''));
+  if(an&&an.v!==TM_ANALYTICS_VERSION)L.push('  unsupported analytics version '+an.v+' — not interpreted or reset');
+  else if(!an||an.since==null||!an.all.turns)L.push('  no eligible turns recorded yet at this version');
+  else {
+    var blind=tmSessionCtxBlindState(v),all=an.all;
+    L.push('  '+(blind.blind?'⚠ BLIND ROUTE — ':'')+'measured '+(all.zero+all.nonzero)+' of '+all.turns+' turns ('+all.unknown+' unmeasured: provider returned no reasoning count and no reasoning text)');
+    if(blind.bucket)L.push('  current provider '+blind.label+': '+(blind.blind?'BLIND ('+blind.bucket.unknown+' of '+blind.bucket.turns+' turns unmeasured)':'measuring')+(blind.pooled?' (statistics pooled — provider cap reached)':''));
+    if(blind.blind)L.push('  Every figure below is computed only from the measured turns. This model/provider does not report reasoning; treat its totals and histogram as a lower bound on turns, not on reasoning.');
+    kv('ka_pings_excluded',an.ka_pings_excluded||0);bucket(all);
+    var levels=Object.keys(an.by_level||{});if(levels.length===1)L.push('  only thinking setting during recorded coverage: '+levels[0]);else levels.forEach(function(k){sec('Reasoning — '+k);bucket(an.by_level[k]);});
+    var providers=Object.keys(an.by_provider||{});if(providers.length>1)providers.forEach(function(k){var p=an.by_provider[k];sec('Reasoning — '+p.label);bucket(p);Object.keys(p.by_level||{}).forEach(function(lv){var b=p.by_level[lv];kv(lv,b.turns+' turns · '+b.unknown+' unmeasured · '+n(b.reasoning_total)+' reasoning tokens');});});
   }
+  if(v.gap.count){sec('Analytics gaps');kv('reasons',JSON.stringify(v.gap.reasons));L.push('  Affected: reasoning total, histogram, per-level / provider breakdown.','  Reasoning analytics are known to be incomplete for '+v.gap.count+' turn(s). Context, cost, cache and time are written by separate code paths to the same ledger; this warning does not certify them.');}
+  sec('Lifetime reasoning archive — all conversations, forward-recorded');var m=tmLifetimeAnalyticsMeta(frame.costs);
+  if(!m.supported)kv('unsupported archive version',m.archive.v+' — not interpreted or reset');
+  kv('since',m.since==null?'no eligible turns persisted yet':new Date(m.since).toLocaleString());kv('eligible turns',m.turns);kv('paths / leaves',m.path_count+' / '+m.leaf_count);kv('serialized bytes',m.serialized_bytes);kv('lifetime gaps (persisted + pending)',m.gaps.count);
+  L.push('  This is cross-conversation reasoning coverage, independent of this row and its seven-day retention. It starts when recording began at this version; it is not imported pre-feature history.','  Lifetime and retained-identity sections overlap — NEVER sum them.');
+  sec('Keep-alive');var ka=frame.keepalive[idKey];kv('state',ka&&ka.enabled?'ON — every '+ka.interval_min+'m'+(ka.max_hours?' (max '+ka.max_hours+'h)':''):'off');
+  if(ka){if(ka.ping_count)kv('pings',tmKeepAliveSummaryText(ka));if(ka.broken)kv('BROKEN','last ping wrote '+tmThinkFmtK(ka.broken.write_tokens)+' cache tokens — auto-disabled');}if(tmKeepAliveStatus[idKey])kv('sweeper',tmKeepAliveStatus[idKey].text);
+  sec('Alerts');if(tmMostRecentError&&tmMostRecentError.idKey===idKey)kv('ERROR',tmMostRecentError.message||tmMostRecentError.code);if(tmEndpointNotFound&&tmEndpointNotFound.idKey===idKey)kv('ENDPOINT NOT FOUND',tmEndpointNotFound.provider||'consider switching providers');if(frame.warnings[idKey])kv('WARNING',frame.warnings[idKey].message);
+  return L.join('\n');
+}
 
   // (v4.407) The report modal: tmShowErrorPopup pattern (overlay + capture-phase Escape +
   // click-away + self-uninstalling listener) plus a Copy All button. Read-only, selectable.
@@ -12504,6 +13513,8 @@
       try { copyTextToClipboard(text, 'session report'); } catch (eC) {}
     });
     hdr.appendChild(title); hdr.appendChild(copyBtn);
+    var exportBtn=document.createElement('button'); exportBtn.textContent='Export analytics JSON'; exportBtn.title='Clipboard export: lifetime and retained identities overlap — do not sum';
+    exportBtn.addEventListener('click',function(ev){ev.stopPropagation();tmExportAnalyticsJson();});hdr.appendChild(exportBtn);
     var pre = document.createElement('pre');
     pre.style.cssText = 'color:#d0d0d8;font-size:12px;font-family:monospace;white-space:pre-wrap;word-break:break-word;margin:0;user-select:text;line-height:1.5;';
     pre.textContent = text;
@@ -12515,6 +13526,7 @@
     function close() {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil=Date.now()+1500;setTimeout(function(){tmPromptActive=false;},100);
     }
     function onKey(ev) {
       if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
@@ -12523,32 +13535,26 @@
     overlay.addEventListener('click', function() { close(); });
     box.addEventListener('click', function(ev) { ev.stopPropagation(); });
     document.addEventListener('keydown', onKey, true);
+    tmPromptActive=true;
     document.body.appendChild(overlay);
   }
 
   // (v4.378) One short-lived read snapshot per dashboard pass, never one ring parse per row.
   // No additional persisted data and no cache retained between ticks.
   function tmBuildSessionCtxLiveFrame() {
-    var f = { now: Date.now(), ring: [], costs: {}, keepalive: {}, byId: Object.create(null), rt: Object.create(null), ctx: Object.create(null), think: Object.create(null), usage: Object.create(null), prov: Object.create(null) };
-    try { f.ring = tmReadCaptureRing() || []; } catch (e) {}
-    try { f.costs = tmGetSessionCosts() || {}; } catch (eC) {}
-    try { f.keepalive = tmGetKeepAliveStore() || {}; } catch (eK) {}
-    for (var i = f.ring.length - 1; i >= 0; i--) {
-      var c = f.ring[i]; if (!c) continue;
-      if (c.id && !f.byId[c.id]) f.byId[c.id] = c;
-      var k = c._identity && c._identity.key;
-      if (!k) continue;
-      if (c._rt_ms != null && !f.rt[k]) f.rt[k] = c;
-      if (c._ctx_snapshot && !f.ctx[k]) f.ctx[k] = c;
-      if (c._think_req && !f.think[k]) f.think[k] = c;
-      // (v4.405) newest usage-carrying entry + serving-provider label per identity: the per-row
-      // cache cluster (tmRenderIdentityCacheCluster) and the migrated provider-routing dropdown
-      // read these, so neither needs its own ring scan.
-      if (!f.usage[k] && (c.response_anthropic_usage || c.response_usage || (typeof c._table_cost === 'number' && c._table_cost > 0))) f.usage[k] = c;
-      if (c.response_provider && !f.prov[k]) f.prov[k] = String(c.response_provider);
-    }
-    return f;
+  var f = {now:Date.now(), ring:tmReadCaptureRing() || [], costs:tmGetSessionCosts() || {}, keepalive:tmGetKeepAliveStore() || {},
+    byId:Object.create(null), latest:Object.create(null), ordinary:Object.create(null), think:Object.create(null), warnings:Object.create(null), views:Object.create(null), order:[]};
+  for (var i=f.ring.length-1;i>=0;i--) {
+    var c=f.ring[i]; if(!c) continue;
+    if(c.id) f.byId[c.id]=c;
+    var k=tmCapIdentityKey(c); if(!tmIsLedgerIdentityKey(k)||!String(k).split('::')[1]) continue;
+    if(!f.latest[k]) { f.latest[k]=c; f.order.push(k); }
+    if(!f.think[k]&&c._think_req) f.think[k]=c;
+    if(!f.ordinary[k]&&!c._ka_ping&&!c.error&&!(Number(c.response_status)>=400)&&!c.response_body_parse_error&&(c.response_usage||c.response_anthropic_usage)) f.ordinary[k]=c;
+    if(!f.warnings[k]&&Array.isArray(c._warnings)) for(var j=c._warnings.length-1;j>=0;j--) if(c._warnings[j]&&c._warnings[j].severity==='critical'){ f.warnings[k]=c._warnings[j]; break; }
   }
+  return f;
+}
 
   // Compare renderer output, not browser-reserialized innerHTML (attribute/emoji normalization).
   // Unchanged spinners retain the same DOM node and therefore their CSS animation phase.
@@ -12588,43 +13594,28 @@
   //   comment=v4.378: dashboard update authority. One ring/cost snapshot per 1s tick; writes only changed live/spinner/KA zones. Full pinned rebuild at 30s wall-clock cadence, deferred during scrolling, text selection, dragging, dropdown use or a child modal. Scroll offset and persistent resize grip survive.,
   // ]
   function tmSessionCtxHoverTick() {
-    try {
-      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none' || tmSessionCtxInteractionBusy()) return;
-      if (tmSessionCtxHoverPinned && Date.now() - tmSessionCtxHoverLastFullAt >= 30000 && tmSessionCtxHoverContentEl) {
-        var st = tmSessionCtxHoverContentEl.scrollTop;
-        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-        tmSessionCtxHoverContentEl.scrollTop = st;
-        return;
-      }
-      var frame = tmBuildSessionCtxLiveFrame();
-      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-live-key]');
-      for (var i = 0; i < zones.length; i++) {
-        var key = zones[i].getAttribute('data-live-key');
-        var info = tmSessionCtxHoverIdentities[key];
-        if (info) tmSessionCtxPatchHtml(zones[i], tmSessionCtxLiveHtml(key, info, frame));
-      }
-      var spins = tmSessionCtxHoverEl.querySelectorAll('[data-spin-key]');
-      for (var j = 0; j < spins.length; j++) {
-        var sk = spins[j].getAttribute('data-spin-key');
-        var si = tmSessionCtxHoverIdentities[sk];
-        tmSessionCtxPatchHtml(spins[j], si && tmSessionCtxIsBusy(sk, si, frame) ? '<span class="tm-hc-spin"></span>' : '');
-      }
-      // (v4.405) The per-row cache clusters + alert zones tick too (patch-compare = no churn when
-      // nothing changed; the frame was already built for this tick).
-      var cacheZones = tmSessionCtxHoverEl.querySelectorAll('[data-cache-key]');
-      for (var cz = 0; cz < cacheZones.length; cz++) {
-        tmSessionCtxPatchHtml(cacheZones[cz], tmRenderIdentityCacheCluster(cacheZones[cz].getAttribute('data-cache-key'), { frame: frame }));
-      }
-      // (v4.407) The lean thinking rows tick too (this-turn count + histogram stay current).
-      var thinkZones = tmSessionCtxHoverEl.querySelectorAll('[data-think-key]');
-      for (var tz = 0; tz < thinkZones.length; tz++) {
-        var tKey = thinkZones[tz].getAttribute('data-think-key');
-        tmSessionCtxPatchHtml(thinkZones[tz], tmThinkRowLeanHtml(frame.think[tKey] || null, tKey, '13px'));
-      }
-      tmSessionCtxRefreshAlerts(frame);
-      tmRefreshSessionCtxKeepAlive(frame.keepalive);
-    } catch (e) { console.warn('[Payload] Sessions-in-Memory tick failed:', e); }
+  if(!tmSessionCtxHoverEl||tmSessionCtxHoverEl.style.display==='none'||tmSessionCtxInteractionBusy())return;
+  var frame=tmBuildSessionCtxLiveFrame();
+  if(tmSessionCtxHoverPinned&&frame.now-tmSessionCtxHoverLastFullAt>=30000&&tmSessionCtxHoverContentEl){var scroll=tmSessionCtxHoverContentEl.scrollTop;tmSessionCtxHoverContentEl.innerHTML=tmBuildSessionCtxHoverHtml(frame);tmSessionCtxHoverContentEl.scrollTop=scroll;return;}
+  var rows=tmSessionCtxHoverEl.querySelectorAll('[data-session-row]');
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i],key=row.getAttribute('data-session-row'),v=tmLedgerRowView(key,frame),last=v.last,rec=v.rec;
+    var tuple={capture:last&&last.capture_id||'',total:rec._total||0,cache:[rec._cache_hits||0,rec._cache_misses||0,rec._cache_streak||0].join(','),max:JSON.stringify(v.maxCtx),width:tmGetSessionCtxHoverWidth()};
+    var old=row.__tmCompletedTuple;
+    // Only the small comparison tuple lives on this DOM row; frame/records are never retained.
+    if(!old||old.capture!==tuple.capture){tmSessionCtxPatchHtml(row,tmSessionCtxRowHtml(v,frame,row.getAttribute('data-ring-badge')==='1'));}
+    else {
+      if(old.total!==tuple.total)tmSessionCtxPatchHtml(row.querySelector('[data-cost-key]'),tmSessionCtxCostHtml(v));
+      if(old.cache!==tuple.cache)tmSessionCtxPatchHtml(row.querySelector('[data-cache-key]'),tmRenderIdentityCacheCluster(key,{frame:frame,view:v}));
+      if(old.max!==tuple.max){tmSessionCtxPatchHtml(row.querySelector('[data-dial-key]'),tmSessionCtxDialHtml(v));tmSessionCtxPatchHtml(row.querySelector('[data-name-key]'),tmSessionCtxNameHtml(v,row.getAttribute('data-ring-badge')==='1'));}
+      if(old.width!==tuple.width)tmSessionCtxPatchHtml(row.querySelector('[data-think-key]'),tmThinkRowLeanHtml(v,key,'13px'));
+    }
+    tmSessionCtxPatchHtml(row.querySelector('[data-live-key]'),tmSessionCtxLiveHtml(key,v,frame));
+    tmSessionCtxPatchHtml(row.querySelector('[data-alert-key]'),tmSessionCtxAlertHtml(key,{frame:frame,view:v}));
+    tmSessionCtxPatchHtml(row.querySelector('[data-ka-key]'),tmKeepAliveRowHtml(key,v,frame.keepalive));
+    row.__tmCompletedTuple=tuple;
   }
+}
 
   // Timer registration only; update decisions live in tmSessionCtxHoverTick.
   // @beacon[
@@ -12661,141 +13652,13 @@
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
   // ]
-  function tmBuildSessionCtxHoverHtml() {
-    tmSessionCtxHoverLastFullAt = Date.now();
-    var liveFrame = tmBuildSessionCtxLiveFrame();
-    tmSessionCtxHoverIdentities = {};
-    var rows = [];
-    rows.push('<div data-hovercard-drag="1" style="font-size:12px;font-weight:700;color:#c8d0dc;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;cursor:' + (tmSessionCtxHoverPinned ? 'move' : 'default') + ';">' +
-      '<span>Sessions in memory \u2014 context used</span>' +
-      '<span style="display:inline-flex;gap:8px;flex:none;align-items:center;">' +
-        '<span data-hovercard-action="width-minus" title="Narrower (persisted)" style="cursor:pointer;opacity:0.7;font-weight:700;">\u2212</span>' +
-        '<span data-hovercard-action="width-plus" title="Wider (persisted)" style="cursor:pointer;opacity:0.7;font-weight:700;">+</span>' +
-        '<span data-hovercard-action="pin" title="' + (tmSessionCtxHoverPinned ? 'Unpin: return to hover-dismiss' : 'Pin: keep open + draggable (survives widget refreshes; restored after TypingMind reload)') + '" style="cursor:pointer;opacity:' + (tmSessionCtxHoverPinned ? '1' : '0.55') + ';">\uD83D\uDCCC</span>' +
-        (tmSessionCtxHoverPinned ? '<span data-hovercard-action="close" title="Close (unpins)" style="cursor:pointer;color:#d08b8b;font-weight:700;">\u2715</span>' : '') +
-      '</span></div>');
-    var ring = liveFrame.ring;
-    var seen = {};
-    var count = 0;
-    for (var i = ring.length - 1; i >= 0 && count < 40; i--) { // (v4.338) cap 12 -> 40: resizable height + scrollbar make large fleets listable
-      var cap = ring[i];
-      if (!cap) continue;
-      var key = '';
-      try { key = tmCapIdentityKey(cap); } catch (eK) { continue; }
-      if (!key || seen[key]) continue;
-      seen[key] = true;
-      count++;
-      var info = { label: key, model: '', host: '', isProxy: false, sid: '' };
-      try { info = tmCapIdentityLabel(cap); } catch (eL) {}
-      tmSessionCtxHoverIdentities[key] = { sid: info.sid || '', model: info.model || '', host: info.host || '', isProxy: !!info.isProxy };
-      var hue = '#c8d0dc';
-      try { hue = tmModelEndpointColor(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eH) {}
-      // (v4.407) DASHBOARD ROW: the glyph wall retired. Layout per row:
-      //   1) session name (+ fullness bulge) ......... STATUS WORD (top-right, was the live zone)
-      //   2) alert zone (unchanged, per-identity)
-      //   3) model \u00b7 route \u00b7 serving provider + cache cluster (now with a HIT/MISS chip)
-      //   4) BIG context dial (32px; absolute numbers on hover) + aggregate session cost + \uD83D\uDCCB report
-      //   5) thinking lean row: this-turn reasoning + the per-turn histogram
-      //   6) controls (Think / display / note)   7) keep-alive + provider routing
-      var ctxDialHtml = '';
-      var ctxCostHtml = '';
-      var ctxCap = null;
-      try { ctxCap = liveFrame.ctx[key] || null; } catch (eC) {}
-      if (ctxCap && ctxCap._ctx_snapshot) {
-        ctxDialHtml = tmRenderCtxDial(ctxCap._ctx_snapshot, { size: 32, labelFs: '13px', noClick: true, cap: ctxCap });
-      }
-      try {
-        var hoverSessCost = tmGetSessionCost(info.sid || '', info.model || '', info.host, info.isProxy);
-        if (hoverSessCost > 0) {
-          ctxCostHtml = '<span style="font-size:14px;font-weight:700;color:' + hue + ';white-space:nowrap;" title="aggregate session cost (all turns for this identity, from the session ledger)">$' + hoverSessCost.toFixed(2) + '</span>';
-        }
-      } catch (eCost) {}
-      var ctxPct = null;
-      if (ctxCap && ctxCap._ctx_snapshot) {
-        try {
-          var pctModel = ctxCap._ctx_snapshot.model || info.model || '';
-          var pctMr = tmResolveModelMaxCtxCached(pctModel, ctxCap || null);
-          var pctMax = (pctMr && pctMr.max != null) ? pctMr.max : ((ctxCap._ctx_snapshot.max_ctx != null) ? ctxCap._ctx_snapshot.max_ctx : null);
-          if (pctMax > 0) ctxPct = (Number(ctxCap._ctx_snapshot.total) / pctMax) * 100;
-        } catch (ePct) {}
-      }
-      var hueNum = null;
-      try { hueNum = tmSessionHueNumber(info.model || '', info.host, info.isProxy, info.sid || ''); } catch (eHN) {}
-      var namePart = String(info.label || key);
-      if (info.model && namePart.slice(-(info.model.length + 3)) === (' \u2014 ' + info.model)) {
-        namePart = namePart.slice(0, namePart.length - (info.model.length + 3));
-      }
-      var nameRow = '<div style="display:flex;align-items:center;gap:6px;min-width:0;justify-content:space-between;">' +
-        '<span style="font-size:15px;color:' + hue + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;' + tmSessionFullnessBulgeStyle(ctxPct, hueNum) + '" title="' + escapeHtml(info.label || key) + '">' + escapeHtml(namePart) + '</span>' +
-        '<span data-live-key="' + escapeHtml(key) + '" style="flex:none;padding-left:8px;">' + tmSessionCtxLiveHtml(key, tmSessionCtxHoverIdentities[key], liveFrame) + '</span>' +
-      '</div>';
-      // Row 3: model \u00b7 route \u00b7 serving provider + the cache cluster.
-      var routeTxt = (info.isProxy ? 'TypingMind proxy \u2192 ' : '') + (info.host || '');
-      var provLabel = (liveFrame.prov && liveFrame.prov[key]) || '';
-      if (provLabel) { try { provLabel = tmResolveProviderLabel(key, provLabel); } catch (eRL) {} }
-      var modelLiveRow = '<div style="display:flex;align-items:center;gap:8px;min-height:14px;flex-wrap:wrap;margin-top:9px;">' +
-        (info.model ? ('<span style="font-size:14px;color:#c8d0dc;white-space:nowrap;">' + escapeHtml(info.model) + '</span>') : '') +
-        (routeTxt ? ('<span style="font-size:11px;color:#6a7280;white-space:nowrap;" title="route: relay / intermediary host for this identity">' + escapeHtml(routeTxt) + '</span>') : '') +
-        (provLabel ? ('<span style="font-size:12px;color:#8ef0a0;white-space:nowrap;" title="serving provider: the actual host serving this model on this route">' + escapeHtml(provLabel) + '</span>') : '') +
-        '<span data-cache-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;gap:4px;padding-left:7px;">' + tmRenderIdentityCacheCluster(key, { frame: liveFrame }) + '</span>' +
-      '</div>';
-      // Row 5: lean thinking (this turn + per-turn histogram), ticked live.
-      var thinkRow = '';
-      var tkCapH = null;
-      try {
-        tkCapH = liveFrame.think[key] || null;
-        if (tkCapH) thinkRow = '<div style="margin-top:3px;"><span data-think-key="' + escapeHtml(key) + '">' + tmThinkRowLeanHtml(tkCapH, key, '13px') + '</span></div>';
-      } catch (eTkH) {}
-      // Row 4: BIG dial + aggregate cost + lean thinking (merged) + report button at far right.
-      // (v4.407b) The thinking lean row merged INTO this row per Dan (no reason for two rows).
-      var thinkRow = '';
-      var tkCapH = null;
-      try {
-        tkCapH = liveFrame.think[key] || null;
-        if (tkCapH) thinkRow = '<span data-think-key="' + escapeHtml(key) + '" style="display:inline-flex;align-items:center;">' + tmThinkRowLeanHtml(tkCapH, key, '13px') + '</span>';
-      } catch (eTkH) {}
-      var reportBtn = '<span data-action="session-ctx-report" data-key="' + escapeHtml(key) + '" title="Session report \u2014 context, cost, cache, time, thinking, keep-alive: read-only, copyable" style="cursor:pointer;font-size:13px;opacity:0.85;">\uD83D\uDCCB</span>';
-      var gaugesRow = '<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-height:34px;margin-top:3px;">' +
-        '<span style="display:inline-flex;align-items:center;flex:none;">' + ctxDialHtml + '</span>' +
-        ctxCostHtml +
-        thinkRow +
-        '<span style="flex:1;"></span>' +
-        reportBtn +
-      '</div>';
-      var ctlParts = [];
-      try { if (tmThinkControlSupportedForIdentity(key)) ctlParts.push(tmBuildThinkControlHtml(key, { selMaxWidth: '285px', selMaxWidthDisp: '255px' })); } catch (eCtl) {}
-      if (tkCapH) { try { ctlParts.push(tmThinkNoteButtonHtml(tkCapH)); } catch (eNb) {} }
-      var ctlRow = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:16px;margin-top:3px;">' + ctlParts.join('') + '</div>';
-      var kaRowHtml = '';
-      try {
-        var kaRouteHtml = '';
-        try {
-          var _rm = String(info.model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-          var _rh = String(info.host || '');
-          if (_rm && (_rh.indexOf('openrouter') !== -1 || (!_rh && _rm.indexOf('/') !== -1))) {
-            try { tmMaybeFetchProviderEndpoints(_rm); } catch (ePF) {}
-          }
-          if (_rm && tmIsMultiProviderModel(_rm)) {
-            var _pl = (liveFrame.prov && liveFrame.prov[key]) || _rh || '';
-            try { _pl = tmResolveProviderLabel(key, _pl); } catch (eRL) {}
-            kaRouteHtml = tmBuildProviderRoutingDropdown(key, _rm, _pl);
-          }
-        } catch (eRtH) {}
-        kaRowHtml = '<div style="display:flex;align-items:center;gap:8px;min-height:16px;margin-top:3px;">' + kaRouteHtml + '<span data-ka-key="' + escapeHtml(key) + '" style="margin-left:auto;">' + tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], liveFrame.keepalive) + '</span></div>';
-      } catch (eKaH) {}
-      var alertRowHtml = '<div data-alert-key="' + escapeHtml(key) + '">' + tmSessionCtxAlertHtml(key, { ring: liveFrame.ring }) + '</div>';
-      rows.push(
-        '<div style="padding:6px 0 5px;margin-top:1px;border-top:1px solid rgba(255,255,255,0.28);">' +
-          nameRow +
-          '<div style="padding-left:48px;">' + alertRowHtml + modelLiveRow + gaugesRow + ctlRow + kaRowHtml + '</div>' +
-        '</div>'
-      );
-    }
-    if (count === 0) {
-      rows.push('<div style="font-size:12px;color:#6a7280;">(ring buffer empty)</div>');
-    }
-    return rows.join('');
-  }
+  function tmBuildSessionCtxHoverHtml(frame) {
+  tmSessionCtxHoverLastFullAt=Date.now();frame=frame||tmBuildSessionCtxLiveFrame();tmSessionCtxHoverIdentities={};
+  var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
+  var composition=tmSessionCtxComposeRows(frame);
+  composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="padding:8px 0;border-top:1px solid rgba(255,255,255,0.28);">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
+  if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
+}
 
   // (v4.335) Pin lifecycle. Dragging IMPLIES pinning (a moved card is a kept card).
   // @beacon[
@@ -12976,7 +13839,7 @@
             var hcStyle = document.createElement('style');
             hcStyle.id = 'tm-hovercard-style';
             // (v4.336) Row-height-safe busy spinner (CSS-animated; JS only toggles presence).
-            hcStyle.textContent = '@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}';
+            hcStyle.textContent = '#tm-session-ctx-hovercard button{background:#242832;color:#c8d0dc;border:1px solid #48515d;border-radius:3px;font:inherit;font-size:11px;padding:1px 5px;cursor:pointer;}#tm-session-ctx-hovercard [data-session-row]{overflow-wrap:anywhere;}@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}';
             document.head.appendChild(hcStyle);
           }
         } catch (eSty) {}
@@ -12988,6 +13851,9 @@
         // on show and on pinned ticks, so handlers live on the persistent element only).
         tmSessionCtxHoverEl.addEventListener('click', function(ev) {
           try {
+            // Hide is visibility only; new outbound traffic (including KA) resurrects this identity.
+            var hide = ev.target.closest('[data-action="session-ctx-hide"]');
+            if (hide) { ev.stopPropagation(); ev.preventDefault(); if(tmTombstoneSet(hide.dataset.key)) { var row=hide.closest('[data-session-row]'); if(row)row.remove(); } return; }
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
             var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"],[data-action="ka-messages"]') : null;
             if (kaEl && kaEl.dataset) {
@@ -13002,20 +13868,30 @@
             if (tkH && tkH.dataset) {
               ev.stopPropagation();
               if (tkH.dataset.action === 'think-report') { tmShowThinkReport(tkH.dataset.captureId); return; }
-              var tkCtxH = tmThinkNoteContextFromCap(getCaptureById(tkH.dataset.captureId));
+              var tkCtxH = tkH.dataset.key ? tmThinkNoteContextForIdentity(tkH.dataset.key) : tmThinkNoteContextFromCap(getCaptureById(tkH.dataset.captureId));
               if (tkCtxH) tmShowThinkNoteEditor(tkCtxH, null, null);
               return;
             }
             // (v4.405) Alert-zone actions (migrated from the persistent widget): raw error JSON
             // popup, endpoint-not-found dismiss, prompt-warning dismiss. Same stores/handlers as
             // the widget versions; only the alert zone repaints, not the card.
-            var alEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="open-error-popup"],[data-action="dismiss-endpoint-not-found"],[data-action="dismiss-warning-banner"]') : null;
+            var alEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="open-error-popup"],[data-action="dismiss-endpoint-not-found"],[data-action="dismiss-warning-banner"],[data-action="dismiss-blind-banner"]') : null;
             if (alEl && alEl.dataset) {
               ev.stopPropagation();
               ev.preventDefault();
               if (alEl.dataset.action === 'open-error-popup') { try { tmShowErrorPopup(); } catch (eEP) {} }
               else if (alEl.dataset.action === 'dismiss-endpoint-not-found') { tmEndpointNotFound = null; tmSessionCtxRefreshAlerts(); }
+              else if (alEl.dataset.action === 'dismiss-blind-banner') { try { tmBlindBannerDismissed[alEl.dataset.key] = (tmLedgerRowView(alEl.dataset.key).last || {}).capture_id; tmSessionCtxRefreshAlerts(); } catch (eBB) {} }
               else { try { tmDismissWarningBanner(alEl.dataset.warningId || ''); } catch (eDW) {} tmSessionCtxRefreshAlerts(); }
+              return;
+            }
+            // (Fix 24 analytics S4, §7.1) the SiM context dial is clickable: set/clear a per-model
+            // (or model::provider) context-window override. Runs under the existing prompt guard.
+            var cdEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ctx-dial-set"]') : null;
+            if (cdEl && cdEl.dataset) {
+              ev.stopPropagation();
+              ev.preventDefault();
+              try { tmCtxDialPromptSet(cdEl.dataset.model || '', cdEl.dataset.provider || ''); } catch (eCD) {}
               return;
             }
             // (v4.407) Per-row session report (the glyph wall's detail, as sectioned copyable text).
@@ -13538,77 +14414,209 @@
     try { localStorage.setItem(TM_MODEL_CTX_OVERRIDES_KEY, JSON.stringify(o || {})); } catch (e) {}
   }
 
-  // Denominator resolution. modelKey = lowercase model (vendor-prefixed or bare); provSlug =
-  // serving provider slug when known (matched base-slug tolerant so 'fireworks' finds
-  // 'fireworks/fast' and vice versa). Returns { max, source: 'override'|'provider'|'provider-max'|'seed'|null }.
-  function tmResolveModelMaxCtx(modelKey, provSlug) {
+  // (Fix 24 analytics S1, §0.12) CONTEXT-WINDOW DENOMINATOR RESOLUTION -- replaced wholesale.
+  // The old chain re-slugged the provider LABEL through the nine-entry alias table (any provider
+  // outside it, and any variant/tier-decorated label, fell to provider-max), accepted a
+  // base-prefix relation BEFORE an exact match, consulted the catalogue on direct routes,
+  // borrowed another endpoint's maximum for a matched null-capacity entry, backfilled p50
+  // statistics as capacity, and let a stamped capacity silently override a corrected unknown.
+  //
+  //   tmResolveModelMaxCtx(model, { slug, host, route, stamp })
+  //     slug  : the row's BASE endpoint slug, undecorated by service tier ('fireworks/fast',
+  //             'streamlake/fp8', 'moonshotai'; '' / 'unattributed' when nothing identifies the
+  //             serving endpoint)
+  //     host  : the resolved TARGET host ('api.deepinfra.com', ...) -- the direct-route identity
+  //     route : 'intermediary' iff the resolved target host is openrouter.ai, else 'direct'
+  //     stamp : the row's own _ctx_snapshot { max_ctx, max_ctx_source } -- consulted ONLY under
+  //             the 'unresolvable now' rule (catalogue unavailable), and only when its source is
+  //             provider / override-provider / override (NEVER provider-max / seed)
+  //   -> { max, source, reason?, note? } -- source ∈ override-provider | override | provider |
+  //      provider-max | seed | stamped (<src>) | null. The result is AUTHORITATIVE, including
+  //      unknown; the null case distinguishes 'unknown by rule' from 'unresolvable now' (reason).
+  //
+  // Intermediary chain: (1) override[model::slug]; (2) override[model] (exact key, then final
+  // slash segment); (3) the serving endpoint's capacity by EXACT slug equality over the whole
+  // catalogue entry list; (4) base-prefix tolerance ONLY when it resolves to exactly ONE
+  // candidate entry -- a named base matching two or more distinct variants -> unknown by rule;
+  // (5) a matched entry whose capacity is null -> unknown by rule (a present-but-null capacity
+  // is DATA); (6) NO slug (unattributed) -> provider-max, the largest endpoint capacity in the
+  // loaded catalogue, an UPPER BOUND labelled as such -- consulted ONLY in the unattributed
+  // case; (7) a slug with no matching entry, or an unattributed row whose loaded catalogue
+  // carries no capacity -> seed -> unknown by rule; (8) catalogue not loaded / expired ->
+  // 'unresolvable now': the eligible stamp, else a matching seed; when BOTH exist take the
+  // SMALLER (the conservative denominator), labelled by the winner; neither -> unknown.
+  //
+  // Direct chain: override[model::host] -> override[model] -> seed -> unknown by rule. The
+  // OpenRouter catalogue is NEVER consulted; stamps never apply.
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmResolveModelMaxCtx-s1,
+  //   role=__lambdao_1.tmResolveModelMaxCtx,
+  //   slice_labels=tm-payload-overview,tm-payload-cost-visibility,
+  //   kind=ast,
+  //   comment=(Fix 24 analytics S1, §0.12) Context-window denominator resolution: override-provider -> override -> (intermediary: exact-slug endpoint capacity -> unambiguous-prefix -> unknown-by-rule | unattributed: provider-max upper bound | catalogue unavailable: eligible stamp/seed conservative) -> (direct: seed -> unknown). Authoritative including unknown; never borrows another endpoint's window; the dial/bulge/report share it via tmResolveModelMaxCtxCached.,
+  // ]
+  function tmResolveModelMaxCtx(modelKey, opts) {
+    opts = opts || {};
     var m = String(modelKey || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-    if (!m) return { max: null, source: null };
-    // 0) Provider-SPECIFIC manual override (v4.299: most precise rung; key = 'model::providerSlug')
-    if (provSlug) {
+    if (!m) return { max: null, source: null, reason: 'unknown by rule' };
+    var slug = String(opts.slug || '').toLowerCase().trim();
+    if (slug === 'unattributed') slug = '';
+    var host = String(opts.host || '').toLowerCase().trim();
+    var route = opts.route === 'intermediary' ? 'intermediary' : 'direct';
+    var stamp = (opts.stamp && typeof opts.stamp === 'object') ? opts.stamp : null;
+
+    function seedFor(mm) {
+      for (var si = 0; si < TM_MODEL_CTX_SEED.length; si++) {
+        if (TM_MODEL_CTX_SEED[si][0].test(mm)) return TM_MODEL_CTX_SEED[si][1];
+      }
+      return null;
+    }
+    function modelOverrideFor(mm) {
+      try {
+        var ov = tmReadModelCtxOverrides();
+        var hit = ov[mm];
+        if (hit == null) { var seg = mm.split('/').pop(); if (seg && ov[seg] != null) hit = ov[seg]; }
+        var hn = Number(hit);
+        if (isFinite(hn) && hn > 0) return hn;
+      } catch (e) {}
+      return null;
+    }
+
+    // (1) Provider-SPECIFIC override: model::slug on an intermediary route, model::host direct
+    // (a direct host keys e.g. 'moonshotai/kimi-k3::api.deepinfra.com').
+    var provKey = (route === 'intermediary') ? slug : host;
+    if (provKey) {
       try {
         var ovP = tmReadModelCtxOverrides();
-        var hnP = Number(ovP[m + '::' + provSlug]);
+        var hnP = Number(ovP[m + '::' + provKey]);
         if (isFinite(hnP) && hnP > 0) return { max: hnP, source: 'override-provider' };
       } catch (eP0) {}
     }
-    // 1) Manual per-model override (exact full key, then final slash segment)
-    try {
-      var ov = tmReadModelCtxOverrides();
-      var hit = ov[m];
-      if (hit == null) { var seg = m.split('/').pop(); if (seg && ov[seg] != null) hit = ov[seg]; }
-      var hn = Number(hit);
-      if (isFinite(hn) && hn > 0) return { max: hn, source: 'override' };
-    } catch (e) {}
-    // 2) Provider entries (live OpenRouter discovery merged over the seed table)
-    try {
-      var entries = tmGetProviderEntries(m) || [];
-      var anyMax = false;
-      for (var ei = 0; ei < entries.length; ei++) { if (entries[ei] && entries[ei].maxContext != null) { anyMax = true; break; } }
-      // Kick off the lazy Endpoints-API fetch when nothing usable is cached -- the NEXT turn's
-      // snapshot (or a later render) picks up the fresh windows. Carries the tm_passthrough
-      // sentinel and is fully guarded/in-flight-deduped by tmMaybeFetchProviderEndpoints itself.
-      // (v4.341) Only OPENROUTER-SLUG models (vendor-prefixed, containing '/') are
-      // discoverable via the Endpoints API. Bare names come from DIRECT routes
-      // (Moonshot-direct 'kimi-k3', Gemini-native 'gemini-3.7-flash') where discovery
-      // cannot reach by design -- firing it there produced a PERMANENT 404 storm, since
-      // the API needs the full 'moonshotai/kimi-k3' slug and bare names 404 forever.
-      if (!anyMax && m.indexOf('/') !== -1) { try { tmMaybeFetchProviderEndpoints(m); } catch (eF) {} }
-      if (provSlug) {
-        for (var i = 0; i < entries.length; i++) {
-          var e = entries[i];
-          if (!e || e.maxContext == null || !e.slug) continue;
-          if (e.slug === provSlug || e.slug.indexOf(provSlug + '/') === 0 || provSlug.indexOf(e.slug + '/') === 0) {
-            return { max: e.maxContext, source: 'provider' };
-          }
+    // (2) Model override (exact full key, then final slash segment).
+    var mo = modelOverrideFor(m);
+    if (mo != null) return { max: mo, source: 'override' };
+
+    if (route !== 'intermediary') {
+      // ---- DIRECT route: the OpenRouter catalogue is never consulted; stamps never apply.
+      var sd = seedFor(m);
+      if (sd != null) return { max: sd, source: 'seed' };
+      return { max: null, source: null, reason: 'unknown by rule',
+               note: 'capacity unknown for this direct host — click the dial to set it' };
+    }
+
+    // ---- INTERMEDIARY (OpenRouter) ----
+    var entries = null;
+    try { entries = tmGetLiveProviderEntries(m); } catch (eG) { entries = null; }
+    // Kick the lazy Endpoints-API fetch only when nothing usable is cached (the v4.341 guard:
+    // only vendor-prefixed OpenRouter slugs are discoverable; bare direct names 404 forever).
+    if (entries == null && m.indexOf('/') !== -1) { try { tmMaybeFetchProviderEndpoints(m); } catch (eF) {} }
+
+    if (entries == null) {
+      // (8) UNRESOLVABLE NOW -- catalogue not loaded / expired. The row's stamp is consulted
+      // ONLY when its source is provider / override-provider / override (never provider-max or
+      // seed); a matching seed competes conservatively (the SMALLER denominator wins, labelled
+      // by the winner).
+      var stampSrc = stamp && stamp.max_ctx_source;
+      var stampVal = null;
+      if (stamp && stamp.max_ctx != null &&
+          (stampSrc === 'provider' || stampSrc === 'override-provider' || stampSrc === 'override')) {
+        var sn = Number(stamp.max_ctx);
+        if (isFinite(sn) && sn > 0) stampVal = sn;
+      }
+      var seedU = seedFor(m);
+      if (stampVal != null && seedU != null) {
+        if (stampVal <= seedU) return { max: stampVal, source: 'stamped (' + stampSrc + ')' };
+        return { max: seedU, source: 'seed' };
+      }
+      if (stampVal != null) return { max: stampVal, source: 'stamped (' + stampSrc + ')' };
+      if (seedU != null) return { max: seedU, source: 'seed' };
+      return { max: null, source: null, reason: 'unresolvable now' };
+    }
+
+    if (slug) {
+      // (3) EXACT slug equality over the whole entry list.
+      var exact = null;
+      for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (e && e.slug === slug) { exact = e; break; }
+      }
+      // (4) base-prefix tolerance ONLY when it resolves to exactly ONE candidate entry -- a named
+      // base matching two or more distinct variants is unknown by rule.
+      var prefixEntry = null, prefixCount = 0;
+      if (!exact) {
+        for (var j = 0; j < entries.length; j++) {
+          var e2 = entries[j];
+          if (!e2 || !e2.slug) continue;
+          if (e2.slug.indexOf(slug + '/') === 0 || slug.indexOf(e2.slug + '/') === 0) { prefixCount++; prefixEntry = e2; }
+        }
+        if (prefixCount >= 2) {
+          return { max: null, source: null, reason: 'unknown by rule',
+                   note: 'serving endpoint variant not identified (' + prefixCount + ' candidates) — click the dial to set it' };
         }
       }
-      var best = null;
-      for (var bi = 0; bi < entries.length; bi++) { var be = entries[bi]; if (be && be.maxContext != null && (best == null || be.maxContext > best)) best = be.maxContext; }
-      if (best != null) return { max: best, source: 'provider-max' };
-    } catch (e2) {}
-    // 3) Built-in seed (direct routes with well-known windows)
-    for (var si = 0; si < TM_MODEL_CTX_SEED.length; si++) {
-      if (TM_MODEL_CTX_SEED[si][0].test(m)) return { max: TM_MODEL_CTX_SEED[si][1], source: 'seed' };
+      var matched = exact || (prefixCount === 1 ? prefixEntry : null);
+      if (matched) {
+        // (5) a matched entry whose capacity is null is DATA: unknown by rule; never borrow
+        // another endpoint's maximum.
+        if (matched.maxContext != null) return { max: matched.maxContext, source: 'provider' };
+        return { max: null, source: null, reason: 'unknown by rule',
+                 note: 'capacity unknown for this endpoint — click the dial to set it' };
+      }
+      // (7) a slug with no matching entry: seed, then unknown by rule (provider-max is NOT
+      // consulted for an attributed slug).
+      var s7 = seedFor(m);
+      if (s7 != null) return { max: s7, source: 'seed' };
+      return { max: null, source: null, reason: 'unknown by rule',
+               note: 'capacity unknown for this endpoint — click the dial to set it' };
     }
-    return { max: null, source: null };
+
+    // (6) NO slug (unattributed): provider-max = the largest endpoint capacity in the loaded
+    // catalogue -- an UPPER BOUND, not this endpoint's limit.
+    var best = null;
+    for (var b = 0; b < entries.length; b++) { var be = entries[b]; if (be && be.maxContext != null && (best == null || be.maxContext > best)) best = be.maxContext; }
+    if (best != null) return { max: best, source: 'provider-max',
+                               note: 'largest endpoint (serving provider unknown) — an upper bound, not this endpoint\'s limit' };
+    var s6 = seedFor(m);
+    if (s6 != null) return { max: s6, source: 'seed' };
+    return { max: null, source: null, reason: 'unknown by rule' };
   }
 
   // 2s memo so a 500-row modal render pass does not re-parse the localStorage discovery store
   // per row. Busted explicitly by tmCtxDialPromptSet after an override change.
   var tmCtxResolveMemo = { ts: 0, map: {} };
-  function tmResolveModelMaxCtxCached(model, capRec) {
+  function tmResolveModelMaxCtxCached(model, capRec, explicit) {
+    if (explicit) return tmResolveModelMaxCtx(model, explicit);
     var now = Date.now();
     if (now - tmCtxResolveMemo.ts > 2000) { tmCtxResolveMemo = { ts: now, map: {} }; }
     var m = String(model || '').toLowerCase().replace(/:(nitro|floor|free)$/i, '');
-    var provSlug = '';
+    // (Fix 24 analytics S1, §0.12 plumbing) the row's stamped BASE provider slug is primary; the
+    // label->alias route is the LEGACY fallback, used only for rows carrying no slug stamp.
+    var slug = '';
     try {
-      var pl = (capRec && (capRec._provider_label || capRec.response_provider)) || null;
-      if (pl) provSlug = tmProviderNameToSlug(pl) || '';
+      slug = (capRec && typeof capRec._provider_slug === 'string' && capRec._provider_slug) || '';
+      if (!slug) {
+        var pl = (capRec && (capRec._provider_label || capRec.response_provider)) || null;
+        if (pl) {
+          slug = tmProviderNameToSlug(pl) || '';
+          // (§0.12) the alias table is only nine entries; a variant label outside it
+          // ('StreamLake Fp8', 'Fireworks Fast') lowercases to a SPACE form ('streamlake fp8')
+          // that never matches the catalogue slug ('streamlake/fp8'). Normalize the OpenRouter
+          // variant convention 'provider variant' -> 'provider/variant' so the legacy label route
+          // resolves to the real endpoint slug.
+          if (slug && slug.indexOf('/') === -1 && slug.indexOf(' ') !== -1) {
+            slug = slug.replace(/ ([^ ]+)$/, '/$1');
+          }
+        }
+      }
     } catch (e) {}
-    var ck = m + '::' + provSlug;
+    slug = String(slug || '').toLowerCase();
+    var host = '';
+    try { host = (capRec && capRec._identity && capRec._identity.host) || (capRec && capRec._think_req && capRec._think_req.host) || tmExtractEndpointHost(capRec || {}) || ''; if (host === 'unknown') host = ''; } catch (eH) {}
+    var route = (host === 'openrouter.ai') ? 'intermediary' : 'direct';
+    var stamp = (capRec && capRec._ctx_snapshot) || null;
+    var ck = m + '|' + slug + '|' + host + '|' + route + '|' + (stamp && stamp.max_ctx) + '|' + (stamp && stamp.max_ctx_source);
     if (!Object.prototype.hasOwnProperty.call(tmCtxResolveMemo.map, ck)) {
-      tmCtxResolveMemo.map[ck] = tmResolveModelMaxCtx(m, provSlug || null);
+      tmCtxResolveMemo.map[ck] = tmResolveModelMaxCtx(m, { slug: slug, host: host, route: route, stamp: stamp });
     }
     return tmCtxResolveMemo.map[ck];
   }
@@ -13714,17 +14722,30 @@
     opts = opts || {};
     if (!snap || snap.total == null) return '';
     var size = opts.size || 16;
-    var model = snap.model || (opts.cap && opts.cap._identity && opts.cap._identity.model) || '';
-    var mr = tmResolveModelMaxCtxCached(model, opts.cap || null);
+    var model = opts.model || snap.model || (opts.cap && opts.cap._identity && opts.cap._identity.model) || '';
+    // (Fix 24 analytics S4, §7.1) when the caller supplies the denominator resolution + provider
+    // slug/host/route directly (the SiM adapter path via tmLedgerRowView), honor them; otherwise
+    // fall back to the legacy ring-row cap path. The resolver result is AUTHORITATIVE incl. unknown.
+    var mr = opts.mr || tmResolveModelMaxCtxCached(model, opts.cap || null);
     // (v4.299) Resolve the row's provider slug up front: it rides the dial's data-provider attr
     // so the click handler targets a 'model::providerSlug' override key (not just 'model').
     var provSlugForAttr = '';
     try {
-      var plA = (opts.cap && (opts.cap._provider_label || opts.cap.response_provider)) || null;
-      if (plA) provSlugForAttr = tmProviderNameToSlug(plA) || '';
+      if (opts.provider != null) provSlugForAttr = String(opts.provider);
+      else if (opts.cap && opts.cap._provider_slug) provSlugForAttr = opts.cap._provider_slug;
+      else {
+        var directHost = opts.cap && opts.cap._identity && opts.cap._identity.host;
+        if (directHost && directHost !== 'openrouter.ai') provSlugForAttr = directHost;
+        var plA = (opts.cap && (opts.cap._provider_label || opts.cap.response_provider)) || null;
+        if (!provSlugForAttr && plA) provSlugForAttr = tmProviderNameToSlug(plA) || '';
+      }
     } catch (ePA) {}
     var maxCtx = mr.max, maxSrc = mr.source;
-    if (maxCtx == null && snap.max_ctx != null) { maxCtx = snap.max_ctx; maxSrc = snap.max_ctx_source || 'stamped'; }
+    // (Fix 24 analytics S1, §0.12) the resolver's result is AUTHORITATIVE, including unknown --
+    // it already applies the 'unresolvable now' stamp rule internally (only provider/override
+    // stamps, only when the catalogue is unavailable), so the old unconditional snap.max_ctx
+    // fallback here is REMOVED (a provider-max/seed stamp must not silently reappear). The
+    // resolver's note (an unknown reason / the upper-bound disclaimer) rides the tooltip below.
     var pct = (maxCtx != null && maxCtx > 0) ? (snap.total / maxCtx) * 100 : null;
     var color = tmCtxDialColor(pct);
     var r = (size / 2) - 2;
@@ -13753,6 +14774,10 @@
     if (snap.reasoning != null) bd.push('reasoning ' + Math.round(snap.reasoning).toLocaleString());
     if (snap.cached != null) bd.push('cached ' + tmFmtTok(snap.cached));
     if (bd.length) tip.push(bd.join(' · '));
+    // (§0.12) surface the resolver's reason for an unknown denominator / the provider-max
+    // upper-bound disclaimer, so a dashed dial says WHY instead of merely being dashed.
+    if (mr && mr.note) tip.push(mr.note);
+    if (mr && mr.reason) tip.push('[' + mr.reason + (maxSrc ? (': ' + maxSrc) : '') + ']');
     tip.push('total ' + Math.round(snap.total).toLocaleString() + ' tokens this turn (provider-reported, incl. reasoning)');
     tip.push('max: ' + (maxSrc || 'unknown') + (model ? ' -- click to override ' + (provSlugForAttr ? ('model::' + provSlugForAttr) : 'model') : ''));
     if (over) tip.push('⚠ OVER the model context window');
@@ -13780,7 +14805,11 @@
     var targetKey = provSlug ? (key + '::' + provSlug) : key;
     var ov = tmReadModelCtxOverrides();
     var curKeyVal = (ov[targetKey] != null) ? ov[targetKey] : '';
-    var eff = tmResolveModelMaxCtx(key, provSlug || null);
+    // (Fix 24 analytics S1, §0.12) resolver signature is now (model, {slug, host, route, stamp}).
+    // A dot-bearing provider value is a direct HOST (model::host key); anything else is an
+    // intermediary slug. The prompt's effective-value readout follows the same chain as the dial.
+    var isHostKey = /[.]/.test(provSlug) && provSlug.indexOf('openrouter') === -1;
+    var eff = tmResolveModelMaxCtx(key, isHostKey ? { host: provSlug, route: 'direct' } : { slug: provSlug, route: 'intermediary' });
     var NL2 = String.fromCharCode(10);
     var lines = [];
     lines.push('Max context window (tokens) for ' + model + (provSlug ? (' :: ' + provSlug) : '') + ':');
@@ -13839,61 +14868,16 @@
   //   kind=ast,
   //   comment=(v4.405) Per-identity cache cluster (cache report + turn cost + streak / misses-slash-hits superscripts), migrated verbatim from the pre-v4.405 widget top row onto each Sessions-in-Memory row; reads the live frame usage map + the per-identity cache-outcome ledger.,
   // ]
-  function tmRenderIdentityCacheCluster(idKey, opts) {
-    try {
-      if (!idKey) return '';
-      opts = opts || {};
-      var cap = null;
-      try { if (opts.frame && opts.frame.usage) cap = opts.frame.usage[idKey] || null; } catch (eF) {}
-      if (!cap) {
-        var ring = opts.ring || tmReadCaptureRing();
-        for (var i = ring.length - 1; i >= 0; i--) {
-          var c = ring[i];
-          if (!c) continue;
-          var k = c._identity && c._identity.key;
-          if (k !== idKey) continue;
-          if (c.response_anthropic_usage || c.response_usage || (typeof c._table_cost === 'number' && c._table_cost > 0)) { cap = c; break; }
-        }
-      }
-      if (!cap) return '';
-      var au = cap.response_anthropic_usage || null;
-      var oru = cap.response_usage || null;
-      var tableCostFallback = (typeof cap._table_cost === 'number' && cap._table_cost > 0) ? cap._table_cost : 0;
-      var turnCostVal = tmExtractCostVal(au, oru);
-      if (!(turnCostVal > 0) && tableCostFallback > 0) turnCostVal = tableCostFallback;
-      var stats = tmGetCacheOutcomeForIdentity(idKey) || {};
-      var cacheHit = (stats._cache_last === 'hit');
-      var streak = Number(stats._cache_streak || 0);
-      var totalHits = Number(stats._cache_hits || 0);
-      var totalMisses = Number(stats._cache_misses || 0);
-      var missBorder = cacheHit
-        ? ''
-        : 'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;';
-      var supTopAdj = missBorder ? -7 : 0;
-      var turnCostStr = (turnCostVal > 0)
-        ? ' <span title="inference cost (this turn) \u2014 ' + (cacheHit ? 'cache hit' : 'cache miss') + '" ' +
-            'style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;' + missBorder + '">' +
-              '$' + turnCostVal.toFixed(3) +
-              (streak > 0
-                ? '<span style="position:absolute;top:' + (-10 + supTopAdj) + 'px;left:-7px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">' + streak + '</span>'
-                : '') +
-              ((totalMisses > 0 || totalHits > 0)
-                ? '<span style="position:absolute;top:' + (-14 + supTopAdj) + 'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">' + totalMisses + '</span> / ' + totalHits + '</span>'
-                : '') +
-          '</span>'
-        : '';
-      var cacheReportNoCost = tmRenderCacheReport(au, oru, '__skip_cost__');
-      if (!cacheReportNoCost && !turnCostStr) return '';
-      // (v4.407) Always-visible HIT/MISS chip leads the cluster (Dan: cache hit/miss is one of the
-      // most important things on the row). Reads the same ledger as the superscripts.
-      var chip = '';
-      if (stats._cache_last === 'hit' || stats._cache_last === 'miss') {
-        var isH = stats._cache_last === 'hit';
-        chip = '<span title="last turn: cache ' + (isH ? 'HIT' : 'MISS') + '" style="font-size:10px;font-weight:700;padding:0 5px;border-radius:3px;border:1px solid ' + (isH ? '#2a6a3a' : '#6a2a2a') + ';background:' + (isH ? '#173a22' : '#3a1717') + ';color:' + (isH ? '#7dd67d' : '#ff8080') + ';white-space:nowrap;">' + (isH ? 'HIT' : 'MISS') + '</span>';
-      }
-      return chip + '<span style="font-size:13px;">' + cacheReportNoCost + '</span>' + turnCostStr;
-    } catch (e) { return ''; }
-  }
+  function tmRenderIdentityCacheCluster(idKey,opts) {
+  opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,r=v.rec,c=l&&l.cache||{},hit=c.hit;
+  var chip='<span style="font-size:10px;font-weight:700;color:'+(hit===true?'#7dd67d':hit===false?'#ff8080':'#9aa4b2')+';">'+(hit===true?'HIT':hit===false?'MISS':'cache —')+'</span>';
+  var read=c.read==null?'—':tmFmtTok(c.read),write=c.write==null?'—':tmFmtTok(c.write);
+  var report=l?'<span style="font-size:11px;"> <span style="color:#7ec8e3;">read '+read+'</span> · <span style="color:#ff8080;">write '+write+'</span></span>':'';
+  var retained='retained totals (including keep-alive): '+(r._cache_hits||0)+' hits, '+(r._cache_misses||0)+' misses, streak '+(r._cache_streak||0);
+  var counters='<sup title="'+retained+'" style="font-size:9px;color:#ccffcc;white-space:nowrap;"> '+(r._cache_streak||0)+' ↗ <span style="color:#ff8080;">'+(r._cache_misses||0)+'</span> / '+(r._cache_hits||0)+'</sup>';
+  var cost=l&&l.cost!=null?' <span style="color:#ff6b3d;font-weight:bold;'+(hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'')+'" title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+')">$'+l.cost.toFixed(3)+'</span>':'';
+  return chip+report+cost+counters;
+}
 
   // (v4.405) THE PER-IDENTITY ALERT ZONE -- the three banners that used to live on the persistent
   // widget (red error row / orange endpoint-not-found / red prompt-ingestion warning), rendered ONLY
@@ -13916,6 +14900,8 @@
     try {
       if (!idKey) return '';
       opts = opts || {};
+      opts.frame = opts.frame || tmBuildSessionCtxLiveFrame();
+      opts.view = opts.view || tmLedgerRowView(idKey, opts.frame);
       // (1) Red error row (was widget; auto-clears on the identity's next success).
       if (tmMostRecentError && tmMostRecentError.idKey && tmMostRecentError.idKey === idKey) {
         var errCode = tmMostRecentError.code != null ? tmMostRecentError.code : '?';
@@ -13932,20 +14918,7 @@
           '</div>');
       }
       // (3) Prompt-ingestion warning: newest critical _warnings entry for THIS identity, ring-derived.
-      var ring = opts.ring || (opts.frame && opts.frame.ring) || [];
-      var newestWarn = null;
-      for (var i = ring.length - 1; i >= 0; i--) {
-        var wCap = ring[i];
-        if (!wCap || !Array.isArray(wCap._warnings) || !wCap._warnings.length) continue;
-        var wKey = wCap._identity && wCap._identity.key;
-        if (!wKey) { try { wKey = tmCapIdentityKey(wCap); } catch (eK) {} }
-        if (wKey !== idKey) continue;
-        for (var w = wCap._warnings.length - 1; w >= 0; w--) {
-          var cand = wCap._warnings[w];
-          if (cand && cand.severity === 'critical') { newestWarn = cand; break; }
-        }
-        if (newestWarn) break;
-      }
+      var newestWarn = opts.frame.warnings[idKey] || null;
       if (newestWarn && !tmIsWarningBannerDismissed(newestWarn.id)) {
         var wTitle = escapeHtml(newestWarn.title || 'Prompt warning');
         var wMsg = escapeHtml(newestWarn.message || '');
@@ -13963,6 +14936,27 @@
           '<span data-action="dismiss-warning-banner" data-warning-id="' + escapeHtml(String(newestWarn.id || '')) + '" title="Dismiss (this turn only)" style="cursor:pointer;color:#ff4444;font-weight:bold;font-size:13px;flex-shrink:0;line-height:1;">\u00d7</span>' +
           '</div>');
       }
+      // (Fix 24 analytics S4, §7.4) 4th alert: the ANALYTICS-GAP flag. Small, dim yellow, no red
+      // border/glow. Source = persisted ledger gap + the in-memory pending gap. Fires ONLY for
+      // response_read_failed / analytics_write_failed (WE lost a result); persists for the
+      // conversation. Never lights for a route that is simply unmeasured on every turn.
+      try {
+        var _view4 = opts.view || null;
+        if (!_view4) { try { _view4 = tmLedgerRowView(idKey, opts.frame || null); } catch (eV4) {} }
+        var _gapN = tmSessionCtxAnalyticsGapCount(idKey, _view4);
+        if (_gapN > 0) {
+          out.push('<div style="font-size:9px;color:#c8b46a;opacity:0.85;margin-top:2px;font-family:monospace;" title="Reasoning analytics are incomplete for this conversation: ' + _gapN + ' turn result(s) failed to record (a body read failed, or the analytics write failed). Context/cost/cache/time are written by separate code paths; this flag does not certify them.">\u2691 Analytics: ' + _gapN + ' turn result(s) failed to record</div>');
+        }
+      } catch (eGap) {}
+      // (Fix 24 analytics S4, §7.4) 5th alert: the BLIND-ROUTE banner. Amber, full-width, same
+      // weight as the error row. Current-provider scoped; dismissible per identity (in-memory,
+      // re-arms on the next unmeasured turn).
+      try {
+        var _view5 = opts.view || null;
+        if (!_view5) { try { _view5 = tmLedgerRowView(idKey, opts.frame || null); } catch (eV5) {} }
+        var _blind = tmSessionCtxBlindBanner(idKey, _view5);
+        if (_blind) out.push(_blind);
+      } catch (eBlind) {}
     } catch (e) {}
     return out.join('');
   }
@@ -13970,16 +14964,10 @@
   // (v4.405) Repaint just the per-row alert zones (dismiss actions + the 1s tick); zones carry
   // pre-rendered content, so a dismissed banner disappears without a full card rebuild.
   function tmSessionCtxRefreshAlerts(frame) {
-    try {
-      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
-      frame = frame || tmBuildSessionCtxLiveFrame();
-      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-alert-key]');
-      for (var i = 0; i < zones.length; i++) {
-        var key = zones[i].getAttribute('data-alert-key');
-        tmSessionCtxPatchHtml(zones[i], tmSessionCtxAlertHtml(key, { ring: frame.ring }));
-      }
-    } catch (e) {}
-  }
+  if(!tmSessionCtxHoverEl||tmSessionCtxHoverEl.style.display==='none')return;
+  frame=frame||tmBuildSessionCtxLiveFrame();var zones=tmSessionCtxHoverEl.querySelectorAll('[data-alert-key]');
+  for(var i=0;i<zones.length;i++){var k=zones[i].getAttribute('data-alert-key');tmSessionCtxPatchHtml(zones[i],tmSessionCtxAlertHtml(k,{frame:frame,view:tmLedgerRowView(k,frame)}));}
+}
 
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildWidgetStatusLine-pmi7,
@@ -15820,7 +16808,13 @@
           originalFetch.apply(window, args).then(function(r2) {
             if (retryCapId) { try { tmCaptureResponse(retryCapId, r2); } catch (e) {} }
             resolve(tmMaybeAutoRetry(r2, args, retryCapId, shouldSanitizeSolProUsage, attempt + 1));
-          }).catch(function() { resolve(passThrough || response); });
+          }).catch(function() {
+            // (Fix 24 analytics S3, §1.1) the RETRY's fetch rejection is the retry capture's OWN
+            // fetch-failed terminal path -- finalize it (activity touch, pending/in-flight release)
+            // before returning the fallback response (the fallback behavior is kept unchanged).
+            tmFinalizeCapturedFailure(retryCapId, new Error('retry fetch rejected'), null, true);
+            resolve(passThrough || response);
+          });
         }, waitSec * 1000);
       });
     }
@@ -16124,15 +17118,25 @@
         var execMs = Date.now() - Number(s.responseFinishedAt);
         if (execMs > 0 && execMs < 30 * 60 * 1000) {
           tmUpdateCaptureRecord(captureId, { _tool_exec_ms: execMs });
-          // (v4.353) Accumulate into the per-session TOOL ledger (same identity key as cost/rt).
+          // (Fix 24 analytics S3, §3 step 4) assign the SAME execMs to the pending record
+          // (independently of the ring patch), and credit tmRecordToolExec with identity taken from
+          // the PENDING record (sid/model/host/isProxy) -- never from getCaptureById, which can be
+          // evicted. Compute once, credit once. The stale check already ran at §3 step 2.
+          var _tpRec = null;
+          try { _tpRec = tmPendingTurnGet(captureId); if (_tpRec) _tpRec.tool_exec_ms = execMs; } catch (eTP) {}
           try {
-            var tcap = getCaptureById(captureId);
-            if (tcap && tcap.session_id) {
-              var tModel = '', tHost = '', tProxy = false;
-              try { tModel = tmCaptureModel(tcap); } catch (e1) {}
-              try { tHost = tmExtractEndpointHost(tcap); } catch (e2) {}
-              try { tProxy = tmIsProxyCapture(tcap); } catch (e3) {}
-              tmRecordToolExec(tcap.session_id, tModel, tHost, tProxy, execMs);
+            if (_tpRec && _tpRec.sid && _tpRec.model) {
+              tmRecordToolExec(_tpRec.sid, _tpRec.model, _tpRec.host, _tpRec.isProxy, execMs);
+            } else {
+              // (§1.2 recovery exception only) fall back to the stored capture's own evidence.
+              var tcap = getCaptureById(captureId);
+              if (tcap && tcap.session_id) {
+                var tModel = '', tHost = '', tProxy = false;
+                try { tModel = tmCaptureModel(tcap); } catch (e1) {}
+                try { tHost = tmExtractEndpointHost(tcap); } catch (e2) {}
+                try { tProxy = tmIsProxyCapture(tcap); } catch (e3) {}
+                tmRecordToolExec(tcap.session_id, tModel, tHost, tProxy, execMs);
+              }
             }
           } catch (eTL) {}
         }
@@ -18772,7 +19776,8 @@
 
   // v4.163: Extract the identity key for a capture, preferring stamped _identity.
   function tmCapIdentityKey(cap) {
-    if (cap._identity) return cap._identity.key || '';
+    if (cap._identity && cap._identity.key) return cap._identity.key;
+    if (cap.session_id && cap._model && cap._think_req && cap._think_req.host) return tmBuildIdentityKey(cap.session_id,cap._model,cap._think_req.host,!!cap._think_req.proxy);
     var sid = cap.session_id || null;
     var model = '';
     var host = '';
@@ -19464,7 +20469,9 @@
       }
       // v4.267: fixed 30px/58px badge widths REMOVED (would clip the merged ratio parenthetical);
       // nowrap keeps 'HIT (3 / 18)' / 'MISS (12 / 4)' on one line as a single field.
-      var hitBadge = isHit
+      var hitBadge = isHit === null
+        ? '<span title="cache outcome unmeasured (no prompt-denominator evidence on this row)" style="display:inline-block;color:#9aa4b2;font-size:9px;font-weight:bold;white-space:nowrap;">cache —</span>'
+        : isHit
         ? '<span title="cache hit" style="display:inline-block;color:#7dd67d;font-size:9px;font-weight:bold;white-space:nowrap;">HIT' + hitRatioInner + '</span>'
         : '<span title="cache miss" style="display:inline-block;color:#ff6b6b;font-size:12px;font-weight:bold;white-space:nowrap;">MISS' + hitRatioInner + '</span>';
       // v4.261: permanent per-capture marker for a response whose Kimi tool-call ID was repaired.
@@ -19554,10 +20561,10 @@
       var cost24h = (typeof cap._cost_24h === 'number') ? cap._cost_24h : null;
       // (v4.230) Show whenever the field exists (including $0.00) — misses must not hide these.
       var cost12hStr = (cost12h != null)
-        ? '<span title="cost in current 12h block" style="color:#a0d0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">12h:$' + cost12h.toFixed(2) + '</span>'
+        ? '<span title="cost in current 12h block (ring window only — not a durable total)" style="color:#a0d0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">12h:$' + cost12h.toFixed(2) + '</span>'
         : '';
       var cost24hStr = (cost24h != null)
-        ? '<span title="cost in current+prior 12h blocks" style="color:#c0b0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">24h:$' + cost24h.toFixed(2) + '</span>'
+        ? '<span title="cost in current+prior 12h blocks (ring window only — not a durable total)" style="color:#c0b0ff;font-size:10px;white-space:nowrap;flex-shrink:0;">24h:$' + cost24h.toFixed(2) + '</span>'
         : '';
 
       var modelColor = tmModelEndpointColor(capModel, capHost, capIsProxy, capSessionId);
@@ -21339,7 +22346,8 @@
         } catch (eMU) {}
       }
       if (!model) return null;
-      var sid = body.session_id || tmDeriveStableSessionId(body) || '';
+      var sid = tmDeriveStableSessionId(body) || '';
+      if (!sid) return null; // body.session_id is a routing hint, never canonical identity evidence.
       var capLike = { url: url, headers: hdrs };
       var host = '';
       try { host = tmExtractEndpointHost(capLike); } catch (e) {}
@@ -21934,6 +22942,33 @@
       if (options && typeof options.body === 'string') {
         var tmUniversalBody = JSON.parse(options.body);
         var tmUniversalChanged = false;
+        // (Fix 24 analytics S3, §3 step 2) REQUEST-TIME STALE CHECK + one-time legacy conversion,
+        // BEFORE provider routing: compute the identity key from the FINAL body (sid via
+        // tmDeriveStableSessionId, never body.session_id), then expire a >7-day-idle identity record
+        // (so a resumed identity is seen as NEW for accounting and, when no routing lock exists, the
+        // model->provider map re-applies). The lock store is independent and never cleared here.
+        try {
+          var _scBody = tmUniversalBody;
+          var _scSid = null, _scModel = null, _scHost = null, _scProxy = false;
+          try { _scSid = tmDeriveStableSessionId(_scBody); } catch (eScS) {}
+          try { _scModel = (_scBody && _scBody.model) ? String(_scBody.model) : null; } catch (eScM) {}
+          if (!_scModel) {
+            try {
+              var _scHdrs = tmNormalizeHeaders(options && options.headers);
+              var _scUrl = String(url || '');
+              var _scTgt = _scHdrs && (_scHdrs['x-target-endpoint'] || _scHdrs['X-Target-Endpoint']);
+              if (_scTgt && /\/models\//i.test(String(_scTgt))) _scUrl = String(_scTgt);
+              var _scM = _scUrl.match(/\/models\/([^\/:?#]+)/i);
+              if (_scM && _scM[1]) _scModel = decodeURIComponent(_scM[1]);
+            } catch (eScMU) {}
+          }
+          try { _scHost = tmExtractEndpointHost({ url: url, headers: tmNormalizeHeaders(options && options.headers) }); } catch (eScH) {}
+          try { _scProxy = tmIsProxyCapture({ url: url, headers: tmNormalizeHeaders(options && options.headers) }); } catch (eScP) {}
+          if (_scSid && _scModel) {
+            var _scIdKey = tmBuildIdentityKey(_scSid, _scModel, _scHost, _scProxy);
+            try { tmLedgerStaleCheck(_scIdKey, Date.now()); } catch (eSc1) {}
+          }
+        } catch (eScAll) {}
         // (Fix 15, v4.199) Repair typeless tool-schema properties BEFORE canonicalization, so the
         // key-sort then runs over the completed schema and the cache-stable ordering still holds.
         // Universal (every endpoint) since a naked schema is a portability bug, not OpenRouter-only.
@@ -22835,9 +23870,12 @@
       } catch (eDrop) {}
       // (v4.349) A rejected fetch is terminal for THIS capture's in-flight markers --
       // previously neither tracker cleared here, so dead turns kept spinning for 30 minutes.
+      // (Fix 24 analytics S3, §1.1/§1.3) FETCH-REJECTION terminal path: no Response object exists.
+      // Touch identity activity (never analytics, never _last, no gap), release the pending entry.
+      tmFinalizeCapturedFailure(captureId, fetchErr, null, true);
       try { tmClearInFlightByCapture(captureId); } catch (eClrR) {}
       try {
-        if (captureId) {
+        if (captureId && tmCaptureEnabled()) {
           var fetchPayload = {
             name: fetchErr && fetchErr.name ? String(fetchErr.name) : 'FetchError',
             message: fetchErr && fetchErr.message ? String(fetchErr.message) : String(fetchErr),
