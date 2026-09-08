@@ -5743,7 +5743,18 @@
       }
       if (ev.type === 'content_block_delta' && ev.delta) {
         var dt = ev.delta.type;
-        if (dt === 'thinking_delta') { tmThinkAddChars(acc, 'raw_chars', ev.delta.thinking); acc.channels.anthropic_thinking = 1; }
+        if (dt === 'thinking_delta') {
+          // (Fix 24 remediation F2) a thinking_delta implies a prior (possibly empty-opened)
+          // thinking content_block. §0.7 correctly declines to count a bare block-OPEN (it is not
+          // output evidence), but if that open was empty the block would NEVER be counted, so the
+          // replay ledger saw rawChars>0 with rawBlocks:0 and its block-gated own-origin-loss
+          // warning silently died. Count the block once when it first acquires actual text. This
+          // does NOT affect §1.3(b): success keys on CHARS, never on the block counter, so a
+          // genuinely empty block-open remains non-evidence.
+          var _preRaw = acc.raw_chars;
+          tmThinkAddChars(acc, 'raw_chars', ev.delta.thinking);
+          if (acc.raw_chars > _preRaw) { acc.blocks.thinking++; acc.channels.anthropic_thinking = 1; }
+        }
         else if (dt === 'signature_delta') { acc.signature = true; tmThinkAddChars(acc, 'signature_chars', ev.delta && ev.delta.signature); }
         else if (dt === 'text_delta') { tmThinkAddChars(acc, 'visible_chars', ev.delta.text); }
       }
@@ -5800,6 +5811,14 @@
           acc.channels.responses_output_item_done = 1;
           if (ev.item.type === 'reasoning') tmThinkScanResponsesReasoningItem(acc, ev.item);
           else if (ev.item.type === 'function_call' || ev.item.type === 'function_tool_call') acc.tool_calls++;   // (§0.7) tool-call output
+          // (Fix 24 remediation F4) a completed MESSAGE item's content[].text IS model output
+          // (§0.7 / §1.3(b)): count it so a cleanly-ended stream whose text arrives ONLY in this
+          // wrapper (no separate output_text.delta, no response.completed output[] rescan) is not
+          // misclassified no-model-output. Guard against double-counting when text deltas already
+          // covered it (the same guard tmThinkScanResponsesOutputItems uses).
+          else if (ev.item.type === 'message' && Array.isArray(ev.item.content) && !acc.channels.responses_output_text_delta) {
+            for (var mci = 0; mci < ev.item.content.length; mci++) { var mc = ev.item.content[mci]; if (mc && typeof mc.text === 'string') tmThinkAddChars(acc, 'visible_chars', mc.text); }
+          }
         }
         else if (ev.type === 'response.completed') {
           acc.terminal = true;   // (§0.7) terminal signal
@@ -6724,25 +6743,26 @@
       function truthyOn(v) { var s = strVal(v).toLowerCase(); return s === 'true' || s === '1' || s === 'enabled'; }
 
       var i, p, v;
-      // explicit off (any spelling)
-      for (i = 0; i < A.length; i++) {
-        p = A[i].path; v = A[i].value;
-        if (p === 'thinking.type' && strVal(v).toLowerCase() === 'disabled') return 'off';
-        if ((p === 'reasoning_effort' || p === 'reasoning.effort') && strVal(v).toLowerCase() === 'none') return 'off';
-        if (p === 'reasoning.enabled' && truthyOff(v)) return 'off';
-        if (p === 'enable_thinking' && truthyOff(v)) return 'off';
-        if (p === 'chat_template_kwargs.enable_thinking' && truthyOff(v)) return 'off';
-        if ((p === 'generationConfig.thinkingConfig.thinkingBudget' || p === 'extra_body.google.thinkingConfig.thinkingBudget' || p === 'thinking_budget') && numVal(v) === 0) return 'off';
-      }
-
       // reasoning.mode suffix (kept in A): 'standard' (or absent) shares one bucket; any other
-      // value is appended literally, never dropped, never 'unmapped'.
+      // value is appended literally, never dropped, never 'unmapped'. Computed BEFORE the off /
+      // adaptive / effort / ... cascades so EVERY return path -- including early 'off' and the
+      // terminal 'unmapped' -- carries it (Fix 24 remediation F5).
       var modeSuffix = '';
       for (i = 0; i < A.length; i++) {
         if (A[i].path === 'reasoning.mode') {
           var mv = strVal(A[i].value).toLowerCase();
           if (mv && mv !== 'standard') modeSuffix = '\u00b7mode:' + mv;
         }
+      }
+      // explicit off (any spelling)
+      for (i = 0; i < A.length; i++) {
+        p = A[i].path; v = A[i].value;
+        if (p === 'thinking.type' && strVal(v).toLowerCase() === 'disabled') return 'off' + modeSuffix;
+        if ((p === 'reasoning_effort' || p === 'reasoning.effort') && strVal(v).toLowerCase() === 'none') return 'off' + modeSuffix;
+        if (p === 'reasoning.enabled' && truthyOff(v)) return 'off' + modeSuffix;
+        if (p === 'enable_thinking' && truthyOff(v)) return 'off' + modeSuffix;
+        if (p === 'chat_template_kwargs.enable_thinking' && truthyOff(v)) return 'off' + modeSuffix;
+        if ((p === 'generationConfig.thinkingConfig.thinkingBudget' || p === 'extra_body.google.thinkingConfig.thinkingBudget' || p === 'thinking_budget') && numVal(v) === 0) return 'off' + modeSuffix;
       }
 
       // Anthropic adaptive: effort = per-message output_config.effort (the scanner reports the
@@ -6798,7 +6818,8 @@
 
       // Anything left in A matching no rule: a KNOWN path with an unexpected value. Never
       // provider-default, never undefined -- the cue to extend TM_THINK_MAP and this classifier.
-      return 'unmapped';
+      // (Fix 24 remediation F5) the mode suffix still applies here.
+      return 'unmapped' + modeSuffix;
     } catch (e) { return 'unmapped'; }
   }
 
@@ -7418,9 +7439,15 @@ function tmPendingTurnForTerminal(captureId) {
   var pending=tmPendingTurnGet(captureId);if(pending)return pending;
   var c=getCaptureById(captureId);if(!c)return null;
   var i=c._identity,req=c._think_req,sid=null,model=null,host=null,proxy=false;
-  if(i&&i.sid&&i.model&&i.host){sid=i.sid;model=i.model;host=i.host;proxy=!!i.proxy;}
+  // (Fix 24 remediation F3) track whether identity came from the authoritative stamped _identity.
+  var fromIdentity=false;
+  if(i&&i.sid&&i.model&&i.host){sid=i.sid;model=i.model;host=i.host;proxy=!!i.proxy;fromIdentity=true;}
   else {sid=c.session_id;model=c._model||(req&&req.model);host=req&&req.host;proxy=req&&typeof req.proxy==='boolean'?req.proxy:tmIsProxyCapture(c);if(!host)host=tmExtractEndpointHost(c);}
-  if(!sid||!model||!host||host==='unknown'||(proxy&&(/typingmind/i.test(host)||!req&&!c.headers)))return null;
+  // The 'proxy && !req && !headers' reconstruction guard applies ONLY when the target host had to
+  // be reconstructed from duplicated request evidence. A valid stamped _identity already establishes
+  // sid/model/host/proxy and stands alone (§1.2 recovery); missing _think_req then means
+  // 'unknown-setting' (handled downstream), never loss of the whole identity.
+  if(!sid||!model||!host||host==='unknown'||(!fromIdentity&&proxy&&(/typingmind/i.test(host)||!req&&!c.headers)))return null;
   var body=c.body||c.body_skeleton;
   return {idKey:tmBuildIdentityKey(sid,model,host,proxy),sid:sid,model:model,host:host,isProxy:proxy,requestTs:Date.parse(c.ts),tool_exec_ms:c._tool_exec_ms==null?null:c._tool_exec_ms,
     think:{level_key:tmThinkAnalyticsLevelKey(req),summary:req&&String(req.summary||'').slice(0,200),protocol:req&&req.protocol,route:host==='openrouter.ai'?'intermediary':'direct',override_applied:!!(req&&req.override&&req.override.applied),req_states:req?tmThinkReqStatesFromScan(req):[],readout:tmThinkBuildReadout(req,null)},
@@ -22947,7 +22974,10 @@ function tmThinkRenderBins(bucket,opts) {
         // tmDeriveStableSessionId, never body.session_id), then expire a >7-day-idle identity record
         // (so a resumed identity is seen as NEW for accounting and, when no routing lock exists, the
         // model->provider map re-applies). The lock store is independent and never cleared here.
-        try {
+        // (Fix 24 remediation F1) GATED ON CAPTURE-ENABLED: with recording intentionally paused
+        // (tm_payload_capture_enabled==='false', §1.3 capture control) NO retention/legacy-conversion
+        // hook may write or delete ledger telemetry. Routing/repair below are unaffected.
+        if (tmCaptureEnabled()) try {
           var _scBody = tmUniversalBody;
           var _scSid = null, _scModel = null, _scHost = null, _scProxy = false;
           try { _scSid = tmDeriveStableSessionId(_scBody); } catch (eScS) {}
