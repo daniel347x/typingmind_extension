@@ -1,5 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.416
+// Version: 4.417
+// v4.417: three fixes. (1) CARD PADDING: 16px right, 10px left (the status word and the
+// right-aligned groups were running onto the card edge; the left stays smaller because the × hide
+// button already reads as padding there). The cache zone's right margin drops 22px -> 18px so its
+// right-hanging misses/hits superscript (right:-18px) lands its VISUAL edge exactly where the
+// keep-alive group's edge lands -- the two ⇅-swappable groups stay aligned instead of the cache
+// cluster sitting 18px further in. (2) ROUTE/PROVIDER DEDUP: when the gray route string and the
+// green serving-provider string are identical (Gemini native -- both
+// 'generativelanguage.googleapis.com'), only the green one renders. That duplicate was long enough
+// to wrap the whole row-2 flex and shove the cache cluster onto a second line, which only ever
+// happened on Gemini. Compared on the FULL route string, so a proxied row keeps its
+// 'TypingMind proxy → host' prefix and never loses the proxy fact. (3) The 🌐 global reasoning
+// modal's histograms now line up: its '❓ N unmeasured' note moves to the LEFT of the chart via a
+// new tmThinkRenderBins opts.unknownFirst. That modal's chart column is pushed to the row's right
+// edge, so a note TRAILING the svg shoved the chart left by the note's width and charts with
+// different unknown counts no longer shared an edge. Sessions-in-Memory keeps the original order.
 // v4.416: each Sessions-in-Memory entry is now a CARD -- off-black background, rounded corners and
 // generous bottom spacing -- replacing the old border-top divider. Wrapper-only: tmSessionCtxRowHtml
 // is untouched, so the internal layout is literally identical. Two deliberate choices keep it that
@@ -2341,7 +2356,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.416';
+  const EXT_VERSION = '4.417';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7755,6 +7770,15 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'142px',selMaxWidthDisp:'255px'}):'';
   var route=v.isProxy?'TypingMind proxy → '+v.host:v.host;
   var routing='';if(v.host==='openrouter.ai'){tmMaybeFetchProviderEndpoints(v.model);if(tmIsMultiProviderModel(v.model))routing=tmBuildProviderRoutingDropdown(v.idKey,v.model,v.provider.label||'');}
+  // (v4.417) ROUTE/PROVIDER DEDUP: when the gray route string and the green serving-provider string
+  // are the SAME text, show only the green one. Gemini native is the case that triggered it -- route
+  // and provider are both 'generativelanguage.googleapis.com', and the duplicate was long enough to
+  // wrap the row-2 flex and push the cache cluster onto a second line. Compared on the FULL route
+  // string, so a proxied row ('TypingMind proxy -> host') still shows both and never loses the fact
+  // that it was relayed.
+  var provLabel=String(v.provider.label||'');
+  var routeSameAsProvider=!!provLabel&&String(route).toLowerCase()===provLabel.toLowerCase();
+  var routeHtml=routeSameAsProvider?'':(' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span>');
   // (v4.412) ROW 2 = model/route/provider (left) + ONE right-aligned group. ROW 3 = dial/cost/
   // think/info (left) + the OTHER right-aligned group. Which of the cache cluster and the
   // keep-alive cluster lands on which row is Dan's ⇅ header toggle (tm_sim_group_swap_v1), so rows
@@ -7767,7 +7791,7 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   // NOTE: the right-margin wrapper sits OUTSIDE the zone. tmSessionCtxHoverTick patches
   // [data-cache-key].innerHTML with a freshly rendered cluster, which would strip any margin
   // applied INSIDE the zone the first time the cache tuple changed.
-  var cacheZone='<span style="display:inline-block;margin-right:22px;">'+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</span>';
+  var cacheZone='<span style="display:inline-block;margin-right:18px;">'+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</span>';
   // (v4.413) The absolute-token cache report is its OWN zone on the LEFT of row 2, behind a thin
   // vertical separator with 10px of space each side. Its own zone is the whole point: the delta
   // tick patches [data-cache-key] and [data-cachereport-key] independently, so this text can never
@@ -7781,7 +7805,7 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
     '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
     '<div style="margin-top:2px;padding-top:18px;padding-bottom:5px;">'+
-      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+cacheReportZone+'<span style="flex:1;"></span>'+row2Right+'</div>'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+routeHtml+' '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+cacheReportZone+'<span style="flex:1;"></span>'+row2Right+'</div>'+
     '</div>'+
     '<div style="'+(swap?'padding-top:8px;':'padding-top:18px;')+'padding-bottom:8px;">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
@@ -7971,7 +7995,13 @@ function tmThinkRenderBins(bucket,opts) {
   svg+=rect(distX+3+bars.length*(w+gap),overflow,max,'#ff8080','≥ 1,048,576 reasoning tokens: '+overflow+' turns (overflow)','overflow')+'</svg>';
   var hot=bucket.turns>=3&&unknown/bucket.turns>=0.5;
   var text=unknown?'<span style="font-size:11px;color:'+(hot?'#ffd166':'#9aa4b2')+';font-weight:'+(hot?'700':'400')+';">❓ '+unknown+' unmeasured</span>':'';
-  return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">'+svg+text+'</span>';
+  // (v4.417) opts.unknownFirst puts the '❓ N unmeasured' note BEFORE the chart instead of after.
+  // The 🌐 global reasoning modal needs it: its chart column is the last flex item, pushed to the
+  // row's right edge, so a note TRAILING the svg shoves the chart left by the note's width and
+  // charts with different unknown counts stop sharing an edge -- which is exactly what makes them
+  // hard to compare. Leading with the note keeps every svg's RIGHT edge on the same x. The
+  // Sessions-in-Memory row keeps the original order (unchanged).
+  return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">'+(opts.unknownFirst?(text+svg):(svg+text))+'</span>';
 }
 
   // Text-bar rendering for the report (the report is a <pre>; Copy All stays meaningful).
@@ -10502,7 +10532,7 @@ function tmThinkRenderBins(bucket,opts) {
         '</div>';
 
       function histRow(titleHtml, subHtml, bucket, widthPx) {
-        var hg = tmThinkRenderBins(bucket, { widthPx: widthPx });
+        var hg = tmThinkRenderBins(bucket, { widthPx: widthPx, unknownFirst: true });
         return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 8px;border-top:1px solid rgba(255,255,255,0.08);">' +
           '<div style="min-width:230px;max-width:420px;">' + titleHtml + (subHtml ? ('<div style="color:#8b93a3;font-size:10.5px;margin-top:2px;">' + subHtml + '</div>') : '') + '</div>' +
           '<div style="color:#c8ccd6;font-size:11px;flex:1;min-width:280px;">' + escapeHtml(tmAnalyticsBucketLine(bucket)) + '</div>' +
@@ -14295,11 +14325,13 @@ function tmThinkRenderBins(bucket,opts) {
     tmSessionCtxHoverTickerId = setInterval(tmSessionCtxHoverTick, 1000);
   }
 
-  // (v4.416) THE ENTRY CARD. Wrapper-only styling -- see the version note for why the ring is a
-  // box-shadow rather than a border and why horizontal padding stays 0. The parent content region
-  // already supplies 9px of side padding, so the background band sits in a gutter of the panel's own
-  // colour and still reads as a distinct card.
-  var TM_SIM_CARD_STYLE = 'padding:10px 0 16px;margin-bottom:9px;background:rgba(255,255,255,0.04);border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,0.10);';
+  // (v4.416; padding added v4.417) THE ENTRY CARD. Wrapper-only styling -- tmSessionCtxRowHtml is
+  // never touched. The ring is a BOX-SHADOW rather than a border so it steals no width and cannot
+  // change where flex-wrap breaks. (v4.417) Horizontal padding is now 10px left / 16px right --
+  // asymmetric on purpose: the × hide button already reads as padding on the left, while the status
+  // word and the right-aligned groups were running onto the edge. The parent content region still
+  // supplies 9px of side padding, so the background band sits in a gutter of the panel's own colour.
+  var TM_SIM_CARD_STYLE = 'padding:10px 16px 16px 10px;margin-bottom:9px;background:rgba(255,255,255,0.04);border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,0.10);';
 
   // (v4.336) Dashboard width: persisted, header [-]/[+] adjustable (80px steps, clamped).
   var TM_SESSION_CTX_HOVER_WIDTH_KEY = 'tm_session_ctx_hover_width_v1';
