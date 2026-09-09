@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.413
+// Version: 4.414
+// v4.414: three UI fixes. (1) The thinking LEVEL select: the v4.412 attempt zeroed its vertical
+// padding AND set line-height:1, which made the box SHORTER than the 👁 display select while the
+// larger text had nowhere to breathe -- Dan correctly read it as 'the text did not get larger, the
+// rectangle just smushed down onto it'. The font size did apply; the box shrank around it. Now the
+// level select keeps the display select's padding (plus 1px vertical air) with a normal
+// line-height, so the box grows naturally with the 12px text, and the size is pinned with
+// !important so no host stylesheet can win. (2) The level select's max-width is HALVED on the SiM
+// row (285px -> 142px): a long disabled-option label (e.g. Qwen's registry-exception warning)
+// stretched the CLOSED box to max-width even with a one-word value like 'low' selected. The 👁
+// display select's width is untouched. (3) Persistent widget: version string +1px (12 -> 13, it
+// inherited the widget base) with 20px of extra space separating it from the Σ$ running total.
 // v4.413: cache cluster SPLIT into two independently-patched zones. The 'cache ↺read +write'
 // absolute-token report moves OFF the right end and joins the LEFT of row 2 (after model/route/
 // provider, behind a thin vertical separator with 10px each side); the right end keeps the MISS
@@ -2306,7 +2317,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.413';
+  const EXT_VERSION = '4.414';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7717,7 +7728,7 @@ function tmSessionCtxCostHtml(v) {
 function tmSessionCtxRowHtml(v,frame,badge) {
   var k=escapeHtml(v.idKey);
   function zone(name,html){return '<span data-'+name+'-key="'+k+'">'+html+'</span>';}
-  var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'285px',selMaxWidthDisp:'255px'}):'';
+  var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'142px',selMaxWidthDisp:'255px'}):'';
   var route=v.isProxy?'TypingMind proxy → '+v.host:v.host;
   var routing='';if(v.host==='openrouter.ai'){tmMaybeFetchProviderEndpoints(v.model);if(tmIsMultiProviderModel(v.model))routing=tmBuildProviderRoutingDropdown(v.idKey,v.model,v.provider.label||'');}
   // (v4.412) ROW 2 = model/route/provider (left) + ONE right-aligned group. ROW 3 = dial/cost/
@@ -11186,10 +11197,13 @@ function tmThinkRenderBins(bucket,opts) {
       var orc = VOC.orc;
       var exc = !!VOC.exception;
       var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (exc ? '#c0392b' : (active ? '#3f6f8f' : '#444')) + ';border-radius:3px;padding:0 2px;margin-left:3px;';
-      // (v4.412) LEVEL select only: +3px font with the vertical padding zeroed, so the text fills
-      // the existing box instead of floating in empty space above/below it. The \ud83d\udc41 DISPLAY
-      // select keeps the original 9px/2px treatment (Dan: less important, always set the same).
-      var selStyleLvl = selStyle.replace('font-size:9px', 'font-size:12px').replace('padding:0 2px', 'padding:0 1px;line-height:1;');
+      // (v4.414) LEVEL select only: larger text with a box that GROWS to fit it. The v4.412 attempt
+      // (padding:0 1px + line-height:1) shrank the box below the 👁 display select's height and
+      // squeezed the text, which read as 'the font never got larger'. Keep the same horizontal
+      // padding as the display select, add 1px of vertical air, leave line-height normal, and pin
+      // the font size with !important. The \ud83d\udc41 DISPLAY select keeps the original 9px/2px
+      // treatment (Dan: less important, always set the same).
+      var selStyleLvl = selStyle.replace('font-size:9px', 'font-size:12px !important').replace('padding:0 2px', 'padding:1px 2px;vertical-align:middle;');
       function opt(v, label, cur, disabled, title) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + (disabled ? ' disabled' : '') + (title ? (' title="' + escapeHtml(title) + '"') : '') + '>' + label + '</option>'; }
       var offered = VOC.options.map(function(o) { return o.value; });
       var curSel = (isBudget && offered.indexOf(lvl) < 0) ? '__budget' : lvl;
@@ -15286,7 +15300,9 @@ function tmThinkRenderBins(bucket,opts) {
     // (tmSessionCtxAlertHtml). The repair tally (R a/b/c/d + T n) retired from here too; its
     // per-row home has always been the ring modal (tmRenderRepairBlocks).
     var parts = [];
-    parts.push('<span style="opacity:0.7;">v' + EXT_VERSION + '</span>');
+    // (v4.414) Version +1px (it inherited the widget's 12px base) and 20px of clear space before
+    // the Σ$ total, so the two read as separate items rather than one cramped string.
+    parts.push('<span style="opacity:0.7;font-size:13px;margin-right:20px;">v' + EXT_VERSION + '</span>');
     var totalCost = 0;
     try { totalCost = tmGetTotalCost(); } catch (eTC) {}
     parts.push('<span title="running total cost (all sessions, until reset)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
