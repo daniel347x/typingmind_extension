@@ -1,5 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.410
+// Version: 4.411
+// v4.411: SiM dashboard UI polish batch 2. Click-to-rename session label (bracket-only prompt; the
+// hash prefix is preserved by construction); session total cost font +5px; lean think row drops the
+// reported-check glyph (estimated/heuristic/unmeasured render +3px larger instead); report button
+// becomes an i-emoji + 'info' label (+2px); cache cluster RESTORED to the pre-v4.405 pixel-perfect
+// widget form (absolute-positioned streak upper-left + misses/hits upper-right superscripts, miss
+// border with the v4.190 lift, 13px cost, classic cache report colors) with the HIT chip removed
+// and MISS 2px larger; KA cluster moved to row 2 flush right (reversed: status, messages, interval,
+// toggle rightmost) inside a container with superscript headroom; provider-routing dropdown moved
+// onto the think-controls row (bottom row eliminated); histogram zero/nonzero bars recolored
+// (gray-blue / bright teal) with a tall thin separator pipe; keep-alive now arms from REAL last
+// activity (no full-interval clock reset; lapsed-idle guard) and inherits its interval per
+// model::host so a new session keeps the last setting.
 // v4.410: Blind-warning suppression whitelist -- display policy only; no wire, schema or storage change.
 // A narrowly whitelisted Gemini-native route (exact model gemini-3.8-flash + resolved host
 // generativelanguage.googleapis.com + protocol gemini-generatecontent) stops asserting the prominent
@@ -2276,7 +2288,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.410';
+  const EXT_VERSION = '4.411';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5320,7 +5332,7 @@
         try { ds = tmAgentManagementDisplayState(e.sid || String(key).split('::')[0]); } catch (eDS) {}
         if (ds && ds.pendingToolCall) { tmKeepAliveSetStatus(key, { text: 'waiting: tool call pending (turn incomplete)', tone: 'muted' }); continue; }
         if (actuatorBusy) { tmKeepAliveSetStatus(key, { text: 'waiting: auto-resume actuator busy', tone: 'muted' }); continue; }
-        var baseline = Math.max(e.last_turn_ts || 0, e.enabled_at || 0);
+        var baseline = e.last_turn_ts || e.enabled_at || 0; // (v4.411) arming no longer resets the clock: last_turn_ts is seeded from REAL activity at toggle time; enabled_at is only a last-resort fallback
         var lastActivity = Math.max(baseline, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, e.last_ping_ts || 0);
         var intervalMs = Math.max(1, Number(e.interval_min || 50)) * 60 * 1000;
         var remaining = intervalMs - (now - lastActivity);
@@ -5372,8 +5384,8 @@
       var kParts = String(key || '').split('::');
       var iModel = (info && info.model) || kParts[1] || '', iHost = (info && info.host) || kParts[2] || '';
       var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String(iModel) + String(iHost)) ? 50 : 4);
-      var btn = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
-      btn += ' <span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
+      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      var btnInterval = '<span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
       var status = '';
       if (e && e.broken) {
         status = ' <span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-size:10px;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>';
@@ -5388,7 +5400,9 @@
         status += ' <span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';font-size:10px;white-space:nowrap;">\u00b7 ' + escapeHtml(sttText) + '</span>';
       }
       var historyButton = '<button type="button" data-action="ka-messages" data-key="' + escapeHtml(key) + '" title="Keep-alive messages: grouped patterns, counts and last seen (numeric values omitted)" style="font-size:11px;padding:0 4px;border:1px solid #44515e;border-radius:3px;background:#20252e;color:#9ecce6;cursor:pointer;">▤</button>';
-      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">' + btn + status + historyButton + '</span>';
+      // (v4.411) Reversed per Dan: status text, then ▤ history, then interval, then the KA toggle
+      // RIGHTMOST -- the whole cluster sits flush right on row 2, beneath the status word.
+      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">' + status + historyButton + btnInterval + btnToggle + '</span>';
     } catch (e9) { return ''; }
   }
 
@@ -5423,11 +5437,25 @@
     var newEnabled = !e.enabled;
     if (newEnabled) {
       e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = Date.now(); e.retry_at = 0; e.pending_ping = null; e.paused_until_turn = false;
-      if (!e.last_turn_ts) e.last_turn_ts = Date.now();
-      if (!e.interval_min) e.interval_min = /claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4;
       e.sid = info.sid || e.sid || null; e.model = info.model || e.model || ''; e.host = info.host || e.host || ''; e.proxy = !!info.isProxy;
+      // (v4.411) ARM FROM REAL ACTIVITY: the clock no longer restarts at toggle time. Seed the
+      // persisted idle clock from the newest real evidence for this session (agent-management
+      // display state, the newest ring capture of the session, any already-persisted
+      // last_turn_ts) so arming 45 min into a 50-min interval correctly shows ~5 min remaining.
+      // If idle time ALREADY exceeds the interval the provider cache has lapsed; a ping then
+      // would pay a full write and trip KA BROKEN, so the clock resets with a visible note.
+      var sidSeed = tmKeepAliveNormSid((info && info.sid) || e.sid || String(key).split('::')[0] || '');
+      var actTs = Math.max(Number(e.last_turn_ts) || 0, tmKeepAliveRecentActivityTs(sidSeed));
+      if (!e.interval_min) {
+        var inhIv = tmKeepAliveInheritInterval(key, info);
+        e.interval_min = inhIv || (/claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4);
+      }
+      var idleMs = actTs > 0 ? (Date.now() - actTs) : 0;
+      var lapsed = actTs > 0 && idleMs > Number(e.interval_min) * 60000;
+      e.last_turn_ts = (actTs > 0 && !lapsed) ? actTs : Date.now();
       e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
-      tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + e.interval_min + 'm', tone: 'muted' });
+      if (lapsed) tmKeepAliveSetStatus(key, { text: 'armed \u2014 was idle past the ' + e.interval_min + 'm interval (cache likely lapsed); clock reset', tone: 'warn' });
+      else tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + Math.max(1, Math.ceil((Number(e.interval_min) * 60000 - idleMs) / 60000)) + 'm', tone: 'muted' });
       console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm (session ' + (e.sid || '?') + '; a signposted ping turn will be typed into the conversation after ' + e.interval_min + 'm of quiescence).');
       tmKeepAliveEnsureSweeper();
     } else {
@@ -5458,6 +5486,55 @@
       if (synced || bad.length) console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ' + (newEnabled ? 'ENABLED' : 'DISABLED') + ' conversation ' + sidNorm + ' across ' + (1 + synced) + ' row(s)' + (resumed ? (' (' + resumed + ' resumed from a skipped ping)') : '') + (bad.length ? ' \u2014 \u26a0 ' + bad.length + ' still off' : '') + '.');
     }
     tmKeepAliveRefreshUI();
+  }
+
+  // (v4.411) Newest real-activity timestamp for a session: the agent-management display state
+  // (in-memory turn tracking, both tm- and raw sid spellings) and the newest ring capture carrying
+  // this session's identity (ISO cap.ts). 0 when nothing is known (caller falls back to now).
+  function tmKeepAliveRecentActivityTs(sidNorm) {
+    var best = 0;
+    if (!sidNorm) return 0;
+    try {
+      var ds = tmAgentManagementDisplayState(sidNorm) || tmAgentManagementDisplayState('tm-' + sidNorm);
+      if (ds) best = Math.max(best, Number(ds.responseFinishedAt) || 0, Number(ds.lastOutboundAt) || 0);
+    } catch (eDS) {}
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var c = ring[i];
+        if (!c || !c._identity || !c._identity.key) continue;
+        if (tmKeepAliveNormSid(String(c._identity.key).split('::')[0]) !== sidNorm) continue;
+        var t = c.ts ? Date.parse(c.ts) : NaN;
+        if (isFinite(t) && t > best) best = t;
+        break; // newest matching capture is the only one that matters
+      }
+    } catch (eR) {}
+    return best;
+  }
+  // (v4.411) Interval inheritance: the most recently touched keep-alive entry for the SAME
+  // model::host donates its interval to a freshly armed identity, so Dan sets the interval once
+  // per model/endpoint and every later session starts with it (previously every new session fell
+  // back to the hardcoded 50/4 default). Proxy flag deliberately ignored (model::host is the
+  // granularity Dan asked for).
+  function tmKeepAliveInheritInterval(key, info) {
+    try {
+      var store = tmGetKeepAliveStore();
+      var kParts = String(key || '').split('::');
+      var model = (info && info.model) || kParts[1] || '', host = (info && info.host) || kParts[2] || '';
+      if (!model || !host) return 0;
+      var bestTs = -1, best = 0;
+      for (var k in store) {
+        if (!store.hasOwnProperty(k) || k === key) continue;
+        var e2 = store[k];
+        if (!e2 || !(Number(e2.interval_min) > 0)) continue;
+        var p = String(k).split('::');
+        if (String(e2.model || p[1] || '') !== model) continue;
+        if (String(e2.host || p[2] || '') !== host) continue;
+        var ts2 = Number(e2._ts || 0);
+        if (ts2 >= bestTs) { bestTs = ts2; best = Number(e2.interval_min); }
+      }
+      return best;
+    } catch (eI) { return 0; }
   }
 
   function tmKeepAliveHandleInterval(key) {
@@ -6506,8 +6583,12 @@
   var an=view&&view.analytics;
   if(!last&&!obs&&!an)return '';
   var measured=obs&&obs.reasoning!=null,source=obs&&obs.source;
-  var amount=measured?((source==='reported'?'✅':source==='heuristic'?'~':'≈')+' 🧮 '+tmThinkFmtK(obs.reasoning)+' tok'):'❓ unmeasured';
-  return '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:'+fs+';"><span title="Latest ordinary turn: '+escapeHtml(source||'unmeasured')+'">'+amount+'</span>'+(an&&an.v===TM_ANALYTICS_VERSION?tmThinkRenderBins(an.all,{widthPx:Math.max(120,tmGetSessionCtxHoverWidth()-560)}):'')+'</span>';
+  // (v4.411) The reported-check is dropped (the normal case carries no signal); an estimated /
+  // heuristic / unmeasured count renders +3px LARGER so degraded evidence stands out.
+  var reported=measured&&source==='reported';
+  var amount=measured?((reported?'':(source==='heuristic'?'~ ':'\u2248 '))+'\ud83e\uddee '+tmThinkFmtK(obs.reasoning)+' tok'):'\u2753 unmeasured';
+  var amountFs=reported?fs:(((parseInt(fs,10)||13)+3)+'px');
+  return '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:'+fs+';"><span title="Latest ordinary turn: '+escapeHtml(source||'unmeasured')+'" style="font-size:'+amountFs+';">'+amount+'</span>'+(an&&an.v===TM_ANALYTICS_VERSION?tmThinkRenderBins(an.all,{widthPx:Math.max(120,tmGetSessionCtxHoverWidth()-560)}):'')+'</span>';
 }
 
   // ---------- v4.356: SESSION THINKING HISTOGRAM -- per-glyph turn counts, ledger-backed ----------
@@ -7572,7 +7653,39 @@ function tmThinkNoteButtonForIdentity(view) {
 
 function tmSessionCtxNameHtml(v,badge) {
   var color=tmModelEndpointColor(v.model,v.host,v.isProxy,v.sid),hue=tmSessionHueNumber(v.model,v.host,v.isProxy,v.sid);
-  return '<span style="font-size:15px;color:'+color+';'+tmSessionFullnessBulgeStyle(v.pct,hue)+'">'+escapeHtml(tmGetSessionName(v.sid)||v.sid)+'</span>'+(badge?' <span style="font-size:9px;color:#8fb8ff;">not in ring buffer</span>':'');
+  return '<span data-action="session-rename" data-sid="'+escapeHtml(v.sid||'')+'" title="Click to rename the session label (the bracketed part; the hash prefix is preserved)" style="cursor:pointer;font-size:15px;color:'+color+';'+tmSessionFullnessBulgeStyle(v.pct,hue)+'">'+escapeHtml(tmGetSessionName(v.sid)||v.sid)+'</span>'+(badge?' <span style="font-size:9px;color:#8fb8ff;">not in ring buffer</span>':'');
+}
+
+// (v4.411) Click-to-rename on the SiM row name. Convention-aware: '<8hex> - [label]' prompts for
+// ONLY the bracketed label and rebuilds the full name, so the hash prefix (which the DOM actuator
+// matches sidebar rows by) can never be damaged. A name that does not match the convention is
+// edited whole. Writes through tmSetSessionName (the shared tm_session_names store; a manual
+// rename takes precedence over the sibling's auto-label) and patches every rendered name zone of
+// the same session in place -- no full dashboard rebuild.
+function tmHandleSessionCtxRename(el) {
+  var sid = el && el.dataset ? el.dataset.sid : '';
+  if (!sid) return;
+  var current = tmGetSessionName(sid) || '';
+  var m = String(current).match(/^([0-9a-fA-F]{8})\s*-\s*\[([\s\S]*)\]\s*$/);
+  tmPromptActive = true;
+  var v = prompt('Rename session label for ' + (m ? m[1] : sid) + '\n(the bracketed part only \u2014 the hash prefix is preserved):', m ? m[2] : current);
+  try { tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500; } catch (eS) {}
+  setTimeout(function() { tmPromptActive = false; }, 100);
+  if (v == null) return;
+  v = String(v).trim();
+  var newName = m ? (m[1] + ' - [' + v + ']') : v;
+  tmSetSessionName(sid, newName);
+  try {
+    var sidNorm = tmKeepAliveNormSid(sid);
+    var zones = document.querySelectorAll('#tm-session-ctx-hovercard [data-name-key]');
+    for (var i = 0; i < zones.length; i++) {
+      var zKey = String(zones[i].getAttribute('data-name-key') || '');
+      if (tmKeepAliveNormSid(zKey.split('::')[0]) !== sidNorm) continue;
+      var sp = zones[i].querySelector('span');
+      if (sp) sp.textContent = newName;
+    }
+  } catch (eP) {}
+  console.log('\u270f\ufe0f [v' + EXT_VERSION + '] session label renamed for ' + sid + ': ' + newName);
 }
 
 function tmSessionCtxDialHtml(v) {
@@ -7580,7 +7693,7 @@ function tmSessionCtxDialHtml(v) {
 }
 
 function tmSessionCtxCostHtml(v) {
-  return '<span title="Retained session cost (includes keep-alive and billed attempts)" style="font-size:14px;font-weight:700;color:#c8d0dc;">$'+Number(v.rec._total||0).toFixed(2)+'</span>';
+  return '<span title="Retained session cost (includes keep-alive and billed attempts)" style="font-size:19px;font-weight:700;color:#c8d0dc;">$'+Number(v.rec._total||0).toFixed(2)+'</span>';
 }
 
 function tmSessionCtxRowHtml(v,frame,badge) {
@@ -7589,12 +7702,22 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'285px',selMaxWidthDisp:'255px'}):'';
   var route=v.isProxy?'TypingMind proxy → '+v.host:v.host;
   var routing='';if(v.host==='openrouter.ai'){tmMaybeFetchProviderEndpoints(v.model);if(tmIsMultiProviderModel(v.model))routing=tmBuildProviderRoutingDropdown(v.idKey,v.model,v.provider.label||'');}
+  // (v4.411) ROW 2 = model/route/provider + cache cluster + KA cluster flush right, inside a
+  // container with TOP HEADROOM (18px) so the restored absolutely-positioned superscripts (which
+  // reach ~21px above the cost span) can never overlap the name row again; the cache zone keeps a
+  // 20px right margin so the right-hanging misses/hits superscript clears the KA buttons. ROW 3 =
+  // dial/cost/think/info inside its own padded container (breathing room for the taller separator
+  // pipe + histogram). The provider-routing dropdown moves to the far LEFT of the think-controls
+  // row; the old bottom (routing + KA) row is eliminated.
   return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
     '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
-    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px;font-size:14px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</div>'+
-    '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:6px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report">📋</button></div>'+
-    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">'+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
-    '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">'+routing+zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive))+'</div></div>';
+    '<div style="margin-top:2px;padding-top:18px;padding-bottom:5px;">'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:14px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+'<span style="flex:1;"></span>'+zone('cache','<span style="display:inline-block;margin-right:20px;">'+tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v})+'</span>')+zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive))+'</div>'+
+    '</div>'+
+    '<div style="padding-top:10px;padding-bottom:10px;">'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button></div>'+
+    '</div>'+
+    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div></div>';
 }
 
 function tmThinkProtocolFromHost(model,host) {
@@ -7764,12 +7887,19 @@ function tmThinkRenderBins(bucket,opts) {
   if(!bucket||!bucket.turns)return '';
   opts=opts||{};var cols=opts.cols||((opts.widthPx||220)<160?10:((opts.widthPx||220)<320?20:50));
   var bars=tmThinkMergeBins(bucket,cols),zero=Number(bucket.zero||0),nonzero=Number(bucket.nonzero||0),unknown=Number(bucket.unknown||0),overflow=Number(bucket.overflow||0),h=24,w=4,gap=1;
+  // (v4.411) Geometry: the SVG grows 4px taller (26 -> 30) and every bar shifts down 3px so the
+  // thin separator pipe between the zero/nonzero pair and the distribution extends ABOVE and BELOW
+  // the bars, with ~10px of space on each side. Colors per Dan: the zero bar a gray-blue near
+  // white, the nonzero bar a brighter blue-green near white; the distribution keeps its loved pale
+  // purple; the overflow keeps its red.
+  var topPad=3,sepX=21,distX=31;
   var max=Math.max(overflow,1);bars.forEach(function(b){max=Math.max(max,b.count);});
-  var svg='<svg aria-label="Reasoning distribution" width="'+(27+bars.length*(w+gap)+(overflow?10:0))+'" height="26" style="vertical-align:middle;">';
-  function rect(x,count,scale,color,tip,kind){if(count<=0)return '';var bh=Math.max(1,Math.round(h*count/scale));return '<rect data-bin-kind="'+kind+'" x="'+x+'" y="'+(h-bh)+'" width="4" height="'+bh+'" fill="'+color+'"><title>'+escapeHtml(tip)+'</title></rect>';}
-  svg+=rect(0,zero,zero+nonzero,'#707783',zero+' zero-reasoning turns','zero')+rect(7,nonzero,zero+nonzero,'#c8b4ff',nonzero+' nonzero-reasoning turns','nonzero');
-  bars.forEach(function(b,i){svg+=rect(27+i*(w+gap),b.count,max,'#c8b4ff',b.label+' reasoning tokens: '+b.count+' turns','distribution');});
-  svg+=rect(30+bars.length*(w+gap),overflow,max,'#ff8080','≥ 1,048,576 reasoning tokens: '+overflow+' turns (overflow)','overflow')+'</svg>';
+  var svg='<svg aria-label="Reasoning distribution" width="'+(distX+bars.length*(w+gap)+(overflow?10:0))+'" height="30" style="vertical-align:middle;">';
+  function rect(x,count,scale,color,tip,kind){if(count<=0)return '';var bh=Math.max(1,Math.round(h*count/scale));return '<rect data-bin-kind="'+kind+'" x="'+x+'" y="'+(topPad+h-bh)+'" width="4" height="'+bh+'" fill="'+color+'"><title>'+escapeHtml(tip)+'</title></rect>';}
+  svg+=rect(0,zero,zero+nonzero,'#c3cede',zero+' zero-reasoning turns','zero')+rect(7,nonzero,zero+nonzero,'#93e8d8',nonzero+' nonzero-reasoning turns','nonzero');
+  svg+='<line x1="'+sepX+'" y1="0" x2="'+sepX+'" y2="30" stroke="#7a8090" stroke-width="1"/>';
+  bars.forEach(function(b,i){svg+=rect(distX+i*(w+gap),b.count,max,'#c8b4ff',b.label+' reasoning tokens: '+b.count+' turns','distribution');});
+  svg+=rect(distX+3+bars.length*(w+gap),overflow,max,'#ff8080','≥ 1,048,576 reasoning tokens: '+overflow+' turns (overflow)','overflow')+'</svg>';
   var hot=bucket.turns>=3&&unknown/bucket.turns>=0.5;
   var text=unknown?'<span style="font-size:11px;color:'+(hot?'#ffd166':'#9aa4b2')+';font-weight:'+(hot?'700':'400')+';">❓ '+unknown+' unmeasured</span>':'';
   return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;">'+svg+text+'</span>';
@@ -13941,6 +14071,9 @@ function tmThinkRenderBins(bucket,opts) {
             // Hide is visibility only; new outbound traffic (including KA) resurrects this identity.
             var hide = ev.target.closest('[data-action="session-ctx-hide"]');
             if (hide) { ev.stopPropagation(); ev.preventDefault(); if(tmTombstoneSet(hide.dataset.key)) { var row=hide.closest('[data-session-row]'); if(row)row.remove(); } return; }
+            // (v4.411) Click-to-rename the session label on a row's name.
+            var rnEl = ev.target.closest('[data-action="session-rename"]');
+            if (rnEl) { ev.stopPropagation(); ev.preventDefault(); try { tmHandleSessionCtxRename(rnEl); } catch (eRN) {} return; }
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
             var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"],[data-action="ka-messages"]') : null;
             if (kaEl && kaEl.dataset) {
@@ -14956,14 +15089,23 @@ function tmThinkRenderBins(bucket,opts) {
   //   comment=(v4.405) Per-identity cache cluster (cache report + turn cost + streak / misses-slash-hits superscripts), migrated verbatim from the pre-v4.405 widget top row onto each Sessions-in-Memory row; reads the live frame usage map + the per-identity cache-outcome ledger.,
   // ]
   function tmRenderIdentityCacheCluster(idKey,opts) {
+  // (v4.411) RESTORED to the pre-v4.405 widget cluster's pixel-perfect form (Dan's long-tuned
+  // layout, git 336fcbc/730dc85): streak superscript floats upper-LEFT of the cost, misses/hits
+  // upper-RIGHT (miss count in the reserved red #ff6b6b, slash+hits light green), both absolutely
+  // positioned with the v4.190 miss-border lift; cost 13px bold #ff6b3d with the yellow miss
+  // border; cache report in the classic green-label / blue-read / gray-write 11px form. Data
+  // source stays the durable ledger view (v4.407+). HIT chip removed per Dan; MISS renders 2px
+  // larger than the old chip; the unmeasured 'cache —' state stays at 10px.
   opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,r=v.rec,c=l&&l.cache||{},hit=c.hit;
-  var chip='<span style="font-size:10px;font-weight:700;color:'+(hit===true?'#7dd67d':hit===false?'#ff8080':'#9aa4b2')+';">'+(hit===true?'HIT':hit===false?'MISS':'cache —')+'</span>';
-  var read=c.read==null?'—':tmFmtTok(c.read),write=c.write==null?'—':tmFmtTok(c.write);
-  var report=l?'<span style="font-size:11px;"> <span style="color:#7ec8e3;">read '+read+'</span> · <span style="color:#ff8080;">write '+write+'</span></span>':'';
-  var retained='retained totals (including keep-alive): '+(r._cache_hits||0)+' hits, '+(r._cache_misses||0)+' misses, streak '+(r._cache_streak||0);
-  var counters='<sup title="'+retained+'" style="font-size:9px;color:#ccffcc;white-space:nowrap;"> '+(r._cache_streak||0)+' ↗ <span style="color:#ff8080;">'+(r._cache_misses||0)+'</span> / '+(r._cache_hits||0)+'</sup>';
-  var cost=l&&l.cost!=null?' <span style="color:#ff6b3d;font-weight:bold;'+(hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'')+'" title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+')">$'+l.cost.toFixed(3)+'</span>':'';
-  return chip+report+cost+counters;
+  var chip=hit===false?'<span style="font-size:12px;font-weight:700;color:#ff8080;">MISS</span> ':(hit==null?'<span style="font-size:10px;font-weight:700;color:#9aa4b2;">cache \u2014</span> ':'');
+  var read=c.read==null?'\u2014':tmFmtTok(c.read),write=c.write==null?'\u2014':tmFmtTok(c.write);
+  var report=l?'<span style="font-size:11px;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>':'';
+  var streak=Number(r._cache_streak||0),totalHits=Number(r._cache_hits||0),totalMisses=Number(r._cache_misses||0);
+  var retained='retained totals (including keep-alive): '+totalHits+' hits, '+totalMisses+' misses, streak '+streak;
+  var missBorder=hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'';
+  var supTopAdj=missBorder?-7:0;
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-14+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  return chip+report+cost;
 }
 
   // (v4.405) THE PER-IDENTITY ALERT ZONE -- the three banners that used to live on the persistent
