@@ -3,7 +3,27 @@
 // Usage: node sessions_delta_history.test.cjs <extension.js>
 const fs=require('node:fs'),vm=require('node:vm'),assert=require('node:assert/strict');
 const source=fs.readFileSync(process.argv[2],'utf8');
-function extract(name){const m=source.match(new RegExp('^  function '+name+'\\([^\\n]*\\) \\{[\\s\\S]*?^  \\}','m'));if(!m)throw Error(name);return m[0];}
+// Brace-BALANCED extraction (repaired v4.418). The previous regex stopped at the first line that
+// was exactly two spaces + "}", which truncated any function whose INNER block closes at that
+// indent -- tmBuildSessionCtxLiveFrame and tmSessionCtxHoverTick both do. The vm then received
+// half a function and every dependent check died with "Unexpected end of input": nine failures
+// that looked like production regressions but were purely a test-harness defect (they reproduced
+// identically on a pristine checkout). Indentation-tolerant: the declaration is located by its
+// "function NAME(" marker and the body is found by balancing braces from the opening "{".
+function extract(name){
+  const i=source.indexOf('function '+name+'(');
+  if(i<0)throw Error(name);
+  const from=source.lastIndexOf('\n',i)+1;
+  const open=source.indexOf('{',i);
+  if(open<0)throw Error(name+' body');
+  let depth=0;
+  for(let j=open;j<source.length;j++){
+    const ch=source[j];
+    if(ch==='{')depth++;
+    else if(ch==='}'){depth--;if(depth===0)return source.slice(from,j+1);}
+  }
+  throw Error(name+' unbalanced');
+}
 let pass=0,fail=0;
 function test(name,run){try{run();pass++;console.log('PASS '+name);}catch(e){fail++;console.error('FAIL '+name+': '+e.message);}}
 const escapeHtml=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
@@ -36,7 +56,7 @@ function dashboard(){const h=base();const c=h.c;let ringReads=0,costReads=0,kaRe
  document:{activeElement:null},window:{getSelection:()=>selected},
  tmBuildSessionCtxHoverHtml(){c.tmSessionCtxHoverLastFullAt=h.now();return 'full build';}
  });
- vm.runInContext(['tmToolStateIdentityKey','tmSessionCtxIsBusy','tmSessionCtxLiveHtml','tmBuildSessionCtxLiveFrame','tmSessionCtxPatchHtml','tmSessionCtxInteractionBusy','tmRefreshSessionCtxKeepAlive','tmSessionCtxHoverTick','tmKeepAliveRowHtml','tmKeepAliveSummaryText','tmKeepAliveRefreshUI'].map(extract).join('\n'),c);
+ vm.runInContext(['tmIsLedgerIdentityKey','tmToolStateIdentityKey','tmSessionCtxIsBusy','tmSessionCtxLiveHtml','tmBuildSessionCtxLiveFrame','tmSessionCtxPatchHtml','tmSessionCtxInteractionBusy','tmRefreshSessionCtxKeepAlive','tmSessionCtxHoverTick','tmKeepAliveRowHtml','tmKeepAliveSummaryText','tmKeepAliveRefreshUI'].map(extract).join('\n'),c);
  return {...h,keys,ring,costs,states,zones,spins,kas,el,content,setSelection:s=>{selected=s;},counts:()=>({ringReads,costReads,kaReads,full,domWrites})};}
 test('40 idle rows use one ring/cost/KA read per tick; next tick writes nothing',()=>{const h=dashboard();h.c.tmSessionCtxHoverTick();const a=h.counts();assert.equal(a.ringReads,1);assert.equal(a.costReads,1);assert.equal(a.kaReads,1);h.advance(1000);h.c.tmSessionCtxHoverTick();const b=h.counts();assert.equal(b.domWrites,a.domWrites);assert.equal(b.ringReads,2);assert.equal(b.full,0);});
 test('only the active timer changes; its spinner DOM is not recreated each second',()=>{const h=dashboard();h.c.tmSessionCtxHoverTick();h.c.tmInFlightByIdentity[h.keys[0]]={ts:h.now()-1000};h.advance(1000);h.c.tmSessionCtxHoverTick();const first=h.counts(),spins=h.spins[0].writes;h.advance(1000);h.c.tmSessionCtxHoverTick();assert.equal(h.counts().domWrites-first.domWrites,1);assert.equal(h.spins[0].writes,spins);assert.equal(h.zones[1].writes,1);});

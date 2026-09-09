@@ -1,5 +1,21 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.417
+// Version: 4.418
+// v4.418: two changes. (1) SUBSCRIPT FLIP -- when the ⇅ toggle leaves the cache cluster on ROW 3
+// (the default), its two counters mirror BELOW the turn cost instead of above it, using the SAME
+// 10px / 16px offsets so it is a true vertical mirror: the left counter stays the CLOSER of the two
+// to the cost text, exactly as it is up top. The miss-border lift mirrors too (-7 pushes supers
+// higher to clear the fat border, and pushes subs lower), and the row containers move their headroom
+// to whichever side the counters hang (row 2 top / row 3 bottom) so total entry height barely
+// changes. tmSimGroupSwap() is read INSIDE the cluster rather than passed as an opt, because the
+// delta tick re-renders that zone independently -- an opt the tick forgot to pass would silently
+// flip the cluster back (the zone contract's lesson again). (2) BROAD FAMILY = leading alphabetic
+// run, not first hyphen token. Qwen is the one vendor whose name is glued to its version with no
+// hyphen ('qwen3.8-max-0902'), so the old rule produced a 'qwen3.8' family, the labels.qwen entry
+// never fired, and Qwen 3.9 would have split into a SECOND family -- making 'Qwen as a whole'
+// unviewable in Rate Providers / Set Costs / Global reasoning. A single leading letter (the o-series)
+// falls back to the hyphen token, so 'o1' / 'o3' families are preserved; every other model already
+// splits on a hyphen before any digit and is unchanged. No storage key is affected: ratings,
+// comments, prices and tombstones are keyed model::provider, never by family.
 // v4.417: three fixes. (1) CARD PADDING: 16px right, 10px left (the status word and the
 // right-aligned groups were running onto the card edge; the left stays smaller because the × hide
 // button already reads as padding there). The cache zone's right margin drops 22px -> 18px so its
@@ -2356,7 +2372,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.417';
+  const EXT_VERSION = '4.418';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2776,7 +2792,20 @@
   // Display aliases keep acronym/canonical casing readable while the key remains lowercase.
   function tmProviderBroadFamily(model) {
     var specific = tmProviderModelFamily(model).replace(/^~+/, '');
-    var key = (specific.split('-')[0] || specific || 'other').toLowerCase();
+    // (v4.418) Broad family = the LEADING ALPHABETIC RUN of the specific name, not its first hyphen
+    // token. Qwen is the one vendor whose name is glued to its version with no hyphen
+    // ('qwen3.8-max-0902'), so the hyphen rule yielded a 'qwen3.8' family and labels.qwen never
+    // fired; Qwen 3.9 would have split into a SECOND family, making 'Qwen as a whole' unviewable in
+    // Rate Providers / Set Costs / Global reasoning. A single leading letter (the o-series:
+    // 'o1-preview', 'o3-mini') falls back to the hyphen token so those keep their 'o1' / 'o3'
+    // families. Everything else is unchanged -- kimi-k3, claude-fable-5-1, gpt-5.6-sol,
+    // gemini-3.8-flash, deepseek-v4-pro, glm-5.3, grok-4.5 and minimax-m3 all already split on a
+    // hyphen before any digit. No storage key is affected: ratings / comments / prices / tombstones
+    // are keyed model::provider; the family key only groups UI rows and persists expansion state, so
+    // a stale 'qwen3.8' expansion entry is simply never read again (that section opens collapsed).
+    var alphaRun = /^[a-z]+/.exec(specific.toLowerCase());
+    var lead = alphaRun ? alphaRun[0] : '';
+    var key = (lead.length >= 2 ? lead : (specific.split('-')[0] || specific || 'other')).toLowerCase();
     var labels = {
       claude: 'Claude', gpt: 'GPT', kimi: 'Kimi', gemini: 'Gemini', deepseek: 'DeepSeek',
       glm: 'GLM', qwen: 'Qwen', grok: 'Grok', minimax: 'MiniMax', user: 'Other'
@@ -7804,10 +7833,10 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   var row2Right=swap?cacheZone:kaZone,row3Right=swap?kaZone:cacheZone;
   return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
     '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
-    '<div style="margin-top:2px;padding-top:18px;padding-bottom:5px;">'+
+    '<div style="margin-top:2px;'+(swap?'padding-top:18px;':'padding-top:8px;')+'padding-bottom:5px;">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+routeHtml+' '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+cacheReportZone+'<span style="flex:1;"></span>'+row2Right+'</div>'+
     '</div>'+
-    '<div style="'+(swap?'padding-top:8px;':'padding-top:18px;')+'padding-bottom:8px;">'+
+    '<div style="'+(swap?'padding-top:8px;padding-bottom:8px;':'padding-top:6px;padding-bottom:18px;')+'">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
     '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div></div>';
@@ -15614,8 +15643,14 @@ function tmThinkRenderBins(bucket,opts) {
   var streak=Number(r._cache_streak||0),totalHits=Number(r._cache_hits||0),totalMisses=Number(r._cache_misses||0);
   var retained='retained totals (including keep-alive): '+totalHits+' hits, '+totalMisses+' misses, streak '+streak;
   var missBorder=hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'';
-  var supTopAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-16+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  // (v4.418) SUBSCRIPT FLIP. On ROW 3 (the default, ⇅ unswapped) the two counters mirror BELOW the
+  // cost: SAME 10px / 16px offsets anchored on `bottom` instead of `top`, which is a true vertical
+  // mirror -- the LEFT counter stays the CLOSER of the two to the cost text, just as it is up top.
+  // The miss-border lift mirrors with it: -7 raises supers to clear the fat border and lowers subs.
+  // tmSimGroupSwap() is read HERE, not passed in: the delta tick re-renders this zone on its own, so
+  // an opt the tick forgot to pass would silently flip the cluster back to superscripts.
+  var below=!tmSimGroupSwap(),vEdge=below?'bottom:':'top:',supOffAdj=missBorder?-7:0;
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-10+supOffAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
   return chip+cost;
 }
 
