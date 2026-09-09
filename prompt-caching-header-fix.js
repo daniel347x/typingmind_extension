@@ -1,5 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.418
+// Version: 4.419
+// v4.419: three visual tweaks. (1) The LEFT counter (streak) moves 4px further out (left:-12px ->
+// -16px) in BOTH superscript and subscript mode -- at double digits it was running corner-to-corner
+// against the turn cost, and the rows now have the space. The differing vertical offset already
+// separates it conceptually from the misses/hits counter. (2) KEEP-ALIVE ARMED = BLAZED: the ON
+// toggle renders 2px larger (10 -> 12) with proportionally larger padding and a LIGHT RED palette
+// instead of green. Green read as calm/ok; Dan wants a live scheduler on that conversation to be
+// unmissable at a glance, and explicitly does not want it to imply 'about to fire'. OFF keeps the
+// dim 10px gray so the two states cannot be confused. The red is a warm blaze, deliberately distinct
+// from the alarm reds reserved for errors (#ff4444 / #ff6b6b). (3) The session-name FULLNESS BULGE
+// gets more air between the ring and the text (padding 4px -> 1px 7px, radius 5px -> 7px): it was
+// cropping too tightly against the name. This DELIBERATELY ends the v4.365 zero-layout-geometry
+// guarantee -- the name widget is now a few px wider and taller, which is fine because row 1 is a
+// space-between flex with a flex:1 spacer that absorbs it. SiM-only: tmSessionFullnessBulgeStyle
+// has exactly ONE caller (tmSessionCtxNameHtml), so nothing in TypingMind's own UI, the ring modal
+// or the sibling Transcription extension is affected.
 // v4.418: two changes. (1) SUBSCRIPT FLIP -- when the ⇅ toggle leaves the cache cluster on ROW 3
 // (the default), its two counters mirror BELOW the turn cost instead of above it, using the SAME
 // 10px / 16px offsets so it is a true vertical mirror: the left counter stays the CLOSER of the two
@@ -2372,7 +2387,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.418';
+  const EXT_VERSION = '4.419';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5481,7 +5496,12 @@
       var kParts = String(key || '').split('::');
       var iModel = (info && info.model) || kParts[1] || '', iHost = (info && info.host) || kParts[2] || '';
       var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String(iModel) + String(iHost)) ? 50 : 4);
-      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:10px;font-weight:700;padding:0 6px;border-radius:3px;border:1px solid ' + (on ? '#2a6a3a' : '#444') + ';background:' + (on ? '#173a22' : '#26262e') + ';color:' + (on ? '#7dd67d' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      // (v4.419) ARMED = BLAZED. ON renders 2px larger with proportionally larger padding and a
+      // LIGHT RED palette; OFF keeps the dim 10px gray. Green read as calm/ok rather than 'a
+      // scheduler is live here'. The size change on toggle is intended -- the KA cluster is an
+      // inline-flex that absorbs it. Warm blaze red (#ffb0b0 on #4a1a1a behind #a34040), kept
+      // distinct from the alarm reds reserved for errors (#ff4444 / #ff6b6b) and the KA BROKEN banner.
+      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;border:1px solid ' + (on ? '#a34040' : '#444') + ';background:' + (on ? '#4a1a1a' : '#26262e') + ';color:' + (on ? '#ffb0b0' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
       var btnInterval = '<span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
       var status = '';
       if (e && e.broken) {
@@ -13981,9 +14001,15 @@ function tmThinkRenderBins(bucket,opts) {
     } catch (e) { return tmFmtTok(snap && snap.total) + ' / ?'; }
   }
 
-  // (v4.365) SESSION-NAME FULLNESS BULGE + BORDER TIERS -- ported from the Transcription Control
-  // sibling's v3.364 contract (applySessionFullnessBulge): box-shadow-only borders, symmetric 4px
-  // side padding, 5px radius -> ZERO layout geometry impact (safe under the card's 3s rebuilds).
+  // (v4.365; padding widened v4.419) SESSION-NAME FULLNESS BULGE + BORDER TIERS -- ported from the
+  // Transcription Control sibling's v3.364 contract (applySessionFullnessBulge): box-shadow-only
+  // borders, no real border, so the ring itself never steals width.
+  // (v4.419) The v4.365 'symmetric 4px padding -> ZERO layout geometry impact' guarantee is
+  // DELIBERATELY ENDED: the ring cropped too tightly against the name, so padding is now 1px 7px
+  // with a 7px radius. The name widget is a few px wider and taller; row 1 is a space-between flex
+  // with a flex:1 spacer, so it absorbs the growth. This function has exactly ONE caller
+  // (tmSessionCtxNameHtml, the Sessions-in-Memory card) -- TypingMind's own UI, the ring modal and
+  // the sibling extension are untouched.
   // pct = context fullness 0-150+ (null/<25 = plain). hueNum = the identity's numeric session hue
   // (30-329) for the glow; null -> white glow. Returns an inline style fragment for the name span.
   function tmSessionFullnessBulgeStyle(pct, hueNum) {
@@ -13991,7 +14017,7 @@ function tmThinkRenderBins(bucket,opts) {
       var clamped = (typeof pct === 'number' && isFinite(pct)) ? Math.min(pct, 150) : null;
       if (clamped === null || clamped < 25) return '';
       var glowBase = (typeof hueNum === 'number') ? ('hsla(' + hueNum + ',60%,70%,') : 'hsla(255,255,255,';
-      var pad = 'padding-left:4px;padding-right:4px;border-radius:5px;';
+      var pad = 'padding:1px 7px;border-radius:7px;';
       if (clamped < 40) return pad + 'font-weight:600;background:rgba(255,255,255,0.03);box-shadow:0 0 0 1px hsla(85,85%,58%,0.90);';
       if (clamped < 50) return pad + 'font-weight:700;background:rgba(255,255,255,0.03);box-shadow:0 0 0 2px hsla(95,90%,54%,0.95), 0 0 5px ' + glowBase + '0.30);';
       if (clamped < 60) return pad + 'font-weight:700;background:rgba(255,200,0,0.04);box-shadow:0 0 0 2px hsla(42,95%,52%,0.95), 0 0 7px ' + glowBase + '0.40);';
@@ -15650,7 +15676,7 @@ function tmThinkRenderBins(bucket,opts) {
   // tmSimGroupSwap() is read HERE, not passed in: the delta tick re-renders this zone on its own, so
   // an opt the tick forgot to pass would silently flip the cluster back to superscripts.
   var below=!tmSimGroupSwap(),vEdge=below?'bottom:':'top:',supOffAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-10+supOffAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-10+supOffAdj)+'px;left:-16px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
   return chip+cost;
 }
 
