@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.423
+// Version: 4.424
+// v4.424: the keep-alive badge click actually jumps now. It was silently inert: the badge carries the
+// KEEP-ALIVE STORE key while the card carries the LEDGER identity key, and those drift in the way this
+// file keeps rediscovering (the capture side derives a 'tm-'-prefixed sid, some store entries hold the
+// raw pasted hash, and an OLD armed entry can name a model that is no longer in the list at all --
+// exactly the stale paused sessions the badge row was built to surface). A single exact-match
+// querySelector therefore found nothing and returned without a word. Now: four widening match tiers
+// (exact -> tm- alias flipped -> raw sid -> any card of the same conversation), a console line naming
+// the tier used, and when there is genuinely no card a VISIBLE note plus a badge flash instead of
+// silence. Each badge also gains a small x DISARM button, because the right action for a stale armed
+// keep-alive with no card is to turn it off, not to hunt for it. The card's delegated click handler
+// now checks the keep-alive button actions BEFORE the badge jump so that x disarms rather than jumps.
 // v4.423: keep-alive badge row refinements. (1) STICKY -- the badge row is now position:sticky at the
 // top of the scrolling content region, so armed keep-alives stay visible no matter how far Dan has
 // scrolled; losing them off the top was the whole problem the row exists to solve. Sticky needs an
@@ -2441,7 +2452,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.423';
+  const EXT_VERSION = '4.424';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5652,7 +5663,69 @@
   // of a live keep-alive (and paying for it) precisely because old conversations sink. Unit = a
   // universal ⏰ pill, a dash, then the session NAME in its own hue wearing the fullness ring (tight
   // padding), with the full status line centered beneath. The unit itself is NOT a pill. Clicking it
-  // scrolls that card into view and flashes it. Nothing armed -> '' and the wrapper stays zero-height.
+  // scrolls that card into view and flashes it -- see tmSessionCtxJumpToKaBadge below, which was
+  // silently inert until v4.424. Nothing armed -> '' and the wrapper stays zero-height.
+  // THREE FUNCTIONS make up this subsystem, in the order they appear: the jump resolver, its
+  // no-target feedback, and finally the row builder (tmBuildSessionCtxKaBadgeRow).
+  // (v4.424) Jump from a top keep-alive badge to its card. The badge carries the KEEP-ALIVE STORE key
+  // and the card carries the LEDGER identity key; those two drift (tm- aliasing, and an old entry can
+  // name a model that is no longer listed at all). So match in four widening tiers and, when there is
+  // genuinely no card, SAY SO visibly instead of failing silently -- the silence is what made the
+  // badge look inert and had Dan clicking and double-clicking it.
+  function tmSessionCtxJumpToKaBadge(badgeEl) {
+    var key = String((badgeEl && badgeEl.dataset ? badgeEl.dataset.key : '') || '');
+    if (!key || !tmSessionCtxHoverEl) return;
+    function q(k) {
+      try { return tmSessionCtxHoverEl.querySelector('[data-session-row="' + String(k).replace(/"/g, '') + '"]'); } catch (eQ) { return null; }
+    }
+    var parts = key.split('::');
+    var sidNorm = tmKeepAliveNormSid(parts[0] || '');
+    var tail = parts.slice(1).join('::');
+    var target = q(key), how = 'exact key';
+    if (!target && sidNorm) { target = q('tm-' + sidNorm + (tail ? '::' + tail : '')); how = 'tm- alias'; }
+    if (!target && sidNorm) { target = q(sidNorm + (tail ? '::' + tail : '')); how = 'raw sid'; }
+    if (!target && sidNorm) {
+      // Any card of the same conversation beats nothing: the active model may have changed since the
+      // keep-alive was armed (and v4.422 stands the old entry down on the next real turn anyway).
+      var rows = tmSessionCtxHoverEl.querySelectorAll('[data-session-row]');
+      for (var i = 0; i < rows.length; i++) {
+        var rk = String(rows[i].getAttribute('data-session-row') || '');
+        if (tmKeepAliveNormSid(rk.split('::')[0] || '') === sidNorm) { target = rows[i]; how = 'same conversation, different model'; break; }
+      }
+    }
+    if (!target) {
+      console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive badge click: NO CARD for ' + key + ' -- that identity is not in the ring buffer or the 24h ledger window, so there is nothing to scroll to. Use the badge\u2019s \u00d7 to disarm it.');
+      tmSessionCtxKaBadgeNoTarget(badgeEl);
+      return;
+    }
+    try { target.scrollIntoView({ block: 'start' }); } catch (eS) {}
+    try {
+      var prevOut = target.style.outline, prevOff = target.style.outlineOffset;
+      target.style.outline = '2px solid #e09090'; target.style.outlineOffset = '-2px';
+      setTimeout(function () { target.style.outline = prevOut || ''; target.style.outlineOffset = prevOff || ''; }, 1600);
+    } catch (eF) {}
+    if (how !== 'exact key') console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive badge jump matched by ' + how + ' for ' + key + '.');
+  }
+
+  // (v4.424) Visible feedback when a badge has no card to jump to: flash the badge and write a note
+  // into the dedicated [data-ka-badge-note] element, which sits OUTSIDE the patched badges zone so a
+  // countdown repaint cannot erase it mid-read.
+  function tmSessionCtxKaBadgeNoTarget(badgeEl) {
+    try {
+      if (badgeEl && badgeEl.style) {
+        var po = badgeEl.style.outline;
+        badgeEl.style.outline = '2px solid #ff6b6b'; badgeEl.style.outlineOffset = '1px';
+        setTimeout(function () { try { badgeEl.style.outline = po || ''; badgeEl.style.outlineOffset = ''; } catch (e2) {} }, 1600);
+      }
+      var note = tmSessionCtxHoverEl ? tmSessionCtxHoverEl.querySelector('[data-ka-badge-note]') : null;
+      if (note) {
+        note.style.margin = '-4px 0 6px';
+        note.textContent = '\u26a0 no card in view for that keep-alive \u2014 the identity has aged out of the ring buffer and the 24h ledger window. Use its \u00d7 to disarm.';
+        setTimeout(function () { try { note.textContent = ''; note.style.margin = ''; } catch (e3) {} }, 8000);
+      }
+    } catch (eN) {}
+  }
+
   function tmBuildSessionCtxKaBadgeRow(frame, store) {
     try {
       store = store || tmGetKeepAliveStore();
@@ -5692,8 +5765,12 @@
         var pill = '<span title="Keep-alive is ARMED on this conversation' + (fired ? ' and has fired at least one ping' : '') + '" style="display:inline-block;font-size:10px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #b04a4a;background:#2e1416;color:#e09090;' + (fired ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '') + '">\u23f0</span>';
         var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(pct, hue, true) + '">' + escapeHtml(name) + '</span>';
         var statusHtml = tmKeepAliveStatusLineHtml(key, info || { sid: sid, model: model, host: host, isProxy: isProxy }, store, { center: true });
-        units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
-          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + '</span>' +
+        // (v4.424) A small DISARM button on every badge. The stale armed keep-alives this row
+        // surfaces are often exactly the ones whose card has aged out of the ring and the 24h ledger
+        // window -- so there is nothing to jump TO, and the useful action is to turn it off here.
+        var disarm = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Disarm keep-alive for this conversation (the usual fix for a stale armed entry whose card has aged out of the list)" style="cursor:pointer;font-size:11px;font-weight:700;color:#c08080;padding:0 3px;border-radius:3px;white-space:nowrap;">\u00d7</span>';
+        units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view (x disarms it)" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
           statusHtml + '</span>');
       });
       // (v4.423) STICKY + TITLED. position:sticky at the top of the scrolling content region, so the
@@ -14648,6 +14725,9 @@ function tmThinkRenderBins(bucket,opts) {
   // wrapper is ALWAYS rendered (empty = zero height) so the tick can patch badges into it the moment
   // a keep-alive is armed -- a conditional wrapper would be a silent no-op until the 30s rebuild.
   rows.push('<div data-ka-badges="1">'+tmBuildSessionCtxKaBadgeRow(frame)+'</div>');
+  // (v4.424) The 'no card to jump to' note lives OUTSIDE the patched badges zone on purpose: the zone's
+  // innerHTML is replaced whenever a countdown changes, which would erase a note placed inside it.
+  rows.push('<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>');
   var composition=tmSessionCtxComposeRows(frame);
   composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="'+TM_SIM_CARD_STYLE+'">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
   if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
@@ -14850,23 +14930,8 @@ function tmThinkRenderBins(bucket,opts) {
             // (v4.411) Click-to-rename the session label on a row's name.
             var rnEl = ev.target.closest('[data-action="session-rename"]');
             if (rnEl) { ev.stopPropagation(); ev.preventDefault(); try { tmHandleSessionCtxRename(rnEl); } catch (eRN) {} return; }
-            // (v4.422) Clicking a top keep-alive badge scrolls that card into view and flashes it, so
-            // an aged-down armed conversation is one click away instead of a hunt.
-            var bgEl = ev.target.closest('[data-action="ka-badge-jump"]');
-            if (bgEl) {
-              ev.stopPropagation(); ev.preventDefault();
-              try {
-                var bgKey = String(bgEl.dataset.key || '').replace(/"/g, '');
-                var bgTarget = tmSessionCtxHoverEl.querySelector('[data-session-row="' + bgKey + '"]');
-                if (bgTarget) {
-                  bgTarget.scrollIntoView({ block: 'start' });
-                  var bgPrevOut = bgTarget.style.outline, bgPrevOff = bgTarget.style.outlineOffset;
-                  bgTarget.style.outline = '2px solid #e09090'; bgTarget.style.outlineOffset = '-2px';
-                  setTimeout(function () { bgTarget.style.outline = bgPrevOut || ''; bgTarget.style.outlineOffset = bgPrevOff || ''; }, 1600);
-                }
-              } catch (eBJ) {}
-              return;
-            }
+            // (v4.422; MOVED v4.424) The badge-jump handler now sits AFTER the keep-alive button
+            // actions below, so the badge's own x disarm button wins over the jump.
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
             var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"],[data-action="ka-messages"]') : null;
             if (kaEl && kaEl.dataset) {
@@ -14876,6 +14941,9 @@ function tmThinkRenderBins(bucket,opts) {
               else tmKeepAliveHandleInterval(kaEl.dataset.key);
               return;
             }
+            // (v4.422; reordered v4.424) Clicking a top keep-alive badge scrolls its card into view.
+            var bgEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-badge-jump"]') : null;
+            if (bgEl) { ev.stopPropagation(); ev.preventDefault(); try { tmSessionCtxJumpToKaBadge(bgEl); } catch (eBJ) {} return; }
             // (v4.354) Thinking Observatory badge / 📝 note on a hovercard row.
             var tkH = ev.target && ev.target.closest ? ev.target.closest('[data-action="think-report"],[data-action="think-note"]') : null;
             if (tkH && tkH.dataset) {
