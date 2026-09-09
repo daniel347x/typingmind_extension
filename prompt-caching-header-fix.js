@@ -1,5 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.419
+// Version: 4.420
+// v4.420: five spacing/colour refinements. (1) The LEFT counter (streak) moves 2px further from the
+// cost text -- top/bottom -10 -> -12 -- because a 100-hit streak reached THREE digits and ran on
+// again; the offset is anchor-relative so it moves UP in superscript mode and DOWN in subscript mode
+// from the one change. (2) 10px more air before the zero/nonzero histogram in the SiM lean think row
+// (gap 8px -> 18px, and the chart's width budget widens to match) -- it was running straight on from
+// the reasoning-token count. (3) The fullness bulge gets 2px more air (padding 1px 7px -> 2px 9px,
+// radius 7px -> 8px). (4) KEEP-ALIVE ON stops looking like a stamped badge: the red is DIMMED
+// (#ffb0b0 -> #e09090 on #2e1416) and the border now GLOWS (box-shadow halo), so it reads as a live
+// scheduler rather than a blazing stamp. Size unchanged (12px) -- box-shadow takes no layout space.
+// (5) A touch more spacing inside the cache absolute-token report: 3px between the 'cache' label,
+// the ↺ read figure and the + write figure (SiM only; the shared tmRenderCacheReport used by the
+// cropped ring-modal rows is untouched).
 // v4.419: three visual tweaks. (1) The LEFT counter (streak) moves 4px further out (left:-12px ->
 // -16px) in BOTH superscript and subscript mode -- at double digits it was running corner-to-corner
 // against the turn cost, and the rows now have the space. The differing vertical offset already
@@ -2387,7 +2399,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.419';
+  const EXT_VERSION = '4.420';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5496,12 +5508,12 @@
       var kParts = String(key || '').split('::');
       var iModel = (info && info.model) || kParts[1] || '', iHost = (info && info.host) || kParts[2] || '';
       var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String(iModel) + String(iHost)) ? 50 : 4);
-      // (v4.419) ARMED = BLAZED. ON renders 2px larger with proportionally larger padding and a
-      // LIGHT RED palette; OFF keeps the dim 10px gray. Green read as calm/ok rather than 'a
-      // scheduler is live here'. The size change on toggle is intended -- the KA cluster is an
-      // inline-flex that absorbs it. Warm blaze red (#ffb0b0 on #4a1a1a behind #a34040), kept
-      // distinct from the alarm reds reserved for errors (#ff4444 / #ff6b6b) and the KA BROKEN banner.
-      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;border:1px solid ' + (on ? '#a34040' : '#444') + ';background:' + (on ? '#4a1a1a' : '#26262e') + ';color:' + (on ? '#ffb0b0' : '#9aa4b2') + ';white-space:nowrap;">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      // (v4.419; recoloured v4.420) ARMED = ALIVE, not ARMED = STAMPED. The first blaze read as a
+      // rubber stamp -- flat, saturated, dead. The red is now DIMMER (#e09090 on #2e1416) and the
+      // border GLOWS (a two-layer box-shadow halo), so it reads as something running rather than
+      // something printed. Size is unchanged (12px, Dan: 'the size is perfect') and box-shadow takes
+      // no layout space, so the cluster geometry is untouched. OFF keeps the dim 10px gray.
+      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;white-space:nowrap;' + (on ? 'border:1px solid #b04a4a;background:#2e1416;color:#e09090;box-shadow:0 0 7px rgba(255,96,96,0.50),0 0 2px rgba(255,140,140,0.35);' : 'border:1px solid #444;background:#26262e;color:#9aa4b2;') + '">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
       var btnInterval = '<span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
       var status = '';
       if (e && e.broken) {
@@ -6705,7 +6717,7 @@
   var reported=measured&&source==='reported';
   var amount=measured?((reported?'':(source==='heuristic'?'~ ':'\u2248 '))+'\ud83e\uddee '+tmThinkFmtK(obs.reasoning)+' tok'):'\u2753 unmeasured';
   var amountFs=reported?fs:(((parseInt(fs,10)||13)+3)+'px');
-  return '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:'+fs+';"><span title="Latest ordinary turn: '+escapeHtml(source||'unmeasured')+'" style="font-size:'+amountFs+';">'+amount+'</span>'+(an&&an.v===TM_ANALYTICS_VERSION?tmThinkRenderBins(an.all,{widthPx:Math.max(120,tmGetSessionCtxHoverWidth()-560)}):'')+'</span>';
+  return '<span style="display:inline-flex;align-items:center;flex-wrap:wrap;gap:18px;font-size:'+fs+';"><span title="Latest ordinary turn: '+escapeHtml(source||'unmeasured')+'" style="font-size:'+amountFs+';">'+amount+'</span>'+(an&&an.v===TM_ANALYTICS_VERSION?tmThinkRenderBins(an.all,{widthPx:Math.max(120,tmGetSessionCtxHoverWidth()-570)}):'')+'</span>';
 }
 
   // ---------- v4.356: SESSION THINKING HISTOGRAM -- per-glyph turn counts, ledger-backed ----------
@@ -14017,7 +14029,7 @@ function tmThinkRenderBins(bucket,opts) {
       var clamped = (typeof pct === 'number' && isFinite(pct)) ? Math.min(pct, 150) : null;
       if (clamped === null || clamped < 25) return '';
       var glowBase = (typeof hueNum === 'number') ? ('hsla(' + hueNum + ',60%,70%,') : 'hsla(255,255,255,';
-      var pad = 'padding:1px 7px;border-radius:7px;';
+      var pad = 'padding:2px 9px;border-radius:8px;';
       if (clamped < 40) return pad + 'font-weight:600;background:rgba(255,255,255,0.03);box-shadow:0 0 0 1px hsla(85,85%,58%,0.90);';
       if (clamped < 50) return pad + 'font-weight:700;background:rgba(255,255,255,0.03);box-shadow:0 0 0 2px hsla(95,90%,54%,0.95), 0 0 5px ' + glowBase + '0.30);';
       if (clamped < 60) return pad + 'font-weight:700;background:rgba(255,200,0,0.04);box-shadow:0 0 0 2px hsla(42,95%,52%,0.95), 0 0 7px ' + glowBase + '0.40);';
@@ -15676,7 +15688,7 @@ function tmThinkRenderBins(bucket,opts) {
   // tmSimGroupSwap() is read HERE, not passed in: the delta tick re-renders this zone on its own, so
   // an opt the tick forgot to pass would silently flip the cluster back to superscripts.
   var below=!tmSimGroupSwap(),vEdge=below?'bottom:':'top:',supOffAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-10+supOffAdj)+'px;left:-16px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-12+supOffAdj)+'px;left:-16px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
   return chip+cost;
 }
 
@@ -15688,7 +15700,10 @@ function tmThinkRenderBins(bucket,opts) {
   opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,c=l&&l.cache||{};
   if(!l)return '';
   var read=c.read==null?'\u2014':tmFmtTok(c.read),write=c.write==null?'\u2014':tmFmtTok(c.write);
-  return '<span style="font-size:13px;white-space:nowrap;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>';
+  // (v4.420) 3px of air between the three text widgets in this block -- they were set with single
+  // spaces from when the cluster lived in the far more cropped widget top row. SiM only: the shared
+  // tmRenderCacheReport (ring-modal rows, widget) keeps its tight spacing on purpose.
+  return '<span style="font-size:13px;white-space:nowrap;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;margin-left:3px;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;margin-left:3px;">+'+write+'</span></span>';
 }
 
   // (v4.405) THE PER-IDENTITY ALERT ZONE -- the three banners that used to live on the persistent
