@@ -1,5 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.415
+// Version: 4.416
+// v4.416: each Sessions-in-Memory entry is now a CARD -- off-black background, rounded corners and
+// generous bottom spacing -- replacing the old border-top divider. Wrapper-only: tmSessionCtxRowHtml
+// is untouched, so the internal layout is literally identical. Two deliberate choices keep it that
+// way. (1) The ring is a BOX-SHADOW, not a border -- the same zero-layout-geometry trick the
+// fullness bulge uses; a real border would steal 2px of width and could trigger extra flex-wrap on
+// a narrow card. (2) Horizontal padding stays 0, so every row keeps its exact x positions (row 1
+// flush, rows 2-4 inset 48px) and the full content width. Motivation: row 2 carries 18px of
+// superscript headroom, which made each entry top-heavy -- the whitespace landed above the model
+// row, so the NEXT entry's title read as though it belonged to the card before it. Bottom padding
+// 8px -> 16px plus 9px of margin between cards settles the grouping.
 // v4.415: 🌐 GLOBAL REASONING ANALYTICS modal (read-only), opened from the ⚖ Think Audit header so
 // every thinking/reasoning surface lives behind the same door. It projects the v4.409 LIFETIME
 // ARCHIVE (__tm_reasoning_lifetime_v1), which is keyed by exact path [model, host, isProxy,
@@ -2331,7 +2341,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.415';
+  const EXT_VERSION = '4.416';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -14285,6 +14295,12 @@ function tmThinkRenderBins(bucket,opts) {
     tmSessionCtxHoverTickerId = setInterval(tmSessionCtxHoverTick, 1000);
   }
 
+  // (v4.416) THE ENTRY CARD. Wrapper-only styling -- see the version note for why the ring is a
+  // box-shadow rather than a border and why horizontal padding stays 0. The parent content region
+  // already supplies 9px of side padding, so the background band sits in a gutter of the panel's own
+  // colour and still reads as a distinct card.
+  var TM_SIM_CARD_STYLE = 'padding:10px 0 16px;margin-bottom:9px;background:rgba(255,255,255,0.04);border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,0.10);';
+
   // (v4.336) Dashboard width: persisted, header [-]/[+] adjustable (80px steps, clamped).
   var TM_SESSION_CTX_HOVER_WIDTH_KEY = 'tm_session_ctx_hover_width_v1';
   function tmGetSessionCtxHoverWidth() {
@@ -14332,7 +14348,7 @@ function tmThinkRenderBins(bucket,opts) {
   tmSessionCtxHoverLastFullAt=Date.now();frame=frame||tmBuildSessionCtxLiveFrame();tmSessionCtxHoverIdentities={};
   var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
   var composition=tmSessionCtxComposeRows(frame);
-  composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="padding:8px 0;border-top:1px solid rgba(255,255,255,0.28);">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
+  composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="'+TM_SIM_CARD_STYLE+'">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
   if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
 }
 
