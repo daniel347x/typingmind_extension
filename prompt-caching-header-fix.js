@@ -1,5 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.409
+// Version: 4.410
+// v4.410: Blind-warning suppression whitelist -- display policy only; no wire, schema or storage change.
+// A narrowly whitelisted Gemini-native route (exact model gemini-3.8-flash + resolved host
+// generativelanguage.googleapis.com + protocol gemini-generatecontent) stops asserting the prominent
+// 👁‍🗨 REASONING UNMEASURED blindness warning once THIS conversation/model/endpoint/provider identity
+// has recorded a reasoning measurement in its own exact (non-pooled) analytics.by_provider bucket.
+// A REPORTED ZERO counts as a measurement -- the test is source counts, never reasoning_total > 0.
+// The latch is derived from existing counts on every render, NOT a stored flag; the normal seven-day
+// idle expiry is the only reset. Missing observations stay unknown and visible in the coverage
+// statistics; no lifetime bootstrap, no inferred zeros, no backfill. tmSessionCtxBlindState remains
+// the ONE shared decision behind both the dashboard banner and the row report.
 // v4.409: Integrated Fix 24 durable reasoning analytics (four checkpoints, one release).
 // One terminal event records capped identity and uncapped lifetime buckets; forward-only,
 // unknown is never zero. SiM reads one ordinary _last, includes 24h ledger-only identities,
@@ -2266,7 +2276,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.409';
+  const EXT_VERSION = '4.410';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7596,14 +7606,56 @@ function tmThinkProtocolFromHost(model,host) {
   return null;
 }
 
+// ==================== (v4.410) BLIND-WARNING SUPPRESSION WHITELIST ====================
+// OUR DISPLAY POLICY -- NOT a vendor capability guarantee.
+// REQUIRED: every entry below MUST have a corresponding explanatory note in TM_THINK_DOCS_REGISTRY
+// (today: provider 'Google (Gemini)', range 'Gemini 3.x ... native generateContent', the `usage`
+// cell -- the "reported reasoning count" category). An entry with no registry note is a bug.
+// Matched EXACTLY against the three canonical values tmLedgerRowView already resolves: the request
+// model string, the resolved target host, and the wire protocol. Deliberately NOT the whole Gemini
+// family, NOT OpenRouter routes, NOT Google's OpenAI-compatible door. No model-family normalization
+// and no endpoint-discovery machinery are performed here. Proxy/direct remains part of the identity
+// key upstream, so evidence is never borrowed across those identities.
+var TM_BLIND_WARN_WHITELIST = [
+  { model: 'gemini-3.8-flash', host: 'generativelanguage.googleapis.com', protocol: 'gemini-generatecontent' }
+];
+function tmBlindWarnWhitelisted(view) {
+  if (!view) return false;
+  return TM_BLIND_WARN_WHITELIST.some(function (w) {
+    return view.model === w.model && view.host === w.host && view.protocol === w.protocol;
+  });
+}
+
+// @beacon[
+//   id=auto-beacon@__lambdao_1.tmSessionCtxBlindState-yjsp,
+//   role=__lambdao_1.tmSessionCtxBlindState,
+//   slice_labels=tm-payload-overview,tm-sessions-in-memory,tm-thinking-observatory,
+//   kind=ast,
+//   comment=(v4.407-v4.410) THE one shared reasoning-blindness decision behind BOTH the Sessions-in-Memory REASONING UNMEASURED banner (tmSessionCtxBlindBanner) and the row report's BLIND ROUTE wording (tmSessionCtxReportText). Current-provider scoped: P = _last.provider.key, B = analytics.by_provider for P, falling back to the pooled 'other' bucket. Blind when the latest ordinary turn is unknown AND (pooled, OR B.unknown/B.turns >= 0.5 once B.turns >= 3, OR no reported/bytes_estimate measurement at all). (v4.410) WHITELIST LATCH: on a TM_BLIND_WARN_WHITELIST route -- exact request model + resolved target host + wire protocol, initially gemini-3.8-flash at generativelanguage.googleapis.com on gemini-generatecontent -- with an EXACT non-pooled bucket that has already recorded a reasoning measurement, suppress the warning and return priorMeasurement + measuredCount so the report can read 'previously measured; latest turn unmeasured'. A REPORTED ZERO IS A MEASUREMENT: the test is source counts, NEVER reasoning_total > 0. A latch DERIVED FROM EXISTING COUNTS on every call, NOT a stored flag; the normal seven-day idle expiry is the only reset. Never consults the lifetime archive, another provider's bucket, or another conversation. Display policy only -- stored unknown/zero/nonzero/source counts, _last.obs and the histograms are untouched.,
+// ]
 function tmSessionCtxBlindState(view) {
   var l=view&&view.last,an=view&&view.analytics;
-  var out={blind:false,label:l&&l.provider&&l.provider.label||'unattributed',bucket:null,pooled:false};
+  var out={blind:false,label:l&&l.provider&&l.provider.label||'unattributed',bucket:null,pooled:false,priorMeasurement:false,measuredCount:0};
   if(!l||!an||an.v!==TM_ANALYTICS_VERSION||!l.provider)return out;
   var key=l.provider.key,map=an.by_provider||{};
   var p=Object.prototype.hasOwnProperty.call(map,key)?key:'other',b=map[p];out.bucket=b;out.pooled=p==='other';
   if(!b||!l.obs||l.obs.source!=='unknown')return out;
-  out.blind=out.pooled||(b.turns>=3&&b.unknown/b.turns>=0.5)||((b.source.reported||0)+(b.source.bytes_estimate||0)===0);
+  var measured=(b.source.reported||0)+(b.source.bytes_estimate||0);out.measuredCount=measured;
+  out.blind=out.pooled||(b.turns>=3&&b.unknown/b.turns>=0.5)||(measured===0);
+  // (v4.410) WHITELISTED-ROUTE LATCH. On a whitelisted route whose EXACT (non-pooled) provider bucket
+  // has already recorded a reasoning measurement, stop asserting blindness on later unmeasured turns.
+  // A REPORTED ZERO IS A MEASUREMENT: the test is the source counts above, NEVER reasoning_total > 0 --
+  // normalized Gemini completion already includes thinking tokens, so a token sum cannot distinguish
+  // 'did not think' from 'did not report'. This is a latch DERIVED FROM EXISTING COUNTS on every call,
+  // NOT a new stored flag: it lives exactly as long as this identity/provider's retained analytics do,
+  // and the normal seven-day idle expiry is the only reset. ONLY this identity's own
+  // analytics.by_provider bucket is consulted -- never the lifetime archive, never another
+  // conversation, never another provider. Pooled `other` never qualifies, so provider A cannot vouch
+  // for provider B through the pool. measured === 0 keeps the existing initial-warning behavior (the
+  // first handful of unmeasured turns may therefore still warn). Every non-whitelisted route keeps its
+  // existing behavior, including the ratio rule. KA pings and failed attempts never establish the latch
+  // because they do not enter these reasoning buckets.
+  if(out.blind&&!out.pooled&&measured>0&&tmBlindWarnWhitelisted(view)){out.blind=false;out.priorMeasurement=true;}
   return out;
 }
 
@@ -7752,6 +7804,13 @@ function tmThinkRenderBins(bucket,opts) {
   // analytics.by_provider[P]. Fire when _last.obs.source === 'unknown' AND (B.unknown/B.turns
   // >= 0.5 once B.turns >= 3, OR B.source.reported + B.source.bytes_estimate === 0). Dismissible
   // per identity in-memory (re-arms on the next unmeasured turn).
+  // @beacon[
+  //   id=auto-beacon@__lambdao_1.tmSessionCtxBlindBanner-46kh,
+  //   role=__lambdao_1.tmSessionCtxBlindBanner,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,tm-thinking-observatory,
+  //   kind=ast,
+  //   comment=(v4.405-v4.410) Renders the amber full-width REASONING UNMEASURED banner on the Sessions-in-Memory row of its OWN identity only (parallel-conversation safe by construction). A pure consumer of tmSessionCtxBlindState -- it returns '' whenever that helper says not-blind, so the v4.410 whitelist suppression required NO change here: the banner and the row report share one decision by construction. Dismissible per identity in-memory via tmBlindBannerDismissed, keyed by the latest capture_id so it re-arms on the next unmeasured turn; nothing is persisted. Text names the model, the current provider label, the pooled-statistics caveat, and the bucket's unknown-of-turns count.,
+  // ]
   function tmSessionCtxBlindBanner(idKey,view) {
   var b=tmSessionCtxBlindState(view),last=view&&view.last;
   if(!b.blind||tmBlindBannerDismissed[idKey]===(last&&last.capture_id))return '';
@@ -8949,7 +9008,7 @@ function tmThinkRenderBins(bucket,opts) {
             level:       { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.thinkingLevel', values: 'low | medium | high; default medium (dynamic -- the model decides within the level). OpenRouter lists exactly [high, medium, low] for 3.8 / 3.7 Flash', note: 'Our writer: minimal -> low; the former Pro medium -> high clamp was removed in v4.389 (not in the docs). Since the v4.371 identity-key repair these overrides actually reach the wire.' },
             display:     { url: TM_THINK_URL.gThinking, path: 'generationConfig.thinkingConfig.includeThoughts', values: 'true | false -- returns thought SUMMARIES as parts flagged thought: true; does not change thoughtsTokenCount', note: 'TypingMind sends includeThoughts: false natively; \ud83d\udc41 show flips it. Thought signatures must be replayed for function calling -- a separate mechanism from display.' },
             per_message: { na: true, reason: 'not offered; a level change is a top-level edit (implicit caching keys on the prefix -- expect one miss)' },
-            usage:       { url: TM_THINK_URL.gThinking, path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.' },
+            usage:       { url: TM_THINK_URL.gThinking, path: 'usageMetadata.thoughtsTokenCount', values: 'integer (\u2705 reported)', note: 'The number the histogram reads on this route.\n(v4.410) LOCAL DISPLAY POLICY -- initially limited to gemini-3.8-flash on the native Google endpoint (host generativelanguage.googleapis.com, protocol gemini-generatecontent), the narrower model in this wider 3.x range: after THIS conversation/provider bucket has recorded a reasoning measurement, the prominent blindness warning is suppressed on later unmeasured turns and the session report reads "previously measured; latest turn unmeasured". Missing observations remain UNKNOWN and stay visible in the coverage statistics; nothing is inferred to be zero. This is OUR display policy, NOT a vendor capability guarantee and NOT a verified vendor rule that omitted fields mean zero -- normalized Gemini completion already includes thinking tokens, so prompt + completion = total proves nothing about absence. Controlled by the dedicated TM_BLIND_WARN_WHITELIST table, every entry of which requires a note here. The lifetime statistics that motivated the whitelist (17 eligible turns / 15 reported / 2 unknown) do NOT supply the conversation-local suppression decision.' },
             output_cap:  { url: TM_THINK_URL.gThinking, path: 'generationConfig.maxOutputTokens', values: 'thinking tokens count against it', note: 'Never cap output on a reasoning model.' }
           } },
         { models: 'Gemini 2.5 Pro -- native generateContent; a token budget, no words; cannot go below 128 (thinking cannot be switched off)', match: /gemini-2[-.]5[-.]pro/, protocol: /gemini/, verified: '2026-09-06',
@@ -13483,8 +13542,9 @@ function tmThinkRenderBins(bucket,opts) {
   else {
     var blind=tmSessionCtxBlindState(v),all=an.all;
     L.push('  '+(blind.blind?'⚠ BLIND ROUTE — ':'')+'measured '+(all.zero+all.nonzero)+' of '+all.turns+' turns ('+all.unknown+' unmeasured: provider returned no reasoning count and no reasoning text)');
-    if(blind.bucket)L.push('  current provider '+blind.label+': '+(blind.blind?'BLIND ('+blind.bucket.unknown+' of '+blind.bucket.turns+' turns unmeasured)':'measuring')+(blind.pooled?' (statistics pooled — provider cap reached)':''));
+    if(blind.bucket)L.push('  current provider '+blind.label+': '+(blind.blind?'BLIND ('+blind.bucket.unknown+' of '+blind.bucket.turns+' turns unmeasured)':(blind.priorMeasurement?'previously measured; latest turn unmeasured':'measuring'))+(blind.pooled?' (statistics pooled — provider cap reached)':''));
     if(blind.blind)L.push('  Every figure below is computed only from the measured turns. This model/provider does not report reasoning; treat its totals and histogram as a lower bound on turns, not on reasoning.');
+    else if(blind.priorMeasurement)L.push('  Local display policy (TM_BLIND_WARN_WHITELIST): this conversation has recorded '+blind.measuredCount+' reasoning measurement(s) from this exact provider on a whitelisted route, so the prominent blindness warning is suppressed although the LATEST turn is unmeasured. This asserts NEITHER current measurement NOR zero thinking -- the latest turn is simply unknown, and unknown turns remain counted in the coverage figures and histogram above. Not an inference that omitted fields mean zero.');
     kv('ka_pings_excluded',an.ka_pings_excluded||0);bucket(all);
     var levels=Object.keys(an.by_level||{});if(levels.length===1)L.push('  only thinking setting during recorded coverage: '+levels[0]);else levels.forEach(function(k){sec('Reasoning — '+k);bucket(an.by_level[k]);});
     var providers=Object.keys(an.by_provider||{});if(providers.length>1)providers.forEach(function(k){var p=an.by_provider[k];sec('Reasoning — '+p.label);bucket(p);Object.keys(p.by_level||{}).forEach(function(lv){var b=p.by_level[lv];kv(lv,b.turns+' turns · '+b.unknown+' unmeasured · '+n(b.reasoning_total)+' reasoning tokens');});});
