@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.412
+// Version: 4.413
+// v4.413: cache cluster SPLIT into two independently-patched zones. The 'cache ↺read +write'
+// absolute-token report moves OFF the right end and joins the LEFT of row 2 (after model/route/
+// provider, behind a thin vertical separator with 10px each side); the right end keeps the MISS
+// chip + turn cost + its two superscripts. Root cause of the repeated failed attempts: the report
+// used to live INSIDE tmRenderIdentityCacheCluster's single return string, and the 1s delta tick
+// re-rendered that whole cluster into [data-cache-key] on every cache-tuple change -- so moving the
+// text left appeared to work and then silently reverted (or duplicated) within a second. The report
+// is now its own function + its own [data-cachereport-key] zone, and the tick patches BOTH. Also:
+// the misses/hits superscript raised 2px (top -14 -> -16).
 // v4.412: SiM row groups split one-per-row + a header swap button. The cache cluster (with its
 // absolute-token report text) moves OFF row 2 so rows 1-3 each own one right-aligned group: status
 // word, then keep-alive, then cache cluster. A new ⇅ button in the title bar (leftmost of five,
@@ -2297,7 +2306,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.412';
+  const EXT_VERSION = '4.413';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7724,12 +7733,20 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   // [data-cache-key].innerHTML with a freshly rendered cluster, which would strip any margin
   // applied INSIDE the zone the first time the cache tuple changed.
   var cacheZone='<span style="display:inline-block;margin-right:22px;">'+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</span>';
+  // (v4.413) The absolute-token cache report is its OWN zone on the LEFT of row 2, behind a thin
+  // vertical separator with 10px of space each side. Its own zone is the whole point: the delta
+  // tick patches [data-cache-key] and [data-cachereport-key] independently, so this text can never
+  // be dragged back into the right-hand cluster. Both the separator and the zone are omitted when
+  // there is no last ordinary turn yet (a lone pipe would be noise); the tick's full-row rebuild on
+  // a new capture_id brings them in, so nothing is permanently missing.
+  var cacheReportHtml=tmRenderIdentityCacheReport(v.idKey,{frame:frame,view:v});
+  var cacheReportZone=cacheReportHtml?('<span style="display:inline-block;width:1px;height:20px;background:#6a7080;margin:0 10px;vertical-align:middle;"></span>'+zone('cachereport',cacheReportHtml)):'';
   var kaZone=zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive));
   var row2Right=swap?cacheZone:kaZone,row3Right=swap?kaZone:cacheZone;
   return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
     '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
     '<div style="margin-top:2px;padding-top:18px;padding-bottom:5px;">'+
-      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+'<span style="flex:1;"></span>'+row2Right+'</div>'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+cacheReportZone+'<span style="flex:1;"></span>'+row2Right+'</div>'+
     '</div>'+
     '<div style="'+(swap?'padding-top:8px;':'padding-top:18px;')+'padding-bottom:8px;">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
@@ -13844,7 +13861,7 @@ function tmThinkRenderBins(bucket,opts) {
     if(!old||old.capture!==tuple.capture){tmSessionCtxPatchHtml(row,tmSessionCtxRowHtml(v,frame,row.getAttribute('data-ring-badge')==='1'));}
     else {
       if(old.total!==tuple.total)tmSessionCtxPatchHtml(row.querySelector('[data-cost-key]'),tmSessionCtxCostHtml(v));
-      if(old.cache!==tuple.cache)tmSessionCtxPatchHtml(row.querySelector('[data-cache-key]'),tmRenderIdentityCacheCluster(key,{frame:frame,view:v}));
+      if(old.cache!==tuple.cache){tmSessionCtxPatchHtml(row.querySelector('[data-cache-key]'),tmRenderIdentityCacheCluster(key,{frame:frame,view:v}));tmSessionCtxPatchHtml(row.querySelector('[data-cachereport-key]'),tmRenderIdentityCacheReport(key,{frame:frame,view:v}));}
       if(old.max!==tuple.max){tmSessionCtxPatchHtml(row.querySelector('[data-dial-key]'),tmSessionCtxDialHtml(v));tmSessionCtxPatchHtml(row.querySelector('[data-name-key]'),tmSessionCtxNameHtml(v,row.getAttribute('data-ring-badge')==='1'));}
       if(old.width!==tuple.width)tmSessionCtxPatchHtml(row.querySelector('[data-think-key]'),tmThinkRowLeanHtml(v,key,'13px'));
     }
@@ -15128,7 +15145,7 @@ function tmThinkRenderBins(bucket,opts) {
   //   role=__lambdao_1.tmRenderIdentityCacheCluster,
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,tm-payload-cost-visibility,
   //   kind=ast,
-  //   comment=(v4.405) Per-identity cache cluster (cache report + turn cost + streak / misses-slash-hits superscripts), migrated verbatim from the pre-v4.405 widget top row onto each Sessions-in-Memory row; reads the live frame usage map + the per-identity cache-outcome ledger.,
+  //   comment=(v4.405; v4.413 SPLIT) Per-identity cache cluster -- the RIGHT-hand group only: MISS chip + turn cost + the streak (upper-left) and misses/hits (upper-right) superscripts. The 'cache read/write' absolute-token report moved out to tmRenderIdentityCacheReport with its own [data-cachereport-key] zone on the LEFT of the row, because the delta tick re-renders this zone whole and would otherwise drag the report back to the right. Reads the durable ledger view + the per-identity cache-outcome ledger.,
   // ]
   function tmRenderIdentityCacheCluster(idKey,opts) {
   // (v4.411) RESTORED to the pre-v4.405 widget cluster's pixel-perfect form (Dan's long-tuned
@@ -15139,18 +15156,29 @@ function tmThinkRenderBins(bucket,opts) {
   // source stays the durable ledger view (v4.407+). HIT chip removed per Dan; MISS renders 2px
   // larger than the old chip; the unmeasured 'cache —' state stays at 10px.
   opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,r=v.rec,c=l&&l.cache||{},hit=c.hit;
-  // (v4.412) Every element +2px per Dan (report 13, cost 15, streak 11, misses/hits 13, MISS 14,
-  // unmeasured 12). The superscript offsets (left:-12 / right:-18 / top:-10,-14) are UNCHANGED for
-  // now -- Dan tunes them on sight against the larger glyphs.
+  // (v4.412) Every element +2px per Dan (cost 15, streak 11, misses/hits 13, MISS 14,
+  // unmeasured 12). (v4.413) The 'cache ↺read +write' absolute-token report is NO LONGER part of
+  // this cluster -- it moved to the LEFT of the row as its own zone (tmRenderIdentityCacheReport).
+  // This function is the RIGHT-hand group: MISS chip + turn cost + streak / misses-hits
+  // superscripts. The misses/hits superscript sits 2px higher than before (top -16).
   var chip=hit===false?'<span style="font-size:14px;font-weight:700;color:#ff8080;">MISS</span> ':(hit==null?'<span style="font-size:12px;font-weight:700;color:#9aa4b2;">cache \u2014</span> ':'');
-  var read=c.read==null?'\u2014':tmFmtTok(c.read),write=c.write==null?'\u2014':tmFmtTok(c.write);
-  var report=l?'<span style="font-size:13px;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>':'';
   var streak=Number(r._cache_streak||0),totalHits=Number(r._cache_hits||0),totalMisses=Number(r._cache_misses||0);
   var retained='retained totals (including keep-alive): '+totalHits+' hits, '+totalMisses+' misses, streak '+streak;
   var missBorder=hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'';
   var supTopAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-14+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
-  return chip+report+cost;
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-16+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  return chip+cost;
+}
+
+  // (v4.413) The cache ABSOLUTE-TOKEN REPORT as its own renderer + zone, so it can live anywhere on
+  // the row without the delta tick dragging it back into the cluster's right-hand zone. Same data
+  // source as the cluster (the durable ledger view's last ordinary turn): the green 'cache' label,
+  // blue ↺ read (tokens reused / saved) and gray + write (tokens newly created / expensive).
+  function tmRenderIdentityCacheReport(idKey,opts) {
+  opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,c=l&&l.cache||{};
+  if(!l)return '';
+  var read=c.read==null?'\u2014':tmFmtTok(c.read),write=c.write==null?'\u2014':tmFmtTok(c.write);
+  return '<span style="font-size:13px;white-space:nowrap;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>';
 }
 
   // (v4.405) THE PER-IDENTITY ALERT ZONE -- the three banners that used to live on the persistent
