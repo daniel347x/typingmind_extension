@@ -1,5 +1,25 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.421
+// Version: 4.422
+// v4.422: KEEP-ALIVE surface rebuild, four parts. (1) The long KA status string (ping count, ping
+// spend, last-ping cache read/write, and the sweeper's countdown/reason) moves OUT of the button
+// cluster onto its own bottom line, right-aligned and overlapping the card's bottom padding via a
+// negative bottom margin -- so the card does NOT grow and the cluster can no longer wrap. It is its
+// own renderer + zone ([data-kastatus-key]) per the zone contract, patched by the tick and by
+// tmRefreshSessionCtxKeepAlive. (2) The KA ON badge PULSATES once a ping has actually fired
+// (ping_count > 0), via a new tmKaPulse keyframe in the hovercard style block. Because the status
+// text left the cluster, the cluster's HTML is now static while armed -- so the animation keeps its
+// phase instead of restarting on every countdown tick. (3) A permanent badge row under the title bar:
+// one unit per session with keep-alive ON -- a universal ⏰ pill, a dash, then the session name in its
+// own hue with the fullness ring (tight padding), and the full status line centered beneath. Clicking
+// a unit scrolls that card into view and flashes it. Solves Dan losing track of an armed keep-alive
+// after its conversation aged down the list. (4) KEEP-ALIVE IS NOW SINGLETON PER CONVERSATION: the
+// store was always keyed per identity (sid::model::host::proxy), but the v4.394 toggle armed EVERY
+// sibling of the session -- and since the DOM actuator can only submit to the model TypingMind has
+// SELECTED, arming a non-active sibling is meaningless and its interval could hijack the session's
+// ping cadence (a stale 4-min Kimi entry firing pings at the active Claude). Now: arming affects ONLY
+// the clicked entry, disarming still disarms every sibling (the overnight-burn fix stands), and every
+// REAL (non-ping) outbound turn auto-disables the older siblings of that session with a visible
+// reason, because the newest entry is by definition the active model.
 // v4.421: the streak counter is RIGHT-EDGE anchored instead of left-edge. It was positioned
 // 'left:-16px', so its text grew RIGHTWARD as digits were added -- a 100-hit streak (three digits)
 // reached the turn cost, and 1,000 would have overlapped it. It now sits at 'right:100%;
@@ -2408,7 +2428,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.421';
+  const EXT_VERSION = '4.422';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5146,6 +5166,7 @@
       var store = tmGetKeepAliveStore();
       var now = Date.now();
       var touched = false;
+      var superseded = [];
       var sidNorm = tmKeepAliveNormSid(sid);
       for (var k in store) {
         if (!store.hasOwnProperty(k)) continue;
@@ -5153,6 +5174,18 @@
         if (!e) continue;
         var same = (k === key) || (sidNorm && tmKeepAliveNormSid(e.sid) === sidNorm) || (sidNorm && k.indexOf(sid + '::') === 0);
         if (!same) continue;
+        // (v4.422) SINGLETON PER CONVERSATION. A REAL (non-ping) outbound turn is proof of which
+        // model TypingMind has SELECTED right now -- and the keep-alive actuator can only ever submit
+        // into the conversation, i.e. to that selected model. So any OTHER armed entry of this
+        // conversation is unreachable: left armed it does nothing useful, and worse, the sweep's
+        // per-sid dedupe means a stale sibling could win the fire and impose ITS interval (a 4-minute
+        // Kimi entry pinging the active Claude every 4 minutes). Stand the older siblings down with a
+        // persisted, visible reason. Ping turns never prune -- a ping's own key IS the armed entry.
+        if (!isPing && key && e.enabled && !tmKeepAliveSameIdentity(k, key)) {
+          e.enabled = false;
+          e.stopped_reason = 'auto-off: superseded \u2014 ' + (String(k).split('::')[1] || 'another model') + ' is no longer the active model on this conversation';
+          superseded.push(k);
+        }
         if (isPing) { e.pending_ping = { ts: now, key: key }; }
         else { e.last_turn_ts = now; if (e.retry_at) e.retry_at = 0; if (e.paused_until_turn) e.paused_until_turn = false; }
         e._ts = now;
@@ -5160,6 +5193,9 @@
       }
       if (touched) tmSaveKeepAliveStore(store);
       delete tmKeepAliveSkipLogged[key];
+      if (superseded.length) {
+        console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive auto-off for ' + superseded.length + ' superseded sibling row(s) of session ' + (sidNorm || sid) + ' \u2014 the active model is now ' + (String(key).split('::')[1] || '?') + ': ' + superseded.join(', ') + '. Re-arm on the active row if you want pings to continue.');
+      }
     } catch (eK) {}
   }
 
@@ -5522,25 +5558,16 @@
       // border GLOWS (a two-layer box-shadow halo), so it reads as something running rather than
       // something printed. Size is unchanged (12px, Dan: 'the size is perfect') and box-shadow takes
       // no layout space, so the cluster geometry is untouched. OFF keeps the dim 10px gray.
-      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;white-space:nowrap;' + (on ? 'border:1px solid #b04a4a;background:#2e1416;color:#e09090;box-shadow:0 0 7px rgba(255,96,96,0.50),0 0 2px rgba(255,140,140,0.35);' : 'border:1px solid #444;background:#26262e;color:#9aa4b2;') + '">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;white-space:nowrap;' + (on ? ('border:1px solid #b04a4a;background:#2e1416;color:#e09090;box-shadow:0 0 7px rgba(255,96,96,0.50),0 0 2px rgba(255,140,140,0.35);' + (Number((e && e.ping_count) || 0) > 0 ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '')) : 'border:1px solid #444;background:#26262e;color:#9aa4b2;') + '">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
       var btnInterval = '<span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
-      var status = '';
-      if (e && e.broken) {
-        status = ' <span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-size:10px;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>';
-      } else if (e && e.ping_count) {
-        status = ' <span title="keep-alive pings this session · cumulative ping spend · last ping: cache read / cache write" style="color:#9aa4b2;font-size:10px;white-space:nowrap;">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>';
-      }
-      // (v4.374) THE REASON LINE: what the sweeper decided on its last pass -- never a silent skip.
-      if (on) {
-        var stt = tmKeepAliveStatus[key];
-        var sttText = stt ? stt.text : 'armed \u2014 first sweep pending';
-        var sttColor = (stt && stt.tone === 'warn') ? '#ffb84d' : ((stt && stt.tone === 'active') ? '#7fd8ff' : ((stt && stt.tone === 'ok') ? '#7dd67d' : '#8a94a2'));
-        status += ' <span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';font-size:10px;white-space:nowrap;">\u00b7 ' + escapeHtml(sttText) + '</span>';
-      }
       var historyButton = '<button type="button" data-action="ka-messages" data-key="' + escapeHtml(key) + '" title="Keep-alive messages: grouped patterns, counts and last seen (numeric values omitted)" style="font-size:11px;padding:0 4px;border:1px solid #44515e;border-radius:3px;background:#20252e;color:#9ecce6;cursor:pointer;">▤</button>';
-      // (v4.411) Reversed per Dan: status text, then ▤ history, then interval, then the KA toggle
-      // RIGHTMOST -- the whole cluster sits flush right on row 2, beneath the status word.
-      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">' + status + historyButton + btnInterval + btnToggle + '</span>';
+      // (v4.411) Reversed per Dan: ▤ history, then interval, then the KA toggle RIGHTMOST.
+      // (v4.422) The long status string is NO LONGER part of this cluster -- it was a quarter of the
+      // row's width and wrapped the whole keep-alive block onto a second line. It now renders on its
+      // own bottom line (tmKeepAliveStatusLineHtml into [data-kastatus-key]), which also makes this
+      // cluster's HTML STATIC while armed, so tmKaPulse keeps its animation phase instead of
+      // restarting on every countdown tick.
+      return '<span style="display:inline-flex;align-items:center;gap:5px;flex-wrap:wrap;justify-content:flex-end;">' + historyButton + btnInterval + btnToggle + '</span>';
     } catch (e9) { return ''; }
   }
 
@@ -5551,6 +5578,110 @@
   // sweep, noteRealTurn, firePing and recordPingResult already use. A sibling PAUSED by 'skip this ping'
   // resumes on re-arm (the skip was a one-off); an entry that auto-offed (max_hours reached) is NOT
   // re-armed. The final sweep re-reads the store and asserts nothing under the sid disagrees.
+  // (v4.422) Do two keep-alive keys name the SAME identity? Sid compared alias-tolerantly (the
+  // capture side derives 'tm-<hex>' while a row may carry the raw pasted id), the model / host /
+  // proxy tail compared verbatim. This is what distinguishes "the entry that just sent" from "an
+  // older sibling of the same conversation".
+  function tmKeepAliveSameIdentity(kA, kB) {
+    var a = String(kA || '').split('::'), b = String(kB || '').split('::');
+    if (a.length < 4 || b.length < 4) return String(kA || '') === String(kB || '');
+    return tmKeepAliveNormSid(a[0]) === tmKeepAliveNormSid(b[0]) && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
+  }
+
+  // (v4.422) THE KEEP-ALIVE STATUS LINE -- the long string that used to live INSIDE the button
+  // cluster (ping count, cumulative ping spend, last-ping cache read/write, and the sweeper's
+  // countdown or skip reason). It ran a quarter of the row's width and wrapped the whole keep-alive
+  // block onto a second line. It now renders on its own line at the very bottom of the card,
+  // right-aligned, and OVERLAPS the card's 16px bottom padding via a negative bottom margin -- so
+  // arming keep-alive costs the card no height. Own renderer + own zone ([data-kastatus-key]) per the
+  // zone contract; returns '' when there is nothing to say.
+  // opts.center = the top badge row's variant (centered under the badge, no overlap trick).
+  function tmKeepAliveStatusLineHtml(key, info, store, opts) {
+    try {
+      opts = opts || {};
+      var e = store ? store[key] : tmGetKeepAliveEntry(key);
+      var on = !!(e && e.enabled);
+      var parts = [];
+      if (e && e.broken) {
+        parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
+      } else if (e && e.ping_count) {
+        parts.push('<span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>');
+      }
+      // (v4.374) THE REASON LINE: what the sweeper decided on its last pass -- never a silent skip.
+      if (on) {
+        var stt = tmKeepAliveStatus[key];
+        var sttText = stt ? stt.text : 'armed \u2014 first sweep pending';
+        var sttColor = (stt && stt.tone === 'warn') ? '#ffb84d' : ((stt && stt.tone === 'active') ? '#7fd8ff' : ((stt && stt.tone === 'ok') ? '#7dd67d' : '#8a94a2'));
+        parts.push('<span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';white-space:nowrap;">\u00b7 ' + escapeHtml(sttText) + '</span>');
+      } else if (e && /^auto-off: superseded/.test(String(e.stopped_reason || ''))) {
+        // (v4.422) Explain a silent disarm. The sweep deletes tmKeepAliveStatus for disabled entries,
+        // so the reason is read from the persisted stopped_reason instead -- it survives.
+        var why = String(e.stopped_reason).replace(/^auto-off: /, '');
+        parts.push('<span title="' + escapeHtml(String(e.stopped_reason)) + '" style="color:#8a94a2;white-space:nowrap;">\u00b7 ' + escapeHtml(why) + '</span>');
+      }
+      if (!parts.length) return '';
+      var wrap = opts.center
+        ? 'margin-top:1px;text-align:center;font-size:10px;line-height:13px;'
+        // Negative bottom margin paints the line INTO the card's bottom padding: net height +1px.
+        : 'margin-top:2px;margin-bottom:-14px;text-align:right;font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+      return '<div style="' + wrap + '">' + parts.join(' ') + '</div>';
+    } catch (eSL) { return ''; }
+  }
+
+  // (v4.422) THE TOP KEEP-ALIVE BADGE ROW. One unit per CONVERSATION with keep-alive armed, so an
+  // armed session that has aged down the list is still visible at a glance -- Dan kept losing track
+  // of a live keep-alive (and paying for it) precisely because old conversations sink. Unit = a
+  // universal ⏰ pill, a dash, then the session NAME in its own hue wearing the fullness ring (tight
+  // padding), with the full status line centered beneath. The unit itself is NOT a pill. Clicking it
+  // scrolls that card into view and flashes it. Nothing armed -> '' and the wrapper stays zero-height.
+  function tmBuildSessionCtxKaBadgeRow(frame, store) {
+    try {
+      store = store || tmGetKeepAliveStore();
+      frame = frame || tmBuildSessionCtxLiveFrame();
+      // ONE badge per conversation (newest entry wins). Keep-alive is a singleton per session as of
+      // v4.422, but an older build may have left siblings armed, and one badge per conversation is
+      // what Dan reads.
+      var bySid = {};
+      for (var k in store) {
+        if (!store.hasOwnProperty(k)) continue;
+        var e = store[k];
+        if (!e || !e.enabled) continue;
+        var sidNorm = tmKeepAliveNormSid(e.sid || String(k).split('::')[0] || '');
+        if (!sidNorm) continue;
+        var prevKey = bySid[sidNorm];
+        if (!prevKey || Number(e._ts || 0) > Number((store[prevKey] || {})._ts || 0)) bySid[sidNorm] = k;
+      }
+      var sids = Object.keys(bySid);
+      if (!sids.length) return '';
+      sids.sort();
+      var units = [];
+      sids.forEach(function (sidNorm) {
+        var key = bySid[sidNorm], e = store[key] || {};
+        var kParts = String(key).split('::');
+        // tmSessionCtxHoverIdentities is repopulated by the composition loop AFTER this row is built
+        // on a full rebuild, so the store / key fallbacks are the normal path here, not an edge case.
+        var info = (typeof tmSessionCtxHoverIdentities !== 'undefined' && tmSessionCtxHoverIdentities[key]) || null;
+        var model = (info && info.model) || e.model || kParts[1] || '';
+        var host = (info && info.host) || e.host || kParts[2] || '';
+        var isProxy = info ? !!info.isProxy : ((e.proxy != null) ? !!e.proxy : kParts[3] === 'proxy');
+        var sid = (info && info.sid) || e.sid || kParts[0] || '';
+        var name = tmGetSessionName(sid) || tmGetSessionName(sidNorm) || sidNorm;
+        var color = '#fff', hue = null, pct = null;
+        try { color = tmModelEndpointColor(model, host, isProxy, sid); hue = tmSessionHueNumber(model, host, isProxy, sid); } catch (eC) {}
+        try { var v = tmLedgerRowView(key, frame); pct = v ? v.pct : null; } catch (eV) {}
+        var fired = Number(e.ping_count || 0) > 0;
+        var pill = '<span title="Keep-alive is ARMED on this conversation' + (fired ? ' and has fired at least one ping' : '') + '" style="display:inline-block;font-size:10px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #b04a4a;background:#2e1416;color:#e09090;' + (fired ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '') + '">\u23f0</span>';
+        var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(pct, hue, true) + '">' + escapeHtml(name) + '</span>';
+        var statusHtml = tmKeepAliveStatusLineHtml(key, info || { sid: sid, model: model, host: host, isProxy: isProxy }, store, { center: true });
+        units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;">' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + '</span>' +
+          statusHtml + '</span>');
+      });
+      return '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:flex-start;margin-bottom:8px;padding:6px 8px;border:1px solid #3a2a2a;border-radius:6px;background:rgba(60,20,20,0.28);">' +
+        '<span style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.3px;align-self:center;white-space:nowrap;">\u23f0 KEEP-ALIVE ON</span>' + units.join('') + '</div>';
+    } catch (eKB) { return ''; }
+  }
+
   function tmKeepAliveSidOfEntry(key, e) { return tmKeepAliveNormSid((e && e.sid) || String(key || '').split('::')[0] || ''); }
   function tmKeepAliveSidOfKey(key, store) {
     var e = store && store[key];
@@ -5600,28 +5731,32 @@
       e.enabled = false; e.stopped_reason = 'toggled off';
     }
     tmSetKeepAliveEntry(key, e);
-    // (v4.394) Sync every sibling row of this conversation to the same state, then verify.
+    // (v4.394; NARROWED v4.422) DISARM stays conversation-scoped -- that was the overnight-burn fix
+    // (toggling the Kimi row off left the Claude row of the same conversation armed and paying).
+    // ARM is no longer conversation-scoped: the DOM actuator can only submit to the model TypingMind
+    // has SELECTED, so arming a non-active sibling is meaningless, and a stale sibling's interval
+    // could hijack the session's ping cadence. Arming now affects ONLY the clicked row; the newest
+    // entry is the active one by definition, and any older sibling still armed is stood down by the
+    // next real turn (tmKeepAliveNoteRealTurn).
     var sidNorm = tmKeepAliveSidOfKey(key, tmGetKeepAliveStore());
-    if (sidNorm) {
+    if (sidNorm && !newEnabled) {
       var store = tmGetKeepAliveStore();
-      var synced = 0, resumed = 0;
+      var synced = 0;
       for (var k in store) {
         if (!store.hasOwnProperty(k) || k === key) continue;
         var se = store[k];
         if (!se || !tmKeepAliveSameSid(k, se, sidNorm)) continue;
-        if (se.enabled === newEnabled) continue;
-        if (newEnabled && se.stopped_reason && /^max duration/.test(String(se.stopped_reason))) continue; // auto-offed stays off
-        se.enabled = newEnabled; se._ts = Date.now();
-        if (newEnabled) { se.stopped_reason = null; if (se.paused_until_turn) { se.paused_until_turn = false; resumed++; } }
-        else se.stopped_reason = 'toggled off (sibling of ' + key + ')';
+        if (!se.enabled) continue;
+        se.enabled = false; se._ts = Date.now();
+        se.stopped_reason = 'toggled off (sibling of ' + key + ')';
         store[k] = se; synced++;
       }
       if (synced) tmSaveKeepAliveStore(store);
-      // Final safety check: nothing under this sid may disagree.
+      // Final safety check: after a disarm, nothing under this sid may still be armed.
       var st2 = tmGetKeepAliveStore(), bad = [];
-      for (var k2 in st2) { if (st2.hasOwnProperty(k2) && st2[k2] && tmKeepAliveSameSid(k2, st2[k2], sidNorm) && !!st2[k2].enabled !== newEnabled) bad.push(k2); }
-      if (bad.length) console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive toggle sync: ' + bad.length + ' sibling row(s) still disagree with the new state (' + newEnabled + '): ' + bad.join(', '));
-      if (synced || bad.length) console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ' + (newEnabled ? 'ENABLED' : 'DISABLED') + ' conversation ' + sidNorm + ' across ' + (1 + synced) + ' row(s)' + (resumed ? (' (' + resumed + ' resumed from a skipped ping)') : '') + (bad.length ? ' \u2014 \u26a0 ' + bad.length + ' still off' : '') + '.');
+      for (var k2 in st2) { if (st2.hasOwnProperty(k2) && st2[k2] && tmKeepAliveSameSid(k2, st2[k2], sidNorm) && st2[k2].enabled) bad.push(k2); }
+      if (bad.length) console.warn('\u23f0 [v' + EXT_VERSION + '] keep-alive disarm: ' + bad.length + ' sibling row(s) of session ' + sidNorm + ' are STILL ARMED: ' + bad.join(', '));
+      if (synced || bad.length) console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive DISABLED for conversation ' + sidNorm + ' across ' + (1 + synced) + ' row(s)' + (bad.length ? ' \u2014 \u26a0 ' + bad.length + ' still armed' : '') + '.');
     }
     tmKeepAliveRefreshUI();
   }
@@ -7880,7 +8015,13 @@ function tmSessionCtxRowHtml(v,frame,badge) {
     '<div style="'+(swap?'padding-top:8px;padding-bottom:8px;':'padding-top:6px;padding-bottom:18px;')+'">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
-    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div></div>';
+    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
+    // (v4.422) The KA status line gets its OWN zone at the very bottom of the card. The zone div
+    // itself carries no margin, so when the renderer returns '' the card height is unchanged; the
+    // renderer's inner div owns the negative bottom margin that lets the text overlap the card's
+    // 16px bottom padding. Always rendered (never conditional) so the tick can patch it into
+    // existence the moment keep-alive is armed -- an absent zone would be a silent no-op.
+    '<div data-kastatus-key="'+k+'">'+tmKeepAliveStatusLineHtml(v.idKey,v,frame.keepalive)+'</div></div>';
 }
 
 function tmThinkProtocolFromHost(model,host) {
@@ -14033,12 +14174,14 @@ function tmThinkRenderBins(bucket,opts) {
   // the sibling extension are untouched.
   // pct = context fullness 0-150+ (null/<25 = plain). hueNum = the identity's numeric session hue
   // (30-329) for the glow; null -> white glow. Returns an inline style fragment for the name span.
-  function tmSessionFullnessBulgeStyle(pct, hueNum) {
+  function tmSessionFullnessBulgeStyle(pct, hueNum, tight) {
     try {
       var clamped = (typeof pct === 'number' && isFinite(pct)) ? Math.min(pct, 150) : null;
       if (clamped === null || clamped < 25) return '';
       var glowBase = (typeof hueNum === 'number') ? ('hsla(' + hueNum + ',60%,70%,') : 'hsla(255,255,255,';
-      var pad = 'padding:2px 9px;border-radius:8px;';
+      // (v4.422) `tight` = the smaller padding for the top keep-alive badge row's name pill, where a
+      // full-size bulge would dwarf the badge. The SiM row keeps the roomy v4.420 padding.
+      var pad = tight ? 'padding:1px 5px;border-radius:6px;' : 'padding:2px 9px;border-radius:8px;';
       if (clamped < 40) return pad + 'font-weight:600;background:rgba(255,255,255,0.03);box-shadow:0 0 0 1px hsla(85,85%,58%,0.90);';
       if (clamped < 50) return pad + 'font-weight:700;background:rgba(255,255,255,0.03);box-shadow:0 0 0 2px hsla(95,90%,54%,0.95), 0 0 5px ' + glowBase + '0.30);';
       if (clamped < 60) return pad + 'font-weight:700;background:rgba(255,200,0,0.04);box-shadow:0 0 0 2px hsla(42,95%,52%,0.95), 0 0 7px ' + glowBase + '0.40);';
@@ -14356,6 +14499,17 @@ function tmThinkRenderBins(bucket,opts) {
       var key = zones[i].getAttribute('data-ka-key');
       tmSessionCtxPatchHtml(zones[i], tmKeepAliveRowHtml(key, tmSessionCtxHoverIdentities[key], store));
     }
+    // (v4.422) The status line and the top badge row are separate zones; a KA change must repaint all
+    // three or the countdown / pulse / badges drift out of sync with the buttons.
+    var stZones = tmSessionCtxHoverEl.querySelectorAll('[data-kastatus-key]');
+    for (var j = 0; j < stZones.length; j++) {
+      var sKey = stZones[j].getAttribute('data-kastatus-key');
+      tmSessionCtxPatchHtml(stZones[j], tmKeepAliveStatusLineHtml(sKey, tmSessionCtxHoverIdentities[sKey], store));
+    }
+    try {
+      var badgeZone = tmSessionCtxHoverEl.querySelector('[data-ka-badges]');
+      if (badgeZone) tmSessionCtxPatchHtml(badgeZone, tmBuildSessionCtxKaBadgeRow(null, store));
+    } catch (eB) {}
   }
 
   // @beacon[
@@ -14385,8 +14539,17 @@ function tmThinkRenderBins(bucket,opts) {
     tmSessionCtxPatchHtml(row.querySelector('[data-live-key]'),tmSessionCtxLiveHtml(key,v,frame));
     tmSessionCtxPatchHtml(row.querySelector('[data-alert-key]'),tmSessionCtxAlertHtml(key,{frame:frame,view:v}));
     tmSessionCtxPatchHtml(row.querySelector('[data-ka-key]'),tmKeepAliveRowHtml(key,v,frame.keepalive));
+    // (v4.422) The KA status line is its own zone now. It used to ride inside the cluster above and
+    // changed on every countdown tick -- which is also why the pulse animation would have restarted
+    // each second had it been added there.
+    tmSessionCtxPatchHtml(row.querySelector('[data-kastatus-key]'),tmKeepAliveStatusLineHtml(key,v,frame.keepalive));
     row.__tmCompletedTuple=tuple;
   }
+  // (v4.422) The top keep-alive badge row is CARD-level, not per-row: patched once per tick so an
+  // arm/disarm anywhere appears within a second instead of waiting for the 30s full rebuild.
+  // Guarded like the equivalent call in tmRefreshSessionCtxKeepAlive: the tick is the dashboard's
+  // update authority and must never throw out of an optional cosmetic zone.
+  try { tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-ka-badges]'), tmBuildSessionCtxKaBadgeRow(frame)); } catch (eBg) {}
 }
 
   // Timer registration only; update decisions live in tmSessionCtxHoverTick.
@@ -14455,6 +14618,10 @@ function tmThinkRenderBins(bucket,opts) {
   function tmBuildSessionCtxHoverHtml(frame) {
   tmSessionCtxHoverLastFullAt=Date.now();frame=frame||tmBuildSessionCtxLiveFrame();tmSessionCtxHoverIdentities={};
   var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
+  // (v4.422) The permanent keep-alive badge row sits between the title bar and the first card. The
+  // wrapper is ALWAYS rendered (empty = zero height) so the tick can patch badges into it the moment
+  // a keep-alive is armed -- a conditional wrapper would be a silent no-op until the 30s rebuild.
+  rows.push('<div data-ka-badges="1">'+tmBuildSessionCtxKaBadgeRow(frame)+'</div>');
   var composition=tmSessionCtxComposeRows(frame);
   composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="'+TM_SIM_CARD_STYLE+'">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
   if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
@@ -14639,7 +14806,7 @@ function tmThinkRenderBins(bucket,opts) {
             var hcStyle = document.createElement('style');
             hcStyle.id = 'tm-hovercard-style';
             // (v4.336) Row-height-safe busy spinner (CSS-animated; JS only toggles presence).
-            hcStyle.textContent = '#tm-session-ctx-hovercard button{background:#242832;color:#c8d0dc;border:1px solid #48515d;border-radius:3px;font:inherit;font-size:11px;padding:1px 5px;cursor:pointer;}#tm-session-ctx-hovercard [data-session-row]{overflow-wrap:anywhere;}@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}';
+            hcStyle.textContent = '#tm-session-ctx-hovercard button{background:#242832;color:#c8d0dc;border:1px solid #48515d;border-radius:3px;font:inherit;font-size:11px;padding:1px 5px;cursor:pointer;}#tm-session-ctx-hovercard [data-session-row]{overflow-wrap:anywhere;}@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}@keyframes tmKaPulse{0%,100%{box-shadow:0 0 7px rgba(255,96,96,0.45),0 0 2px rgba(255,140,140,0.30)}50%{box-shadow:0 0 14px rgba(255,96,96,0.90),0 0 4px rgba(255,150,150,0.60)}}';
             document.head.appendChild(hcStyle);
           }
         } catch (eSty) {}
@@ -14657,6 +14824,23 @@ function tmThinkRenderBins(bucket,opts) {
             // (v4.411) Click-to-rename the session label on a row's name.
             var rnEl = ev.target.closest('[data-action="session-rename"]');
             if (rnEl) { ev.stopPropagation(); ev.preventDefault(); try { tmHandleSessionCtxRename(rnEl); } catch (eRN) {} return; }
+            // (v4.422) Clicking a top keep-alive badge scrolls that card into view and flashes it, so
+            // an aged-down armed conversation is one click away instead of a hunt.
+            var bgEl = ev.target.closest('[data-action="ka-badge-jump"]');
+            if (bgEl) {
+              ev.stopPropagation(); ev.preventDefault();
+              try {
+                var bgKey = String(bgEl.dataset.key || '').replace(/"/g, '');
+                var bgTarget = tmSessionCtxHoverEl.querySelector('[data-session-row="' + bgKey + '"]');
+                if (bgTarget) {
+                  bgTarget.scrollIntoView({ block: 'start' });
+                  var bgPrevOut = bgTarget.style.outline, bgPrevOff = bgTarget.style.outlineOffset;
+                  bgTarget.style.outline = '2px solid #e09090'; bgTarget.style.outlineOffset = '-2px';
+                  setTimeout(function () { bgTarget.style.outline = bgPrevOut || ''; bgTarget.style.outlineOffset = bgPrevOff || ''; }, 1600);
+                }
+              } catch (eBJ) {}
+              return;
+            }
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
             var kaEl = ev.target && ev.target.closest ? ev.target.closest('[data-action="ka-toggle"],[data-action="ka-interval"],[data-action="ka-messages"]') : null;
             if (kaEl && kaEl.dataset) {
