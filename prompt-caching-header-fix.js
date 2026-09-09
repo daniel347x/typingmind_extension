@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.420
+// Version: 4.421
+// v4.421: the streak counter is RIGHT-EDGE anchored instead of left-edge. It was positioned
+// 'left:-16px', so its text grew RIGHTWARD as digits were added -- a 100-hit streak (three digits)
+// reached the turn cost, and 1,000 would have overlapped it. It now sits at 'right:100%;
+// margin-right:8px', so its right edge holds a CONSTANT 8px clear of the cost text and the number
+// grows LEFTWARD into the card padding no matter how many digits it reaches. This matches how the
+// misses/hits counter on the right has always been anchored ('right:-18px'), which is exactly why
+// that one never crowded. Works identically in superscript and subscript mode (the vertical anchor
+// is unchanged) and with the miss-border lift. +2px of separation over the previous two-digit gap,
+// as requested; white-space:nowrap added so a long streak can never fold.
 // v4.420: five spacing/colour refinements. (1) The LEFT counter (streak) moves 2px further from the
 // cost text -- top/bottom -10 -> -12 -- because a 100-hit streak reached THREE digits and ran on
 // again; the offset is anchor-relative so it moves UP in superscript mode and DOWN in subscript mode
@@ -2399,7 +2408,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.420';
+  const EXT_VERSION = '4.421';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15687,8 +15696,12 @@ function tmThinkRenderBins(bucket,opts) {
   // The miss-border lift mirrors with it: -7 raises supers to clear the fat border and lowers subs.
   // tmSimGroupSwap() is read HERE, not passed in: the delta tick re-renders this zone on its own, so
   // an opt the tick forgot to pass would silently flip the cluster back to superscripts.
+  // (v4.421) The streak counter is RIGHT-EDGE anchored ('right:100%;margin-right:8px') rather than
+  // left-anchored, so it grows LEFTWARD away from the cost text as digits are added -- a 3-digit
+  // 100-streak was reaching the dollar amount, and 1,000 would have overlapped it. The gap is now a
+  // constant 8px at any digit count, matching how the misses/hits counter has always been anchored.
   var below=!tmSimGroupSwap(),vEdge=below?'bottom:':'top:',supOffAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-12+supOffAdj)+'px;left:-16px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-12+supOffAdj)+'px;right:100%;margin-right:8px;white-space:nowrap;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;'+vEdge+(-16+supOffAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
   return chip+cost;
 }
 
