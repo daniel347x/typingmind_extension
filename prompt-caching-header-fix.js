@@ -1,5 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.414
+// Version: 4.415
+// v4.415: 🌐 GLOBAL REASONING ANALYTICS modal (read-only), opened from the ⚖ Think Audit header so
+// every thinking/reasoning surface lives behind the same door. It projects the v4.409 LIFETIME
+// ARCHIVE (__tm_reasoning_lifetime_v1), which is keyed by exact path [model, host, isProxy,
+// protocol, providerKey] with an `all` bucket plus exact `by_level` buckets -- NO session id
+// anywhere -- so the cross-conversation global breakdown Dan specified already existed in storage
+// and only lacked a visual surface. Seven independent CASCADING filters (family / model / endpoint /
+// route / protocol / serving provider / thinking level), each option list computed from the paths
+// matching all the OTHER filters so no combination can dead-end; deliberately NOT the Rate
+// Providers / Set Costs fixed tree, because a tree only answers tree-shaped questions (family
+// grouping still heads the per-path section). Renders the MERGED histogram plus per-level and
+// per-path histograms by reusing tmThinkRenderBins on merged buckets, so the zero/nonzero pair,
+// separator pipe, distribution and overflow bar match the Sessions-in-Memory row exactly.
+// Unknown stays distinct from zero, a reported zero counts as measured, the heuristic tier stays
+// excluded, and the banner repeats the never-sum-with-retained-rollups rule. Nothing is written.
 // v4.414: three UI fixes. (1) The thinking LEVEL select: the v4.412 attempt zeroed its vertical
 // padding AND set line-height:1, which made the box SHORTER than the 👁 display select while the
 // larger text had nowhere to breathe -- Dan correctly read it as 'the text did not get larger, the
@@ -2317,7 +2331,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.414';
+  const EXT_VERSION = '4.415';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -10188,6 +10202,378 @@ function tmThinkRenderBins(bucket,opts) {
     eff.forEach(function(e) { o += '<option>' + escapeHtml(e) + (c.defaultEffort === e ? ' \u2605 default' : '') + '</option>'; });
     return o + '</select>';
   }
+  // ==================== (v4.415) GLOBAL REASONING ANALYTICS MODAL ====================
+  // The v4.409 lifetime archive (__tm_reasoning_lifetime_v1) is keyed by EXACT PATH --
+  // JSON.stringify([model, host, isProxy, protocol, providerKey]) -- and each path keeps an `all`
+  // bucket plus exact `by_level` buckets. NO session hash appears anywhere in it, so the archive IS
+  // already the global cross-conversation breakdown; it simply had no visual surface (only a text
+  // section inside the per-row report modal). This block adds that surface, opened from the Think
+  // Audit alongside every other thinking/reasoning modal.
+  //
+  // DESIGN: FILTERS, not a fixed tree. Rate Providers / Set Costs project a family > model >
+  // endpoint > provider tree -- good, but it only answers questions shaped like that tree. Here each
+  // axis is an independent CASCADING select: every option list is computed from the paths matching
+  // all the OTHER filters, so a combination can never dead-end. That answers "Qwen 3.8 Max on any
+  // route", "everything direct at xhigh", or "Fireworks vs Moonshot on K3" in one or two clicks.
+  // Family grouping still heads the per-path section, so the familiar hierarchy reads top-to-bottom
+  // without constraining the query.
+  //
+  // READ-ONLY: nothing here writes analytics, the ledger, or the wire. Histograms reuse
+  // tmThinkRenderBins on MERGED buckets, so the zero/nonzero pair, the separator pipe, the
+  // distribution and the overflow bar look exactly like the Sessions-in-Memory row's.
+  var TM_GLOBAL_REASONING_OVERLAY_ID = 'tm-global-reasoning-overlay';
+  var tmGlobalReasoningFilter = { family: '', model: '', host: '', route: '', protocol: '', provider: '', level: '' };
+
+  // Read + version-guard the reserved lifetime archive. null = nothing recorded yet;
+  // {stale:true} = stored under a different TM_ANALYTICS_VERSION (never interpreted across versions).
+  function tmAnalyticsReadLifetime() {
+    try {
+      var lt = (tmGetSessionCosts() || {})[TM_ANALYTICS_LIFETIME_KEY];
+      if (!lt || typeof lt !== 'object' || lt.kind !== 'reasoning-lifetime') return null;
+      if (lt.v !== TM_ANALYTICS_VERSION) return { stale: true, v: lt.v };
+      return lt;
+    } catch (e) { return null; }
+  }
+
+  // Merge any number of buckets into ONE bucket of the tmNewBucket shape. Sparse bins are summed
+  // key-by-key and the four source counts are summed. Unknown stays distinct from zero: an unknown
+  // is never folded into zero, and a REPORTED zero is a real measurement.
+  function tmAnalyticsMergeBuckets(list) {
+    var out = tmNewBucket();
+    for (var i = 0; i < (list || []).length; i++) {
+      var b = list[i];
+      if (!b) continue;
+      out.turns += Number(b.turns || 0);
+      out.unknown += Number(b.unknown || 0);
+      out.zero += Number(b.zero || 0);
+      out.nonzero += Number(b.nonzero || 0);
+      out.reasoning_total += Number(b.reasoning_total || 0);
+      out.overflow += Number(b.overflow || 0);
+      var s = b.source || {}, o = out.source;
+      o.reported += Number(s.reported || 0);
+      o.bytes_estimate += Number(s.bytes_estimate || 0);
+      o.heuristic += Number(s.heuristic || 0);
+      o.unknown += Number(s.unknown || 0);
+      var bins = b.bins || {};
+      for (var k in bins) { if (bins.hasOwnProperty(k)) out.bins[k] = Number(out.bins[k] || 0) + Number(bins[k] || 0); }
+    }
+    return out;
+  }
+
+  // The archive paths matching a filter. '' / absent = that axis unconstrained.
+  function tmAnalyticsLifetimePaths(lt, f) {
+    var out = [];
+    if (!lt || !lt.by_path) return out;
+    f = f || {};
+    for (var pk in lt.by_path) {
+      if (!lt.by_path.hasOwnProperty(pk)) continue;
+      var p = lt.by_path[pk];
+      if (!p) continue;
+      var model = String(p.model || ''), host = String(p.host || '');
+      if (f.family && tmProviderBroadFamily(model).key !== f.family) continue;
+      if (f.model && model !== f.model) continue;
+      if (f.host && host !== f.host) continue;
+      if (f.route === 'direct' && p.isProxy) continue;
+      if (f.route === 'proxy' && !p.isProxy) continue;
+      if (f.protocol && String(p.protocol || '') !== f.protocol) continue;
+      if (f.provider && String((p.provider && p.provider.key) || 'unattributed') !== f.provider) continue;
+      out.push(p);
+    }
+    // Deterministic: broad family, then model string, then endpoint host, then serving provider.
+    out.sort(function (a, b) {
+      var fa = tmProviderBroadFamily(a.model), fb = tmProviderBroadFamily(b.model);
+      if (fa.key !== fb.key) return fa.key < fb.key ? -1 : 1;
+      var ma = String(a.model || ''), mb = String(b.model || '');
+      if (ma !== mb) return ma < mb ? -1 : 1;
+      var ha = String(a.host || ''), hb = String(b.host || '');
+      if (ha !== hb) return ha < hb ? -1 : 1;
+      var pa = String((a.provider && a.provider.key) || ''), pb = String((b.provider && b.provider.key) || '');
+      return pa < pb ? -1 : (pa > pb ? 1 : 0);
+    });
+    return out;
+  }
+
+  // CASCADING option lists: each axis offers only what the OTHER axes still allow, so a filter
+  // combination can never dead-end and a stale pick shows an empty result rather than a lie.
+  function tmAnalyticsLifetimeFacets(lt, f) {
+    f = f || {};
+    function others(skip) {
+      var g = {};
+      for (var k in tmGlobalReasoningFilter) {
+        if (!tmGlobalReasoningFilter.hasOwnProperty(k)) continue;
+        g[k] = (k === skip) ? '' : (f[k] || '');
+      }
+      return g;
+    }
+    function collect(skip, get, shape) {
+      var seen = {}, out = [];
+      tmAnalyticsLifetimePaths(lt, others(skip)).forEach(function (p) {
+        var v = get(p);
+        var arr = Array.isArray(v) ? v : [v];
+        for (var i = 0; i < arr.length; i++) {
+          if (arr[i] == null || arr[i] === '') continue;
+          var item = shape ? shape(arr[i], p) : String(arr[i]);
+          var key = item.value != null ? String(item.value) : String(item);
+          if (seen[key]) continue;
+          seen[key] = 1; out.push(item);
+        }
+      });
+      out.sort(function (a, b) {
+        var la = String(a.label != null ? a.label : a), lb = String(b.label != null ? b.label : b);
+        return la.toLowerCase() < lb.toLowerCase() ? -1 : (la.toLowerCase() > lb.toLowerCase() ? 1 : 0);
+      });
+      return out;
+    }
+    return {
+      families: collect('family', function (p) { return tmProviderBroadFamily(p.model).key; }, function (key, p) { return { value: key, label: tmProviderBroadFamily(p.model).label }; }),
+      models: collect('model', function (p) { return p.model; }),
+      hosts: collect('host', function (p) { return p.host; }),
+      routes: collect('route', function (p) { return p.isProxy ? 'proxy' : 'direct'; }),
+      protocols: collect('protocol', function (p) { return p.protocol; }),
+      providers: collect('provider', function (p) { return (p.provider && p.provider.key) || 'unattributed'; }, function (key, p) { return { value: key, label: String((p.provider && p.provider.label) || key) }; }),
+      levels: collect('level', function (p) { return Object.keys(p.by_level || {}); })
+    };
+  }
+
+  // One-line bucket summary, shared by the HTML summary and the plain-text report.
+  function tmAnalyticsBucketLine(b) {
+    if (!b || !b.turns) return 'no turns';
+    var measured = Number(b.zero || 0) + Number(b.nonzero || 0);
+    var s = b.source || {};
+    var avg = measured ? Math.round(Number(b.reasoning_total || 0) / measured) : null;
+    return Number(b.turns) + ' turns \u00b7 ' + measured + ' measured (' + Number(s.reported || 0) + ' reported, ' + Number(s.bytes_estimate || 0) + ' bytes-est)' +
+      ' \u00b7 ' + Number(b.unknown || 0) + ' unknown' +
+      ' \u00b7 zero ' + Number(b.zero || 0) + ' / nonzero ' + Number(b.nonzero || 0) +
+      (Number(b.overflow || 0) ? (' \u00b7 overflow ' + Number(b.overflow)) : '') +
+      ' \u00b7 \u03a3 ' + tmThinkFmtK(b.reasoning_total) + ' reasoning tokens' +
+      (avg != null ? (' \u00b7 avg ' + tmThinkFmtK(avg) + ' per measured turn') : '');
+  }
+
+  // PURE builder: the filtered global projection + its plain-text rendering. Tested surface.
+  function tmBuildGlobalReasoningReport(f) {
+    f = f || {};
+    var out = { ok: false, stale: false, empty: false, since: null, pathCountAll: 0, facets: null, paths: [], rows: [], byLevel: [], all: tmNewBucket(), text: '' };
+    var lt = tmAnalyticsReadLifetime();
+    if (!lt) { out.empty = true; return out; }
+    if (lt.stale) {
+      out.stale = true;
+      out.text = 'Lifetime archive stored under analytics version ' + lt.v + '; this build understands version ' + TM_ANALYTICS_VERSION + '. Nothing is interpreted across versions.';
+      return out;
+    }
+    out.ok = true;
+    out.since = lt.since || null;
+    out.facets = tmAnalyticsLifetimeFacets(lt, f);
+    out.pathCountAll = Object.keys(lt.by_path || {}).length;
+    var paths = tmAnalyticsLifetimePaths(lt, f);
+    out.paths = paths;
+    var lv = f.level || '';
+    // A level filter reads each path's by_level bucket for that level; otherwise the path's `all`.
+    function bucketFor(p) { return lv ? ((p.by_level && p.by_level[lv]) || null) : (p.all || null); }
+    var merged = [];
+    paths.forEach(function (p) { merged.push(bucketFor(p)); });
+    out.all = tmAnalyticsMergeBuckets(merged);
+    var lm = {};
+    paths.forEach(function (p) {
+      var bl = p.by_level || {};
+      for (var k in bl) {
+        if (!bl.hasOwnProperty(k)) continue;
+        if (lv && k !== lv) continue;
+        if (!lm[k]) lm[k] = [];
+        lm[k].push(bl[k]);
+      }
+    });
+    out.byLevel = Object.keys(lm).map(function (k) { return { level: k, bucket: tmAnalyticsMergeBuckets(lm[k]) }; });
+    out.byLevel.sort(function (a, b) { return (b.bucket.turns - a.bucket.turns) || (a.level < b.level ? -1 : 1); });
+    paths.forEach(function (p) {
+      var b = bucketFor(p);
+      if (!b || !b.turns) return;
+      out.rows.push({
+        model: String(p.model || ''), host: String(p.host || ''), isProxy: !!p.isProxy,
+        protocol: String(p.protocol || 'unknown'),
+        provider: String((p.provider && p.provider.label) || (p.provider && p.provider.key) || 'unattributed'),
+        family: tmProviderBroadFamily(p.model).label,
+        since: p.since || null, bucket: b
+      });
+    });
+    var L = [];
+    L.push('GLOBAL REASONING ANALYTICS \u2014 lifetime archive (not tied to any session id)');
+    L.push('');
+    L.push('filter: ' + (['family', 'model', 'host', 'route', 'protocol', 'provider', 'level'].map(function (k) { return f[k] ? (k + '=' + f[k]) : null; }).filter(Boolean).join('   ') || '(none \u2014 every path in the archive)'));
+    L.push('paths matched: ' + out.rows.length + ' of ' + out.pathCountAll + ' in the archive');
+    if (out.since) L.push('coverage since: ' + new Date(Number(out.since)).toLocaleString());
+    if (lt.ka_pings_excluded) L.push('keep-alive pings excluded from every bucket: ' + lt.ka_pings_excluded);
+    if (lt.gap && lt.gap.count) L.push('lifetime analytics gaps (results THIS recorder lost): ' + lt.gap.count);
+    L.push('');
+    L.push('[MERGED] ' + tmAnalyticsBucketLine(out.all));
+    L.push(tmThinkBinsAscii(out.all, 50));
+    if (out.byLevel.length) {
+      L.push('');
+      L.push('BY THINKING LEVEL');
+      out.byLevel.forEach(function (r) {
+        L.push('  ' + r.level + ': ' + tmAnalyticsBucketLine(r.bucket));
+        L.push(tmThinkBinsAscii(r.bucket, 20).replace(/^/gm, '      '));
+      });
+    }
+    if (out.rows.length) {
+      L.push('');
+      L.push('BY PATH (model / endpoint / serving provider)');
+      out.rows.forEach(function (r) {
+        L.push('  ' + r.model + ' @ ' + r.host + (r.isProxy ? ' (via TypingMind proxy)' : '') + ' / ' + r.provider + '  [' + r.protocol + ']');
+        L.push('    ' + tmAnalyticsBucketLine(r.bucket));
+        L.push(tmThinkBinsAscii(r.bucket, 20).replace(/^/gm, '      '));
+      });
+    }
+    out.text = L.join('\n');
+    return out;
+  }
+
+  // The modal (Glyph Map / docs-map pattern: overlay above the audit, capture-phase Escape,
+  // click-away, tmPromptActive). Filter state is in-memory for this first pass -- reopen starts
+  // unfiltered, which is the honest default for a global view.
+  function tmShowGlobalReasoningModal(keepScroll) {
+    if (typeof document === 'undefined') return;
+    var old = document.getElementById(TM_GLOBAL_REASONING_OVERLAY_ID);
+    var prevScroll = 0;
+    if (old) { try { var pb = old.querySelector('[data-gr-body]'); if (pb) prevScroll = pb.scrollTop; } catch (eS) {} old.parentNode.removeChild(old); }
+    var f = tmGlobalReasoningFilter;
+    var R = tmBuildGlobalReasoningReport(f);
+    var overlay = document.createElement('div'); overlay.id = TM_GLOBAL_REASONING_OVERLAY_ID;
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:94vw;max-width:1700px;height:92vh;background:#14141a;border:1px solid #2e4a5e;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.6);display:flex;flex-direction:column;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+
+    var head = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">' +
+      '<span style="font-weight:bold;font-size:14px;color:#7fd8ff;">\ud83c\udf10 Global reasoning analytics ' +
+      '<span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 the lifetime archive: every conversation, keyed by model \u00b7 endpoint \u00b7 route \u00b7 protocol \u00b7 serving provider \u00b7 thinking level, with NO session id anywhere' +
+      (R.ok ? (' \u00b7 ' + R.rows.length + ' of ' + R.pathCountAll + ' paths \u00b7 ' + Number(R.all.turns || 0) + ' turns' + (R.since ? (' \u00b7 since ' + escapeHtml(new Date(Number(R.since)).toLocaleDateString())) : '')) : '') +
+      '</span></span>' +
+      '<span style="white-space:nowrap;">' +
+      '<button type="button" data-action="gr-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2318 Copy report</button>' +
+      '<button type="button" data-action="close-global-reasoning" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button>' +
+      '</span></div>';
+
+    head += '<div style="color:#9aa4b2;font-size:11px;margin-bottom:7px;line-height:1.45;">' +
+      '<b style="color:#e6e6ee;">Forward-only.</b> Recorded at response receipt since v4.409; ring rows evicted long ago are still here, and identity expiry does not delete a lifetime contribution. ' +
+      '<b style="color:#e6e6ee;">Admitted measurements:</b> provider-<i>reported</i> reasoning counts and reasoning-text bytes-estimates (raw chars \u00f7 3.5); the completion-minus-visible heuristic stays on ring rows but is EXCLUDED from durable analytics. ' +
+      '<b style="color:#e6e6ee;">Unknown is not zero</b> \u2014 and a reported zero IS a measurement. Keep-alive pings are counted as exclusions, never as reasoning. ' +
+      '<b style="color:#ff9d9d;">Never sum this with the retained per-identity rollups</b> \u2014 they are overlapping views of the same events.' +
+      '</div>';
+
+    function sel(axis, label, opts, cur, tip) {
+      var o = '<select data-gr-filter="' + axis + '" title="' + escapeHtml(tip || ('Filter by ' + label)) + '" style="font-size:11px;background:#1b2230;color:#cfe6ff;border:1px solid ' + (cur ? '#7fd8ff' : '#2a4a6a') + ';border-radius:3px;padding:1px 3px;max-width:250px;">';
+      o += '<option value="">' + escapeHtml(label) + ': all</option>';
+      (opts || []).forEach(function (v) {
+        var val = (v && v.value != null) ? v.value : v, lab = (v && v.label != null) ? v.label : v;
+        o += '<option value="' + escapeHtml(String(val)) + '"' + (String(cur || '') === String(val) ? ' selected' : '') + '>' + escapeHtml(String(lab)) + '</option>';
+      });
+      return o + '</select>';
+    }
+
+    var body = '';
+    if (R.stale) {
+      body = '<div style="color:#ffd166;padding:20px;">' + escapeHtml(R.text) + '</div>';
+    } else if (!R.ok || R.empty) {
+      body = '<div style="color:#9aa4b2;padding:20px;line-height:1.6;">No lifetime reasoning archive yet.<br><br>' +
+        'The archive is written at response receipt by <code style="' + TM_THINK_CHIP_STYLE + '">tmRecordThinkAnalytics</code> into the reserved ledger property <code style="' + TM_THINK_CHIP_STYLE + '">' + escapeHtml(TM_ANALYTICS_LIFETIME_KEY) + '</code>. It is <b>forward-only</b>: turns completed before v4.409 (or before this browser profile recorded them) are not imported, and ring rows are never walked to backfill it.<br><br>' +
+        'Send one ordinary (non-keep-alive) turn on any reasoning model and this view populates.</div>';
+    } else {
+      var facets = R.facets || {};
+      var bar = '<div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:8px;padding:7px 9px;border:1px solid #2a2a33;border-radius:6px;background:#191922;">' +
+        '<span style="color:#8b93a3;font-size:11px;font-weight:700;letter-spacing:0.3px;">FILTER</span>' +
+        sel('family', 'family', facets.families, f.family, 'Broad model family (first token of the model name)') +
+        sel('model', 'model', facets.models, f.model, 'Exact model string as it went out on the wire') +
+        sel('host', 'endpoint', facets.hosts, f.host, 'Resolved target endpoint host') +
+        sel('route', 'route', facets.routes, f.route, 'direct = no intermediary; proxy = via TypingMind /api/cors-proxy') +
+        sel('protocol', 'protocol', facets.protocols, f.protocol, 'Wire protocol observed on the request') +
+        sel('provider', 'provider', facets.providers, f.provider, 'Serving provider attribution (response provider > request pin > direct host)') +
+        sel('level', 'level', facets.levels, f.level, 'Exact thinking-level key from the FINAL outbound scan (the durable histogram axis)') +
+        '<button type="button" data-action="gr-reset" style="background:#2a2a33;color:#aab;border:1px solid #444;border-radius:3px;padding:1px 8px;font-size:10.5px;cursor:pointer;">Reset</button>' +
+        '<span style="color:#6f7a8a;font-size:10.5px;">each list offers only what the other filters still allow</span>' +
+        '</div>';
+
+      function histRow(titleHtml, subHtml, bucket, widthPx) {
+        var hg = tmThinkRenderBins(bucket, { widthPx: widthPx });
+        return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:6px 8px;border-top:1px solid rgba(255,255,255,0.08);">' +
+          '<div style="min-width:230px;max-width:420px;">' + titleHtml + (subHtml ? ('<div style="color:#8b93a3;font-size:10.5px;margin-top:2px;">' + subHtml + '</div>') : '') + '</div>' +
+          '<div style="color:#c8ccd6;font-size:11px;flex:1;min-width:280px;">' + escapeHtml(tmAnalyticsBucketLine(bucket)) + '</div>' +
+          '<div>' + (hg || '<span style="color:#6f7a8a;font-size:11px;">no measured turns</span>') + '</div>' +
+          '</div>';
+      }
+
+      body = bar;
+      body += '<div data-gr-body="1" style="flex:1;overflow:auto;border:1px solid #2a2a33;border-radius:6px;padding:8px;">';
+      // MERGED
+      body += '<div style="font-weight:700;font-size:13px;color:#7fd8ff;border-bottom:1px solid #2e3a4e;padding-bottom:3px;margin-bottom:4px;">MERGED \u2014 everything the current filter matches</div>';
+      body += histRow('<span style="color:#e6e6ee;font-weight:600;">all matched turns</span>', R.rows.length + ' path' + (R.rows.length === 1 ? '' : 's') + (f.level ? (' at level ' + tmThinkChipHtml(f.level)) : ''), R.all, 900);
+      // BY LEVEL
+      if (R.byLevel.length) {
+        body += '<div style="font-weight:700;font-size:13px;color:#ffd166;border-bottom:1px solid #2e3a4e;padding:12px 0 3px;margin-bottom:4px;">BY THINKING LEVEL <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 the same matched turns, split on the exact level the wire asked for</span></div>';
+        R.byLevel.forEach(function (r) {
+          body += histRow('<span style="color:#ffd166;font-weight:600;">' + tmThinkChipHtml(r.level) + '</span>', (r.bucket.turns / Math.max(1, R.all.turns) * 100).toFixed(0) + '% of matched turns', r.bucket, 300);
+        });
+      }
+      // BY PATH, family-headed
+      if (R.rows.length) {
+        body += '<div style="font-weight:700;font-size:13px;color:#8ef0a0;border-bottom:1px solid #2e3a4e;padding:12px 0 3px;margin-bottom:4px;">BY PATH <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 model \u00b7 endpoint \u00b7 route \u00b7 protocol \u00b7 serving provider, grouped by family</span></div>';
+        var lastFam = null;
+        R.rows.forEach(function (r) {
+          if (r.family !== lastFam) {
+            lastFam = r.family;
+            body += '<div style="color:#8b93a3;font-size:11px;font-weight:700;padding:8px 8px 2px;letter-spacing:0.3px;">' + escapeHtml(r.family.toUpperCase()) + '</div>';
+          }
+          body += histRow(
+            '<span style="color:#e6e6ee;font-weight:600;">' + escapeHtml(r.model) + '</span>',
+            escapeHtml(r.host) + (r.isProxy ? ' <span style="color:#8b93a3;">(via TypingMind proxy)</span>' : '') + ' \u00b7 <span style="color:#8ef0a0;">' + escapeHtml(r.provider) + '</span> \u00b7 <span style="color:#6f7a8a;">' + escapeHtml(r.protocol) + '</span>' + (r.since ? (' \u00b7 since ' + escapeHtml(new Date(Number(r.since)).toLocaleDateString())) : ''),
+            r.bucket, 300);
+        });
+      }
+      body += '</div>';
+    }
+
+    box.innerHTML = head + body;
+    overlay.appendChild(box);
+    function auditOpen() { return !!document.getElementById('tm-think-audit-overlay'); }
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      if (!auditOpen()) setTimeout(function () { tmPromptActive = false; }, 100);
+    }
+    function onKey(ev) {
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); }
+    }
+    function flash(btn, txt) { try { var o = btn.textContent; btn.textContent = txt; setTimeout(function () { btn.textContent = o; }, 900); } catch (e) {} }
+    overlay.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (t === overlay) { close(); return; }
+      var b = t && t.closest ? t.closest('[data-action]') : null;
+      if (!b) return;
+      var a = b.dataset.action;
+      if (a === 'close-global-reasoning') close();
+      else if (a === 'gr-copy') { try { navigator.clipboard.writeText(R.text || '').then(function () { flash(b, '\u2705 copied'); }); } catch (e) {} }
+      else if (a === 'gr-reset') {
+        for (var k in tmGlobalReasoningFilter) { if (tmGlobalReasoningFilter.hasOwnProperty(k)) tmGlobalReasoningFilter[k] = ''; }
+        tmShowGlobalReasoningModal(false);
+      }
+    });
+    // Filter changes re-render in place (scroll preserved). Captured so the document-level
+    // routing/thinking change listener never sees these selects.
+    overlay.addEventListener('change', function (ev) {
+      try {
+        var t = ev.target;
+        ev.stopPropagation();
+        if (!t || !t.dataset || !t.dataset.grFilter) return;
+        tmGlobalReasoningFilter[t.dataset.grFilter] = t.value || '';
+        tmShowGlobalReasoningModal(true);
+      } catch (e) {}
+    }, true);
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+    if (keepScroll && prevScroll) { try { var nb = overlay.querySelector('[data-gr-body]'); if (nb) nb.scrollTop = prevScroll; } catch (eR) {} }
+  }
+
   function tmShowThinkAuditModal(keepScroll) {
     if (typeof document === 'undefined') return;
     try { tmMaybeFetchOrReasoningCaps(); } catch (e0) {}
@@ -10203,7 +10589,7 @@ function tmThinkRenderBins(bucket,opts) {
     var catTxt = cat.loaded ? (cat.count + ' models, fetched ' + escapeHtml(cat.fetched || '?') + (cat.fresh ? '' : ' \u2014 STALE, refresh pending')) : ('NOT LOADED' + (cat.failed ? (' \u2014 last fetch failed: ' + escapeHtml(cat.reason || '?')) : ' \u2014 fetch in flight; reopen in a few seconds'));
     var chip = tmThinkChipHtml;
     var h = '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;"><span style="font-weight:bold;font-size:14px;color:#ffd166;">\u2696 Think Audit <span style="color:#8b93a3;font-weight:normal;font-size:11px;">\u2014 the match rule: vendor vocabulary vs intermediary catalogue, per model you have used \u00b7 ' + R.rows.length + ' identities \u00b7 <span style="color:' + (R.warningsLive ? '#ffd166' : '#8ef0a0') + ';">' + R.warningsLive + ' live \u26a0\ufe0f unknown-mapping warning' + (R.warningsLive === 1 ? '' : 's') + '</span>' + (R.tombstoned ? (' \u00b7 ' + R.tombstoned + ' \ud83e\udea6 tombstoned') : '') + ' \u00b7 ' + R.notes + ' note' + (R.notes === 1 ? '' : 's') + ' \u00b7 ' + R.hints + ' \ud83d\udd0e rot hint' + (R.hints === 1 ? '' : 's') + ' \u00b7 catalogue: ' + catTxt + '</span></span>' +
-      '<span style="white-space:nowrap;"><button data-action="show-think-defaults" title="Think Defaults -- what a NEW conversation on each model range starts with (level + display, per range and route; options from the registry)" style="background:#1a2a3a;color:#7fd8ff;border:1px solid #2a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\ud83c\udf9b\ufe0f Defaults</button><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
+      '<span style="white-space:nowrap;"><button data-action="show-global-reasoning" title="Global reasoning analytics -- the lifetime archive projected through filters (model / endpoint / route / protocol / serving provider / thinking level), NOT tied to any session id. Read-only." style="background:#12283a;color:#7fd8ff;border:1px solid #2e4a5e;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\ud83c\udf10 Global reasoning</button><button data-action="show-think-defaults" title="Think Defaults -- what a NEW conversation on each model range starts with (level + display, per range and route; options from the registry)" style="background:#1a2a3a;color:#7fd8ff;border:1px solid #2a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\ud83c\udf9b\ufe0f Defaults</button><button data-action="think-audit-copy" style="background:#2a3a2a;color:#cfe;border:1px solid #4a6a4a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u2398 Copy report</button><button data-action="think-audit-refresh" title="Force a fresh OpenRouter catalogue fetch and rebuild" style="background:#2a2a3a;color:#cde;border:1px solid #4a4a6a;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;margin-right:6px;">\u21bb Refresh catalogue</button><button data-action="close-think-audit" style="background:#444;color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;">Close</button></span></div>';
     // (v4.391) THE SEAMS -- six lines Dan asked for, above the brown banner, each exposing one thing that used to confuse.
     // (v4.400) Two more: what `inherit` means on the wire, and what's static vs dynamic. Collapsible (the block is tall).
     var seam = 'padding:5px 0;border-bottom:1px dashed #2e2e3a;line-height:1.45;';
@@ -10309,6 +10695,7 @@ function tmThinkRenderBins(bucket,opts) {
       else if (a === 'think-docs-map') { tmShowThinkDocsMapModal((b.dataset.pi != null && b.dataset.pi !== '') ? { pi: parseInt(b.dataset.pi, 10) } : null); }
       else if (a === 'think-docs-row') { tmShowThinkDocsMapModal({ pi: parseInt(b.dataset.pi, 10), ei: parseInt(b.dataset.ei, 10) }); }
       else if (a === 'show-think-defaults') { tmShowThinkDefaultsModal(); }
+      else if (a === 'show-global-reasoning') { tmShowGlobalReasoningModal(); }
       else if (a === 'think-audit-seams-toggle') { try { localStorage.setItem('tm_think_audit_seams_collapsed', localStorage.getItem('tm_think_audit_seams_collapsed') === '1' ? '0' : '1'); } catch (eT2) {} tmShowThinkAuditModal(true); }
       else if (a === 'think-audit-refresh') {
         try { var s = tmReadOrReasoningCaps(); if (s) { s.ts = 0; tmOrReasoningCapsMemo = s; localStorage.setItem(TM_OR_REASONING_CAPS_KEY, JSON.stringify(s)); } tmMaybeFetchOrReasoningCaps(); flash(b, '\u23f3 fetching\u2026'); setTimeout(function() { if (overlay.parentNode) tmShowThinkAuditModal(true); }, 2500); } catch (e) {}
