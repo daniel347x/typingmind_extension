@@ -1,5 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.422
+// Version: 4.423
+// v4.423: keep-alive badge row refinements. (1) STICKY -- the badge row is now position:sticky at the
+// top of the scrolling content region, so armed keep-alives stay visible no matter how far Dan has
+// scrolled; losing them off the top was the whole problem the row exists to solve. Sticky needs an
+// OPAQUE background (the translucent tint let cards show through) plus a shadow and a heavier bottom
+// border so it reads as a header. (2) The '⏰ KEEP-ALIVE ON' label moved ABOVE the badges as a title
+// line -- inline it was stealing horizontal space and pushing a badge onto a second row. It now also
+// carries the armed-conversation count and a click-to-jump hint. (3) The status text under each badge
+// WRAPS at its bullet separators instead of forcing one long line (the parts were individually
+// white-space:nowrap, so their min-content width blew past the unit's max-width and rolled the whole
+// unit). Wrapping applies to the badge row only; the card's bottom status line stays one line with an
+// ellipsis, because its negative-margin overlap trick depends on a single 14px line. (4) Both status
+// lines go 10px -> 11px so the last-ping cache read/write tail (the '✓248K/⚠0' Dan could not read)
+// is legible; the card line's negative margin tracks it (-14 -> -15) so the card still does not grow.
 // v4.422: KEEP-ALIVE surface rebuild, four parts. (1) The long KA status string (ping count, ping
 // spend, last-ping cache read/write, and the sweeper's countdown/reason) moves OUT of the button
 // cluster onto its own bottom line, right-aligned and overlapping the card's bottom padding via a
@@ -2428,7 +2441,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.422';
+  const EXT_VERSION = '4.423';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5602,28 +5615,34 @@
       var e = store ? store[key] : tmGetKeepAliveEntry(key);
       var on = !!(e && e.enabled);
       var parts = [];
+      // (v4.423) In the top badge row the line WRAPS at its bullet separators; on the card's bottom
+      // line it stays one nowrap line with an ellipsis, because that line's negative-margin overlap
+      // of the card padding depends on it being exactly one line tall.
+      var nw = opts.center ? '' : 'white-space:nowrap;';
       if (e && e.broken) {
-        parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;white-space:nowrap;">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
+        parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;' + nw + '">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
       } else if (e && e.ping_count) {
-        parts.push('<span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;white-space:nowrap;">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>');
+        parts.push('<span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;' + nw + '">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>');
       }
       // (v4.374) THE REASON LINE: what the sweeper decided on its last pass -- never a silent skip.
       if (on) {
         var stt = tmKeepAliveStatus[key];
         var sttText = stt ? stt.text : 'armed \u2014 first sweep pending';
         var sttColor = (stt && stt.tone === 'warn') ? '#ffb84d' : ((stt && stt.tone === 'active') ? '#7fd8ff' : ((stt && stt.tone === 'ok') ? '#7dd67d' : '#8a94a2'));
-        parts.push('<span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';white-space:nowrap;">\u00b7 ' + escapeHtml(sttText) + '</span>');
+        parts.push('<span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';' + nw + '">\u00b7 ' + escapeHtml(sttText) + '</span>');
       } else if (e && /^auto-off: superseded/.test(String(e.stopped_reason || ''))) {
         // (v4.422) Explain a silent disarm. The sweep deletes tmKeepAliveStatus for disabled entries,
         // so the reason is read from the persisted stopped_reason instead -- it survives.
         var why = String(e.stopped_reason).replace(/^auto-off: /, '');
-        parts.push('<span title="' + escapeHtml(String(e.stopped_reason)) + '" style="color:#8a94a2;white-space:nowrap;">\u00b7 ' + escapeHtml(why) + '</span>');
+        parts.push('<span title="' + escapeHtml(String(e.stopped_reason)) + '" style="color:#8a94a2;' + nw + '">\u00b7 ' + escapeHtml(why) + '</span>');
       }
       if (!parts.length) return '';
+      // (v4.423) 11px so the last-ping read/write tail is legible. The card line's negative bottom
+      // margin tracks the line-height (2 + 14 - 15 = 1px net) so arming still costs the card nothing.
       var wrap = opts.center
-        ? 'margin-top:1px;text-align:center;font-size:10px;line-height:13px;'
+        ? 'margin-top:1px;text-align:center;font-size:11px;line-height:14px;overflow-wrap:break-word;'
         // Negative bottom margin paints the line INTO the card's bottom padding: net height +1px.
-        : 'margin-top:2px;margin-bottom:-14px;text-align:right;font-size:10px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        : 'margin-top:2px;margin-bottom:-15px;text-align:right;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
       return '<div style="' + wrap + '">' + parts.join(' ') + '</div>';
     } catch (eSL) { return ''; }
   }
@@ -5673,12 +5692,19 @@
         var pill = '<span title="Keep-alive is ARMED on this conversation' + (fired ? ' and has fired at least one ping' : '') + '" style="display:inline-block;font-size:10px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #b04a4a;background:#2e1416;color:#e09090;' + (fired ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '') + '">\u23f0</span>';
         var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(pct, hue, true) + '">' + escapeHtml(name) + '</span>';
         var statusHtml = tmKeepAliveStatusLineHtml(key, info || { sid: sid, model: model, host: host, isProxy: isProxy }, store, { center: true });
-        units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;">' +
+        units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
           '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + '</span>' +
           statusHtml + '</span>');
       });
-      return '<div style="display:flex;flex-wrap:wrap;gap:6px 18px;align-items:flex-start;margin-bottom:8px;padding:6px 8px;border:1px solid #3a2a2a;border-radius:6px;background:rgba(60,20,20,0.28);">' +
-        '<span style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.3px;align-self:center;white-space:nowrap;">\u23f0 KEEP-ALIVE ON</span>' + units.join('') + '</div>';
+      // (v4.423) STICKY + TITLED. position:sticky at the top of the scrolling content region, so the
+      // armed keep-alives stay visible however far Dan has scrolled. Sticky needs an OPAQUE
+      // background (the old translucent tint let cards show through) plus a shadow and a heavier
+      // bottom border to read as a header. The label moved ABOVE the badges as a title line: inline,
+      // it stole horizontal space and pushed a badge onto a second row.
+      return '<div style="position:sticky;top:0;z-index:5;margin-bottom:8px;padding:5px 8px 6px;border:1px solid #3a2a2a;border-bottom:2px solid #4a3030;border-radius:6px;background:#1b1315;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
+        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 click a badge to jump to its card</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:flex-start;">' + units.join('') + '</div>' +
+        '</div>';
     } catch (eKB) { return ''; }
   }
 
