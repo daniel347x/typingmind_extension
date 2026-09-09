@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.411
+// Version: 4.412
+// v4.412: SiM row groups split one-per-row + a header swap button. The cache cluster (with its
+// absolute-token report text) moves OFF row 2 so rows 1-3 each own one right-aligned group: status
+// word, then keep-alive, then cache cluster. A new ⇅ button in the title bar (leftmost of five,
+// 12px clear of the others) swaps the cache cluster and keep-alive groups between rows 2 and 3,
+// persisted in tm_sim_group_swap_v1, because Dan is deliberately undecided which reads better.
+// Model string +2px (14 -> 16); every cache-cluster element +2px (report 13, cost 15, streak 11,
+// misses/hits 13, MISS chip 14, unmeasured 12) with the superscript offsets left for Dan to tune;
+// the thinking LEVEL select gets a larger font (12px) and zeroed vertical padding so the text fills
+// the existing box (the 👁 display select is untouched).
 // v4.411: SiM dashboard UI polish batch 2. Click-to-rename session label (bracket-only prompt; the
 // hash prefix is preserved by construction); session total cost font +5px; lean think row drops the
 // reported-check glyph (estimated/heuristic/unmeasured render +3px larger instead); report button
@@ -2288,7 +2297,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.411';
+  const EXT_VERSION = '4.412';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -7702,20 +7711,28 @@ function tmSessionCtxRowHtml(v,frame,badge) {
   var controls=tmThinkControlSupportedForIdentity(v.idKey,frame)?tmBuildThinkControlHtml(v.idKey,{frame:frame,selMaxWidth:'285px',selMaxWidthDisp:'255px'}):'';
   var route=v.isProxy?'TypingMind proxy → '+v.host:v.host;
   var routing='';if(v.host==='openrouter.ai'){tmMaybeFetchProviderEndpoints(v.model);if(tmIsMultiProviderModel(v.model))routing=tmBuildProviderRoutingDropdown(v.idKey,v.model,v.provider.label||'');}
-  // (v4.411) ROW 2 = model/route/provider + cache cluster + KA cluster flush right, inside a
-  // container with TOP HEADROOM (18px) so the restored absolutely-positioned superscripts (which
-  // reach ~21px above the cost span) can never overlap the name row again; the cache zone keeps a
-  // 20px right margin so the right-hanging misses/hits superscript clears the KA buttons. ROW 3 =
-  // dial/cost/think/info inside its own padded container (breathing room for the taller separator
-  // pipe + histogram). The provider-routing dropdown moves to the far LEFT of the think-controls
-  // row; the old bottom (routing + KA) row is eliminated.
+  // (v4.412) ROW 2 = model/route/provider (left) + ONE right-aligned group. ROW 3 = dial/cost/
+  // think/info (left) + the OTHER right-aligned group. Which of the cache cluster and the
+  // keep-alive cluster lands on which row is Dan's ⇅ header toggle (tm_sim_group_swap_v1), so rows
+  // 1-3 each own exactly one right-side widget group: status word, then one, then the other. Both
+  // containers carry TOP HEADROOM when the cache cluster is on them -- its restored
+  // absolutely-positioned superscripts reach ~21px above the cost span and must never overlap the
+  // row above; the cache zone keeps a right margin so the misses/hits superscript clears the card
+  // padding. The provider-routing dropdown stays at the far LEFT of the think-controls row.
+  var swap=tmSimGroupSwap();
+  // NOTE: the right-margin wrapper sits OUTSIDE the zone. tmSessionCtxHoverTick patches
+  // [data-cache-key].innerHTML with a freshly rendered cluster, which would strip any margin
+  // applied INSIDE the zone the first time the cache tuple changed.
+  var cacheZone='<span style="display:inline-block;margin-right:22px;">'+zone('cache',tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v}))+'</span>';
+  var kaZone=zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive));
+  var row2Right=swap?cacheZone:kaZone,row3Right=swap?kaZone:cacheZone;
   return '<div style="display:flex;align-items:center;gap:7px;justify-content:space-between;"><button data-action="session-ctx-hide" data-key="'+k+'" title="Hide this identity until its next request (keep-alive remains enabled)">×</button>'+zone('name',tmSessionCtxNameHtml(v,badge))+'<span style="flex:1;"></span>'+zone('live',tmSessionCtxLiveHtml(v.idKey,v,frame))+'</div>'+
     '<div style="padding-left:48px;"><div data-alert-key="'+k+'">'+tmSessionCtxAlertHtml(v.idKey,{frame:frame,view:v})+'</div>'+
     '<div style="margin-top:2px;padding-top:18px;padding-bottom:5px;">'+
-      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:14px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+'<span style="flex:1;"></span>'+zone('cache','<span style="display:inline-block;margin-right:20px;">'+tmRenderIdentityCacheCluster(v.idKey,{frame:frame,view:v})+'</span>')+zone('ka',tmKeepAliveRowHtml(v.idKey,v,frame.keepalive))+'</div>'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;font-size:16px;">'+escapeHtml(v.model)+' <span style="font-size:11px;color:#9aa4b2;">'+escapeHtml(route)+'</span> '+zone('provider','<span style="color:#8ef0a0;font-size:12px;">'+escapeHtml(v.provider.label||'')+'</span>')+'<span style="flex:1;"></span>'+row2Right+'</div>'+
     '</div>'+
-    '<div style="padding-top:10px;padding-bottom:10px;">'+
-      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button></div>'+
+    '<div style="'+(swap?'padding-top:8px;':'padding-top:18px;')+'padding-bottom:8px;">'+
+      '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
     '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div></div>';
 }
@@ -11152,6 +11169,10 @@ function tmThinkRenderBins(bucket,opts) {
       var orc = VOC.orc;
       var exc = !!VOC.exception;
       var selStyle = 'font-size:9px;background:#222;color:' + (active ? '#7fd8ff' : (nat && nat.none ? '#ffb84d' : '#aab')) + ';border:1px solid ' + (exc ? '#c0392b' : (active ? '#3f6f8f' : '#444')) + ';border-radius:3px;padding:0 2px;margin-left:3px;';
+      // (v4.412) LEVEL select only: +3px font with the vertical padding zeroed, so the text fills
+      // the existing box instead of floating in empty space above/below it. The \ud83d\udc41 DISPLAY
+      // select keeps the original 9px/2px treatment (Dan: less important, always set the same).
+      var selStyleLvl = selStyle.replace('font-size:9px', 'font-size:12px').replace('padding:0 2px', 'padding:0 1px;line-height:1;');
       function opt(v, label, cur, disabled, title) { return '<option value="' + escapeHtml(v) + '"' + (v === cur ? ' selected' : '') + (disabled ? ' disabled' : '') + (title ? (' title="' + escapeHtml(title) + '"') : '') + '>' + label + '</option>'; }
       var offered = VOC.options.map(function(o) { return o.value; });
       var curSel = (isBudget && offered.indexOf(lvl) < 0) ? '__budget' : lvl;
@@ -11197,7 +11218,7 @@ function tmThinkRenderBins(bucket,opts) {
       var lvlTitle = 'Thinking LEVEL for the NEXT call on this session (call-by-call). TABLE-DRIVEN (v4.393): the menu offers exactly the vocabulary the vendor publishes for this model (TM_THINK_DOCS_REGISTRY); on an OpenRouter route, words OpenRouter does not list for this id are disabled with the reason; off is disabled where thinking cannot be switched off. Nothing you can pick is rewritten before the wire -- the \ud83c\udf9b\ufe0f glyph on the next row shows exactly what was sent. Wire shape: Anthropic output_config.effort (direct Fable 5.1 / Mythos 5.1 / Opus 5 use the cache-PRESERVING per-message effort beta), OpenRouter reasoning.effort / reasoning.max_tokens, OpenAI reasoning_effort / Responses reasoning.effort, Kimi K3 / DeepSeek / GLM-5.3 reasoning_effort, Gemini thinkingLevel / thinkingBudget. Everything except direct-Anthropic per-message is top-level = one cache miss at the change.' + (nSteps ? ('\n' + nSteps + ' per-message step' + (nSteps === 1 ? '' : 's') + ' on the wire: ' + ov.steps.map(function(s) { return s.effort; }).join(' \u2192 ')) : '');
       var dispTitle = 'Thinking DISPLAY for the NEXT call: show / hide the returned reasoning trace (Anthropic thinking.display summarized|omitted, OpenRouter reasoning.exclude, Responses reasoning.summary, Gemini includeThoughts). (v4.393) Offered only where the documentation map has a display knob for this route: ' + (dEn ? ('documented' + (VOC.display.path ? (' \u2014 ' + VOC.display.path) : '') + (dWhy ? (' (' + dWhy + ')') : '')) : ('NOT controllable \u2014 ' + dWhy)) + '. Independent of the level.';
       return '<span style="white-space:nowrap;"><span title="Fix 24 Phase 2 -- thinking control. \u25c2 last sent marks the option matching the newest wire; the inherit line shows what TypingMind sends natively.' + (exc ? ' RED BORDER = a registry EXCEPTION (vocab.fallback) is in force for this menu -- see the hover.' : '') + '" style="font-size:9px;color:' + (active ? '#7fd8ff' : '#9aa4b2') + ';font-weight:700;letter-spacing:0.3px;">\ud83c\udf9b\ufe0f Think:</span>' +
-        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyle + 'max-width:' + selMaxW + ';">' + levelOpts + '</select>' +
+        '<select data-action="set-think-level" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(lvlTitle + readout) + '" style="' + selStyleLvl + 'max-width:' + selMaxW + ';">' + levelOpts + '</select>' +
         orWarn +
         '<span title="' + escapeHtml(dispTitle) + '" style="font-size:9px;color:' + (disp !== 'inherit' ? '#7fd8ff' : '#9aa4b2') + ';margin-left:' + (orWarn ? '0' : '5px') + ';">\ud83d\udc41</span>' +
         '<select data-action="set-think-display" data-identity-key="' + escapeHtml(idKey) + '" title="' + escapeHtml(dispTitle + readout) + '" style="' + selStyle + 'max-width:' + selMaxWD + ';">' + dispOpts + '</select></span>';
@@ -13863,6 +13884,26 @@ function tmThinkRenderBins(bucket,opts) {
     } catch (e) {}
   }
 
+  // (v4.412) Which right-side group sits on row 2 vs row 3 -- Dan is deliberately undecided, so the
+  // title bar's ⇅ button swaps them. false (default) = keep-alive on row 2, cache cluster on row 3;
+  // true = cache cluster on row 2, keep-alive on row 3. Persisted like the width/height.
+  var TM_SIM_GROUP_SWAP_KEY = 'tm_sim_group_swap_v1';
+  function tmSimGroupSwap() {
+    try { return localStorage.getItem(TM_SIM_GROUP_SWAP_KEY) === '1'; } catch (e) { return false; }
+  }
+  function tmToggleSimGroupSwap() {
+    var next = !tmSimGroupSwap();
+    try { localStorage.setItem(TM_SIM_GROUP_SWAP_KEY, next ? '1' : '0'); } catch (e) {}
+    // Rebuild the content region only (the same path the pin toggle uses); scroll preserved.
+    try {
+      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
+        var st = tmSessionCtxHoverContentEl.scrollTop;
+        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+        tmSessionCtxHoverContentEl.scrollTop = st;
+      }
+    } catch (e) {}
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmBuildSessionCtxHoverHtml-zdza,
   //   role=__lambdao_1.tmBuildSessionCtxHoverHtml,
@@ -13871,7 +13912,7 @@ function tmThinkRenderBins(bucket,opts) {
   // ]
   function tmBuildSessionCtxHoverHtml(frame) {
   tmSessionCtxHoverLastFullAt=Date.now();frame=frame||tmBuildSessionCtxLiveFrame();tmSessionCtxHoverIdentities={};
-  var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
+  var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
   var composition=tmSessionCtxComposeRows(frame);
   composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="padding:8px 0;border-top:1px solid rgba(255,255,255,0.28);">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
   if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
@@ -14129,6 +14170,7 @@ function tmThinkRenderBins(bucket,opts) {
             else if (act === 'close') tmClosePinnedSessionCtxHover();
             else if (act === 'width-minus') tmAdjustSessionCtxHoverWidth(-80);
             else if (act === 'width-plus') tmAdjustSessionCtxHoverWidth(80);
+            else if (act === 'swap-groups') tmToggleSimGroupSwap();
             ev.stopPropagation();
           } catch (eAct) {}
         });
@@ -15097,14 +15139,17 @@ function tmThinkRenderBins(bucket,opts) {
   // source stays the durable ledger view (v4.407+). HIT chip removed per Dan; MISS renders 2px
   // larger than the old chip; the unmeasured 'cache —' state stays at 10px.
   opts=opts||{};var v=opts.view||tmLedgerRowView(idKey,opts.frame),l=v.last,r=v.rec,c=l&&l.cache||{},hit=c.hit;
-  var chip=hit===false?'<span style="font-size:12px;font-weight:700;color:#ff8080;">MISS</span> ':(hit==null?'<span style="font-size:10px;font-weight:700;color:#9aa4b2;">cache \u2014</span> ':'');
+  // (v4.412) Every element +2px per Dan (report 13, cost 15, streak 11, misses/hits 13, MISS 14,
+  // unmeasured 12). The superscript offsets (left:-12 / right:-18 / top:-10,-14) are UNCHANGED for
+  // now -- Dan tunes them on sight against the larger glyphs.
+  var chip=hit===false?'<span style="font-size:14px;font-weight:700;color:#ff8080;">MISS</span> ':(hit==null?'<span style="font-size:12px;font-weight:700;color:#9aa4b2;">cache \u2014</span> ':'');
   var read=c.read==null?'\u2014':tmFmtTok(c.read),write=c.write==null?'\u2014':tmFmtTok(c.write);
-  var report=l?'<span style="font-size:11px;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>':'';
+  var report=l?'<span style="font-size:13px;"><span style="color:#7dd67d;">cache</span> <span title="cache read (saved)" style="color:#5ab0ff;">\u21ba'+read+'</span> <span title="cache write / creation" style="color:#9aa4b2;">+'+write+'</span></span>':'';
   var streak=Number(r._cache_streak||0),totalHits=Number(r._cache_hits||0),totalMisses=Number(r._cache_misses||0);
   var retained='retained totals (including keep-alive): '+totalHits+' hits, '+totalMisses+' misses, streak '+streak;
   var missBorder=hit===false?'border:2px solid #ffd166;border-radius:7px;padding:2px 5px;':'';
   var supTopAdj=missBorder?-7:0;
-  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:13px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:9px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-14+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:11px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
+  var cost=(l&&l.cost!=null)?' <span title="Latest ordinary turn cost ('+escapeHtml(l.cost_source||'unknown')+') \u2014 '+(hit===true?'cache hit':hit===false?'cache miss':'unmeasured')+'" style="position:relative;display:inline-block;color:#ff6b3d;font-size:15px;font-weight:bold;'+missBorder+'">$'+l.cost.toFixed(3)+(streak>0?'<span title="'+retained+'" style="position:absolute;top:'+(-10+supTopAdj)+'px;left:-12px;color:#fff4e6;font-size:11px;font-weight:bold;text-shadow:0 1px 2px #000;">'+streak+'</span>':'')+((totalMisses>0||totalHits>0)?'<span title="'+retained+'" style="position:absolute;top:'+(-14+supTopAdj)+'px;right:-18px;color:#ccffcc;font-size:13px;font-weight:600;text-shadow:0 1px 2px #000;"><span style="color:#ff6b6b;">'+totalMisses+'</span> / '+totalHits+'</span>':'')+'</span>':'';
   return chip+report+cost;
 }
 
