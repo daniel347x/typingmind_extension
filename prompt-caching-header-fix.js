@@ -1,5 +1,20 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.424
+// Version: 4.425
+// v4.425: two fixes. (1) THE STICKY BADGE ROW ACTUALLY STICKS. v4.423 put position:sticky on the div
+// RETURNED BY the renderer -- but that div is the innerHTML of the [data-ka-badges] wrapper, and a
+// sticky element can only travel within its PARENT's box. The wrapper was exactly as tall as its
+// child, so there was zero room to stick and the row scrolled away like everything else. The sticky
+// positioning now lives on the WRAPPER (whose parent is the scrolling content region, giving it the
+// full scroll range); the renderer keeps only the visual styling. Patching is unaffected because
+// tmSessionCtxPatchHtml replaces innerHTML and never touches the wrapper's own style attribute.
+// (2) TWO ARMED STATES on the badge pill, because they mean different things to Dan. STANDING BY =
+// armed but no ping has fired since his last real message -- the common case, armed as a backstop and
+// then disarmed ten minutes later; rendered subdued amber and slightly smaller. WORKING = a ping HAS
+// fired since then, i.e. the conversation is genuinely parked and being kept warm; rendered larger,
+// redder, with a stronger pulse halo (tmKaPulseStrong). Detected as last_ping_ts > last_turn_ts: a
+// ping does not advance the idle clock but a real user turn does, so the badge flips back to STANDING
+// BY the moment he returns and sends -- which cumulative ping_count could never express. Entries that
+// predate those timestamps fall back to ping_count.
 // v4.424: the keep-alive badge click actually jumps now. It was silently inert: the badge carries the
 // KEEP-ALIVE STORE key while the card carries the LEDGER identity key, and those drift in the way this
 // file keeps rediscovering (the capture side derives a 'tm-'-prefixed sid, some store entries hold the
@@ -2452,7 +2467,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.424';
+  const EXT_VERSION = '4.425';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5761,8 +5776,18 @@
         var color = '#fff', hue = null, pct = null;
         try { color = tmModelEndpointColor(model, host, isProxy, sid); hue = tmSessionHueNumber(model, host, isProxy, sid); } catch (eC) {}
         try { var v = tmLedgerRowView(key, frame); pct = v ? v.pct : null; } catch (eV) {}
-        var fired = Number(e.ping_count || 0) > 0;
-        var pill = '<span title="Keep-alive is ARMED on this conversation' + (fired ? ' and has fired at least one ping' : '') + '" style="display:inline-block;font-size:10px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #b04a4a;background:#2e1416;color:#e09090;' + (fired ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '') + '">\u23f0</span>';
+        // (v4.425) TWO ARMED STATES. STANDING BY (armed, no ping since Dan's last real message) is the
+        // common case -- armed as a backstop, then disarmed ten minutes later -- so it is subdued amber
+        // and slightly smaller. WORKING (a ping HAS fired since then) means the conversation is truly
+        // parked and being kept warm, so it is larger, redder and pulses harder. The test is
+        // last_ping_ts > last_turn_ts: a ping never advances the idle clock, a real user turn always
+        // does -- so the badge flips back to STANDING BY the instant Dan returns and sends. Cumulative
+        // ping_count could not express that; it only ever grows.
+        var lp = Number(e.last_ping_ts || 0), lt = Number(e.last_turn_ts || 0);
+        var fired = (lp || lt) ? (lp > lt) : (Number(e.ping_count || 0) > 0);
+        var pill = fired
+          ? '<span title="Keep-alive is ARMED and HAS FIRED since your last message \u2014 this conversation is parked and being kept warm" style="display:inline-block;font-size:12px;line-height:1;padding:3px 7px;border-radius:9px;border:1px solid #c04545;background:#3a1416;color:#ff9d9d;animation:tmKaPulseStrong 2.2s ease-in-out infinite;">\u23f0</span>'
+          : '<span title="Keep-alive is ARMED but has NOT fired since your last message \u2014 standing by as a backstop" style="display:inline-block;font-size:9px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #7a5c33;background:#241d15;color:#c9a06a;">\u23f0</span>';
         var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(pct, hue, true) + '">' + escapeHtml(name) + '</span>';
         var statusHtml = tmKeepAliveStatusLineHtml(key, info || { sid: sid, model: model, host: host, isProxy: isProxy }, store, { center: true });
         // (v4.424) A small DISARM button on every badge. The stale armed keep-alives this row
@@ -5778,7 +5803,7 @@
       // background (the old translucent tint let cards show through) plus a shadow and a heavier
       // bottom border to read as a header. The label moved ABOVE the badges as a title line: inline,
       // it stole horizontal space and pushed a badge onto a second row.
-      return '<div style="position:sticky;top:0;z-index:5;margin-bottom:8px;padding:5px 8px 6px;border:1px solid #3a2a2a;border-bottom:2px solid #4a3030;border-radius:6px;background:#1b1315;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
+      return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #3a2a2a;border-bottom:2px solid #4a3030;border-radius:6px;background:#1b1315;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
         '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 click a badge to jump to its card</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:flex-start;">' + units.join('') + '</div>' +
         '</div>';
@@ -14724,7 +14749,10 @@ function tmThinkRenderBins(bucket,opts) {
   // (v4.422) The permanent keep-alive badge row sits between the title bar and the first card. The
   // wrapper is ALWAYS rendered (empty = zero height) so the tick can patch badges into it the moment
   // a keep-alive is armed -- a conditional wrapper would be a silent no-op until the 30s rebuild.
-  rows.push('<div data-ka-badges="1">'+tmBuildSessionCtxKaBadgeRow(frame)+'</div>');
+  // (v4.425) The STICKY positioning belongs HERE, on the wrapper -- not on the renderer's inner div.
+  // A sticky element can only travel within its parent's box, and the inner div's parent was exactly
+  // its own height, so it had nowhere to stick. This wrapper's parent is the scrolling content region.
+  rows.push('<div data-ka-badges="1" style="position:sticky;top:0;z-index:5;">'+tmBuildSessionCtxKaBadgeRow(frame)+'</div>');
   // (v4.424) The 'no card to jump to' note lives OUTSIDE the patched badges zone on purpose: the zone's
   // innerHTML is replaced whenever a countdown changes, which would erase a note placed inside it.
   rows.push('<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>');
@@ -14912,7 +14940,7 @@ function tmThinkRenderBins(bucket,opts) {
             var hcStyle = document.createElement('style');
             hcStyle.id = 'tm-hovercard-style';
             // (v4.336) Row-height-safe busy spinner (CSS-animated; JS only toggles presence).
-            hcStyle.textContent = '#tm-session-ctx-hovercard button{background:#242832;color:#c8d0dc;border:1px solid #48515d;border-radius:3px;font:inherit;font-size:11px;padding:1px 5px;cursor:pointer;}#tm-session-ctx-hovercard [data-session-row]{overflow-wrap:anywhere;}@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}@keyframes tmKaPulse{0%,100%{box-shadow:0 0 7px rgba(255,96,96,0.45),0 0 2px rgba(255,140,140,0.30)}50%{box-shadow:0 0 14px rgba(255,96,96,0.90),0 0 4px rgba(255,150,150,0.60)}}';
+            hcStyle.textContent = '#tm-session-ctx-hovercard button{background:#242832;color:#c8d0dc;border:1px solid #48515d;border-radius:3px;font:inherit;font-size:11px;padding:1px 5px;cursor:pointer;}#tm-session-ctx-hovercard [data-session-row]{overflow-wrap:anywhere;}@keyframes tmHcSpin{to{transform:rotate(360deg)}}.tm-hc-spin{display:inline-block;width:13px;height:13px;border:2px solid rgba(126,200,227,0.25);border-top-color:#7ec8e3;border-radius:50%;animation:tmHcSpin 0.8s linear infinite;}@keyframes tmKaPulse{0%,100%{box-shadow:0 0 7px rgba(255,96,96,0.45),0 0 2px rgba(255,140,140,0.30)}50%{box-shadow:0 0 14px rgba(255,96,96,0.90),0 0 4px rgba(255,150,150,0.60)}}@keyframes tmKaPulseStrong{0%,100%{box-shadow:0 0 6px rgba(255,70,70,0.55),0 0 2px rgba(255,120,120,0.40)}50%{box-shadow:0 0 17px rgba(255,60,60,0.95),0 0 5px rgba(255,150,150,0.70)}}';
             document.head.appendChild(hcStyle);
           }
         } catch (eSty) {}
