@@ -1,5 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.432
+// Version: 4.433
+// v4.433: PER-CONVERSATION SESSION NOTES -- a free-text reminder of what is happening / pending /
+// loose ends in a conversation, keyed ONLY by the session hash (raw 8-hex, tm- alias normalized):
+// model / endpoint / provider switches inside one conversation all share the same note, because
+// the hash IS the conversation. Two surfaces: (1) a 🗒 button at the very LEFT of every PINNED
+// pill -- click opens a multi-line editor modal (Ctrl+Enter saves, Esc cancels, saving empty text
+// removes the note), and the note rides the pill's tooltip as a multi-line hover reminder; (2) a
+// static READ-ONLY row at the bottom of every SiM card of that session (below the controls, above
+// the KA status line; present only when a note exists): the same 🗒 button at the left, then the
+// note as ONE line -- newlines joined with ' | ', middle-ellipsized past ~170 chars (head + tail;
+// CSS ellipsis as the width backstop) -- with the full multi-line text on hover. Saving patches
+// every surface of the conversation at once ([data-simnote-sid] zones + the pinned block). Store
+// tm_sim_session_notes_v1 {sid -> {text,_ts,_created}} rides the normal session-scoped GC:
+// touched at response receipt, pruned after a week idle. No interference with pill-jump scrolling:
+// the row is static text, never an expandable textarea inside the scroll region.
 // v4.432: (1) each PINNED pill is now a legitimate PILL -- a thin 1px border + full-radius
 // rounding + faint background wrap the whole unit (name, dial, status word, unpin) with internal
 // spacing untouched; the inter-pill gap tightens 22px→12px since the borders now do the visual
@@ -2543,7 +2557,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.432';
+  const EXT_VERSION = '4.433';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2630,6 +2644,7 @@
     pruneMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361) per-identity thinking overrides
     pruneMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367) per-origin reasoning-replay ledger
     pruneMap('tm_keepalive_messages_v1', false); // v4.378 bounded message patterns
+    pruneMap(TM_SIM_SESSION_NOTES_KEY, false); // (v4.433) per-conversation session notes
     // (Fix 24 analytics S2, §6.4) SiM-hide tombstones ride the same week-old prune; they are
     // deliberately NOT in tmTouchSessionScopedStores (a hide must not be refreshed into immortality).
     pruneMap(typeof TM_SESSION_CTX_TOMBSTONE_KEY !== 'undefined' ? TM_SESSION_CTX_TOMBSTONE_KEY : 'tm_session_ctx_tombstones_v1', false);
@@ -4139,6 +4154,7 @@
     touchMap(TM_THINK_OVERRIDES_KEY, false); // (Fix 24 Phase 2, v4.361)
     touchMap(TM_REPLAY_LEDGER_KEY, false); // (Fix 26, v4.367)
     touchMap('tm_keepalive_messages_v1', false); // v4.378 raw/tm- alias tolerant history touch
+    touchMap(TM_SIM_SESSION_NOTES_KEY, false); // (v4.433) per-conversation session notes
     try { tmSessionHueCache = null; } catch (e) {}
   }
 
@@ -8241,6 +8257,12 @@ function tmSessionCtxRowHtml(v,frame,badge) {
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
     '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
+    // (v4.433) PER-CONVERSATION SESSION NOTE row -- static, read-only, keyed to the session hash
+    // alone (every identity row of the conversation shows the SAME note). Present only when a note
+    // exists; the zone is always rendered so a save can patch it into existence on every card of
+    // the session. 🗒 at the left opens the editor; the one-line rendering carries the full
+    // multi-line text as its hover tooltip.
+    '<div data-simnote-sid="'+escapeHtml(tmKeepAliveNormSid(v.sid))+'">'+tmSimSessionNoteRowHtml(tmKeepAliveNormSid(v.sid))+'</div>'+
     // (v4.422) The KA status line gets its OWN zone at the very bottom of the card. The zone div
     // itself carries no margin, so when the renderer returns '' the card height is unchanged; the
     // renderer's inner div owns the negative bottom margin that lets the text overlap the card's
@@ -15168,7 +15190,13 @@ function tmThinkRenderBins(bucket,opts) {
         // handler resolves first): click anywhere -> scroll the session's card into view + flash,
         // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
         // dial keeps its click-to-override behavior.
-        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        // (v4.433) 🗒 session-note button at the very LEFT of the pill; the note (when any) also
+        // rides the pill's tooltip as the multi-line hover reminder.
+        var pillSid = tmKeepAliveNormSid(v.sid);
+        var pillNote = tmSimSessionNoteRead(pillSid);
+        var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
+        var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
+        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
       });
       // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
@@ -15176,6 +15204,122 @@ function tmThinkRenderBins(bucket,opts) {
         '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + units.join('') + '</div>' +
         '</div>';
     } catch (ePin) { return ''; }
+  }
+
+  // ==================== (v4.433) PER-CONVERSATION SESSION NOTES ====================
+  // A free-text reminder to Dan about what is happening in a conversation -- keyed ONLY by the
+  // session hash (raw 8-hex, tm- alias normalized): model / endpoint / provider switches inside
+  // one conversation all share the SAME note, which is the point (the hash IS the conversation).
+  // Surfaces: (1) the 🗒 button at the very LEFT of every PINNED pill -- click opens the editor,
+  // hover the pill for the multi-line tooltip; (2) a static read-only row at the bottom of every
+  // SiM card of that session (below the controls, above the KA status line): 🗒 at the left, then
+  // the note on ONE line -- lines joined ' | ', middle-ellipsized past ~170 chars -- with the full
+  // multi-line text on hover. The row exists only when a note does; its zone ([data-simnote-sid])
+  // is always rendered so a save patches it into existence on every card of the session at once.
+  // Rides the normal session-scoped GC: touched at response receipt, pruned after a week idle.
+  var TM_SIM_SESSION_NOTES_KEY = 'tm_sim_session_notes_v1';
+  function tmSimSessionNotesReadAll() {
+    try { var o = JSON.parse(localStorage.getItem(TM_SIM_SESSION_NOTES_KEY) || '{}'); return (o && typeof o === 'object') ? o : {}; } catch (e) { return {}; }
+  }
+  function tmSimSessionNoteRead(sid) {
+    try { var e = tmSimSessionNotesReadAll()[tmKeepAliveNormSid(sid)]; return (e && typeof e === 'object' && e.text) ? String(e.text) : ''; } catch (e2) { return ''; }
+  }
+  function tmSimSessionNoteWrite(sid, text) {
+    sid = tmKeepAliveNormSid(sid); if (!sid) return;
+    var all = tmSimSessionNotesReadAll();
+    text = String(text == null ? '' : text);
+    if (!text.trim()) delete all[sid]; // saving empty removes the note (and its row)
+    else { var prev = all[sid]; all[sid] = { text: text, _ts: Date.now(), _created: (prev && prev._created) || Date.now() }; }
+    try { localStorage.setItem(TM_SIM_SESSION_NOTES_KEY, JSON.stringify(all)); } catch (e) {}
+    tmSimSessionNoteRefresh(sid);
+  }
+  // Patch every rendered surface of this conversation after a save: all card note zones (one per
+  // identity row sharing the sid) + the pinned block (pill buttons + tooltips).
+  function tmSimSessionNoteRefresh(sid) {
+    try {
+      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+      var sidNorm = tmKeepAliveNormSid(sid);
+      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-simnote-sid]');
+      for (var i = 0; i < zones.length; i++) {
+        if (tmKeepAliveNormSid(zones[i].getAttribute('data-simnote-sid') || '') !== sidNorm) continue;
+        tmSessionCtxPatchHtml(zones[i], tmSimSessionNoteRowHtml(sidNorm));
+      }
+      tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins]'), tmBuildSessionCtxPinRow());
+    } catch (e) {}
+  }
+  // ONE line: newlines joined ' | ', middle-ellipsized when long (head + tail both visible -- the
+  // freshest state usually sits at the end); the CSS ellipsis is the width backstop.
+  function tmSimNoteOneLine(text, max) {
+    var s = String(text || '').split('\n').map(function (l) { return l.trim(); }).filter(function (l) { return l; }).join(' | ');
+    max = max || 170;
+    if (s.length <= max) return s;
+    var head = Math.ceil(max * 0.62), tail = Math.floor(max * 0.3);
+    return s.slice(0, head) + ' \u2026 ' + s.slice(s.length - tail);
+  }
+  function tmSimSessionNoteButtonHtml(sid) {
+    var has = !!tmSimSessionNoteRead(sid);
+    return '<button data-action="sim-note-edit" data-sid="' + escapeHtml(sid) + '" title="' + (has ? 'Edit this conversation\u2019s note \u2014 hover the row text (or the pinned pill) to read it' : 'Add a session note: what\u2019s happening / pending / loose ends. Keyed to the session hash only \u2014 it follows this conversation across model and provider switches.') + '" style="cursor:pointer;font-size:10px;line-height:1;padding:1px 5px;border-radius:3px;' + (has ? 'color:#ffd9a0;border:1px solid #7a5c33;background:#241d15;box-shadow:0 0 5px rgba(255,170,60,0.35);' : 'color:#6a7080;border:1px solid #3a3f4a;background:#242832;') + '">🗒</button>';
+  }
+  function tmSimSessionNoteRowHtml(sid) {
+    try {
+      var text = tmSimSessionNoteRead(sid);
+      if (!text) return '';
+      return '<div style="display:flex;align-items:center;gap:6px;margin-top:3px;">' +
+        tmSimSessionNoteButtonHtml(sid) +
+        '<span title="' + escapeHtml(text) + '" style="flex:1;min-width:0;font-size:12px;color:#b8c0cc;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(tmSimNoteOneLine(text)) + '</span>' +
+        '</div>';
+    } catch (e) { return ''; }
+  }
+  // The multi-line editor modal -- follows the file's modal rules: capture-phase keydown that
+  // SELF-UNINSTALLS, tmPromptActive while open, suppress-Escape window on close, click-away.
+  function tmShowSimSessionNoteEditor(sid) {
+    if (typeof document === 'undefined') return;
+    sid = tmKeepAliveNormSid(sid); if (!sid) return;
+    var old = document.getElementById('tm-sim-note-overlay'); if (old && old.parentNode) old.parentNode.removeChild(old);
+    var overlay = document.createElement('div');
+    overlay.id = 'tm-sim-note-overlay';
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;';
+    var box = document.createElement('div');
+    box.style.cssText = 'width:52vw;max-width:560px;background:#1a1a22;border:1px solid #555;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.7);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    var hdr = document.createElement('div');
+    hdr.style.cssText = 'font-weight:bold;font-size:13px;color:#ffd9a0;margin-bottom:6px;';
+    hdr.textContent = '🗒 Session note \u2014 ' + (tmGetSessionName(sid) || sid);
+    box.appendChild(hdr);
+    var hint = document.createElement('div');
+    hint.style.cssText = 'font-size:11px;color:#8a94a2;margin-bottom:8px;line-height:1.5;';
+    hint.textContent = 'Your reminder of what is happening / pending / loose ends in this conversation. Keyed to the session hash only \u2014 it follows the conversation across model and provider switches, and shows on every card of this session plus its pinned pill. Saving empty text removes the note. (Ctrl+Enter saves, Esc cancels.)';
+    box.appendChild(hint);
+    var ta = document.createElement('textarea');
+    ta.style.cssText = 'width:100%;height:130px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:system-ui,sans-serif;padding:8px;box-sizing:border-box;resize:vertical;';
+    ta.value = tmSimSessionNoteRead(sid);
+    box.appendChild(ta);
+    var row = document.createElement('div');
+    row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;';
+    var cancel = document.createElement('button'); cancel.textContent = 'Cancel';
+    cancel.style.cssText = 'background:#333;color:#ccc;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;';
+    var save = document.createElement('button'); save.textContent = 'Save note';
+    save.style.cssText = 'background:#7a5c33;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:bold;';
+    row.appendChild(cancel); row.appendChild(save); box.appendChild(row); overlay.appendChild(box);
+    var wasPromptActive = tmPromptActive;
+    function close() {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      document.removeEventListener('keydown', onKey, true);
+      tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
+      setTimeout(function () { tmPromptActive = wasPromptActive; }, 100);
+    }
+    function doSave() { tmSimSessionNoteWrite(sid, ta.value); close(); }
+    function onKey(ev) {
+      if (!overlay.parentNode) { document.removeEventListener('keydown', onKey, true); return; }
+      if (ev.key === 'Escape' || ev.keyCode === 27) { ev.stopPropagation(); if (ev.preventDefault) ev.preventDefault(); close(); return; }
+      if ((ev.ctrlKey || ev.metaKey) && (ev.key === 'Enter' || ev.keyCode === 13)) { ev.stopPropagation(); ev.preventDefault(); doSave(); }
+    }
+    overlay.addEventListener('click', function (ev) { if (ev.target === overlay) close(); });
+    cancel.addEventListener('click', function (ev) { ev.stopPropagation(); close(); });
+    save.addEventListener('click', function (ev) { ev.stopPropagation(); doSave(); });
+    document.addEventListener('keydown', onKey, true);
+    tmPromptActive = true;
+    document.body.appendChild(overlay);
+    setTimeout(function () { try { ta.focus(); } catch (e) {} }, 30);
   }
 
   // @beacon[
@@ -15395,6 +15539,11 @@ function tmThinkRenderBins(bucket,opts) {
             // (v4.411) Click-to-rename the session label on a row's name.
             var rnEl = ev.target.closest('[data-action="session-rename"]');
             if (rnEl) { ev.stopPropagation(); ev.preventDefault(); try { tmHandleSessionCtxRename(rnEl); } catch (eRN) {} return; }
+            // (v4.433) Per-conversation session note -- the 🗒 at the very left of a pinned pill
+            // and the one on the card's static note row are the same action. BEFORE the pin
+            // toggle/jump branches so the button wins over the pill's jump.
+            var snEl = ev.target.closest('[data-action="sim-note-edit"]');
+            if (snEl) { ev.stopPropagation(); ev.preventDefault(); try { tmShowSimSessionNoteEditor(snEl.dataset.sid || ''); } catch (eSN) {} return; }
             // (v4.428) Pin toggle -- the per-card 📌 at the lower right and the top PINNED block's
             // unpin button are the same action. Purely surface-level: no reorder, no scroll.
             var spEl = ev.target.closest('[data-action="sim-pin-toggle"]');
