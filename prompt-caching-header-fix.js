@@ -1,5 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.429
+// Version: 4.430
+// v4.430: the STATUS WORD joins the top PINNED pill -- Dan's most important live indicator (⚙ tools
+// M:SS / ▶ M:SS / ✓ hit NN% / ✗ miss / ⛔ no endpoint / ⚠ err / ● idle), rendered by the SAME
+// tmSessionCtxLiveHtml the card's upper-right uses, so its count-up timers tick every second in the
+// pinned block too (the block is already patched on the 1s tick) -- a five-minute test suite is
+// readable without scrolling to the card. Unit order: name + fullness ring, dial tight against it,
+// status word with ~8px of air, unpin 📌 rightmost with a small margin. Pills get wider; two or
+// three per row is the expected typical fit and wrapping is fine. The status word sits inside the
+// jump target, so clicking it also jumps; nothing else changes.
 // v4.429: two refinements to PINNED SESSIONS. (1) The per-card 📌 moves OUT of the controls row and
 // INTO the card's bottom-margin band -- absolutely positioned (right:12px, bottom:1px) against the
 // card wrapper (TM_SIM_CARD_STYLE gains position:relative; wrapper-only, zero layout effect), like a
@@ -2513,7 +2521,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.429';
+  const EXT_VERSION = '4.430';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -14839,7 +14847,9 @@ function tmThinkRenderBins(bucket,opts) {
   // or row ordering. The ONLY behavioral change is the compact unit a pinned identity gains in the
   // permanent PINNED block at the top of the dashboard header (above the keep-alive badges): the
   // session name at 12px (3pt smaller than the card's 15px) in the same hue + fullness-bulge ring,
-  // the context dial at 22px tight against it (the card's is 32px), and a small unpin button.
+  // the context dial at 22px tight against it (the card's is 32px), the live STATUS WORD (v4.430 --
+  // the same 1s-ticked renderer as the card's upper-right corner, so the tool / round-trip counters
+  // are readable without scrolling), and a small unpin button rightmost.
   // Store: a bare array of canonical identity keys (sid::model::host::proxy). GC is opportunistic --
   // when an identity has aged out of BOTH the ring and the ledger (the ledger's own 7-day stale
   // check deletes the record), its key is pruned on the next pin-row build.
@@ -14905,11 +14915,16 @@ function tmThinkRenderBins(bucket,opts) {
         var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
         var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
         var unpin = '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
+        // (v4.430) The STATUS WORD rides in the pill -- the exact renderer the card's upper-right
+        // uses, so its count-up timers tick every second here too (this block is patched on the 1s
+        // tick). Small air around it per Dan: tight dial on its left, unpin rightmost.
+        var liveHtml = '';
+        try { liveHtml = tmSessionCtxLiveHtml(k, v, frame); } catch (eL) {}
         // (v4.429) The WHOLE pill is a jump target (except the unpin button, which the delegated
         // handler resolves first): click anywhere -> scroll the session's card into view + flash,
         // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
         // dial keeps its click-to-override behavior.
-        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;">' + nameHtml + dialHtml + unpin + '</span>';
+        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;">' + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
       });
       // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
