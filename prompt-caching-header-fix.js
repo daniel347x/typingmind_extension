@@ -1,5 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.437
+// Version: 4.438
+// v4.438: (1) the 🗒 session-note editor grows for pasted agent summaries -- 62vw→78vw wide
+// (cap 680→1100px) and 130px→320px tall. (2) The dashboard header gains thick blue-gray
+// horizontal dividers BETWEEN content blocks only: pin blocks → divider → keep-alive badges →
+// divider → scrolling cards. A divider renders only when both sides have content (never two in
+// a row); when nothing above exists, no divider -- the header is unchanged from v4.427.
 // v4.437: ACTIVE AUTO-PIN. A running assistant/tool timer pins its exact identity (model +
 // endpoint + route), never every row sharing a session hash; stored in the existing pin list.
 // An active pin's 📌 is disabled with "Unpinning is disabled for active pins" until it settles;
@@ -2585,7 +2590,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.437';
+  const EXT_VERSION = '4.438';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -14686,10 +14691,17 @@ function tmThinkRenderBins(bucket,opts) {
     var title = '<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>';
     // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
     // replaced whenever a countdown changes, which would erase a note placed inside it.
+    // (v4.438) Thick blue-gray dividers between content blocks, only when both sides have
+    // content -- pins → (divider) → keep-alive badges → (divider) → the scrolling cards. Nothing
+    // pinned and nothing armed: no divider, header unchanged. The tick's zone patches rebuild
+    // these wrappers with the blocks, so a divider appears/disappears with its neighbors.
+    var pinsHtml = tmBuildSessionCtxPinRow(frame), kaHtml = tmBuildSessionCtxKaBadgeRow(frame);
+    var divider = '<div style="height:3px;background:#3a4658;border-radius:2px;margin:4px 0 10px;"></div>';
     return title +
-      '<div data-sim-pins="1">' + tmBuildSessionCtxPinRow(frame) + '</div>' +
-      '<div data-ka-badges="1">' + tmBuildSessionCtxKaBadgeRow(frame) + '</div>' +
-      '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>';
+      '<div data-sim-pins="1">' + pinsHtml + (pinsHtml && kaHtml ? divider : '') + '</div>' +
+      '<div data-ka-badges="1">' + kaHtml + '</div>' +
+      '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>' +
+      ((pinsHtml || kaHtml) ? divider : '');
   }
 
   // (v4.427) ONE full repaint of both regions, scroll preserved. ROWS FIRST on purpose: composing
@@ -15439,7 +15451,9 @@ function tmThinkRenderBins(bucket,opts) {
     overlay.id = 'tm-sim-note-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;';
     var box = document.createElement('div');
-    box.style.cssText = 'width:52vw;max-width:560px;background:#1a1a22;border:1px solid #555;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.7);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
+    // (v4.438) Larger editor: Dan pastes full agent summaries in, so 62vw→78vw and the
+    // textarea is 320px tall by default (resize:vertical unchanged).
+    box.style.cssText = 'width:78vw;max-width:1100px;background:#1a1a22;border:1px solid #555;border-radius:8px;padding:14px;box-shadow:0 8px 40px rgba(0,0,0,0.7);font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:12px;color:#fff;';
     var hdr = document.createElement('div');
     hdr.style.cssText = 'font-weight:bold;font-size:13px;color:#ffd9a0;margin-bottom:6px;';
     hdr.textContent = '🗒 Session note \u2014 ' + (tmGetSessionName(sid) || sid);
@@ -15449,7 +15463,7 @@ function tmThinkRenderBins(bucket,opts) {
     hint.textContent = 'Your reminder of what is happening / pending / loose ends in this conversation. Keyed to the session hash only \u2014 it follows the conversation across model and provider switches, and shows on every card of this session plus its pinned pill. Saving empty text removes the note. (Ctrl+Enter saves, Esc cancels.)';
     box.appendChild(hint);
     var ta = document.createElement('textarea');
-    ta.style.cssText = 'width:100%;height:130px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:system-ui,sans-serif;padding:8px;box-sizing:border-box;resize:vertical;';
+    ta.style.cssText = 'width:100%;height:320px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:system-ui,sans-serif;padding:8px;box-sizing:border-box;resize:vertical;';
     ta.value = tmSimSessionNoteRead(sid);
     box.appendChild(ta);
     var row = document.createElement('div');
