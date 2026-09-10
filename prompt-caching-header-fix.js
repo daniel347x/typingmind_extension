@@ -1,5 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.439
+// Version: 4.440
+// v4.440: Pinned-pill total cost. Each Sessions-in-Memory pinned pill (active / inactive /
+// keep-alive working) now shows the identity's retained session cost total to the RIGHT of
+// the percentage gauge -- same value + tooltip as the card's aggregate cost
+// (tmSessionCtxCostHtml -> v.rec._total), rendered at a pill-scale 11px instead of 19px.
+// Display-only: no data-action, so it inherits the pill's existing jump-to-card behavior.
+// tmSessionCtxCostHtml gains an optional {fontSize} (defaults to 19px; card callers unchanged).
 // v4.439: Lossless SSE completion-marker shield. A captured Qwen tool call was valid
 // (259 argument chars), but a broad marker detector stopped at 217. Escape marker
 // brackets only within valid JSON event data; JSON.parse restores the exact text.
@@ -2597,7 +2603,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.439';
+  const EXT_VERSION = '4.440';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8253,8 +8259,9 @@ function tmSessionCtxDialHtml(v) {
   return v.ctx?tmRenderCtxDial(v.ctx,{model:v.model,provider:v.slug,mr:v.maxCtx,size:32,labelFs:'13px'}):'';
 }
 
-function tmSessionCtxCostHtml(v) {
-  return '<span title="Retained session cost (includes keep-alive and billed attempts)" style="font-size:19px;font-weight:700;color:#c8d0dc;">$'+Number(v.rec._total||0).toFixed(2)+'</span>';
+function tmSessionCtxCostHtml(v, opts) {
+  var fs = (opts && opts.fontSize) ? opts.fontSize : '19px';
+  return '<span title="Retained session cost (includes keep-alive and billed attempts)" style="font-size:'+fs+';font-weight:700;color:#c8d0dc;">$'+Number(v.rec._total||0).toFixed(2)+'</span>';
 }
 
 function tmSessionCtxRowHtml(v,frame,badge) {
@@ -15344,6 +15351,10 @@ function tmThinkRenderBins(bucket,opts) {
         var autoBadge = tmSimPinAutoIsActive(k, group === 'active') ? ' <span data-sim-pin-auto="1" title="Pinned automatically because an assistant/tool timer is running" style="font-size:8px;color:#7ec8e3;">AUTO</span>' : '';
         var nameHtml = '<span data-sim-pin-name="1" style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + autoBadge + '</span>';
         var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
+        // (v4.440) Total session cost to the RIGHT of the percentage gauge, per Dan. Same value +
+        // tooltip as the card's aggregate cost (tmSessionCtxCostHtml -> v.rec._total), at a pill-scale
+        // 11px instead of the card's 19px. Display-only: no data-action, so it inherits the pill's jump.
+        var costHtml = '<span data-sim-pin-cost="1" style="margin-left:7px;display:inline-flex;align-items:center;">' + tmSessionCtxCostHtml(v, { fontSize: '11px' }) + '</span>';
         var modelTail = tmSimModelTail(v.model);
         var modelHtml = '<span data-sim-pin-model="1" title="Model: ' + escapeHtml(v.model || '?') + '" style="margin-left:9px;font-size:10px;font-weight:700;color:#aeb8c8;white-space:nowrap;">' + escapeHtml(modelTail) + '</span>';
         var unpin = (group === 'active')
@@ -15366,7 +15377,7 @@ function tmThinkRenderBins(bucket,opts) {
         var pillNote = tmSimSessionNoteRead(pillSid);
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         groups[group].push(unit);
       });
       var sections = [
