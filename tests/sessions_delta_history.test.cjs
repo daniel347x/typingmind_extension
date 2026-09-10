@@ -54,7 +54,8 @@ function dashboard(){const h=base();const c=h.c;let ringReads=0,costReads=0,kaRe
  tmCapIdentityKey:cap=>cap._identity.key,tmAgentManagementEnabled:()=>true,tmAgentManagementDisplayState:s=>states[s],tmAgentManagementBadge:()=>'<span>tool</span>',tmAgentManagementClearBadge:()=>'<span>clear</span>',
  getCaptureById(){throw Error('no per-row ring reads');},tmLatestRoundTripEntryForIdentity(){throw Error('no per-row ring reads');},
  document:{activeElement:null},window:{getSelection:()=>selected},
- tmBuildSessionCtxHoverHtml(){c.tmSessionCtxHoverLastFullAt=h.now();return 'full build';}
+ tmBuildSessionCtxHoverHtml(){c.tmSessionCtxHoverLastFullAt=h.now();return 'full build';},
+ tmRepaintSessionCtxHover(frame){c.tmSessionCtxHoverLastFullAt=h.now();content.innerHTML=c.tmBuildSessionCtxHoverHtml(frame);}
  });
  vm.runInContext(['tmIsLedgerIdentityKey','tmToolStateIdentityKey','tmSessionCtxIsBusy','tmSessionCtxLiveHtml','tmBuildSessionCtxLiveFrame','tmSessionCtxPatchHtml','tmSessionCtxInteractionBusy','tmRefreshSessionCtxKeepAlive','tmSessionCtxHoverTick','tmKeepAliveRowHtml','tmKeepAliveSummaryText','tmKeepAliveRefreshUI'].map(extract).join('\n'),c);
  return {...h,keys,ring,costs,states,zones,spins,kas,el,content,setSelection:s=>{selected=s;},counts:()=>({ringReads,costReads,kaReads,full,domWrites})};}

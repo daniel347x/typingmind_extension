@@ -1,5 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.426
+// Version: 4.427
+// v4.427: the dashboard becomes THREE regions instead of two -- a NON-SCROLLING header (title bar +
+// keep-alive badge section + jump note), the scrolling card region, and the resize grip. The badges
+// were position:sticky INSIDE the scroll region, which had two consequences Dan hit: the block
+// covered the top card, and clicking a badge scrolled its card to block:start -- i.e. precisely
+// UNDERNEATH the sticky block, so the jump appeared to do nothing useful. A dedicated section cannot
+// overlap anything, the scrollbar now belongs to the cards alone, and scrollIntoView lands in clear
+// view. The section collapses to just the title bar when nothing is armed (the badge renderer already
+// returned '' and its wrapper is zero-height), so there is no permanent cost. tmBuildSessionCtxHoverHtml
+// is now ROWS ONLY -- the name and its beacon are kept so the source map does not churn -- and every
+// full repaint goes through the new tmRepaintSessionCtxHover, which writes both regions in one step
+// (rows FIRST, because composing them fills tmSessionCtxHoverIdentities that the badge units read).
+// The five full-repaint call sites (think-control change, 30s tick rebuild, pin toggle, ⇅ swap,
+// initial show) all route through it, so the two regions can never drift out of step.
 // v4.426: the in-row ⏰ KA toggle now speaks the SAME visual language as the top badge row. It had
 // drifted: the row pulsed on cumulative ping_count (only ever grows) while the badge used
 // last_ping_ts > last_turn_ts, so the two surfaces could disagree about the same conversation -- one
@@ -2476,7 +2489,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.426';
+  const EXT_VERSION = '4.427';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -12059,7 +12072,7 @@ function tmThinkRenderBins(bucket,opts) {
       try { renderGpt51UsageWidget(); } catch (e) {}
       try { if (typeof payloadCaptureModalEl !== 'undefined' && payloadCaptureModalEl && payloadCaptureModalEl.style.display !== 'none') renderPayloadCaptureModal('view'); } catch (e) {}
       // (v4.365) The Think controls also live on the sessions-in-memory card now.
-      try { if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') { var stR = tmSessionCtxHoverContentEl.scrollTop; tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml(); tmSessionCtxHoverContentEl.scrollTop = stR; } } catch (e) {}
+      try { if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') { tmRepaintSessionCtxHover(); } } catch (e) {}
     }
     if (act === 'set-think-display') {
       tmSetThinkOverride(idKey, { display: v });
@@ -14288,6 +14301,36 @@ function tmThinkRenderBins(bucket,opts) {
   // (v4.337) Two-region card structure: content (scrolls; rebuilt on ticks) + persistent
   // bottom resize grip (survives rebuilds because rebuilds replace ONLY the content div).
   var tmSessionCtxHoverContentEl = null;
+  // (v4.427) THREE regions: a non-scrolling HEADER (title bar + keep-alive badges + jump note), the
+  // scrolling card region (tmSessionCtxHoverContentEl), and the resize grip.
+  var tmSessionCtxHoverHeaderEl = null;
+
+  // (v4.427) HEADER section builder. Rendered into its own non-scrolling element so it can never
+  // cover a card -- the old position:sticky badge row did, and a badge's jump-to-card scroll landed
+  // the card exactly underneath it. The badge wrapper is ALWAYS present (empty = zero height) so the
+  // tick can patch badges in within a second of arming; with nothing armed the section is just the
+  // title bar, exactly as before.
+  function tmBuildSessionCtxHeaderHtml(frame) {
+    frame = frame || tmBuildSessionCtxLiveFrame();
+    var title = '<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>';
+    // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
+    // replaced whenever a countdown changes, which would erase a note placed inside it.
+    return title +
+      '<div data-ka-badges="1">' + tmBuildSessionCtxKaBadgeRow(frame) + '</div>' +
+      '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>';
+  }
+
+  // (v4.427) ONE full repaint of both regions, scroll preserved. ROWS FIRST on purpose: composing
+  // them fills tmSessionCtxHoverIdentities, which the badge units read for model / host / proxy, so
+  // building the header second gives the badges fresh identity info rather than the previous build's.
+  function tmRepaintSessionCtxHover(frame) {
+    frame = frame || tmBuildSessionCtxLiveFrame();
+    var scroll = 0;
+    try { if (tmSessionCtxHoverContentEl) scroll = tmSessionCtxHoverContentEl.scrollTop; } catch (e0) {}
+    if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml(frame);
+    if (tmSessionCtxHoverHeaderEl) tmSessionCtxHoverHeaderEl.innerHTML = tmBuildSessionCtxHeaderHtml(frame);
+    try { if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.scrollTop = scroll; } catch (e1) {}
+  }
   var tmSessionCtxHoverGripEl = null;
   var TM_SESSION_CTX_HOVER_HEIGHT_KEY = 'tm_session_ctx_hover_height_v1';
   function tmGetSessionCtxHoverHeight() {
@@ -14669,7 +14712,7 @@ function tmThinkRenderBins(bucket,opts) {
   function tmSessionCtxHoverTick() {
   if(!tmSessionCtxHoverEl||tmSessionCtxHoverEl.style.display==='none'||tmSessionCtxInteractionBusy())return;
   var frame=tmBuildSessionCtxLiveFrame();
-  if(tmSessionCtxHoverPinned&&frame.now-tmSessionCtxHoverLastFullAt>=30000&&tmSessionCtxHoverContentEl){var scroll=tmSessionCtxHoverContentEl.scrollTop;tmSessionCtxHoverContentEl.innerHTML=tmBuildSessionCtxHoverHtml(frame);tmSessionCtxHoverContentEl.scrollTop=scroll;return;}
+  if(tmSessionCtxHoverPinned&&frame.now-tmSessionCtxHoverLastFullAt>=30000&&tmSessionCtxHoverContentEl){tmRepaintSessionCtxHover(frame);return;}
   var rows=tmSessionCtxHoverEl.querySelectorAll('[data-session-row]');
   for(var i=0;i<rows.length;i++){
     var row=rows[i],key=row.getAttribute('data-session-row'),v=tmLedgerRowView(key,frame),last=v.last,rec=v.rec;
@@ -14746,13 +14789,10 @@ function tmThinkRenderBins(bucket,opts) {
   function tmToggleSimGroupSwap() {
     var next = !tmSimGroupSwap();
     try { localStorage.setItem(TM_SIM_GROUP_SWAP_KEY, next ? '1' : '0'); } catch (e) {}
-    // Rebuild the content region only (the same path the pin toggle uses); scroll preserved.
+    // (v4.427) Repaint both regions -- the ⇄ swap changes which row holds the cache cluster, and the
+    // cluster reads tmSimGroupSwap() itself, so a single repaint settles every card at once.
     try {
-      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
-        var st = tmSessionCtxHoverContentEl.scrollTop;
-        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-        tmSessionCtxHoverContentEl.scrollTop = st;
-      }
+      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') tmRepaintSessionCtxHover();
     } catch (e) {}
   }
 
@@ -14764,17 +14804,11 @@ function tmThinkRenderBins(bucket,opts) {
   // ]
   function tmBuildSessionCtxHoverHtml(frame) {
   tmSessionCtxHoverLastFullAt=Date.now();frame=frame||tmBuildSessionCtxLiveFrame();tmSessionCtxHoverIdentities={};
-  var rows=['<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>'];
-  // (v4.422) The permanent keep-alive badge row sits between the title bar and the first card. The
-  // wrapper is ALWAYS rendered (empty = zero height) so the tick can patch badges into it the moment
-  // a keep-alive is armed -- a conditional wrapper would be a silent no-op until the 30s rebuild.
-  // (v4.425) The STICKY positioning belongs HERE, on the wrapper -- not on the renderer's inner div.
-  // A sticky element can only travel within its parent's box, and the inner div's parent was exactly
-  // its own height, so it had nowhere to stick. This wrapper's parent is the scrolling content region.
-  rows.push('<div data-ka-badges="1" style="position:sticky;top:0;z-index:5;">'+tmBuildSessionCtxKaBadgeRow(frame)+'</div>');
-  // (v4.424) The 'no card to jump to' note lives OUTSIDE the patched badges zone on purpose: the zone's
-  // innerHTML is replaced whenever a countdown changes, which would erase a note placed inside it.
-  rows.push('<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>');
+  // (v4.427) ROWS ONLY -- the scrolling card region. The title bar, the keep-alive badge section and
+  // the jump note moved to tmBuildSessionCtxHeaderHtml, which renders into its own NON-SCROLLING
+  // element above this one (see tmRepaintSessionCtxHover). The function name and its beacon are kept
+  // so the Cartographer source map does not churn.
+  var rows=[];
   var composition=tmSessionCtxComposeRows(frame);
   composition.forEach(function(spec){var v=tmLedgerRowView(spec.idKey,frame);tmSessionCtxHoverIdentities[v.idKey]={sid:v.sid,model:v.model,host:v.host,isProxy:v.isProxy};rows.push('<div data-session-row="'+escapeHtml(v.idKey)+'" data-ring-badge="'+(spec.badge?'1':'0')+'" style="'+TM_SIM_CARD_STYLE+'">'+tmSessionCtxRowHtml(v,frame,spec.badge)+'</div>');});
   if(!composition.length)rows.push('<div style="color:#9aa4b2;">No visible sessions</div>');return rows.join('');
@@ -14790,12 +14824,8 @@ function tmThinkRenderBins(bucket,opts) {
   function tmToggleSessionCtxHoverPin() {
     tmSessionCtxHoverPinned = !tmSessionCtxHoverPinned;
     if (tmSessionCtxHoverPinned) tmPersistSessionCtxHoverPin(); else tmClearSessionCtxHoverPin();
-    try { // repaint the header (pin/close buttons + drag cursor) immediately, scroll preserved
-      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') {
-        var st = tmSessionCtxHoverContentEl.scrollTop;
-        tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
-        tmSessionCtxHoverContentEl.scrollTop = st;
-      }
+    try { // (v4.427) repaint BOTH regions (header + cards); tmRepaintSessionCtxHover preserves scroll
+      if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') tmRepaintSessionCtxHover();
     } catch (e) {}
   }
   function tmClosePinnedSessionCtxHover() {
@@ -14909,12 +14939,18 @@ function tmThinkRenderBins(bucket,opts) {
         tmSessionCtxHoverEl.style.display = 'none'; // 'flex' when shown
         tmSessionCtxHoverEl.style.flexDirection = 'column';
         tmSessionCtxHoverEl.style.overflow = 'hidden';
+        // (v4.427) The HEADER region: non-scrolling, above the cards. Must be appended BEFORE the
+        // content element so the flex column orders title/badges above the scrolling card region.
+        tmSessionCtxHoverHeaderEl = document.createElement('div');
+        tmSessionCtxHoverHeaderEl.style.flex = 'none';
+        tmSessionCtxHoverHeaderEl.style.padding = '6px 9px 0';
+        tmSessionCtxHoverEl.appendChild(tmSessionCtxHoverHeaderEl);
         tmSessionCtxHoverContentEl = document.createElement('div');
         tmSessionCtxHoverContentEl.style.flex = '1 1 auto';
         tmSessionCtxHoverContentEl.style.minHeight = '0';
         tmSessionCtxHoverContentEl.style.overflowY = 'auto';
         tmSessionCtxHoverContentEl.addEventListener('scroll', function() { tmSessionCtxHoverLastScrollAt = Date.now(); }, { passive: true });
-        tmSessionCtxHoverContentEl.style.padding = '6px 9px';
+        tmSessionCtxHoverContentEl.style.padding = '4px 9px 6px'; // (v4.427) the header now owns the top padding
         tmSessionCtxHoverEl.appendChild(tmSessionCtxHoverContentEl);
         tmSessionCtxHoverGripEl = document.createElement('div');
         tmSessionCtxHoverGripEl.style.flex = 'none';
@@ -15057,7 +15093,7 @@ function tmThinkRenderBins(bucket,opts) {
         // re-clicking the pin) closes the card.
         document.body.appendChild(tmSessionCtxHoverEl);
       }
-      if (tmSessionCtxHoverContentEl) tmSessionCtxHoverContentEl.innerHTML = tmBuildSessionCtxHoverHtml();
+      if (tmSessionCtxHoverContentEl) tmRepaintSessionCtxHover();
       if (opts.left != null && opts.top != null) {
         // (v4.335) Explicit position (pinned restore) -- no anchor needed.
         tmSessionCtxHoverEl.style.left = opts.left + 'px';
