@@ -1,5 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.433
+// Version: 4.434
+// v4.434: pinned pills split into three live, non-scrolling blocks: ACTIVE (green outline),
+// INACTIVE (neutral), KEEP-ALIVE WORKING (soft red), in that order; empty blocks take no space.
+// Grouping uses the same timer state as the status word and the same armed/has-fired-since-real-
+// turn test as the KA toggle/badges. Standing-by is NOT working. KA matches the full row identity
+// with raw/tm- sid tolerance, never all model/route siblings of one conversation. A live timer
+// is active even during a brief ping request; after it settles the working pin returns below.
+// Pills, actions, notes, stored pin order and scrolling-card order are unchanged. Existing 1s
+// header patch repartitions the pins; no new store, timers, network calls or KA scheduling policy.
 // v4.433: PER-CONVERSATION SESSION NOTES -- a free-text reminder of what is happening / pending /
 // loose ends in a conversation, keyed ONLY by the session hash (raw 8-hex, tm- alias normalized):
 // model / endpoint / provider switches inside one conversation all share the same note, because
@@ -2557,7 +2565,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.433';
+  const EXT_VERSION = '4.434';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5667,6 +5675,15 @@
     try { tmRefreshSessionCtxKeepAlive(); } catch (e) {}
   }
 
+  // (v4.434) One display-state test for the KA toggle, badges and pinned grouping. A real
+  // turn resets WORKING to STANDING BY without disarming. Legacy count fallback only when
+  // neither timestamp exists; it must never resurrect last night's ping after a real turn.
+  function tmKeepAliveIsWorking(e) {
+    if (!e || !e.enabled) return false;
+    var lp = Number(e.last_ping_ts || 0), lt = Number(e.last_turn_ts || 0);
+    return (lp || lt) ? lp > lt : Number(e.ping_count || 0) > 0;
+  }
+
   // Hovercard row control: ⏰ toggle + [Nm] interval button + status/broken line.
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmKeepAliveRowHtml-vzmh,
@@ -5692,8 +5709,7 @@
       // the stronger red with the tmKaPulseStrong halo. Size stays 12px when armed (Dan: 'the size is
       // perfect') and the label stays plain 'KA ON' so the cluster width does not change -- only
       // colour and pulse carry the state, and box-shadow takes no layout space. OFF keeps dim gray.
-      var lpTs = Number((e && e.last_ping_ts) || 0), ltTs = Number((e && e.last_turn_ts) || 0);
-      var kaFired = on && ((lpTs || ltTs) ? (lpTs > ltTs) : (Number((e && e.ping_count) || 0) > 0));
+      var kaFired = tmKeepAliveIsWorking(e);
       var kaState = !on
         ? 'border:1px solid #444;background:#26262e;color:#9aa4b2;'
         : (kaFired
@@ -5889,8 +5905,7 @@
         // last_ping_ts > last_turn_ts: a ping never advances the idle clock, a real user turn always
         // does -- so the badge flips back to STANDING BY the instant Dan returns and sends. Cumulative
         // ping_count could not express that; it only ever grows.
-        var lp = Number(e.last_ping_ts || 0), lt = Number(e.last_turn_ts || 0);
-        var fired = (lp || lt) ? (lp > lt) : (Number(e.ping_count || 0) > 0);
+        var fired = tmKeepAliveIsWorking(e);
         var pill = fired
           ? '<span title="Keep-alive is ARMED and HAS FIRED since your last message \u2014 this conversation is parked and being kept warm" style="display:inline-block;font-size:12px;line-height:1;padding:3px 7px;border-radius:9px;border:1px solid #c04545;background:#3a1416;color:#ff9d9d;animation:tmKaPulseStrong 2.2s ease-in-out infinite;">\u23f0</span>'
           : '<span title="Keep-alive is ARMED but has NOT fired since your last message \u2014 standing by as a backstop" style="display:inline-block;font-size:9px;line-height:1;padding:2px 5px;border-radius:8px;border:1px solid #7a5c33;background:#241d15;color:#c9a06a;">\u23f0</span>';
@@ -14753,6 +14768,33 @@ function tmThinkRenderBins(bucket,opts) {
     return false;
   }
 
+  // (v4.434) Shared timer evidence for the status word and pinned groups. Extracted from
+  // tmSessionCtxLiveHtml without changing its identity guards or settlement-scoped lifetimes.
+  // Read state, never parse a coloured status string: a stale MISS/error must not classify a
+  // running request as idle. Return null when neither of the displayed timers is running.
+  function tmSessionCtxTimerState(key, info, frame) {
+    var now = frame ? frame.now : Date.now();
+    try {
+      if (tmAgentManagementEnabled()) {
+        var st = tmAgentManagementDisplayState(info && info.sid);
+        if (st && st.pendingToolCall && st.responseFinishedAt) {
+          var stKey = tmToolStateIdentityKey(st, frame);
+          if (!stKey || stKey === key) return { kind: 'tool', ms: now - Number(st.responseFinishedAt) };
+        }
+      }
+    } catch (eT) {}
+    try {
+      var liveMs = 0, rec = tmInFlightByIdentity[key];
+      if (rec && Number(rec.ts) > 0) liveMs = now - Number(rec.ts);
+      if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
+        var cap = frame ? frame.byId[tmInFlightTurn.captureId] : getCaptureById(tmInFlightTurn.captureId);
+        if (cap && tmCapIdentityKey(cap) === key) liveMs = now - Number(tmInFlightTurn.ts);
+      }
+      if (liveMs > 0) return { kind: 'assistant', ms: liveMs };
+    } catch (eA) {}
+    return null;
+  }
+
   // (v4.329) Per-identity LIVE zone: the same gauges the persistent widget shows for the
   // most-recent session only -- rendered here for EVERY ring session at once, and ticked
   // once a second while the card is visible. Contents: agent-management badge
@@ -14779,30 +14821,9 @@ function tmThinkRenderBins(bucket,opts) {
     var S = 'font-size:14px;white-space:nowrap;'; // (v4.407b) 12px -> 14px per Dan
     try { if (tmEndpointNotFound && tmEndpointNotFound.idKey === key) return '<span title="Provider/endpoint not found \u2014 see the alert line on this row" style="' + S + 'color:#ff9500;font-weight:700;">\u26d4 no endpoint</span>'; } catch (e0) {}
     try { if (tmMostRecentError && tmMostRecentError.idKey === key) return '<span title="Most recent turn errored \u2014 click the alert line on this row for the raw JSON" style="' + S + 'color:#ff6b6b;font-weight:700;">\u26a0 err ' + escapeHtml(String(tmMostRecentError.code != null ? tmMostRecentError.code : '?')) + '</span>'; } catch (e1) {}
-    try {
-      if (tmAgentManagementEnabled()) {
-        var st = tmAgentManagementDisplayState(info.sid);
-        if (st && st.pendingToolCall && st.responseFinishedAt) {
-          var stKey = tmToolStateIdentityKey(st, frame);
-          if (!stKey || stKey === key) return '<span title="Client-side tool executing \u2014 time so far" style="' + S + 'color:#d08b8b;font-weight:600;">\u2699 tools ' + tmFmtDuration(now - Number(st.responseFinishedAt)) + '</span>';
-        }
-      }
-    } catch (e2) {}
-    try {
-      var liveMs = 0;
-      var liveRec = tmInFlightByIdentity[key];
-      // (Fix 24 analytics S3, §1.2) the in-flight marker is settlement-scoped (cleared only on the
-      // terminal path / 6h leak guard), NOT render-time-expired -- a request can legitimately run
-      // longer than any UI timeout. The marker simply counts up from its request timestamp.
-      if (liveRec && Number(liveRec.ts) > 0) {
-        liveMs = now - Number(liveRec.ts);
-      }
-      if (!liveMs && tmInFlightTurn && Number(tmInFlightTurn.ts) > 0) {
-        var ifCap = frame ? frame.byId[tmInFlightTurn.captureId] : getCaptureById(tmInFlightTurn.captureId);
-        if (ifCap && tmCapIdentityKey(ifCap) === key) liveMs = now - Number(tmInFlightTurn.ts);
-      }
-      if (liveMs > 0) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + Math.floor(liveMs / 60000) + ':' + String(Math.floor(liveMs / 1000) % 60).padStart(2, '0') + '</span>';
-    } catch (e3) {}
+    var timer = tmSessionCtxTimerState(key, info, frame);
+    if (timer && timer.kind === 'tool') return '<span title="Client-side tool executing \u2014 time so far" style="' + S + 'color:#d08b8b;font-weight:600;">\u2699 tools ' + tmFmtDuration(timer.ms) + '</span>';
+    if (timer) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + Math.floor(timer.ms / 60000) + ':' + String(Math.floor(timer.ms / 1000) % 60).padStart(2, '0') + '</span>';
     try {
       // (Fix 24 analytics S4, §7.1) the idle cache outcome reads _last.cache.hit (the latest
       // COMPLETED ORDINARY turn's tri-state verdict), NOT the ledger's _cache_last (which KA pings
@@ -15155,9 +15176,33 @@ function tmThinkRenderBins(bucket,opts) {
     var pinned = tmSimRowIsPinned(idKey);
     return '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(idKey) + '" title="' + (pinned ? 'Unpin this session (removes its entry from the top PINNED bar)' : 'Pin this session to the top PINNED bar (card order is unchanged)') + '" style="cursor:pointer;font-size:11px;line-height:1;padding:1px 5px;border-radius:3px;' + (pinned ? 'color:#ff5a5a;border:1px solid #a04040;background:#33181a;text-shadow:0 0 6px rgba(255,90,90,0.65);box-shadow:0 0 5px rgba(255,70,70,0.35);' : 'color:#7d6a6c;border:1px solid #3a3f4a;background:#242832;opacity:0.7;') + '">📌</button>';
   }
-  // The top PINNED block. Returns '' when nothing is pinned (its wrapper is zero-height, exactly
-  // like the keep-alive badge section). Patched every tick so the dials stay live and a pin/unpin
-  // from any surface appears within a second instead of waiting for the 30s full rebuild.
+  // (v4.434) ONE exclusive display group per pinned identity. A live timer is active, including
+  // the brief HTTP response to a KA ping (then it returns to WORKING on settlement). This is a
+  // display partition only, not scheduler logic. Full identity matching keeps an armed model
+  // from pulling every old model/route of the same sid into WORKING. Prefer exact key, otherwise
+  // the newest raw/tm- alias record; a disabled exact record must not be overridden by stale aliases.
+  function tmSimPinGroup(key, view, frame) {
+    if (tmSessionCtxTimerState(key, view, frame)) return 'active';
+    var store = frame.keepalive || {}, entry = store[key];
+    if (!Object.prototype.hasOwnProperty.call(store, key)) {
+      Object.keys(store).forEach(function (k) {
+        if (!tmKeepAliveSameIdentity(k, key)) return;
+        var candidate = store[k];
+        if (candidate && (!entry || Number(candidate._ts || 0) > Number(entry._ts || 0))) entry = candidate;
+      });
+    }
+    return tmKeepAliveIsWorking(entry) ? 'keepalive' : 'inactive';
+  }
+
+  // The existing [data-sim-pins] zone owns ALL three blocks, replaced together on the guarded
+  // 1s tick. Empty groups vanish; pills retain insertion order within each group, and neither
+  // the persisted pin list nor the scrolling-card composition is sorted or mutated by grouping.
+  // @beacon[
+  //   id=payload-sim-pinned-groups,
+  //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
+  //   kind=ast,
+  //   comment=v4.434: live pinned pills in active / inactive / keep-alive working blocks. Shared timer and KA display state; full identity match with sid aliases; pills/actions unchanged.,
+  // ]
   function tmBuildSessionCtxPinRow(frame) {
     try {
       var keys = tmSimPinnedRowsRead();
@@ -15170,7 +15215,8 @@ function tmThinkRenderBins(bucket,opts) {
       });
       if (pruned) { tmSimPinnedRowsWrite(live); console.log('📌 [v' + EXT_VERSION + '] pruned ' + pruned + ' aged-out pinned session key(s)'); }
       if (!live.length) return '';
-      var units = live.map(function (k) {
+      var groups = { active: [], inactive: [], keepalive: [] };
+      live.forEach(function (k) {
         var v = tmLedgerRowView(k, frame);
         var color = '#fff', hue = null;
         try { color = tmModelEndpointColor(v.model, v.host, v.isProxy, v.sid); hue = tmSessionHueNumber(v.model, v.host, v.isProxy, v.sid); } catch (eC) {}
@@ -15196,13 +15242,21 @@ function tmThinkRenderBins(bucket,opts) {
         var pillNote = tmSimSessionNoteRead(pillSid);
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        groups[tmSimPinGroup(k, v, frame)].push(unit);
       });
-      // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
-      return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
-        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">📌 PINNED · ' + units.length + ' session' + (units.length === 1 ? '' : 's') + '</div>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + units.join('') + '</div>' +
-        '</div>';
+      var sections = [
+        { key: 'active', title: 'ACTIVE PINS', border: '#477b57', ink: '#9bceb0', tip: 'Assistant or tool timer running' },
+        { key: 'inactive', title: 'INACTIVE PINS', border: '#333d4f', ink: '#8a94a2', tip: 'No running timer; includes keep-alive armed but standing by' },
+        { key: 'keepalive', title: 'KEEP-ALIVE WORKING PINS', border: '#875459', ink: '#dba0a5', tip: 'Armed and a ping has fired since the last real turn; no timer running' }
+      ];
+      return sections.map(function (section) {
+        var units = groups[section.key];
+        if (!units.length) return '';
+        return '<div data-sim-pin-group="' + section.key + '" style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid ' + section.border + ';border-bottom:2px solid ' + section.border + ';border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
+          '<div title="' + escapeHtml(section.tip) + '" style="color:' + section.ink + ';font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;">' + section.title + ' · ' + units.length + '</div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + units.join('') + '</div></div>';
+      }).join('');
     } catch (ePin) { return ''; }
   }
 
