@@ -1,5 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.438
+// Version: 4.439
+// v4.439: Lossless SSE completion-marker shield. A captured Qwen tool call was valid
+// (259 argument chars), but a broad marker detector stopped at 217. Escape marker
+// brackets only within valid JSON event data; JSON.parse restores the exact text.
+// Preserve actual SSE terminators and raw capture; handle split bytes/CRLF/UTF-8;
+// oversized/non-JSON events pass through with diagnostics, never truncation.
+// Response-only, all intercepted SSE routes. Emergency opt-out: localStorage
+// tm_sse_done_guard_enabled = 'false'. No request or MCP schema changes.
 // v4.438: (1) the 🗒 session-note editor grows for pasted agent summaries -- 62vw→78vw wide
 // (cap 680→1100px) and 130px→320px tall. (2) The dashboard header gains thick blue-gray
 // horizontal dividers BETWEEN content blocks only: pin blocks → divider → keep-alive badges →
@@ -2590,7 +2597,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.438';
+  const EXT_VERSION = '4.439';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -21271,6 +21278,7 @@ function tmThinkRenderBins(bucket,opts) {
       repair_tally: cap.repair_tally || null,
       tool_id_repair_count: Number(cap._tool_id_repair_count || 0),
       tool_id_repair_last: cap._tool_id_repair_last || null,
+      sse_done_guard: cap._sse_done_guard || null, // Encoding-only shield/bypass counts, no response text.
       model,
       hasCacheControl,
       cacheControlSummary,
@@ -24782,6 +24790,176 @@ function tmThinkRenderBins(bucket,opts) {
   }
 
   // @beacon[
+  //   id=tm-payload@sse-done-marker-guard,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.439 lossless SSE compatibility guard: Unicode-escapes literal completion markers ONLY in valid JSON event data, preserving decoded content and the real terminator. Byte-framed across arbitrary chunks and LF/CRLF/CR; bounded per-event buffering; malformed or oversized events pass through unchanged with diagnostics.
+  // ]
+  function tmCreateSseDoneMarkerGuard(onDiagnostic, maxEventBytes) {
+    // Network fixture: valid Qwen arguments were 259 chars, but a broad marker
+    // substring check stopped at 217 -- exactly the observed client failure.
+    // Shield SERIALIZED JSON, never decoded prose or reconstructed arguments.
+    // JSON.parse restores the original marker; the real data: terminator stays.
+    var marker = '[' + 'DONE' + ']';
+    var replacement = '\\u005bDONE\\u005d';
+    var limit = maxEventBytes > 0 ? maxEventBytes : 1024 * 1024;
+    var decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+    var encoder = new TextEncoder();
+    var parts = [], size = 0, bypass = false;
+    var lineBytes = 0, pendingCR = false, pendingBoundary = false, firstEvent = true;
+
+    function report(info) {
+      try { if (typeof onDiagnostic === 'function') onDiagnostic(info); } catch (e) {}
+    }
+
+    function rewriteEvent(bytes, atStart) {
+      var text;
+      try { text = decoder.decode(bytes); } catch (e) {
+        report({ bypass: 'invalid_utf8', event_bytes: bytes.length });
+        return null; // Never replace invalid UTF-8 or lose incomplete trailing bytes.
+      }
+      if (text.indexOf(marker) === -1) return null;
+      // Keep every original line ending and every non-data field verbatim.
+      var lines = text.split(/(\r\n|\r|\n)/), data = [], dataIndexes = [];
+      for (var i = 0; i < lines.length; i += 2) {
+        var line = lines[i];
+        if (atStart && i === 0 && line.charCodeAt(0) === 0xfeff) line = line.slice(1);
+        if (line === 'data') { data.push(''); dataIndexes.push(i); }
+        else if (line.indexOf('data:') === 0) {
+          var value = line.slice(5);
+          if (value.charAt(0) === ' ') value = value.slice(1); // SSE removes ONE space.
+          data.push(value); dataIndexes.push(i);
+        }
+      }
+      var jsonData = data.join('\n');
+      if (!data.length || jsonData.indexOf(marker) === -1 || jsonData.trim() === marker) return null;
+      try { JSON.parse(jsonData); } catch (e) {
+        report({ bypass: 'non_json_data', event_bytes: bytes.length });
+        return null; // Not an argument fixer; unknown event grammars stay untouched.
+      }
+      // In valid JSON an unescaped literal [DONE] can occur only inside a
+      // string (including a key). Replacing its ASCII brackets by JSON Unicode
+      // escapes preserves that string exactly, including pre-existing slashes.
+      var count = 0;
+      for (var j = 0; j < dataIndexes.length; j++) {
+        var ix = dataIndexes[j];
+        lines[ix] = lines[ix].replace(/\[DONE\]/g, function() { count++; return replacement; });
+      }
+      if (!count) return null;
+      report({ replacements: count, event_bytes: bytes.length });
+      return encoder.encode(lines.join(''));
+    }
+
+    function append(bytes, controller) {
+      if (!bytes.length) return;
+      size += bytes.length;
+      if (!bypass && size > limit) {
+        bypass = true;
+        report({ bypass: 'event_too_large', limit_bytes: limit });
+        for (var i = 0; i < parts.length; i++) controller.enqueue(parts[i]);
+        parts = [];
+      }
+      if (bypass) controller.enqueue(bytes);
+      else parts.push(bytes);
+    }
+
+    function finishEvent(controller) {
+      if (!bypass && size) {
+        var bytes = new Uint8Array(size), offset = 0;
+        for (var i = 0; i < parts.length; i++) { bytes.set(parts[i], offset); offset += parts[i].length; }
+        var rewritten = rewriteEvent(bytes, firstEvent);
+        if (rewritten) controller.enqueue(rewritten);
+        else for (var j = 0; j < parts.length; j++) controller.enqueue(parts[j]);
+      }
+      parts = []; size = 0; bypass = false; firstEvent = false;
+    }
+
+    return new TransformStream({
+      transform: function(chunk, controller) {
+        // Frame BYTES, not decoded chunks: ASCII CR/LF cannot bisect a UTF-8
+        // code point. Decode only a complete bounded event; unchanged events
+        // retain their exact bytes, including a BOM or malformed UTF-8.
+        var start = 0;
+        function boundary(end) {
+          append(chunk.subarray(start, end), controller);
+          start = end;
+          finishEvent(controller);
+        }
+        for (var i = 0; i < chunk.length; i++) {
+          var b = chunk[i];
+          if (pendingCR) {
+            pendingCR = false;
+            if (b === 10) {
+              if (pendingBoundary) boundary(i + 1);
+              pendingBoundary = false;
+              continue;
+            }
+            if (pendingBoundary) boundary(i);
+            pendingBoundary = false;
+          }
+          if (b === 13) {
+            pendingCR = true;
+            pendingBoundary = lineBytes === 0;
+            lineBytes = 0;
+          } else if (b === 10) {
+            var blank = lineBytes === 0;
+            lineBytes = 0;
+            if (blank) boundary(i + 1);
+          } else lineBytes++;
+        }
+        append(chunk.subarray(start), controller);
+      },
+      flush: function(controller) {
+        // Preserve EOF tails, whether a final CR, an unterminated data line,
+        // or malformed JSON. Upstream errors/cancellation propagate normally
+        // through pipeThrough; this transform does not fabricate completion.
+        finishEvent(controller);
+      }
+    });
+  }
+
+  // @beacon[
+  //   id=tm-payload@wrap-sse-done-marker-response,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.439 response-only compatibility wrapper for intercepted SSE responses, after raw capture and existing rewrites. Keeps status/headers except content-length, records metadata-only guard counts, and supports a localStorage opt-out. No extra clone, request changes, or argument coercion.
+  // ]
+  function tmWrapSseDoneMarkerResponse(response, captureId) {
+    if (!response || !response.body || response.bodyUsed || response.body.locked) return response;
+    try {
+      if (localStorage.getItem('tm_sse_done_guard_enabled') === 'false') return response;
+    } catch (e) {}
+    var contentType = '';
+    try { contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase(); } catch (e) {}
+    if (contentType !== 'text/event-stream' || typeof TransformStream === 'undefined' ||
+        typeof TextDecoder === 'undefined' || typeof TextEncoder === 'undefined' ||
+        typeof response.body.pipeThrough !== 'function') return response;
+    var stats = { events: 0, replacements: 0, bypassed: 0 };
+    function diagnostic(info) {
+      if (info.bypass) {
+        stats.bypassed++;
+        stats.last_bypass = info.bypass;
+        if (stats.bypassed === 1) console.warn('[v' + EXT_VERSION + '] SSE marker guard: event passed through unshielded (' + info.bypass + ').');
+      } else {
+        stats.events++; stats.replacements += info.replacements || 0;
+        if (stats.events === 1) console.log('[v' + EXT_VERSION + '] SSE marker guard: escaped marker in JSON event; decoded content unchanged.');
+      }
+      try { if (captureId) tmUpdateCaptureRecord(captureId, { _sse_done_guard: Object.assign({}, stats) }); } catch (e) {}
+    }
+    try {
+      var headers = new Headers(response.headers);
+      headers.delete('content-length'); // Encoded event length may change; semantics do not.
+      var transform = tmCreateSseDoneMarkerGuard(diagnostic);
+      return new Response(response.body.pipeThrough(transform), {
+        status: response.status, statusText: response.statusText, headers: headers
+      });
+    } catch (e) {
+      console.warn('[v' + EXT_VERSION + '] SSE marker guard could not wrap response:', e);
+      return response;
+    }
+  }
+
+  // @beacon[
   //   id=auto-beacon@__lambdao_1.originalFetch@1-rkgc,
   //   role=__lambdao_1.originalFetch@1,
   //   slice_labels=tm-payload-overview,
@@ -25830,7 +26008,14 @@ function tmThinkRenderBins(bucket,opts) {
       }
     });
 
-    var fetchPromiseContinuityTapped = fetchPromiseToolIdGuarded.then(function(response) {
+    // Lossless SSE shield is LAST among response rewrites. The raw capture
+    // above retains provider bytes; continuity/TypingMind receive equivalent
+    // JSON with marker literals escaped (not confused with the real terminator).
+    var fetchPromiseSseGuarded = fetchPromiseToolIdGuarded.then(function(response) {
+      return tmWrapSseDoneMarkerResponse(response, captureId);
+    });
+
+    var fetchPromiseContinuityTapped = fetchPromiseSseGuarded.then(function(response) {
       try {
         var stubbedIds = [];
         if (oversizedGuardReportForThisCall && Array.isArray(oversizedGuardReportForThisCall.stubbed)) {
