@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.425
+// Version: 4.426
+// v4.426: the in-row ⏰ KA toggle now speaks the SAME visual language as the top badge row. It had
+// drifted: the row pulsed on cumulative ping_count (only ever grows) while the badge used
+// last_ping_ts > last_turn_ts, so the two surfaces could disagree about the same conversation -- one
+// saying 'working' while the other said 'standing by'. Identical test and identical palette now:
+// STANDING BY (armed, no ping since Dan's last real message) is subdued amber with NO pulse;
+// WORKING (a ping has fired since) is the stronger red with the tmKaPulseStrong halo. Size stays 12px
+// when armed and the label stays plain 'KA ON' -- only colour and pulse differ, exactly as on the
+// badge, so the cluster width is unchanged. OFF keeps the dim 10px gray. The hover now states both
+// meanings so the colour is never a guess.
 // v4.425: two fixes. (1) THE STICKY BADGE ROW ACTUALLY STICKS. v4.423 put position:sticky on the div
 // RETURNED BY the renderer -- but that div is the innerHTML of the [data-ka-badges] wrapper, and a
 // sticky element can only travel within its PARENT's box. The wrapper was exactly as tall as its
@@ -2467,7 +2476,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.425';
+  const EXT_VERSION = '4.426';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5592,12 +5601,22 @@
       var kParts = String(key || '').split('::');
       var iModel = (info && info.model) || kParts[1] || '', iHost = (info && info.host) || kParts[2] || '';
       var iv = (e && e.interval_min) || (/claude|anthropic/i.test(String(iModel) + String(iHost)) ? 50 : 4);
-      // (v4.419; recoloured v4.420) ARMED = ALIVE, not ARMED = STAMPED. The first blaze read as a
-      // rubber stamp -- flat, saturated, dead. The red is now DIMMER (#e09090 on #2e1416) and the
-      // border GLOWS (a two-layer box-shadow halo), so it reads as something running rather than
-      // something printed. Size is unchanged (12px, Dan: 'the size is perfect') and box-shadow takes
-      // no layout space, so the cluster geometry is untouched. OFF keeps the dim 10px gray.
-      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;white-space:nowrap;' + (on ? ('border:1px solid #b04a4a;background:#2e1416;color:#e09090;box-shadow:0 0 7px rgba(255,96,96,0.50),0 0 2px rgba(255,140,140,0.35);' + (Number((e && e.ping_count) || 0) > 0 ? 'animation:tmKaPulse 2.4s ease-in-out infinite;' : '')) : 'border:1px solid #444;background:#26262e;color:#9aa4b2;') + '">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
+      // (v4.419; recoloured v4.420; TWO STATES v4.426) The in-row toggle now matches the top badge
+      // row exactly -- same test, same palette, same pulse. It had drifted: this pulsed on cumulative
+      // ping_count (which only ever grows) while the badge used last_ping_ts > last_turn_ts, so the
+      // two surfaces could contradict each other about one conversation. STANDING BY (armed, no ping
+      // since Dan's last real message) = subdued amber, no pulse. WORKING (a ping HAS fired since) =
+      // the stronger red with the tmKaPulseStrong halo. Size stays 12px when armed (Dan: 'the size is
+      // perfect') and the label stays plain 'KA ON' so the cluster width does not change -- only
+      // colour and pulse carry the state, and box-shadow takes no layout space. OFF keeps dim gray.
+      var lpTs = Number((e && e.last_ping_ts) || 0), ltTs = Number((e && e.last_turn_ts) || 0);
+      var kaFired = on && ((lpTs || ltTs) ? (lpTs > ltTs) : (Number((e && e.ping_count) || 0) > 0));
+      var kaState = !on
+        ? 'border:1px solid #444;background:#26262e;color:#9aa4b2;'
+        : (kaFired
+          ? 'border:1px solid #c04545;background:#3a1416;color:#ff9d9d;animation:tmKaPulseStrong 2.2s ease-in-out infinite;'
+          : 'border:1px solid #7a5c33;background:#241d15;color:#c9a06a;');
+      var btnToggle = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Prompt-cache KEEP-ALIVE: when ON, after ' + iv + ' min of quiescence (turn complete, no tool running) a signposted keep-alive message is typed into this conversation and sent through TypingMind (same actuator as auto-resume) so the provider re-reads the cached prefix at read price and the TTL resets. Survives page refresh. Auto-disables loudly if a ping ever pays a cache WRITE.\n\nAMBER, still = armed but NO ping has fired since your last message (standing by as a backstop). RED, pulsing = a ping HAS fired since then (this conversation is parked and being kept warm). Same colours as the badge row at the top." style="cursor:pointer;font-size:' + (on ? '12px' : '10px') + ';font-weight:700;padding:' + (on ? '1px 8px' : '0 6px') + ';border-radius:3px;white-space:nowrap;' + kaState + '">\u23f0 KA ' + (on ? 'ON' : 'off') + '</span>';
       var btnInterval = '<span data-action="ka-interval" data-key="' + escapeHtml(key) + '" title="Edit keep-alive interval (minutes). Optional max duration: enter e.g. 50,12 for 50-minute pings capped at 12 hours." style="cursor:pointer;font-size:10px;padding:0 5px;border-radius:3px;border:1px solid #3a4a5a;background:#1a2430;color:#8fc4ff;white-space:nowrap;">' + iv + 'm' + (e && e.max_hours ? (' \u2264' + e.max_hours + 'h') : '') + '</span>';
       var historyButton = '<button type="button" data-action="ka-messages" data-key="' + escapeHtml(key) + '" title="Keep-alive messages: grouped patterns, counts and last seen (numeric values omitted)" style="font-size:11px;padding:0 4px;border:1px solid #44515e;border-radius:3px;background:#20252e;color:#9ecce6;cursor:pointer;">▤</button>';
       // (v4.411) Reversed per Dan: ▤ history, then interval, then the KA toggle RIGHTMOST.
