@@ -1,5 +1,18 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.427
+// Version: 4.428
+// v4.428: PINNED SESSIONS on the Sessions-in-Memory dashboard -- a lightweight, purely surface-level
+// pin, orthogonal to ordering and to keep-alive. Every card gains a small 📌 at the very lower right
+// (its OWN [data-simpin-key] zone on the controls row): dim gray with a slight red tinge when
+// unpinned, bright red with a glow when pinned. Clicking it NEVER moves or reorders anything -- the
+// only behavioral change is that pinned identities gain a compact unit in a new permanent PINNED
+// block at the very top of the dashboard header, ABOVE the keep-alive badge section (same
+// always-rendered zero-height-when-empty wrapper pattern, [data-sim-pins]). A unit is the session
+// name at 12px (3pt smaller than the card's 15px name) wearing the identical hue + fullness-bulge
+// ring, then tight against it the context dial at 22px (a notch below the card's 32px) with its
+// usual click-to-override behavior, then a small unpin button -- nothing else. Units are spaced and
+// wrap. The block is patched every 1s tick alongside the KA badges so dials stay live, and the store
+// is a bare array of canonical identity keys (tm_sim_pinned_rows_v1) with opportunistic GC: a key
+// whose identity has aged out of BOTH the ring and the ledger is pruned on the next pin-row build.
 // v4.427: the dashboard becomes THREE regions instead of two -- a NON-SCROLLING header (title bar +
 // keep-alive badge section + jump note), the scrolling card region, and the resize grip. The badges
 // were position:sticky INSIDE the scroll region, which had two consequences Dan hit: the block
@@ -2489,7 +2502,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.427';
+  const EXT_VERSION = '4.428';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8175,7 +8188,7 @@ function tmSessionCtxRowHtml(v,frame,badge) {
     '<div style="'+(swap?'padding-top:8px;padding-bottom:8px;':'padding-top:6px;padding-bottom:18px;')+'">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
-    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
+    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'<span style="flex:1;"></span>'+zone('simpin',tmSimPinButtonHtml(v.idKey))+'</div>'+
     // (v4.422) The KA status line gets its OWN zone at the very bottom of the card. The zone div
     // itself carries no margin, so when the renderer returns '' the card height is unchanged; the
     // renderer's inner div owns the negative bottom margin that lets the text overlap the card's
@@ -14316,6 +14329,7 @@ function tmThinkRenderBins(bucket,opts) {
     // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
     // replaced whenever a countdown changes, which would erase a note placed inside it.
     return title +
+      '<div data-sim-pins="1">' + tmBuildSessionCtxPinRow(frame) + '</div>' +
       '<div data-ka-badges="1">' + tmBuildSessionCtxKaBadgeRow(frame) + '</div>' +
       '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>';
   }
@@ -14740,6 +14754,10 @@ function tmThinkRenderBins(bucket,opts) {
   // Guarded like the equivalent call in tmRefreshSessionCtxKeepAlive: the tick is the dashboard's
   // update authority and must never throw out of an optional cosmetic zone.
   try { tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-ka-badges]'), tmBuildSessionCtxKaBadgeRow(frame)); } catch (eBg) {}
+  // (v4.428) The top PINNED block is card-level too, patched on the same cadence so its dials stay
+  // live and a pin/unpin appears within a second. Same guard: an optional cosmetic zone must never
+  // throw out of the dashboard's update authority.
+  try { tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins]'), tmBuildSessionCtxPinRow(frame)); } catch (ePn) {}
 }
 
   // Timer registration only; update decisions live in tmSessionCtxHoverTick.
@@ -14794,6 +14812,87 @@ function tmThinkRenderBins(bucket,opts) {
     try {
       if (tmSessionCtxHoverContentEl && tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') tmRepaintSessionCtxHover();
     } catch (e) {}
+  }
+
+  // ==================== (v4.428) PINNED SESSIONS ====================
+  // A lightweight surface-level pin, orthogonal to everything else: it NEVER changes card position
+  // or row ordering. The ONLY behavioral change is the compact unit a pinned identity gains in the
+  // permanent PINNED block at the top of the dashboard header (above the keep-alive badges): the
+  // session name at 12px (3pt smaller than the card's 15px) in the same hue + fullness-bulge ring,
+  // the context dial at 22px tight against it (the card's is 32px), and a small unpin button.
+  // Store: a bare array of canonical identity keys (sid::model::host::proxy). GC is opportunistic --
+  // when an identity has aged out of BOTH the ring and the ledger (the ledger's own 7-day stale
+  // check deletes the record), its key is pruned on the next pin-row build.
+  var TM_SIM_PINNED_ROWS_KEY = 'tm_sim_pinned_rows_v1';
+  function tmSimPinnedRowsRead() {
+    try { var a = JSON.parse(localStorage.getItem(TM_SIM_PINNED_ROWS_KEY) || '[]'); return Array.isArray(a) ? a.filter(function (k) { return typeof k === 'string' && k; }) : []; } catch (e) { return []; }
+  }
+  function tmSimPinnedRowsWrite(arr) {
+    try { localStorage.setItem(TM_SIM_PINNED_ROWS_KEY, JSON.stringify(arr)); } catch (e) {}
+  }
+  function tmSimRowIsPinned(idKey) { return tmSimPinnedRowsRead().indexOf(String(idKey)) >= 0; }
+  function tmSimRowSetPinned(idKey, pinned) {
+    idKey = String(idKey || ''); if (!idKey) return;
+    var arr = tmSimPinnedRowsRead(), i = arr.indexOf(idKey);
+    if (pinned && i < 0) arr.push(idKey);
+    if (!pinned && i >= 0) arr.splice(i, 1);
+    tmSimPinnedRowsWrite(arr);
+    tmSimRefreshPinSurfaces(idKey);
+  }
+  // Patch both pin surfaces without a full rebuild: every card-level pin-button zone of this
+  // identity + the top PINNED block (rebuilt whole -- cheap, only pinned identities). Zone
+  // selectors are position-agnostic per the zone contract; both zones are always rendered.
+  function tmSimRefreshPinSurfaces(idKey) {
+    try {
+      if (!tmSessionCtxHoverEl || tmSessionCtxHoverEl.style.display === 'none') return;
+      var zones = tmSessionCtxHoverEl.querySelectorAll('[data-simpin-key]');
+      for (var i = 0; i < zones.length; i++) {
+        if (String(zones[i].getAttribute('data-simpin-key') || '') !== String(idKey)) continue;
+        tmSessionCtxPatchHtml(zones[i], tmSimPinButtonHtml(idKey));
+      }
+      tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins]'), tmBuildSessionCtxPinRow());
+    } catch (e) {}
+  }
+  // The per-card pin button (OWN zone: [data-simpin-key]; single renderer). Unpinned: dim gray
+  // with the slightest tinge of red -- it should not stand out. Pinned: bright red with a glow.
+  function tmSimPinButtonHtml(idKey) {
+    var pinned = tmSimRowIsPinned(idKey);
+    return '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(idKey) + '" title="' + (pinned ? 'Unpin this session (removes its entry from the top PINNED bar)' : 'Pin this session to the top PINNED bar (card order is unchanged)') + '" style="cursor:pointer;font-size:11px;line-height:1;padding:1px 5px;border-radius:3px;' + (pinned ? 'color:#ff5a5a;border:1px solid #a04040;background:#33181a;text-shadow:0 0 6px rgba(255,90,90,0.65);box-shadow:0 0 5px rgba(255,70,70,0.35);' : 'color:#7d6a6c;border:1px solid #3a3f4a;background:#242832;opacity:0.7;') + '">📌</button>';
+  }
+  // The top PINNED block. Returns '' when nothing is pinned (its wrapper is zero-height, exactly
+  // like the keep-alive badge section). Patched every tick so the dials stay live and a pin/unpin
+  // from any surface appears within a second instead of waiting for the 30s full rebuild.
+  function tmBuildSessionCtxPinRow(frame) {
+    try {
+      var keys = tmSimPinnedRowsRead();
+      if (!keys.length) return '';
+      frame = frame || tmBuildSessionCtxLiveFrame();
+      // Opportunistic GC: drop keys whose identity has aged out of BOTH the ring and the ledger.
+      var live = [], pruned = 0;
+      keys.forEach(function (k) {
+        if ((frame.costs && frame.costs[k]) || (frame.latest && frame.latest[k])) live.push(k); else pruned++;
+      });
+      if (pruned) { tmSimPinnedRowsWrite(live); console.log('📌 [v' + EXT_VERSION + '] pruned ' + pruned + ' aged-out pinned session key(s)'); }
+      if (!live.length) return '';
+      var units = live.map(function (k) {
+        var v = tmLedgerRowView(k, frame);
+        var color = '#fff', hue = null;
+        try { color = tmModelEndpointColor(v.model, v.host, v.isProxy, v.sid); hue = tmSessionHueNumber(v.model, v.host, v.isProxy, v.sid); } catch (eC) {}
+        var name = tmGetSessionName(v.sid) || v.sid || k;
+        // Name: identical coloration to the card's name (hue + fullness-bulge ring), 12px = 3pt
+        // smaller than the card's 15px. Dial: the shared gauge, 22px (card's is 32px), tight
+        // against the name (the dial carries its own 4px margin-left; unit gap is 2px).
+        var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
+        var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
+        var unpin = '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
+        return '<span style="display:inline-flex;align-items:center;gap:2px;min-width:0;">' + nameHtml + dialHtml + unpin + '</span>';
+      });
+      // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
+      return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
+        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">📌 PINNED · ' + units.length + ' session' + (units.length === 1 ? '' : 's') + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;">' + units.join('') + '</div>' +
+        '</div>';
+    } catch (ePin) { return ''; }
   }
 
   // @beacon[
@@ -15013,6 +15112,10 @@ function tmThinkRenderBins(bucket,opts) {
             // (v4.411) Click-to-rename the session label on a row's name.
             var rnEl = ev.target.closest('[data-action="session-rename"]');
             if (rnEl) { ev.stopPropagation(); ev.preventDefault(); try { tmHandleSessionCtxRename(rnEl); } catch (eRN) {} return; }
+            // (v4.428) Pin toggle -- the per-card 📌 at the lower right and the top PINNED block's
+            // unpin button are the same action. Purely surface-level: no reorder, no scroll.
+            var spEl = ev.target.closest('[data-action="sim-pin-toggle"]');
+            if (spEl) { ev.stopPropagation(); ev.preventDefault(); try { var spKey = spEl.dataset.key || ''; tmSimRowSetPinned(spKey, !tmSimRowIsPinned(spKey)); } catch (eSP) {} return; }
             // (v4.422; MOVED v4.424) The badge-jump handler now sits AFTER the keep-alive button
             // actions below, so the badge's own x disarm button wins over the jump.
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
