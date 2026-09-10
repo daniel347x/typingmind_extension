@@ -1,5 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.436
+// Version: 4.437
+// v4.437: ACTIVE AUTO-PIN. A running assistant/tool timer pins its exact identity (model +
+// endpoint + route), never every row sharing a session hash; stored in the existing pin list.
+// An active pin's 📌 is disabled with "Unpinning is disabled for active pins" until it settles;
+// it then stays pinned and can be removed manually. Stale activity markers age out after 30 min.
+// AUTO is displayed beside an auto-pinned identity's name until it becomes inactive. Keep-alive
+// pings are ordinary activity; KA-only pinned rows still GC as before. Pin list is deduped.
+// Card 📌 controls are left unchanged.
 // v4.436: Responses usage is authoritative. The generic first-match envelope walk could take
 // echoed zero counters before response.usage; the later raw merge repaired input_tokens and
 // output_tokens but left prompt_tokens/completion_tokens at zero (Astra false MISS and output=0).
@@ -2578,7 +2585,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.436';
+  const EXT_VERSION = '4.437';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15088,6 +15095,17 @@ function tmThinkRenderBins(bucket,opts) {
   var frame=tmBuildSessionCtxLiveFrame();
   if(tmSessionCtxHoverPinned&&frame.now-tmSessionCtxHoverLastFullAt>=30000&&tmSessionCtxHoverContentEl){tmRepaintSessionCtxHover(frame);return;}
   var rows=tmSessionCtxHoverEl.querySelectorAll('[data-session-row]');
+  // (v4.437) AUTO-PIN running rows from the SAME tick before the pinned header renders. Exact
+  // identity, both current assistant/tool timer shapes; a pin-store change marks the zone dirty.
+  var simPinsDirty=false;
+  for(var ap=0;ap<rows.length;ap++){
+    var apKey=rows[ap].getAttribute('data-session-row');
+    if(!tmSimRowIsPinned(apKey)){
+      var apView=tmLedgerRowView(apKey,frame);
+      if(tmSessionCtxTimerState(apKey,apView,frame)){tmSimRowSetPinned(apKey,true,{view:apView,frame:frame});simPinsDirty=true;console.log('📌 [v'+EXT_VERSION+'] auto-pinned active identity '+apKey);}
+    }
+  }
+  if(simPinsDirty){try{tmSessionCtxHoverEl.querySelector('[data-sim-pins]').__tmSessionCtxHtml=null;}catch(eD){}}
   for(var i=0;i<rows.length;i++){
     var row=rows[i],key=row.getAttribute('data-session-row'),v=tmLedgerRowView(key,frame),last=v.last,rec=v.rec;
     var tuple={capture:last&&last.capture_id||'',total:rec._total||0,cache:[rec._cache_hits||0,rec._cache_misses||0,rec._cache_streak||0].join(','),max:JSON.stringify(v.maxCtx),width:tmGetSessionCtxHoverWidth()};
@@ -15190,16 +15208,32 @@ function tmThinkRenderBins(bucket,opts) {
     try { var a = JSON.parse(localStorage.getItem(TM_SIM_PINNED_ROWS_KEY) || '[]'); return Array.isArray(a) ? a.filter(function (k) { return typeof k === 'string' && k; }) : []; } catch (e) { return []; }
   }
   function tmSimPinnedRowsWrite(arr) {
-    try { localStorage.setItem(TM_SIM_PINNED_ROWS_KEY, JSON.stringify(arr)); } catch (e) {}
+    try { localStorage.setItem(TM_SIM_PINNED_ROWS_KEY, JSON.stringify(Array.from(new Set(arr)))); } catch (e) {}
   }
   function tmSimRowIsPinned(idKey) { return tmSimPinnedRowsRead().indexOf(String(idKey)) >= 0; }
-  function tmSimRowSetPinned(idKey, pinned) {
+  function tmSimRowSetPinned(idKey, pinned, opts) {
     idKey = String(idKey || ''); if (!idKey) return;
     var arr = tmSimPinnedRowsRead(), i = arr.indexOf(idKey);
-    if (pinned && i < 0) arr.push(idKey);
-    if (!pinned && i >= 0) arr.splice(i, 1);
+    // (v4.437) A running timer's pin is an auto-pin, but unpinned stale leftovers expire.
+    var newActive = false;
+    try { if (opts && opts.frame) newActive = !!tmSessionCtxTimerState(idKey, opts.view || null, opts.frame); } catch (eA) {}
+    if (pinned && i < 0) { arr.push(idKey); tmSimPinAutoStamp(idKey, newActive); }
+    if (pinned && i >= 0 && newActive) tmSimPinAutoStamp(idKey, true); // resume after manual unpin
+    if (!pinned && i >= 0 && !newActive) arr.splice(i, 1); // active unpin is impossible; manual path
+    if (i >= 0 && !pinned) tmSimPinAutoStamp(idKey, false);
     tmSimPinnedRowsWrite(arr);
     tmSimRefreshPinSurfaces(idKey);
+  }
+  var tmSimPinAutoFlags = {};
+  function tmSimPinAutoStamp(idKey, active) {
+    if (active) tmSimPinAutoFlags[String(idKey)] = { ts: Date.now() };
+    else delete tmSimPinAutoFlags[String(idKey)];
+  }
+  function tmSimPinAutoIsActive(idKey, currentlyActive) {
+    if (currentlyActive) return true; // display is authoritative even when pinned pre-v4.437
+    var st = tmSimPinAutoFlags[String(idKey)]; if (!st) return false;
+    if (Date.now() - Number(st.ts || 0) > 30 * 60 * 1000) { delete tmSimPinAutoFlags[String(idKey)]; return false; }
+    return false;
   }
   // Patch both pin surfaces without a full rebuild: every card-level pin-button zone of this
   // identity + the top PINNED block (rebuilt whole -- cheap, only pinned identities). Zone
@@ -15221,13 +15255,13 @@ function tmThinkRenderBins(bucket,opts) {
     var pinned = tmSimRowIsPinned(idKey);
     return '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(idKey) + '" title="' + (pinned ? 'Unpin this session (removes its entry from the top PINNED bar)' : 'Pin this session to the top PINNED bar (card order is unchanged)') + '" style="cursor:pointer;font-size:11px;line-height:1;padding:1px 5px;border-radius:3px;' + (pinned ? 'color:#ff5a5a;border:1px solid #a04040;background:#33181a;text-shadow:0 0 6px rgba(255,90,90,0.65);box-shadow:0 0 5px rgba(255,70,70,0.35);' : 'color:#7d6a6c;border:1px solid #3a3f4a;background:#242832;opacity:0.7;') + '">📌</button>';
   }
-  // (v4.434) ONE exclusive display group per pinned identity. A live timer is active, including
-  // the brief HTTP response to a KA ping (then it returns to WORKING on settlement). This is a
-  // display partition only, not scheduler logic. Full identity matching keeps an armed model
-  // from pulling every old model/route of the same sid into WORKING. Prefer exact key, otherwise
-  // the newest raw/tm- alias record; a disabled exact record must not be overridden by stale aliases.
+  // (v4.434; auto-pin v4.437) ONE exclusive display group per pinned identity. A live timer is
+  // active and PINS the exact identity (not a hash-wide sibling set), including the brief HTTP
+  // response to a KA ping; on settle it returns to WORKING. Pinning is a persisted display state,
+  // not scheduler logic. Full identity matching keeps an armed model from pulling every old
+  // model/route of the same sid into WORKING. Prefer exact key, otherwise newest raw/tm- alias.
   function tmSimPinGroup(key, view, frame) {
-    if (tmSessionCtxTimerState(key, view, frame)) return 'active';
+    if (tmSessionCtxTimerState(key, view, frame)) { tmSimPinAutoStamp(key, true); return 'active'; }
     var store = frame.keepalive || {}, entry = store[key];
     if (!Object.prototype.hasOwnProperty.call(store, key)) {
       Object.keys(store).forEach(function (k) {
@@ -15242,6 +15276,12 @@ function tmThinkRenderBins(bucket,opts) {
   // (v4.435) Pinned-only fixed-width timer. Compact M:SS with fixed-width digits stops the
   // session name moving when 7m 0s becomes 7m 1s, or when minutes gain a digit. No blank slot
   // for idle/working pins; the active group has a common alignment. No timer-state writes.
+  // (v4.437) Pill model text: display only the final slash segment; tooltip has the full model.
+  function tmSimModelTail(model) {
+    var m = String(model || '');
+    var i = m.lastIndexOf('/');
+    return i >= 0 ? m.slice(i + 1) : m;
+  }
   function tmSimPinTimerHtml(timer) {
     if (!timer) return '';
     var seconds = Math.max(0, Math.floor(Number(timer.ms) / 1000) || 0);
@@ -15282,9 +15322,14 @@ function tmThinkRenderBins(bucket,opts) {
         // Name: identical coloration to the card's name (hue + fullness-bulge ring), 12px = 3pt
         // smaller than the card's 15px. Dial: the shared gauge, 22px (card's is 32px), tight
         // against the name (the dial carries its own 4px margin-left; unit gap is 2px).
-        var nameHtml = '<span data-sim-pin-name="1" style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
+        var autoBadge = tmSimPinAutoIsActive(k, group === 'active') ? ' <span data-sim-pin-auto="1" title="Pinned automatically because an assistant/tool timer is running" style="font-size:8px;color:#7ec8e3;">AUTO</span>' : '';
+        var nameHtml = '<span data-sim-pin-name="1" style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + autoBadge + '</span>';
         var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
-        var unpin = '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
+        var modelTail = tmSimModelTail(v.model);
+        var modelHtml = '<span data-sim-pin-model="1" title="Model: ' + escapeHtml(v.model || '?') + '" style="margin-left:9px;font-size:10px;font-weight:700;color:#aeb8c8;white-space:nowrap;">' + escapeHtml(modelTail) + '</span>';
+        var unpin = (group === 'active')
+          ? '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpinning is disabled for active pins." disabled aria-disabled="true" style="cursor:not-allowed;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;opacity:0.6;">📌</button>'
+          : '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
         // (v4.435) Timer has its own fixed slot BEFORE the name, independent of alert priority.
         // Right-hand status retains errors and idle outcomes, but never duplicates the timer.
         var timerHtml = tmSimPinTimerHtml(tmSessionCtxTimerState(k, v, frame));
@@ -15302,7 +15347,7 @@ function tmThinkRenderBins(bucket,opts) {
         var pillNote = tmSimSessionNoteRead(pillSid);
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         groups[group].push(unit);
       });
       var sections = [
