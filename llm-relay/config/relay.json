@@ -1,0 +1,23 @@
+{
+  "bind": "127.0.0.1",
+  "port": 8787,
+  "token_env": "LLM_RELAY_TOKEN",
+  "store_dir": "/var/lib/llm-relay/chunks",
+  "capacity_bytes": 107374182400,
+  "upstream_read_timeout": null,
+  "max_envelope_bytes": 268435456,
+  "max_manifest_entries": 400000,
+  "max_new_chunk_bytes": 134217728,
+  "max_body_bytes": 536870912,
+  "routes": {
+    "anthropic-claude": { "base_url": "https://api.anthropic.com" },
+    "openai-gpt": { "base_url": "https://api.openai.com/v1" },
+    "deepseek-direct": { "base_url": "https://api.deepseek.com" },
+    "kimi-direct": { "base_url": "https://api.moonshot.ai/v1" },
+    "zai-glm": { "base_url": "https://api.z.ai/api/paas/v4" },
+    "dashscope-qwen": {
+      "base_url": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    },
+    "deepinfra": { "base_url": "https://api.deepinfra.com/v1/openai" }
+  }
+}

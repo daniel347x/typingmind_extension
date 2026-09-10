@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.431
+// Version: 4.432
+// v4.432: (1) each PINNED pill is now a legitimate PILL -- a thin 1px border + full-radius
+// rounding + faint background wrap the whole unit (name, dial, status word, unpin) with internal
+// spacing untouched; the inter-pill gap tightens 22px→12px since the borders now do the visual
+// separating. (2) NOTE-PREFIX WARNING VOCABULARY: two editable rows at the top of the 📝 note
+// editor -- ⚠ warn prefixes and ⛔ error prefixes -- comma-separated, case-sensitive, matched
+// against the START of note text (leading whitespace tolerated; nothing else). Global store
+// tm_think_note_prefixes_v1, auto-saved as you type (debounced, flushed on editor close). When ANY
+// related note (same family + endpoint + provider) is flagged, the SiM row's 📝 button GLOWS --
+// orange for warn, red for error, error wins -- and flagged notes wear their glyph + tint inside
+// the editor's prior-notes list. Saving/deleting a note from the SiM 📝 now repaints the dashboard
+// so glows update immediately.
 // v4.431: the 📝 Thinking Note editor now shows YOUR PRIOR NOTES at the top -- every note for the
 // SAME model FAMILY (tmThinkFamilyOf: all Kimis, all Claudes, all Qwens...) + endpoint host +
 // serving provider, oldest → newest, scrollable, with inline ✏️ edit and 🗑 delete (8-second undo
@@ -2532,7 +2543,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.431';
+  const EXT_VERSION = '4.432';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8128,7 +8139,14 @@ function tmThinkNoteContextForIdentity(idKey,frame) {
 
 function tmThinkNoteButtonForIdentity(view) {
   if(!view.last)return '';
-  return '<button data-action="think-note" data-key="'+escapeHtml(view.idKey)+'" title="Add a Thinking Note for '+escapeHtml(view.model+' @ '+(view.provider.label||view.host))+'" style="cursor:pointer;">📝</button>';
+  // (v4.432) PREFIX-FLAG GLOW: scan the RELATED notes (same family + endpoint + provider);
+  // any note starting with one of Dan's error prefixes -> red glow, else warn prefixes -> orange.
+  // Error wins. Recomputed at every full-row rebuild, so it survives refreshes.
+  var flag = null;
+  try { flag = tmThinkNotesFlagForCtx({ model: tmThinkNormModel(view.model), provider: (view.provider && view.provider.label) || view.host, host: view.host }); } catch (eF) {}
+  var glow = flag === 'err' ? 'border-color:#ff5a5a;box-shadow:0 0 8px rgba(255,70,70,0.95);background:#3a1416;' : (flag === 'warn' ? 'border-color:#ffb84d;box-shadow:0 0 7px rgba(255,170,60,0.9);background:#3a2c14;' : '');
+  var tip = 'Add a Thinking Note for ' + escapeHtml(view.model + ' @ ' + (view.provider.label || view.host)) + (flag ? (' -- ' + (flag === 'err' ? '\u26d4 a related note starts with one of your ERROR prefixes' : '\u26a0 a related note starts with one of your WARN prefixes')) : '');
+  return '<button data-action="think-note" data-key="'+escapeHtml(view.idKey)+'" title="'+tip+'" style="cursor:pointer;'+glow+'">📝</button>';
 }
 
 function tmSessionCtxNameHtml(v,badge) {
@@ -8752,6 +8770,47 @@ function tmThinkRenderBins(bucket,opts) {
       return out;
     } catch (e) { return []; }
   }
+  // (v4.432) NOTE-PREFIX WARNING VOCABULARY -- Dan's own prefixes, global across everything
+  // (tm_think_note_prefixes_v1), editable in two little rows at the top of the note editor.
+  // Comma-separated lists (commas therefore can't appear in a prefix); entries are trimmed but
+  // matching is CASE-SENSITIVE against the START of the note text -- leading whitespace on the
+  // note is tolerated, nothing else is (no space rules, no word boundaries, per Dan: 'just easy').
+  // Error beats warn. The flag surfaces two ways: the SiM row's 📝 button glows when ANY related
+  // note (tmThinkNotesRelated: family + endpoint + provider) is flagged, and flagged notes wear
+  // their glyph + tint inside the editor's prior-notes list.
+  var TM_THINK_NOTE_PREFIX_KEY = 'tm_think_note_prefixes_v1';
+  function tmGetThinkNotePrefixesRaw() {
+    try { var o = JSON.parse(localStorage.getItem(TM_THINK_NOTE_PREFIX_KEY) || '{}'); return { warn: String((o && o.warn) || ''), err: String((o && o.err) || '') }; } catch (e) { return { warn: '', err: '' }; }
+  }
+  function tmSaveThinkNotePrefix(which, val) {
+    var o = tmGetThinkNotePrefixesRaw(); o[which] = String(val == null ? '' : val);
+    try { localStorage.setItem(TM_THINK_NOTE_PREFIX_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  function tmThinkNotePrefixList(which) {
+    return tmGetThinkNotePrefixesRaw()[which].split(',').map(function (s) { return s.trim(); }).filter(function (s) { return s; });
+  }
+  function tmThinkNoteFlagText(text) {
+    try {
+      var t = String(text || ''); if (!t) return null;
+      var tr = t.replace(/^\s+/, '');
+      var errs = tmThinkNotePrefixList('err');
+      for (var i = 0; i < errs.length; i++) if (t.indexOf(errs[i]) === 0 || tr.indexOf(errs[i]) === 0) return 'err';
+      var warns = tmThinkNotePrefixList('warn');
+      for (var j = 0; j < warns.length; j++) if (t.indexOf(warns[j]) === 0 || tr.indexOf(warns[j]) === 0) return 'warn';
+      return null;
+    } catch (e) { return null; }
+  }
+  function tmThinkNotesFlagForCtx(ctx) {
+    try {
+      var rel = tmThinkNotesRelated(ctx), flag = null;
+      for (var i = 0; i < rel.length; i++) {
+        var f = tmThinkNoteFlagText(rel[i] && rel[i].text);
+        if (f === 'err') return 'err';
+        if (f === 'warn') flag = 'warn';
+      }
+      return flag;
+    } catch (e) { return null; }
+  }
   function tmAddThinkNote(ctx, text) {
     var L = tmGetThinkNotes();
     var note = { id: 'tn_' + Date.now() + '_' + Math.random().toString(16).slice(2, 8), ts: Date.now(),
@@ -8797,6 +8856,35 @@ function tmThinkRenderBins(bucket,opts) {
     hdr.style.cssText = 'font-weight:bold;font-size:13px;color:#c8b4ff;margin-bottom:6px;';
     hdr.textContent = existing ? '\u270f\ufe0f Edit Thinking Note' : '\ud83e\udde0\ud83d\udcdd New Thinking Note';
     box.appendChild(hdr);
+    // (v4.432) PREFIX VOCABULARY rows -- two little editable rows at the very top of the editor.
+    // Global (tm_think_note_prefixes_v1), comma-separated, case-sensitive, matched against the
+    // START of note text. Auto-saved as you type (400ms debounce) AND flushed on close; after every
+    // save the related-notes list re-renders with fresh flags and the dashboard repaints so the SiM
+    // 📝 glows update without waiting for a tick.
+    var prefBox = document.createElement('div');
+    prefBox.style.cssText = 'margin-bottom:8px;';
+    var prefRaw = tmGetThinkNotePrefixesRaw();
+    prefBox.innerHTML =
+      '<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;"><span title="Comma-separated, case-sensitive. A related note STARTING with one of these glows the SiM 📝 button orange." style="color:#ffb84d;font-size:11px;font-weight:700;cursor:help;white-space:nowrap;">\u26a0 warn prefixes:</span><input data-prefix-which="warn" value="' + escapeHtml(prefRaw.warn) + '" placeholder="e.g. DN,WARM" style="flex:1;min-width:0;background:#0d0d11;border:1px solid #4a3f2a;border-radius:4px;color:#ffd9a0;font-size:11px;padding:3px 6px;box-sizing:border-box;"></div>' +
+      '<div style="display:flex;align-items:center;gap:6px;"><span title="Same, but red -- and an error prefix beats a warn prefix on the same note." style="color:#ff6b6b;font-size:11px;font-weight:700;cursor:help;white-space:nowrap;">\u26d4 error prefixes:</span><input data-prefix-which="err" value="' + escapeHtml(prefRaw.err) + '" placeholder="e.g. XXX,BROKEN" style="flex:1;min-width:0;background:#0d0d11;border:1px solid #4a2a2a;border-radius:4px;color:#ffb0b0;font-size:11px;padding:3px 6px;box-sizing:border-box;"></div>';
+    box.appendChild(prefBox);
+    var prefSaveTimer = 0;
+    function savePrefixes() {
+      try {
+        var ws = prefBox.querySelectorAll('[data-prefix-which]');
+        for (var i = 0; i < ws.length; i++) tmSaveThinkNotePrefix(ws[i].getAttribute('data-prefix-which'), ws[i].value);
+        try { renderRelated(); } catch (eR) {}
+        try { if (tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') tmRepaintSessionCtxHover(); } catch (eD) {}
+      } catch (eS) {}
+    }
+    prefBox.addEventListener('input', function (ev) {
+      try {
+        var t = ev.target;
+        if (!t || !t.getAttribute || !t.getAttribute('data-prefix-which')) return;
+        if (prefSaveTimer) clearTimeout(prefSaveTimer);
+        prefSaveTimer = setTimeout(function () { prefSaveTimer = 0; savePrefixes(); }, 400);
+      } catch (eP) {}
+    });
     var ctxBox = document.createElement('div');
     ctxBox.style.cssText = 'background:#0d0d11;border:1px solid #333;border-radius:4px;padding:6px 8px;margin-bottom:8px;font-family:monospace;font-size:11px;line-height:1.5;color:#9aa4b2;';
     ctxBox.innerHTML = tmNoteCtxBoxHtml(src, editing);
@@ -8819,11 +8907,15 @@ function tmThinkRenderBins(bucket,opts) {
           return;
         }
         var rows = rel.map(function (n) {
+          // (v4.432) flagged notes wear their level: glyph + tinted border/background.
+          var fl = tmThinkNoteFlagText(n.text);
+          var flBorder = fl === 'err' ? 'border-color:#a04040;background:#241013;' : (fl === 'warn' ? 'border-color:#7a5c33;background:#241d10;' : '');
+          var flGlyph = fl === 'err' ? '<span title="starts with one of your ERROR prefixes" style="color:#ff6b6b;font-weight:700;">\u26d4</span> ' : (fl === 'warn' ? '<span title="starts with one of your WARN prefixes" style="color:#ffb84d;font-weight:700;">\u26a0</span> ' : '');
           var meta = '<span style="color:#7ec8e3;">' + escapeHtml(n.ts_local || '') + '</span> <span style="color:#8ef0a0;">' + escapeHtml(n.model || '') + '</span>' +
             ((n.req_summary || n.obs_summary) ? ' <span style="opacity:0.65;">\ud83e\udde0 ' + escapeHtml(n.req_summary || '?') + ' \u2192 ' + escapeHtml(n.obs_summary || '?') + '</span>' : '') +
             (n.session_id ? ' <span style="opacity:0.45;">sess ' + escapeHtml(String(n.session_id)) + '</span>' : '');
-          return '<div style="border:1px solid #2c2c36;border-radius:4px;padding:4px 7px;margin-bottom:4px;background:#0d0d11;">' +
-            '<div style="display:flex;align-items:center;gap:6px;font-size:10px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + meta + '</span>' +
+          return '<div style="border:1px solid #2c2c36;border-radius:4px;padding:4px 7px;margin-bottom:4px;background:#0d0d11;' + flBorder + '">' +
+            '<div style="display:flex;align-items:center;gap:6px;font-size:10px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + flGlyph + meta + '</span>' +
             '<span data-rel-edit="' + escapeHtml(n.id) + '" title="Edit this note in this editor" style="cursor:pointer;color:#c8b4ff;font-weight:700;">\u270f\ufe0f</span>' +
             '<span data-rel-del="' + escapeHtml(n.id) + '" title="Delete this note (undo offered for 8s)" style="cursor:pointer;color:#c08080;font-weight:700;">\ud83d\uddd1</span></div>' +
             '<div style="font-size:11px;color:#d0d0d8;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px;max-height:80px;overflow-y:auto;">' + escapeHtml(n.text || '') + '</div></div>';
@@ -8913,6 +9005,8 @@ function tmThinkRenderBins(bucket,opts) {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
       if (undoTimer) { clearTimeout(undoTimer); undoTimer = 0; }
+      // (v4.432) flush a pending debounced prefix save so typing-then-Escape never loses it
+      if (prefSaveTimer) { clearTimeout(prefSaveTimer); prefSaveTimer = 0; savePrefixes(); }
       tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
       setTimeout(function() { tmPromptActive = wasPromptActive; }, 100);
     }
@@ -15074,12 +15168,12 @@ function tmThinkRenderBins(bucket,opts) {
         // handler resolves first): click anywhere -> scroll the session's card into view + flash,
         // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
         // dial keeps its click-to-override behavior.
-        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;">' + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
       });
       // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
         '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">📌 PINNED · ' + units.length + ' session' + (units.length === 1 ? '' : 's') + '</div>' +
-        '<div style="display:flex;flex-wrap:wrap;gap:8px 22px;align-items:center;">' + units.join('') + '</div>' +
+        '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + units.join('') + '</div>' +
         '</div>';
     } catch (ePin) { return ''; }
   }
@@ -15330,7 +15424,8 @@ function tmThinkRenderBins(bucket,opts) {
               ev.stopPropagation();
               if (tkH.dataset.action === 'think-report') { tmShowThinkReport(tkH.dataset.captureId); return; }
               var tkCtxH = tkH.dataset.key ? tmThinkNoteContextForIdentity(tkH.dataset.key) : tmThinkNoteContextFromCap(getCaptureById(tkH.dataset.captureId));
-              if (tkCtxH) tmShowThinkNoteEditor(tkCtxH, null, null);
+              // (v4.432) repaint the dashboard after a save/delete/undo so the 📝 prefix glow updates immediately
+              if (tkCtxH) tmShowThinkNoteEditor(tkCtxH, null, function () { try { if (tmSessionCtxHoverEl && tmSessionCtxHoverEl.style.display !== 'none') tmRepaintSessionCtxHover(); } catch (eG) {} });
               return;
             }
             // (v4.405) Alert-zone actions (migrated from the persistent widget): raw error JSON
