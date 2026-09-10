@@ -1,5 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.435
+// Version: 4.436
+// v4.436: Responses usage is authoritative. The generic first-match envelope walk could take
+// echoed zero counters before response.usage; the later raw merge repaired input_tokens and
+// output_tokens but left prompt_tokens/completion_tokens at zero (Astra false MISS and output=0).
+// Known Responses envelopes now normalize ONLY native usage for tokens, with inclusive input
+// and output aliases, while retaining legitimate envelope cost fields. Real zeros stay zero;
+// other protocols retain their existing extraction. No historical accounting rewrite/backfill.
+// Inactive pinned pills omit right-hand status entirely; active timers/errors and keep-alive-
+// working status stay unchanged. Group computed once per pill; no card-status change.
 // v4.435: pinned running timers move BEFORE the session name, after the note button, in a
 // fixed 112px slot with monospaced/tabular M:SS digits. Tool and assistant timers share the
 // same position; neither is repeated on the right. Idle cache status and alerts stay right,
@@ -2570,7 +2578,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.435';
+  const EXT_VERSION = '4.436';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -13276,7 +13284,36 @@ function tmThinkRenderBins(bucket,opts) {
         if (value && typeof value === 'object') walk(value, depth + 1, keys[ki]);
       }
     }
-    walk(root, 0, '');
+    // (v4.436) Known Responses envelopes have one authoritative token source: usage.
+    // Never let echoed request/metadata counters pre-empt it via first-match walking.
+    // This applies to direct non-streaming responses and response.* SSE/JSON-array events.
+    // The native raw merge in tmCaptureResponse preserves input/output spellings, but cannot
+    // fix stale normalized aliases -- normalize those from the SAME native usage here first.
+    var responseEnvelope = root.object === 'response' ? root :
+      (root.response && typeof root.response === 'object' &&
+       (root.response.object === 'response' || (typeof root.type === 'string' && root.type.indexOf('response.') === 0)) ? root.response : null);
+    if (responseEnvelope) {
+      // Keep existing first-positive API-cost precedence (outer, envelope, usage), without
+      // walking token-shaped fields in cost metadata or unrelated echoed configuration.
+      function inspectEnvelopeCost(obj) {
+        inspect({ cost: obj.cost, estimated_cost: obj.estimated_cost, estimatedCost: obj.estimatedCost, cost_details: obj.cost_details });
+      }
+      inspectEnvelopeCost(root);
+      if (responseEnvelope !== root) inspectEnvelopeCost(responseEnvelope);
+      var nativeUsage = responseEnvelope.usage;
+      if (nativeUsage && typeof nativeUsage === 'object' && !Array.isArray(nativeUsage)) {
+        var normalizedSource = Object.assign({}, nativeUsage);
+        var nativeInput = firstNum(nativeUsage, ['input_tokens', 'inputTokens', 'inputTokenCount']);
+        var nativeOutput = firstNum(nativeUsage, ['output_tokens', 'outputTokens']);
+        // Response schema proves input is inclusive even if optional details are absent.
+        // Numeric PRESENCE, not positivity: actual zero input/output remains authoritative.
+        if (nativeInput != null) normalizedSource.prompt_tokens = nativeInput;
+        if (nativeOutput != null) normalizedSource.completion_tokens = nativeOutput;
+        walk(normalizedSource, 0, 'usage');
+      }
+    } else {
+      walk(root, 0, ''); // unchanged generic/Anthropic/Chat/Gemini fallback
+    }
     return found ? out : null;
   }
 
@@ -15238,6 +15275,7 @@ function tmThinkRenderBins(bucket,opts) {
       var groups = { active: [], inactive: [], keepalive: [] };
       live.forEach(function (k) {
         var v = tmLedgerRowView(k, frame);
+        var group = tmSimPinGroup(k, v, frame);
         var color = '#fff', hue = null;
         try { color = tmModelEndpointColor(v.model, v.host, v.isProxy, v.sid); hue = tmSessionHueNumber(v.model, v.host, v.isProxy, v.sid); } catch (eC) {}
         var name = tmGetSessionName(v.sid) || v.sid || k;
@@ -15251,7 +15289,9 @@ function tmThinkRenderBins(bucket,opts) {
         // Right-hand status retains errors and idle outcomes, but never duplicates the timer.
         var timerHtml = tmSimPinTimerHtml(tmSessionCtxTimerState(k, v, frame));
         var liveHtml = '';
-        try { liveHtml = tmSessionCtxLiveHtml(k, v, frame, { hideTimer: true }); } catch (eL) {}
+        // (v4.436) Inactive pins carry no right-hand status (including HIT/MISS). The card
+        // retains its full status, and keep-alive-working pills keep their prior readout.
+        try { if (group !== 'inactive') liveHtml = tmSessionCtxLiveHtml(k, v, frame, { hideTimer: true }); } catch (eL) {}
         // (v4.429) The WHOLE pill is a jump target (except the unpin button, which the delegated
         // handler resolves first): click anywhere -> scroll the session's card into view + flash,
         // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
@@ -15263,7 +15303,7 @@ function tmThinkRenderBins(bucket,opts) {
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
         var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
-        groups[tmSimPinGroup(k, v, frame)].push(unit);
+        groups[group].push(unit);
       });
       var sections = [
         { key: 'active', title: 'ACTIVE PINS', border: '#477b57', ink: '#9bceb0', tip: 'Assistant or tool timer running' },
