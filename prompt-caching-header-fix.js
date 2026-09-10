@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.428
+// Version: 4.429
+// v4.429: two refinements to PINNED SESSIONS. (1) The per-card 📌 moves OUT of the controls row and
+// INTO the card's bottom-margin band -- absolutely positioned (right:12px, bottom:1px) against the
+// card wrapper (TM_SIM_CARD_STYLE gains position:relative; wrapper-only, zero layout effect), like a
+// footer stamp rather than a row element. The keep-alive status line paints into the same band via
+// its negative bottom margin, so its card variant gains padding-right:30px and ellipsizes before the
+// reserved pin corner -- the two can never collide. (2) Clicking ANYWHERE on a top PINNED pill
+// except its unpin button now jumps to that session's card (scrollIntoView block:start + outline
+// flash), reusing the KA-badge jump resolver: tmSessionCtxJumpToKaBadge / tmSessionCtxKaBadgeNoTarget
+// gain an optional kind parameter so the no-target feedback says 'pinned session' and notes the pin
+// will be pruned, instead of speaking of keep-alive disarming. The pill's dial is jump-only (the
+// handler sits before ctx-dial-set); the card's own dial still opens the override prompt.
 // v4.428: PINNED SESSIONS on the Sessions-in-Memory dashboard -- a lightweight, purely surface-level
 // pin, orthogonal to ordering and to keep-alive. Every card gains a small 📌 at the very lower right
 // (its OWN [data-simpin-key] zone on the controls row): dim gray with a slight red tinge when
@@ -2502,7 +2513,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.428';
+  const EXT_VERSION = '4.429';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5713,7 +5724,9 @@
       var wrap = opts.center
         ? 'margin-top:1px;text-align:center;font-size:11px;line-height:14px;overflow-wrap:break-word;'
         // Negative bottom margin paints the line INTO the card's bottom padding: net height +1px.
-        : 'margin-top:2px;margin-bottom:-15px;text-align:right;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+        // (v4.429) padding-right:30px reserves the card's bottom-right corner for the absolutely-
+        // positioned pin stamp, so the ellipsis kicks in before the text could reach it.
+        : 'margin-top:2px;margin-bottom:-15px;padding-right:30px;text-align:right;font-size:11px;line-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
       return '<div style="' + wrap + '">' + parts.join(' ') + '</div>';
     } catch (eSL) { return ''; }
   }
@@ -5732,7 +5745,7 @@
   // name a model that is no longer listed at all). So match in four widening tiers and, when there is
   // genuinely no card, SAY SO visibly instead of failing silently -- the silence is what made the
   // badge look inert and had Dan clicking and double-clicking it.
-  function tmSessionCtxJumpToKaBadge(badgeEl) {
+  function tmSessionCtxJumpToKaBadge(badgeEl, kind) {
     var key = String((badgeEl && badgeEl.dataset ? badgeEl.dataset.key : '') || '');
     if (!key || !tmSessionCtxHoverEl) return;
     function q(k) {
@@ -5754,8 +5767,8 @@
       }
     }
     if (!target) {
-      console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive badge click: NO CARD for ' + key + ' -- that identity is not in the ring buffer or the 24h ledger window, so there is nothing to scroll to. Use the badge\u2019s \u00d7 to disarm it.');
-      tmSessionCtxKaBadgeNoTarget(badgeEl);
+      console.log('\u23f0 [v' + EXT_VERSION + '] ' + (kind === 'pin' ? 'pinned-session' : 'keep-alive badge') + ' click: NO CARD for ' + key + ' -- that identity is not in the ring buffer or the 24h ledger window, so there is nothing to scroll to. Use the badge\u2019s \u00d7 to disarm it.');
+      tmSessionCtxKaBadgeNoTarget(badgeEl, kind);
       return;
     }
     try { target.scrollIntoView({ block: 'start' }); } catch (eS) {}
@@ -5770,7 +5783,7 @@
   // (v4.424) Visible feedback when a badge has no card to jump to: flash the badge and write a note
   // into the dedicated [data-ka-badge-note] element, which sits OUTSIDE the patched badges zone so a
   // countdown repaint cannot erase it mid-read.
-  function tmSessionCtxKaBadgeNoTarget(badgeEl) {
+  function tmSessionCtxKaBadgeNoTarget(badgeEl, kind) {
     try {
       if (badgeEl && badgeEl.style) {
         var po = badgeEl.style.outline;
@@ -5780,7 +5793,9 @@
       var note = tmSessionCtxHoverEl ? tmSessionCtxHoverEl.querySelector('[data-ka-badge-note]') : null;
       if (note) {
         note.style.margin = '-4px 0 6px';
-        note.textContent = '\u26a0 no card in view for that keep-alive \u2014 the identity has aged out of the ring buffer and the 24h ledger window. Use its \u00d7 to disarm.';
+        note.textContent = (kind === 'pin')
+          ? '\u26a0 no card in view for that pinned session \u2014 the identity has aged out of the ring buffer and the 24h ledger window; its pin will be pruned from the PINNED bar.'
+          : '\u26a0 no card in view for that keep-alive \u2014 the identity has aged out of the ring buffer and the 24h ledger window. Use its \u00d7 to disarm.';
         setTimeout(function () { try { note.textContent = ''; note.style.margin = ''; } catch (e3) {} }, 8000);
       }
     } catch (eN) {}
@@ -8188,13 +8203,18 @@ function tmSessionCtxRowHtml(v,frame,badge) {
     '<div style="'+(swap?'padding-top:8px;padding-bottom:8px;':'padding-top:6px;padding-bottom:18px;')+'">'+
       '<div style="display:flex;align-items:center;flex-wrap:wrap;gap:12px;">'+zone('dial',tmSessionCtxDialHtml(v))+zone('cost',tmSessionCtxCostHtml(v))+zone('think',tmThinkRowLeanHtml(v,v.idKey,'13px'))+'<button data-action="session-ctx-report" data-key="'+k+'" title="Session report — full per-identity readout" style="font-size:13px;">ℹ️ <span style="font-size:10px;font-weight:600;">info</span></button><span style="flex:1;"></span>'+row3Right+'</div>'+
     '</div>'+
-    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'<span style="flex:1;"></span>'+zone('simpin',tmSimPinButtonHtml(v.idKey))+'</div>'+
+    '<div data-control-key="'+k+'" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:2px;">'+routing+(routing?'<span style="width:6px;"></span>':'')+controls+tmThinkNoteButtonForIdentity(v)+'</div>'+
     // (v4.422) The KA status line gets its OWN zone at the very bottom of the card. The zone div
     // itself carries no margin, so when the renderer returns '' the card height is unchanged; the
     // renderer's inner div owns the negative bottom margin that lets the text overlap the card's
     // 16px bottom padding. Always rendered (never conditional) so the tick can patch it into
     // existence the moment keep-alive is armed -- an absent zone would be a silent no-op.
-    '<div data-kastatus-key="'+k+'">'+tmKeepAliveStatusLineHtml(v.idKey,v,frame.keepalive)+'</div></div>';
+    '<div data-kastatus-key="'+k+'">'+tmKeepAliveStatusLineHtml(v.idKey,v,frame.keepalive)+'</div>'+
+    // (v4.429) The pin is a FOOTER STAMP, not a row element: absolutely positioned into the card's
+    // bottom-margin band (the wrapper's position:relative anchors it), near the right end. Out of
+    // flow, so it costs the card zero height and survives whatever the rows above do. The KA status
+    // line reserves this corner via its own padding-right:30px, so they never collide.
+    '<div style="position:absolute;right:12px;bottom:1px;z-index:3;">'+zone('simpin',tmSimPinButtonHtml(v.idKey))+'</div></div>';
 }
 
 function tmThinkProtocolFromHost(model,host) {
@@ -14778,7 +14798,7 @@ function tmThinkRenderBins(bucket,opts) {
   // asymmetric on purpose: the × hide button already reads as padding on the left, while the status
   // word and the right-aligned groups were running onto the edge. The parent content region still
   // supplies 9px of side padding, so the background band sits in a gutter of the panel's own colour.
-  var TM_SIM_CARD_STYLE = 'padding:10px 16px 16px 10px;margin-bottom:9px;background:rgba(255,255,255,0.04);border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,0.10);';
+  var TM_SIM_CARD_STYLE = 'position:relative;padding:10px 16px 16px 10px;margin-bottom:9px;background:rgba(255,255,255,0.04);border-radius:8px;box-shadow:0 0 0 1px rgba(255,255,255,0.10);';
 
   // (v4.336) Dashboard width: persisted, header [-]/[+] adjustable (80px steps, clamped).
   var TM_SESSION_CTX_HOVER_WIDTH_KEY = 'tm_session_ctx_hover_width_v1';
@@ -14885,7 +14905,11 @@ function tmThinkRenderBins(bucket,opts) {
         var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
         var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
         var unpin = '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
-        return '<span style="display:inline-flex;align-items:center;gap:2px;min-width:0;">' + nameHtml + dialHtml + unpin + '</span>';
+        // (v4.429) The WHOLE pill is a jump target (except the unpin button, which the delegated
+        // handler resolves first): click anywhere -> scroll the session's card into view + flash,
+        // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
+        // dial keeps its click-to-override behavior.
+        return '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="Click to scroll this session\u2019s card into view (📌 unpins)" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;">' + nameHtml + dialHtml + unpin + '</span>';
       });
       // Neutral slate styling, deliberately distinct from the keep-alive block's red tint.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #2a3040;border-bottom:2px solid #333d4f;border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
@@ -15116,6 +15140,11 @@ function tmThinkRenderBins(bucket,opts) {
             // unpin button are the same action. Purely surface-level: no reorder, no scroll.
             var spEl = ev.target.closest('[data-action="sim-pin-toggle"]');
             if (spEl) { ev.stopPropagation(); ev.preventDefault(); try { var spKey = spEl.dataset.key || ''; tmSimRowSetPinned(spKey, !tmSimRowIsPinned(spKey)); } catch (eSP) {} return; }
+            // (v4.429) Clicking ANYWHERE else on a top PINNED pill jumps to its card -- the KA-badge
+            // jump resolver reused (same key shape, same four widening tiers, same flash). Sits
+            // BEFORE ctx-dial-set on purpose: the pill's dial is jump-only per Dan's 'anywhere'.
+            var pjEl = ev.target.closest('[data-action="sim-pin-jump"]');
+            if (pjEl) { ev.stopPropagation(); ev.preventDefault(); try { tmSessionCtxJumpToKaBadge(pjEl, 'pin'); } catch (ePJ) {} return; }
             // (v4.422; MOVED v4.424) The badge-jump handler now sits AFTER the keep-alive button
             // actions below, so the badge's own x disarm button wins over the jump.
             // (Fix 25, v4.360) Keep-alive toggle / interval on a hovercard row.
