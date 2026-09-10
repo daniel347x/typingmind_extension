@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.430
+// Version: 4.431
+// v4.431: the 📝 Thinking Note editor now shows YOUR PRIOR NOTES at the top -- every note for the
+// SAME model FAMILY (tmThinkFamilyOf: all Kimis, all Claudes, all Qwens...) + endpoint host +
+// serving provider, oldest → newest, scrollable, with inline ✏️ edit and 🗑 delete (8-second undo
+// restoring the note at its original index). Proxy and session are deliberately NOT part of the
+// match -- a working proxy is supposed to influence nothing, and the notes exist precisely to
+// compare reasoning behavior across providers/routes (Kimi via OpenRouter/Fireworks vs Moonshot
+// direct). Provider matching is slug-tolerant: ring-recorded notes carry tmObservedProviderKey
+// slugs while SiM rows carry display labels ('Fireworks Fast'), so both sides normalize through
+// tmProviderNameToSlug with a lowercase fallback. ✏️ switches the SAME editor in place (never a
+// re-invocation -- that would trap tmPromptActive, whose restore value is captured at open), with
+// a '⬅ back to new note' button preserving the fresh draft. No count cap; the list scrolls.
 // v4.430: the STATUS WORD joins the top PINNED pill -- Dan's most important live indicator (⚙ tools
 // M:SS / ▶ M:SS / ✓ hit NN% / ✗ miss / ⛔ no endpoint / ⚠ err / ● idle), rendered by the SAME
 // tmSessionCtxLiveHtml the card's upper-right uses, so its count-up timers tick every second in the
@@ -2521,7 +2532,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.430';
+  const EXT_VERSION = '4.431';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -8712,6 +8723,35 @@ function tmThinkRenderBins(bucket,opts) {
   function tmThinkNotesCount(model, provider) {
     try { var n = 0, L = tmGetThinkNotes(); for (var i = 0; i < L.length; i++) if (L[i] && L[i].model === model && L[i].provider === provider) n++; return n; } catch (e) { return 0; }
   }
+  // (v4.431) RELATED-NOTES MATCHER for the editor's top section: SAME model FAMILY (tmThinkFamilyOf
+  // -- all Kimis, all Claudes, all Qwens; version-agnostic per Dan), SAME endpoint host, SAME
+  // serving provider. Proxy and session are deliberately NOT part of the match. Provider comparison
+  // is slug-tolerant because the two recording paths differ: ring-row notes carry the
+  // tmObservedProviderKey slug, SiM-row notes carry the display LABEL ('Fireworks Fast'). An empty
+  // ctx side skips that filter rather than demanding emptiness. Oldest -> newest, uncapped.
+  function tmThinkNoteProviderNorm(p) {
+    var s = String(p || '').trim(); if (!s) return '';
+    try { var sl = tmProviderNameToSlug(s); if (sl) return String(sl).toLowerCase(); } catch (e) {}
+    return s.toLowerCase();
+  }
+  function tmThinkNotesRelated(ctx) {
+    try {
+      if (!ctx || !ctx.model) return [];
+      var fam = tmThinkFamilyOf(ctx.model);
+      var host = String(ctx.host || '').trim().toLowerCase();
+      var prov = tmThinkNoteProviderNorm(ctx.provider);
+      var out = [], L = tmGetThinkNotes();
+      for (var i = 0; i < L.length; i++) {
+        var n = L[i]; if (!n || !n.model) continue;
+        if (tmThinkFamilyOf(n.model) !== fam) continue;
+        if (host && String(n.host || '').trim().toLowerCase() !== host) continue;
+        if (prov && tmThinkNoteProviderNorm(n.provider) !== prov) continue;
+        out.push(n);
+      }
+      out.sort(function (a, b) { return Number(a.ts || 0) - Number(b.ts || 0); });
+      return out;
+    } catch (e) { return []; }
+  }
   function tmAddThinkNote(ctx, text) {
     var L = tmGetThinkNotes();
     var note = { id: 'tn_' + Date.now() + '_' + Math.random().toString(16).slice(2, 8), ts: Date.now(),
@@ -8724,13 +8764,30 @@ function tmThinkRenderBins(bucket,opts) {
   function tmUpdateThinkNote(id, text) { var L = tmGetThinkNotes(); for (var i = 0; i < L.length; i++) if (L[i] && L[i].id === id) { L[i].text = String(text || ''); L[i].edited_ts = Date.now(); break; } tmSaveThinkNotes(L); }
   function tmDeleteThinkNote(id) { tmSaveThinkNotes(tmGetThinkNotes().filter(function(n) { return n && n.id !== id; })); }
 
+  // (v4.431) Context-header renderer, extracted from the editor body so the in-place mode switch
+  // (✏️ edit a related note / ⬅ back to new) can refresh it. `s` = the note when editing, else the
+  // ctx; `ed` = the note being edited (supplies ts_local). Output identical to the old inline HTML.
+  function tmNoteCtxBoxHtml(s, ed) {
+    s = s || {};
+    return '<div><span style="color:#8ef0a0;">' + escapeHtml(s.model || '?') + '</span> @ <span style="color:#8fc4ff;">' + escapeHtml(s.provider || '?') + '</span>' + (s.proxy ? ' <span style="color:#c8a8ff;">via proxy</span>' : '') + '</div>' +
+      '<div>\ud83e\udde0 req: <span style="color:' + (s.req_verdict === 'NONE' ? '#ffb84d' : '#e0d0ff') + ';">' + escapeHtml(s.req_summary || '?') + '</span> \u2192 obs: <span style="color:#e0d0ff;">' + escapeHtml(s.obs_summary || '?') + '</span></div>' +
+      (s.session_id ? '<div style="opacity:0.7;">session ' + escapeHtml(String(s.session_id)) + (ed && ed.ts_local ? (' \u00b7 ' + escapeHtml(ed.ts_local)) : '') + '</div>' : '');
+  }
+
   // Nested editor (z 2147483648): read-only context header + textarea. Ctrl+Enter saves, Escape cancels.
   // Follows the file's modal rules: capture-phase keydown that SELF-UNINSTALLS, tmPromptActive while
   // open (ring modal ignores Escape), suppress-Escape window on close.
   function tmShowThinkNoteEditor(ctx, existing, onSaved) {
     if (typeof document === 'undefined' || !ctx) return;
     var old = document.getElementById('tm-think-note-overlay'); if (old) old.parentNode.removeChild(old);
-    var src = existing || ctx;
+    // (v4.431) Mutable edit target: ✏️ on a related note switches THIS editor in place. A fresh
+    // tmShowThinkNoteEditor invocation instead would trap tmPromptActive -- its restore value
+    // (wasPromptActive) is captured at open, so a stacked open would capture 'true' and never
+    // release the flag on close.
+    var editing = existing || null;
+    var openedAsEdit = !!existing;
+    var newDraft = ''; // the fresh-note draft, preserved across an edit detour
+    var src = editing || ctx;
     var overlay = document.createElement('div');
     overlay.id = 'tm-think-note-overlay';
     overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483648;background:rgba(0,0,0,0.55);display:flex;align-items:center;justify-content:center;';
@@ -8742,33 +8799,126 @@ function tmThinkRenderBins(bucket,opts) {
     box.appendChild(hdr);
     var ctxBox = document.createElement('div');
     ctxBox.style.cssText = 'background:#0d0d11;border:1px solid #333;border-radius:4px;padding:6px 8px;margin-bottom:8px;font-family:monospace;font-size:11px;line-height:1.5;color:#9aa4b2;';
-    ctxBox.innerHTML =
-      '<div><span style="color:#8ef0a0;">' + escapeHtml(src.model || '?') + '</span> @ <span style="color:#8fc4ff;">' + escapeHtml(src.provider || '?') + '</span>' + (src.proxy ? ' <span style="color:#c8a8ff;">via proxy</span>' : '') + '</div>' +
-      '<div>\ud83e\udde0 req: <span style="color:' + (src.req_verdict === 'NONE' ? '#ffb84d' : '#e0d0ff') + ';">' + escapeHtml(src.req_summary || '?') + '</span> \u2192 obs: <span style="color:#e0d0ff;">' + escapeHtml(src.obs_summary || '?') + '</span></div>' +
-      (src.session_id ? '<div style="opacity:0.7;">session ' + escapeHtml(String(src.session_id)) + (existing && existing.ts_local ? (' \u00b7 ' + escapeHtml(existing.ts_local)) : '') + '</div>' : '');
+    ctxBox.innerHTML = tmNoteCtxBoxHtml(src, editing);
     box.appendChild(ctxBox);
+    // (v4.431) RELATED NOTES section -- between the context header and the textarea. Every prior
+    // note for the same family + endpoint + provider (tmThinkNotesRelated), oldest -> newest, each
+    // with ✏️ (switch this editor to that note, preserving the new-note draft) and 🗑 (delete with
+    // an 8-second undo that restores the note object -- id and ts intact -- at its original index).
+    var relBox = document.createElement('div');
+    relBox.style.cssText = 'margin-bottom:8px;';
+    box.appendChild(relBox);
+    var lastDeleted = null, lastDeletedIdx = -1, undoTimer = 0;
+    function renderRelated() {
+      try {
+        var rel = tmThinkNotesRelated(ctx);
+        var fam = tmThinkFamilyOf(ctx.model || '');
+        var h = '<div style="font-size:11px;font-weight:700;color:#8a94a2;margin-bottom:4px;">\ud83d\udcda ' + rel.length + ' prior note' + (rel.length === 1 ? '' : 's') + ' \u2014 all ' + escapeHtml(fam) + ' @ ' + escapeHtml(String(ctx.host || '?')) + ' \u00b7 ' + escapeHtml(String(ctx.provider || '?')) + ' \u2014 oldest \u2192 newest</div>';
+        if (!rel.length) {
+          relBox.innerHTML = '<div style="border:1px solid #2c2c36;border-radius:6px;background:#12121a;padding:6px 8px;">' + h + '<div style="font-size:11px;color:#5a6270;font-style:italic;">none yet \u2014 the note you add becomes the first for this family + endpoint + provider.</div></div>';
+          return;
+        }
+        var rows = rel.map(function (n) {
+          var meta = '<span style="color:#7ec8e3;">' + escapeHtml(n.ts_local || '') + '</span> <span style="color:#8ef0a0;">' + escapeHtml(n.model || '') + '</span>' +
+            ((n.req_summary || n.obs_summary) ? ' <span style="opacity:0.65;">\ud83e\udde0 ' + escapeHtml(n.req_summary || '?') + ' \u2192 ' + escapeHtml(n.obs_summary || '?') + '</span>' : '') +
+            (n.session_id ? ' <span style="opacity:0.45;">sess ' + escapeHtml(String(n.session_id)) + '</span>' : '');
+          return '<div style="border:1px solid #2c2c36;border-radius:4px;padding:4px 7px;margin-bottom:4px;background:#0d0d11;">' +
+            '<div style="display:flex;align-items:center;gap:6px;font-size:10px;"><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + meta + '</span>' +
+            '<span data-rel-edit="' + escapeHtml(n.id) + '" title="Edit this note in this editor" style="cursor:pointer;color:#c8b4ff;font-weight:700;">\u270f\ufe0f</span>' +
+            '<span data-rel-del="' + escapeHtml(n.id) + '" title="Delete this note (undo offered for 8s)" style="cursor:pointer;color:#c08080;font-weight:700;">\ud83d\uddd1</span></div>' +
+            '<div style="font-size:11px;color:#d0d0d8;white-space:pre-wrap;overflow-wrap:anywhere;margin-top:2px;max-height:80px;overflow-y:auto;">' + escapeHtml(n.text || '') + '</div></div>';
+        }).join('');
+        relBox.innerHTML = '<div style="border:1px solid #333;border-radius:6px;background:#12121a;padding:6px 8px;max-height:200px;overflow-y:auto;">' + h + rows +
+          (lastDeleted ? '<div data-rel-undo="1" style="cursor:pointer;font-size:11px;color:#ffb84d;font-weight:600;">\u21a9 undo delete \u2014 restore \u201c' + escapeHtml(String(lastDeleted.text || '').slice(0, 60)) + '\u201d</div>' : '') +
+          '</div>';
+      } catch (eR) { try { relBox.innerHTML = ''; } catch (eR2) {} }
+    }
+    relBox.addEventListener('click', function (ev) {
+      try {
+        var t = ev.target;
+        if (!t || !t.closest) return;
+        var un = t.closest('[data-rel-undo]');
+        if (un && lastDeleted) {
+          ev.stopPropagation(); ev.preventDefault();
+          var L = tmGetThinkNotes();
+          L.splice(Math.max(0, Math.min(lastDeletedIdx, L.length)), 0, lastDeleted);
+          tmSaveThinkNotes(L);
+          lastDeleted = null; lastDeletedIdx = -1;
+          renderRelated();
+          try { if (onSaved) onSaved(); } catch (eU) {}
+          return;
+        }
+        var del = t.closest('[data-rel-del]');
+        if (del) {
+          ev.stopPropagation(); ev.preventDefault();
+          var idD = del.getAttribute('data-rel-del'), L2 = tmGetThinkNotes(), idx = -1, target = null;
+          for (var i = 0; i < L2.length; i++) if (L2[i] && L2[i].id === idD) { idx = i; target = L2[i]; break; }
+          if (target) {
+            tmDeleteThinkNote(idD);
+            lastDeleted = target; lastDeletedIdx = idx;
+            if (undoTimer) clearTimeout(undoTimer);
+            undoTimer = setTimeout(function () { lastDeleted = null; try { renderRelated(); } catch (eT) {} }, 8000);
+            // Deleting the note currently being edited drops the editor back to new-note mode.
+            if (editing && editing.id === idD) { editing = null; ta.value = newDraft; updateMode(); }
+            renderRelated();
+            try { if (onSaved) onSaved(); } catch (eD) {}
+          }
+          return;
+        }
+        var ed = t.closest('[data-rel-edit]');
+        if (ed) {
+          ev.stopPropagation(); ev.preventDefault();
+          var idE = ed.getAttribute('data-rel-edit'), L3 = tmGetThinkNotes(), target2 = null;
+          for (var j = 0; j < L3.length; j++) if (L3[j] && L3[j].id === idE) { target2 = L3[j]; break; }
+          if (target2) {
+            if (!editing) newDraft = ta.value; // preserve the fresh draft for 'back to new note'
+            editing = target2;
+            ta.value = target2.text || '';
+            updateMode();
+            try { ta.focus(); } catch (eF) {}
+          }
+          return;
+        }
+      } catch (eRel) {}
+    });
+    renderRelated();
     var ta = document.createElement('textarea');
     ta.style.cssText = 'width:100%;height:110px;background:#0d0d11;border:1px solid #333;border-radius:4px;color:#d0d0d8;font-size:12px;font-family:system-ui,sans-serif;padding:8px;box-sizing:border-box;resize:vertical;';
-    ta.value = existing ? (existing.text || '') : '';
+    ta.value = editing ? (editing.text || '') : '';
     ta.placeholder = 'Your experience with this thinking level\u2026  (Ctrl+Enter saves, Esc cancels)';
     box.appendChild(ta);
     var row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;justify-content:flex-end;margin-top:10px;';
     var cancel = document.createElement('button'); cancel.textContent = 'Cancel';
     cancel.style.cssText = 'background:#333;color:#ccc;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;';
-    var save = document.createElement('button'); save.textContent = existing ? 'Save' : 'Add note';
+    var save = document.createElement('button'); save.textContent = editing ? 'Save' : 'Add note';
     save.style.cssText = 'background:#4a3a7a;color:#fff;border:none;border-radius:4px;padding:4px 12px;font-size:12px;cursor:pointer;font-weight:bold;';
-    row.appendChild(cancel); row.appendChild(save); box.appendChild(row); overlay.appendChild(box);
+    // (v4.431) 'back to new note' -- visible only during an edit detour from a NEW-note editor;
+    // restores the preserved draft. An editor opened AS an edit (🧠 Thinking Notes modal) never
+    // shows it: there is no new-note draft to go back to.
+    var backToNew = document.createElement('button'); backToNew.textContent = '\u2b05 back to new note';
+    backToNew.style.cssText = 'background:#2a2a34;color:#c8b4ff;border:1px solid #4a4a5a;border-radius:4px;padding:4px 10px;font-size:11px;cursor:pointer;margin-right:auto;display:none;';
+    backToNew.addEventListener('click', function (ev) { ev.stopPropagation(); editing = null; ta.value = newDraft; newDraft = ''; updateMode(); try { ta.focus(); } catch (eB) {} });
+    // One mode-switch updater: header, context box, save label, back-to-new visibility.
+    function updateMode() {
+      src = editing || ctx;
+      hdr.textContent = editing ? '\u270f\ufe0f Edit Thinking Note' : '\ud83e\udde0\ud83d\udcdd New Thinking Note';
+      ctxBox.innerHTML = tmNoteCtxBoxHtml(src, editing);
+      save.textContent = editing ? 'Save' : 'Add note';
+      backToNew.style.display = (editing && !openedAsEdit) ? '' : 'none';
+    }
+    row.appendChild(backToNew); row.appendChild(cancel); row.appendChild(save); box.appendChild(row); overlay.appendChild(box);
     var wasPromptActive = tmPromptActive;
     function close() {
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       document.removeEventListener('keydown', onKey, true);
+      if (undoTimer) { clearTimeout(undoTimer); undoTimer = 0; }
       tmPayloadCaptureSuppressEscapeUntil = Date.now() + 1500;
       setTimeout(function() { tmPromptActive = wasPromptActive; }, 100);
     }
     function doSave() {
       var txt = ta.value.trim();
-      if (existing) tmUpdateThinkNote(existing.id, txt);
+      if (editing) tmUpdateThinkNote(editing.id, txt);
       else if (txt) tmAddThinkNote(ctx, txt);
       close();
       try { if (onSaved) onSaved(); } catch (e) {}
