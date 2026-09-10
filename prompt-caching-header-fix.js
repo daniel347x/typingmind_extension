@@ -1,5 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.434
+// Version: 4.435
+// v4.435: pinned running timers move BEFORE the session name, after the note button, in a
+// fixed 112px slot with monospaced/tabular M:SS digits. Tool and assistant timers share the
+// same position; neither is repeated on the right. Idle cache status and alerts stay right,
+// and an alert cannot hide the independent left timer. Cards and three-way grouping unchanged.
+// Cache HIT/MISS investigation is pending a real GPT-6 response capture; no cache/cost mutation.
 // v4.434: pinned pills split into three live, non-scrolling blocks: ACTIVE (green outline),
 // INACTIVE (neutral), KEEP-ALIVE WORKING (soft red), in that order; empty blocks take no space.
 // Grouping uses the same timer state as the status word and the same armed/has-fired-since-real-
@@ -2565,7 +2570,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.434';
+  const EXT_VERSION = '4.435';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -14809,7 +14814,7 @@ function tmThinkRenderBins(bucket,opts) {
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
   // ]
-  function tmSessionCtxLiveHtml(key, info, frame) {
+  function tmSessionCtxLiveHtml(key, info, frame, opts) {
     // (v4.407) THE STATUS WORD. The old live zone (cumulative-rt span + per-turn timer + clear/tool
     // badge + tool timer) and the busy spinner are replaced by ONE status, top-right of the row,
     // in priority order: alerts > tools running > assistant in flight > last cache outcome > idle.
@@ -14822,6 +14827,9 @@ function tmThinkRenderBins(bucket,opts) {
     try { if (tmEndpointNotFound && tmEndpointNotFound.idKey === key) return '<span title="Provider/endpoint not found \u2014 see the alert line on this row" style="' + S + 'color:#ff9500;font-weight:700;">\u26d4 no endpoint</span>'; } catch (e0) {}
     try { if (tmMostRecentError && tmMostRecentError.idKey === key) return '<span title="Most recent turn errored \u2014 click the alert line on this row for the raw JSON" style="' + S + 'color:#ff6b6b;font-weight:700;">\u26a0 err ' + escapeHtml(String(tmMostRecentError.code != null ? tmMostRecentError.code : '?')) + '</span>'; } catch (e1) {}
     var timer = tmSessionCtxTimerState(key, info, frame);
+    // (v4.435) Pins render timers before the name. Only suppress that duplicate here:
+    // alerts above and idle cache/idle states below retain the ordinary status wording.
+    if (timer && opts && opts.hideTimer) return '';
     if (timer && timer.kind === 'tool') return '<span title="Client-side tool executing \u2014 time so far" style="' + S + 'color:#d08b8b;font-weight:600;">\u2699 tools ' + tmFmtDuration(timer.ms) + '</span>';
     if (timer) return '<span title="Assistant turn in flight \u2014 time so far" style="' + S + 'color:#7ec8e3;font-weight:600;">\u25b6 ' + Math.floor(timer.ms / 60000) + ':' + String(Math.floor(timer.ms / 1000) % 60).padStart(2, '0') + '</span>';
     try {
@@ -15194,6 +15202,18 @@ function tmThinkRenderBins(bucket,opts) {
     return tmKeepAliveIsWorking(entry) ? 'keepalive' : 'inactive';
   }
 
+  // (v4.435) Pinned-only fixed-width timer. Compact M:SS with fixed-width digits stops the
+  // session name moving when 7m 0s becomes 7m 1s, or when minutes gain a digit. No blank slot
+  // for idle/working pins; the active group has a common alignment. No timer-state writes.
+  function tmSimPinTimerHtml(timer) {
+    if (!timer) return '';
+    var seconds = Math.max(0, Math.floor(Number(timer.ms) / 1000) || 0);
+    var text = Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
+    var tool = timer.kind === 'tool';
+    return '<span data-sim-pin-timer="' + (tool ? 'tool' : 'assistant') + '" title="' + (tool ? 'Client-side tool executing' : 'Assistant turn in flight') + ' — time so far" style="display:inline-flex;align-items:center;gap:5px;width:112px;flex:0 0 112px;margin-right:6px;font-size:14px;font-weight:600;white-space:nowrap;color:' + (tool ? '#d08b8b' : '#7ec8e3') + ';">' +
+      '<span>' + (tool ? '⚙ tools' : '▶') + '</span><span style="font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;">' + text + '</span></span>';
+  }
+
   // The existing [data-sim-pins] zone owns ALL three blocks, replaced together on the guarded
   // 1s tick. Empty groups vanish; pills retain insertion order within each group, and neither
   // the persisted pin list nor the scrolling-card composition is sorted or mutated by grouping.
@@ -15224,14 +15244,14 @@ function tmThinkRenderBins(bucket,opts) {
         // Name: identical coloration to the card's name (hue + fullness-bulge ring), 12px = 3pt
         // smaller than the card's 15px. Dial: the shared gauge, 22px (card's is 32px), tight
         // against the name (the dial carries its own 4px margin-left; unit gap is 2px).
-        var nameHtml = '<span style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
+        var nameHtml = '<span data-sim-pin-name="1" style="font-size:12px;color:' + color + ';' + tmSessionFullnessBulgeStyle(v.pct, hue) + '">' + escapeHtml(name) + '</span>';
         var dialHtml = v.ctx ? tmRenderCtxDial(v.ctx, { model: v.model, provider: v.slug, mr: v.maxCtx, size: 22, labelFs: '10px' }) : '<span style="font-size:10px;color:#9aa4b2;margin-left:6px;">ctx —</span>';
         var unpin = '<button data-action="sim-pin-toggle" data-key="' + escapeHtml(k) + '" title="Unpin this session" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#ff5a5a;border:1px solid #a04040;background:#33181a;">📌</button>';
-        // (v4.430) The STATUS WORD rides in the pill -- the exact renderer the card's upper-right
-        // uses, so its count-up timers tick every second here too (this block is patched on the 1s
-        // tick). Small air around it per Dan: tight dial on its left, unpin rightmost.
+        // (v4.435) Timer has its own fixed slot BEFORE the name, independent of alert priority.
+        // Right-hand status retains errors and idle outcomes, but never duplicates the timer.
+        var timerHtml = tmSimPinTimerHtml(tmSessionCtxTimerState(k, v, frame));
         var liveHtml = '';
-        try { liveHtml = tmSessionCtxLiveHtml(k, v, frame); } catch (eL) {}
+        try { liveHtml = tmSessionCtxLiveHtml(k, v, frame, { hideTimer: true }); } catch (eL) {}
         // (v4.429) The WHOLE pill is a jump target (except the unpin button, which the delegated
         // handler resolves first): click anywhere -> scroll the session's card into view + flash,
         // the KA-badge jump resolver reused. The pill's dial is therefore jump-only; the card's own
@@ -15242,7 +15262,7 @@ function tmThinkRenderBins(bucket,opts) {
         var pillNote = tmSimSessionNoteRead(pillSid);
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         groups[tmSimPinGroup(k, v, frame)].push(unit);
       });
       var sections = [
