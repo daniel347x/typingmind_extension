@@ -1,5 +1,15 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.440
+// Version: 4.441
+// v4.441: Inactive pinned pills order by the most recent REAL Dan-typed message, not by
+// pin-insertion order or last-capture activity. A capture-time classifier (tmBodyIsRealUserTurn)
+// recognises a genuine user turn across all four wire shapes and excludes tool-result
+// continuations, keep-alive pings and walk-away auto-resume sentinels; it stamps a durable
+// _last_user_ts on the identity ledger (via tmLedgerTouchActivity, the one existing capture-time
+// ledger touch). tmBuildSessionCtxPinRow sorts the INACTIVE group by that clock (fallback: ledger
+// _ts), so a background tool swarm or an overnight keep-alive never bumps a conversation to the
+// top -- only Dan actually typing and sending does. Active / keep-alive groups keep insertion
+// order. NOTE: the main body still sorts by most-recent-capture (frame.order), so a ping/tool
+// DOES bump a card there; aligning it is a separate opt-in change.
 // v4.440: Pinned-pill total cost. Each Sessions-in-Memory pinned pill (active / inactive /
 // keep-alive working) now shows the identity's retained session cost total to the RIGHT of
 // the percentage gauge -- same value + tooltip as the card's aggregate cost
@@ -2603,7 +2613,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.440';
+  const EXT_VERSION = '4.441';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5453,6 +5463,61 @@
     return isPing;
   }
 
+  // (v4.441) First genuine text of a message-content / parts value: a string is itself; an array
+  // yields its first text-ish part. Anthropic tool_result blocks (type:'tool_result', text under
+  // .content) and Gemini functionResponse parts carry no top-level .text and are correctly skipped.
+  // Mirrors tmKeepAliveLastUserText's inner textOf so the two classifiers never disagree.
+  function tmContentFirstText(content) {
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      for (var i = 0; i < content.length; i++) {
+        var p = content[i];
+        if (p && typeof p.text === 'string' && (!p.type || p.type === 'text' || p.type === 'input_text')) return p.text;
+      }
+    }
+    return '';
+  }
+
+  // (v4.441) TRUE when the outbound payload's FINAL turn is a genuine Dan-typed user message --
+  // NOT a tool-result continuation, NOT a keep-alive ping, NOT a walk-away auto-resume sentinel.
+  // Examines the ACTUAL last message (not a backward role:'user' scan, which on an OpenAI
+  // tool-result turn would find Dan's earlier text and misfire). Stamps the durable _last_user_ts
+  // clock that orders the INACTIVE pinned pills by real human activity, so a background tool swarm
+  // or an overnight keep-alive never bumps a conversation -- only Dan typing and sending does.
+  function tmBodyIsRealUserTurn(body) {
+    try {
+      if (!body || typeof body !== 'object') return false;
+      var last, txt = '';
+      if (Array.isArray(body.messages) && body.messages.length) {
+        // OpenAI chat-completions AND Anthropic Messages. OpenAI tool results are role:'tool';
+        // Anthropic tool results are role:'user' with a tool_result block and no text part.
+        last = body.messages[body.messages.length - 1];
+        if (!last || last.role !== 'user') return false;
+        txt = tmContentFirstText(last.content);
+      } else if (Array.isArray(body.input) && body.input.length) {
+        // OpenAI Responses API: function_call / function_call_output items are not user messages.
+        last = body.input[body.input.length - 1];
+        if (!last) return false;
+        if (last.type && last.type !== 'message') return false;
+        if (last.role && last.role !== 'user') return false;
+        txt = tmContentFirstText(last.content);
+      } else if (Array.isArray(body.contents) && body.contents.length) {
+        // Gemini native: a functionResponse turn has no text part; role may be user/model/function.
+        last = body.contents[body.contents.length - 1];
+        if (!last) return false;
+        if (last.role && last.role !== 'user') return false;
+        txt = tmContentFirstText(last.parts);
+      } else {
+        return false;
+      }
+      txt = String(txt || '').trim();
+      if (!txt) return false;  // tool_result-only / functionResponse-only / empty -> not a Dan turn
+      if (txt.indexOf(TM_KEEPALIVE_SENTINEL_PREFIX) === 0) return false;  // keep-alive ping
+      if (txt.indexOf('[AUTO-RESUME') === 0) return false;                 // walk-away auto-resume
+      return true;
+    } catch (e) { return false; }
+  }
+
   function tmKeepAliveFindPricing(model, host) {
     try {
       var costs = tmGetProviderCosts();
@@ -7557,6 +7622,11 @@
       }
       rec._ts = now;
       rec._activity_v = 2;
+      // (v4.441) Durable 'last REAL Dan-typed turn' clock, written ONLY when the caller passes a
+      // valid lastUserTs (a genuine user turn). Unlike _ts -- which every outbound, KA ping and
+      // tool-result submit advances -- this never moves on auto-activity, so it can order the
+      // INACTIVE pinned pills by real human recency.
+      if (opts && isFinite(Number(opts.lastUserTs)) && Number(opts.lastUserTs) > 0) rec._last_user_ts = Number(opts.lastUserTs);
       if (!rec._session_id) rec._session_id = parts[0];
       costs[idKey] = rec;
       localStorage.setItem(TM_SESSION_COSTS_KEY, JSON.stringify(costs));
@@ -13006,6 +13076,10 @@ function tmThinkRenderBins(bucket,opts) {
           var kaKey = tmComputeRoutingIdentityKey(parsed, url, options);
           var kaIsPing = !!(options && options._tm_ka_ping) || tmKeepAliveBodyIsPing(parsed);
           if (kaIsPing) record._ka_ping = true;
+          // (v4.441) A genuine Dan-typed turn (not a ping, not a tool-result continuation, not an
+          // auto-resume sentinel) stamps _real_user; the pending block below persists it as the
+          // ledger's durable _last_user_ts, which orders the INACTIVE pinned pills by real activity.
+          if (!kaIsPing && tmBodyIsRealUserTurn(parsed)) record._real_user = true;
           tmKeepAliveNoteRealTurn(kaKey, record.session_id, kaIsPing);
         } catch (eKa) {}
 
@@ -13126,7 +13200,7 @@ function tmThinkRenderBins(bucket,opts) {
         // (§3 step 4) Outbound traffic is identity activity whether or not a response arrives:
         // touch the ledger (creating a MINIMAL activity record if absent) and clear any tombstone
         // for this exact identity (auto-untombstone on NEW outbound, no isKaPing exemption).
-        try { tmLedgerTouchActivity(tmPendingIdKey, { create: true, ts: Date.now() }); } catch (eTA) {}
+        try { tmLedgerTouchActivity(tmPendingIdKey, { create: true, ts: Date.now(), lastUserTs: record._real_user ? Date.now() : null }); } catch (eTA) {}
         try { tmTombstoneClear(tmPendingIdKey); } catch (eTC) {}
       }
     } catch (ePend) {}
@@ -15318,13 +15392,16 @@ function tmThinkRenderBins(bucket,opts) {
   }
 
   // The existing [data-sim-pins] zone owns ALL three blocks, replaced together on the guarded
-  // 1s tick. Empty groups vanish; pills retain insertion order within each group, and neither
-  // the persisted pin list nor the scrolling-card composition is sorted or mutated by grouping.
+  // 1s tick. Empty groups vanish. (v4.441) The INACTIVE group is sorted by the most recent REAL
+  // Dan-typed turn (ledger _last_user_ts, fallback _ts), newest first -- so a background tool swarm
+  // or an overnight keep-alive never bumps a conversation; only Dan sending a message does. Active
+  // and keep-alive-working groups keep insertion order. Neither the persisted pin list nor the
+  // scrolling-card composition is sorted or mutated by grouping.
   // @beacon[
   //   id=payload-sim-pinned-groups,
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
-  //   comment=v4.434: live pinned pills in active / inactive / keep-alive working blocks. Shared timer and KA display state; full identity match with sid aliases; pills/actions unchanged.,
+  //   comment=v4.434: live pinned pills in active / inactive / keep-alive working blocks. Shared timer and KA display state; full identity match with sid aliases. v4.441: INACTIVE group sorted by last real Dan-typed turn (_last_user_ts, fallback _ts); active/keep-alive keep insertion order.,
   // ]
   function tmBuildSessionCtxPinRow(frame) {
     try {
@@ -15378,7 +15455,10 @@ function tmThinkRenderBins(bucket,opts) {
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
         var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
-        groups[group].push(unit);
+        // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
+        // back to the ledger activity stamp (and 0) so pre-v4.441 records still order sensibly.
+        var pinSortTs = (v.rec && Number(v.rec._last_user_ts)) || (v.rec && Number(v.rec._ts)) || 0;
+        groups[group].push({ html: unit, ts: pinSortTs });
       });
       var sections = [
         { key: 'active', title: 'ACTIVE PINS', border: '#477b57', ink: '#9bceb0', tip: 'Assistant or tool timer running' },
@@ -15388,9 +15468,15 @@ function tmThinkRenderBins(bucket,opts) {
       return sections.map(function (section) {
         var units = groups[section.key];
         if (!units.length) return '';
+        // (v4.441) INACTIVE pins order by the most recent REAL Dan-typed turn (_last_user_ts,
+        // fallback ledger _ts), newest first -- a background tool swarm or an overnight keep-alive
+        // never bumps a conversation; only Dan actually sending a message does. Active / keep-alive
+        // groups keep insertion order. Ties are stable (V8 sort), so equal clocks keep pin order.
+        if (section.key === 'inactive') units = units.slice().sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
+        var unitsHtml = units.map(function (u) { return u.html; }).join('');
         return '<div data-sim-pin-group="' + section.key + '" style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid ' + section.border + ';border-bottom:2px solid ' + section.border + ';border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
           '<div title="' + escapeHtml(section.tip) + '" style="color:' + section.ink + ';font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;">' + section.title + ' · ' + units.length + '</div>' +
-          '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + units.join('') + '</div></div>';
+          '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + unitsHtml + '</div></div>';
       }).join('');
     } catch (ePin) { return ''; }
   }
