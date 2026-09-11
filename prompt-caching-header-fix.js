@@ -1,5 +1,16 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.442
+// Version: 4.443
+// v4.443: Keep-alive badge polish + the flickering-divider fix. (1) The 'next ping in' countdown is
+// now a LIVE M:SS timer (recomputed from the entry every 1s tick via tmKeepAliveNextPingRemainingMs,
+// mirroring the sweep's idle math) rendered bright red (#ff5a5a) and 1pt larger (12px vs the 11px
+// line) so it pops against the dark-red badge; any 'armed --' / 'auto-armed --' prefix keeps its tone
+// colour and skip/waiting reasons render unchanged. (2) +4px margin above the status line and +3px
+// above the badge session names (title margin-bottom 4 to 7px) so nothing runs together. (3) Removed
+// the pins-to-keep-alive-badges divider: it lived INSIDE the [data-sim-pins] zone, so the 1s zone
+// patch (tmBuildSessionCtxPinRow carries no divider) stripped it and the 30s rebuild restored it --
+// the ~17px height jump + flicker Dan kept catching. The one header-to-cards divider stays (it is
+// outside every patched zone). The KA badge row (KEEP-ALIVE ON, N conversations) is the block beneath
+// the three pin groups; a usually-empty jump-note line follows it.
 // v4.442: Keep-alive AUTO-RE-ARM whitelist. Switching away from a model correctly disarms its
 // keep-alive (v4.422 supersede), but switching BACK never re-armed it -- so a return to Claude
 // left it cold and the next turn paid a full cache-lapse miss (~$7). New global constant
@@ -2625,7 +2636,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.442';
+  const EXT_VERSION = '4.443';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5860,6 +5871,33 @@
     return tmKeepAliveNormSid(a[0]) === tmKeepAliveNormSid(b[0]) && a[1] === b[1] && a[2] === b[2] && a[3] === b[3];
   }
 
+  // (v4.443) Format a millisecond duration as a live 'Xm YYs' countdown (minutes + seconds) for the
+  // keep-alive 'next ping in' readout Dan watches tick down. Clamped at zero; seconds zero-padded so
+  // the width does not jitter every tick.
+  function tmFmtMinSec(ms) {
+    ms = Math.max(0, Math.round(Number(ms) || 0));
+    var totalSec = Math.floor(ms / 1000), m = Math.floor(totalSec / 60), s = totalSec % 60;
+    return m + 'm ' + String(s).padStart(2, '0') + 's';
+  }
+
+  // (v4.443) Milliseconds until the next keep-alive ping, recomputed LIVE from the entry -- mirrors
+  // tmKeepAliveSweep's idle math (lastActivity = max(last_turn_ts, enabled_at, the agent-management
+  // turn/outbound stamps, last_ping_ts); remaining = interval - (now - lastActivity)). The sweep only
+  // refreshes its stored minute-granularity text every 30s, so the status line calls this every tick
+  // to tick the countdown down smoothly. Meaningful only when the sweep has scheduled a ping.
+  function tmKeepAliveNextPingRemainingMs(e, key) {
+    try {
+      if (!e) return 0;
+      var now = Date.now();
+      var baseline = Number(e.last_turn_ts) || Number(e.enabled_at) || 0;
+      var ds = null;
+      try { ds = tmAgentManagementDisplayState(e.sid || String(key || '').split('::')[0]); } catch (eDS) {}
+      var lastActivity = Math.max(baseline, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, Number(e.last_ping_ts) || 0);
+      var intervalMs = Math.max(1, Number(e.interval_min || 50)) * 60 * 1000;
+      return intervalMs - (now - lastActivity);
+    } catch (eR) { return 0; }
+  }
+
   // (v4.422) THE KEEP-ALIVE STATUS LINE -- the long string that used to live INSIDE the button
   // cluster (ping count, cumulative ping spend, last-ping cache read/write, and the sweeper's
   // countdown or skip reason). It ran a quarter of the row's width and wrapped the whole keep-alive
@@ -5888,7 +5926,19 @@
         var stt = tmKeepAliveStatus[key];
         var sttText = stt ? stt.text : 'armed \u2014 first sweep pending';
         var sttColor = (stt && stt.tone === 'warn') ? '#ffb84d' : ((stt && stt.tone === 'active') ? '#7fd8ff' : ((stt && stt.tone === 'ok') ? '#7dd67d' : '#8a94a2'));
-        parts.push('<span title="Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed." style="color:' + sttColor + ';' + nw + '">\u00b7 ' + escapeHtml(sttText) + '</span>');
+        var sttTitle = 'Keep-alive sweeper status (re-evaluated every 30s). A ping is a REAL signposted turn typed into this conversation through the same actuator as auto-resume; TypingMind builds the payload, the provider reads the prefix from cache, TTL refreshed.';
+        // (v4.443) LIVE M:SS countdown. The sweep stores minute-granularity text refreshed only every
+        // 30s, so recompute the remaining time from the entry on EVERY tick and render the
+        // 'next ping in ...' tail bright red + 1pt larger so it pops against the dark-red badge. Any
+        // prefix ('armed --', 'auto-armed -- ...;') keeps the normal tone colour; skip/waiting reasons
+        // (no 'next ping in') render unchanged.
+        var cdAt = sttText.indexOf('next ping in');
+        if (cdAt >= 0) {
+          var cdText = 'next ping in ' + tmFmtMinSec(tmKeepAliveNextPingRemainingMs(e, key));
+          parts.push('<span title="' + sttTitle + '" style="color:' + sttColor + ';' + nw + '">\u00b7 ' + escapeHtml(sttText.slice(0, cdAt)) + '<span style="color:#ff5a5a;font-weight:700;font-size:12px;font-variant-numeric:tabular-nums;' + nw + '">' + escapeHtml(cdText) + '</span></span>');
+        } else {
+          parts.push('<span title="' + sttTitle + '" style="color:' + sttColor + ';' + nw + '">\u00b7 ' + escapeHtml(sttText) + '</span>');
+        }
       } else if (e && /^auto-off: superseded/.test(String(e.stopped_reason || ''))) {
         // (v4.422) Explain a silent disarm. The sweep deletes tmKeepAliveStatus for disabled entries,
         // so the reason is read from the persisted stopped_reason instead -- it survives.
@@ -5899,7 +5949,7 @@
       // (v4.423) 11px so the last-ping read/write tail is legible. The card line's negative bottom
       // margin tracks the line-height (2 + 14 - 15 = 1px net) so arming still costs the card nothing.
       var wrap = opts.center
-        ? 'margin-top:1px;text-align:center;font-size:11px;line-height:14px;overflow-wrap:break-word;'
+        ? 'margin-top:5px;text-align:center;font-size:11px;line-height:14px;overflow-wrap:break-word;'
         // Negative bottom margin paints the line INTO the card's bottom padding: net height +1px.
         // (v4.429) padding-right:30px reserves the card's bottom-right corner for the absolutely-
         // positioned pin stamp, so the ellipsis kicks in before the text could reach it.
@@ -6040,7 +6090,7 @@
       // bottom border to read as a header. The label moved ABOVE the badges as a title line: inline,
       // it stole horizontal space and pushed a badge onto a second row.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #3a2a2a;border-bottom:2px solid #4a3030;border-radius:6px;background:#1b1315;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
-        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;white-space:nowrap;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 click a badge to jump to its card</div>' +
+        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:7px;white-space:nowrap;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 click a badge to jump to its card</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:flex-start;">' + units.join('') + '</div>' +
         '</div>';
     } catch (eKB) { return ''; }
@@ -14864,14 +14914,16 @@ function tmThinkRenderBins(bucket,opts) {
     var title = '<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>';
     // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
     // replaced whenever a countdown changes, which would erase a note placed inside it.
-    // (v4.438) Thick blue-gray dividers between content blocks, only when both sides have
-    // content -- pins → (divider) → keep-alive badges → (divider) → the scrolling cards. Nothing
-    // pinned and nothing armed: no divider, header unchanged. The tick's zone patches rebuild
-    // these wrappers with the blocks, so a divider appears/disappears with its neighbors.
+    // (v4.438; v4.443) ONE thick blue-gray divider now: between the header (pins + keep-alive
+    // badges) and the scrolling cards, rendered only when the header has content. The former
+    // pins-to-badges divider was REMOVED in v4.443 -- it lived INSIDE the [data-sim-pins] zone, so
+    // every 1s zone patch (tmBuildSessionCtxPinRow carries no divider) stripped it and the 30s full
+    // rebuild restored it: a ~17px height jump and a divider flickering in/out that grabbed Dan's eye.
+    // A decorative separator must live OUTSIDE a patched zone (the zone contract); this one now does.
     var pinsHtml = tmBuildSessionCtxPinRow(frame), kaHtml = tmBuildSessionCtxKaBadgeRow(frame);
     var divider = '<div style="height:3px;background:#3a4658;border-radius:2px;margin:4px 0 10px;"></div>';
     return title +
-      '<div data-sim-pins="1">' + pinsHtml + (pinsHtml && kaHtml ? divider : '') + '</div>' +
+      '<div data-sim-pins="1">' + pinsHtml + '</div>' +
       '<div data-ka-badges="1">' + kaHtml + '</div>' +
       '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>' +
       ((pinsHtml || kaHtml) ? divider : '');
