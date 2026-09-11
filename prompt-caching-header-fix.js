@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.455
+// Version: 4.456
+// v4.456: KA BROKEN false-positive fix -- the health check now requires a LOW HIT RATIO, not just a
+// big write. Dan's live case: a hand-pasted ping after a few GPT turns read ~300K cached tokens and
+// wrote a 13K delta (the new tail) -- a 95% HIT that cost 89 cents instead of ~6 dollars -- yet the
+// absolute-write rule (writeTok > 1024) declared a prefix mismatch, tripped KA BROKEN and
+// auto-disabled. BROKEN now needs writeTok > TM_KA_BROKEN_WRITE_TOKENS AND read/(read+write) <
+// TM_KA_BROKEN_MIN_HIT_RATIO (0.50 -- the same 50% semantics as tmIsSignificantCacheHit): a large
+// write beside a dominant read is the new tail entering the cache (healthy); a large write with
+// little/no read is the genuine prefix mismatch. Healthy status shows the hit pct; the BROKEN badge
+// hover explains the ratio rule; doctrine comment + beacon updated.
 // v4.455: The copy-keep-alive-message button now lives on the KA-ON BADGE pills (the block that is
 // ALWAYS visible while armed). The v4.445 button was scoped to the KEEP-ALIVE WORKING PINS block
 // only, which renders solely after a ping has FIRED -- so in Dan's real workflow (switch to Astra,
@@ -2706,7 +2715,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.455';
+  const EXT_VERSION = '4.456';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5311,10 +5320,14 @@
   //    idle >= interval. Any real turn / each ping resets the idle clock.
   //  * EVERY skip has a visible reason: tmKeepAliveStatus[key] is rendered on the KA row ('next in
   //    38m', 'waiting: tool call pending', ...). The v4.360 sweeper skipped silently.
-  //  * HEALTH: read-heavy usage = healthy; cache_creation > 1KB tokens = BROKEN (prefix mismatch
-  //    -- we PAID A WRITE): loud red badge + AUTO-DISABLE so it cannot repeat every interval.
+  //  * HEALTH: read-heavy usage = healthy. BROKEN (prefix mismatch) needs BOTH a large write
+  //    (cache_creation > 1KB tokens) AND a hit ratio below TM_KA_BROKEN_MIN_HIT_RATIO (v4.456):
+  //    a big write beside a dominant read is just the new tail entering the cache (e.g. turns from
+  //    another model since the last ping) -- healthy, not a mismatch. BROKEN = loud red badge +
+  //    AUTO-DISABLE so it cannot repeat every interval.
   var TM_KEEPALIVE_KEY = 'tm_keepalive_v1';
   var TM_KA_BROKEN_WRITE_TOKENS = 1024;
+  var TM_KA_BROKEN_MIN_HIT_RATIO = 0.5; // (v4.456) below this read/(read+write), a large write means BROKEN
   var TM_KA_PENDING_TIMEOUT_MS = 10 * 60 * 1000; // a queued ping with no response after 10 min is abandoned
   var TM_KEEPALIVE_SENTINEL_PREFIX = '[KEEP-ALIVE \u2014 TypingMind payload extension';
   var TM_KEEPALIVE_SENTINEL = TM_KEEPALIVE_SENTINEL_PREFIX + ', not a user instruction. Prompt-cache refresh ping; reply with a single character and do nothing else.]';
@@ -5698,7 +5711,7 @@
   //   role=__lambdao_1.tmKeepAliveRecordPingResult,
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   comment=Fix 25 (v4.374): pairs a keep-alive ping RESPONSE (a normal capture row stamped _ka_ping) with the awaiting entry -- exact identity key first, then any pending entry of the same session -- logs cache read/write/cost to the ledger, clears pending_ping, and trips 🚨 KA BROKEN + auto-disable when the ping paid a cache WRITE above the mismatch threshold.,
+  //   comment=Fix 25 (v4.374): pairs a keep-alive ping RESPONSE (a normal capture row stamped _ka_ping) with the awaiting entry -- exact identity key first, then any pending entry of the same session -- logs cache read/write/cost to the ledger, clears pending_ping, and trips 🚨 KA BROKEN + auto-disable when the ping paid a cache WRITE above the mismatch threshold AND the hit ratio is below TM_KA_BROKEN_MIN_HIT_RATIO (v4.456).,
   // ]
   function tmKeepAliveRecordPingResult(cap, idSid, idModel, idHost, idIsProxy) {
     try {
@@ -5739,14 +5752,21 @@
       e2.log.push({ ts: now, read: readTok, write: writeTok, cost: cost, capture_id: cap.id || null });
       if (e2.log.length > 30) e2.log = e2.log.slice(-30);
       e2.retry_at = 0;
-      if (writeTok > TM_KA_BROKEN_WRITE_TOKENS) {
-        // Prefix mismatch: we just PAID A WRITE. Disable so it cannot repeat every interval.
+      // (v4.456) RATIO GUARD: a large write ALONGSIDE a dominant read is NOT a prefix mismatch --
+      // it is the new tail (e.g. turns Dan took on another model since the last ping) entering the
+      // cache while the whole prior prefix HIT. Dan's live case: read ~300K / write 13K = a 95% hit
+      // for 89 cents instead of a ~$6 cold miss, and the absolute-write rule still tripped BROKEN.
+      // Require BOTH a big write AND a hit ratio below TM_KA_BROKEN_MIN_HIT_RATIO (50%, the same
+      // semantics as tmIsSignificantCacheHit) before declaring the prefix mismatched.
+      var kaHitRatio = (readTok + writeTok) > 0 ? readTok / (readTok + writeTok) : 0;
+      if (writeTok > TM_KA_BROKEN_WRITE_TOKENS && kaHitRatio < TM_KA_BROKEN_MIN_HIT_RATIO) {
+        // Prefix mismatch: we just PAID A FULL WRITE. Disable so it cannot repeat every interval.
         e2.enabled = false;
-        e2.broken = { ts: now, write_tokens: writeTok, read_tokens: readTok, cost: cost };
-        tmKeepAliveSetStatus(key, { text: 'BROKEN \u2014 the ping paid a cache write', tone: 'warn' }, 'result:' + (cap.id || now));
-        console.error('\ud83d\udea8 [v' + EXT_VERSION + '] KEEP-ALIVE BROKEN for ' + (e2.model || key) + ': ping WROTE ' + tmThinkFmtK(writeTok) + ' cache tokens (prefix mismatch) \u2014 auto-disabled.');
+        e2.broken = { ts: now, write_tokens: writeTok, read_tokens: readTok, cost: cost, hit_ratio: kaHitRatio };
+        tmKeepAliveSetStatus(key, { text: 'BROKEN \u2014 the ping paid a cache write (' + Math.round(kaHitRatio * 100) + '% hit)', tone: 'warn' }, 'result:' + (cap.id || now));
+        console.error('\ud83d\udea8 [v' + EXT_VERSION + '] KEEP-ALIVE BROKEN for ' + (e2.model || key) + ': ping WROTE ' + tmThinkFmtK(writeTok) + ' cache tokens at a ' + Math.round(kaHitRatio * 100) + '% hit ratio (prefix mismatch) \u2014 auto-disabled.');
       } else {
-        tmKeepAliveSetStatus(key, { text: 'TTL refreshed \u2713 read ' + tmThinkFmtK(readTok), tone: 'ok' }, 'result:' + (cap.id || now));
+        tmKeepAliveSetStatus(key, { text: 'TTL refreshed \u2713 read ' + tmThinkFmtK(readTok) + ((readTok + writeTok) > 0 ? ' (' + Math.round(kaHitRatio * 100) + '% hit)' : ''), tone: 'ok' }, 'result:' + (cap.id || now));
         console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ping ' + (e2.model || '?') + ' @ ' + (e2.host || '?') + ': read ' + tmThinkFmtK(readTok) + ', write ' + tmThinkFmtK(writeTok) + (cost != null ? (', $' + cost.toFixed(4)) : '') + ' \u2014 TTL refreshed.');
       }
       e2._ts = now;
@@ -5987,7 +6007,7 @@
       // of the card padding depends on it being exactly one line tall.
       var nw = opts.center ? '' : 'white-space:nowrap;';
       if (e && e.broken) {
-        parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens): the conversation prefix no longer matched the cache. Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;' + nw + '">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
+        parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens) with only a ' + Math.round(Number(e.broken.hit_ratio || 0) * 100) + '% hit ratio -- below the ' + Math.round(TM_KA_BROKEN_MIN_HIT_RATIO * 100) + '% floor: the conversation prefix no longer matched the cache (v4.456 ratio guard -- a large write beside a dominant read is the healthy new tail, NOT broken). Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;' + nw + '">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
       } else if (e && e.ping_count) {
         parts.push('<span title="keep-alive pings this session \u00b7 cumulative ping spend \u00b7 last ping: cache read / cache write" style="color:#9aa4b2;' + nw + '">' + escapeHtml(tmKeepAliveSummaryText(e)) + '</span>');
       }
