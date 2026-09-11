@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.457
+// Version: 4.458
+// v4.458: PER-MODEL keep-alive clock. Arming Claude after 45 min on another model of the SAME
+// conversation showed a fresh ~50m countdown: last_turn_ts was stamped sid-wide by every sibling's
+// real turns, and both the arm seed and the sweep read session-wide activity. New per-identity
+// own_last_turn_ts (stamped only by turns on THAT exact identity; arm seeds it from the identity's
+// own newest ring capture; session-wide legacy fallback) now drives the arm seed, the lapse check,
+// the countdown and the sweep's due check. Plus a wrong-model guard: an entry that is due while its
+// model is NOT the conversation's selected one (newest ring capture wins) is HELD with a visible
+// status (the actuator can only submit to the selected model -- use the clipboard button), and the
+// v4.445 catch-up fire is gated to the selected model. Fire protection keeps the session-wide clock.
 // v4.457: The keep-alive badge countdown can no longer break mid-phrase. The centered badge status
 // line wraps at its bullet separators (white-space was open), so 'next ping in 49m 13s' could split
 // at the space before the seconds -- orphaned '13s' alone on the next row read like 13 seconds to
@@ -2720,7 +2729,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.457';
+  const EXT_VERSION = '4.458';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5485,7 +5494,17 @@
           superseded.push(k);
         }
         if (isPing) { e.pending_ping = { ts: now, key: key }; }
-        else { e.last_turn_ts = now; if (e.retry_at) e.retry_at = 0; if (e.paused_until_turn) e.paused_until_turn = false; }
+        else {
+          // (v4.458) TWO CLOCKS. last_turn_ts stays SESSION-WIDE: the sweep's fire-protection math
+          // deliberately counts any sibling activity (never ping mid-conversation). own_last_turn_ts
+          // is PER-IDENTITY -- only a real turn on THIS exact model advances it -- and it is what the
+          // arm seed, the lapse check, the countdown and the sweep's due check now read, so 45 min on
+          // Astra can never show a fresh 50m on the armed Claude row again.
+          e.last_turn_ts = now;
+          if (key && tmKeepAliveSameIdentity(k, key)) e.own_last_turn_ts = now;
+          if (e.retry_at) e.retry_at = 0;
+          if (e.paused_until_turn) e.paused_until_turn = false;
+        }
         e._ts = now;
         touched = true;
       }
@@ -5808,7 +5827,7 @@
   //   role=__lambdao_1.tmKeepAliveSweep,
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   comment=Fix 25 (v4.374): 30s sweeper deciding when a keep-alive ping may fire -- REUSES the existing state machine (skips while a request is in flight for the session, while tmAgentManagementDisplayState says pendingToolCall, while the auto-resume actuator is busy, while a ping is already pending, or while idle < interval; idle = LATEST of persisted last_turn_ts / turn completion / last outbound / last ping) and, unlike v4.360, writes a VISIBLE reason for every skip into tmKeepAliveStatus. Enforces optional max_hours auto-off and abandons a pending ping after 10 min.,
+  //   comment=Fix 25 (v4.374): 30s sweeper deciding when a keep-alive ping may fire -- REUSES the existing state machine (skips while a request is in flight for the session, while tmAgentManagementDisplayState says pendingToolCall, while the auto-resume actuator is busy, while a ping is already pending, or while idle < interval; idle = LATEST of persisted last_turn_ts / turn completion / last outbound / last ping) and, unlike v4.360, writes a VISIBLE reason for every skip into tmKeepAliveStatus. Enforces optional max_hours auto-off and abandons a pending ping after 10 min. (v4.458) The DUE check runs on the per-identity own clock (a sibling model's turns cannot keep a background entry not-due), and a due entry whose model is not the conversation's selected one is HELD with a visible reason instead of firing into the wrong model.,
   // ]
   function tmKeepAliveSweep() {
     try {
@@ -5865,9 +5884,24 @@
         var lastActivity = Math.max(baseline, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, e.last_ping_ts || 0);
         var intervalMs = Math.max(1, Number(e.interval_min || 50)) * 60 * 1000;
         var remaining = intervalMs - (now - lastActivity);
-        if (remaining > 0) {
-          var mins = Math.ceil(remaining / 60000);
-          tmKeepAliveSetStatus(key, { text: 'next ping in ' + (mins >= 2 ? (mins + 'm') : (Math.max(1, Math.round(remaining / 1000)) + 's')), tone: 'muted' });
+        // (v4.458) DUE CHECK ON THE PER-IDENTITY CLOCK: this model's cache ages on its OWN history
+        // (own_last_turn_ts / last_ping_ts / arm-seeded ring evidence; the session-wide baseline only
+        // while a legacy entry has no own stamp yet) -- a sibling model's turns can no longer keep a
+        // background entry 'not due'. The session-wide lastActivity above still gates WHEN a ping may
+        // fire (never mid-conversation); the own clock decides WHEN ONE IS DUE.
+        var ownBase = Math.max(Number(e.own_last_turn_ts) || 0, Number(e.last_ping_ts) || 0, Number(e.enabled_at) || 0, (Number(e.own_last_turn_ts) ? 0 : baseline));
+        if (!ownBase) { try { ownBase = tmKeepAliveRecentActivityTsForKey(key); } catch (eOB) {} }
+        var remainingOwn = ownBase > 0 ? (intervalMs - (now - ownBase)) : remaining;
+        if (remaining > 0 && remainingOwn > 0) {
+          var mins = Math.ceil(remainingOwn / 60000);
+          tmKeepAliveSetStatus(key, { text: 'next ping in ' + (mins >= 2 ? (mins + 'm') : (Math.max(1, Math.round(remainingOwn / 1000)) + 's')), tone: 'muted' });
+          continue;
+        }
+        // (v4.458) Due -- but the actuator types into the conversation and TypingMind submits to the
+        // SELECTED model, so firing for a background model would ping the wrong one. Hold with a
+        // visible reason; Dan's manual path is the \ud83d\udccb copy button (or selecting this model).
+        if (!tmKeepAliveSessionIsCurrentModel(e, key, sidNorm)) {
+          tmKeepAliveSetStatus(key, { text: 'due \u2014 held: ' + (String(key).split('::')[1] || 'this model') + ' is not the selected model (a ping would go to the selected one); use \ud83d\udccb copy, or select it', tone: 'warn' });
           continue;
         }
         if (firedSids[sidNorm]) { tmKeepAliveSetStatus(key, { text: 'ping fired via sibling row', tone: 'active' }); continue; }
@@ -5984,7 +6018,10 @@
     try {
       if (!e) return 0;
       var now = Date.now();
-      var baseline = Number(e.last_turn_ts) || Number(e.enabled_at) || 0;
+      // (v4.458) OWN clock first: this exact identity's last real turn / ping / arm seed. The
+      // session-wide last_turn_ts only while a legacy entry has no own stamp yet.
+      var ownTs = Number(e.own_last_turn_ts) || 0;
+      var baseline = ownTs || Number(e.last_turn_ts) || Number(e.enabled_at) || 0;
       var ds = null;
       try { ds = tmAgentManagementDisplayState(e.sid || String(key || '').split('::')[0]); } catch (eDS) {}
       var lastActivity = Math.max(baseline, (ds && ds.responseFinishedAt) || 0, (ds && ds.lastOutboundAt) || 0, Number(e.last_ping_ts) || 0);
@@ -6241,18 +6278,30 @@
         var inhIv = tmKeepAliveInheritInterval(key, info);
         e.interval_min = inhIv || (/claude|anthropic/i.test(String(info.model || '') + String(info.host || '')) ? 50 : 4);
       }
-      var idleMs = actTs > 0 ? (Date.now() - actTs) : 0;
-      var lapsed = actTs > 0 && idleMs > Number(e.interval_min) * 60000;
-      e.last_turn_ts = (actTs > 0) ? actTs : Date.now();  // (v4.445) lapsed re-arm keeps actTs so the sweep fires a catch-up ping
+      // (v4.458) The idle clock, lapse check and countdown run on THIS IDENTITY'S OWN history: seed
+      // own_last_turn_ts from its own newest ring capture (a sibling model's recent turns no longer
+      // reset it). last_turn_ts keeps its v4.411 session-wide semantics -- the sweep's fire gates
+      // stay conservative -- but the DISPLAY and the due decision read the own clock.
+      e.own_last_turn_ts = Math.max(Number(e.own_last_turn_ts) || 0, tmKeepAliveRecentActivityTsForKey(key));
+      var ownClock = tmKeepAliveOwnClockTs(e);
+      var idleMs = ownClock > 0 ? (Date.now() - ownClock) : 0;
+      var lapsed = ownClock > 0 && idleMs > Number(e.interval_min) * 60000;
+      if (ownClock > 0) e.own_last_turn_ts = ownClock;
+      e.last_turn_ts = (actTs > 0) ? actTs : Date.now();  // (v4.445) session-wide fire-protection clock, unchanged
       e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
-      if (lapsed) tmKeepAliveSetStatus(key, { text: 'armed \u2014 idle past the ' + e.interval_min + 'm interval; firing a catch-up ping now to try to catch a still-warm cache', tone: 'warn' });
-      else tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + Math.max(1, Math.ceil((Number(e.interval_min) * 60000 - idleMs) / 60000)) + 'm', tone: 'muted' });
+      var isCur = tmKeepAliveSessionIsCurrentModel(e, key, sidSeed);
+      if (lapsed && !isCur) tmKeepAliveSetStatus(key, { text: 'armed \u2014 PAST DUE for this model (' + Math.floor(idleMs / 60000) + 'm idle); pings held while another model is selected \u2014 use \ud83d\udccb to copy the ping, or select this model', tone: 'warn' });
+      else if (lapsed) tmKeepAliveSetStatus(key, { text: 'armed \u2014 idle past the ' + e.interval_min + 'm interval; firing a catch-up ping now to try to catch a still-warm cache', tone: 'warn' });
+      else if (ownClock > 0) tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + Math.max(1, Math.ceil((Number(e.interval_min) * 60000 - idleMs) / 60000)) + 'm', tone: 'muted' });
+      else tmKeepAliveSetStatus(key, { text: 'armed \u2014 no activity history for this model yet; first ping in ' + e.interval_min + 'm', tone: 'muted' });
       console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm (session ' + (e.sid || '?') + '; a signposted ping turn will be typed into the conversation after ' + e.interval_min + 'm of quiescence).');
       tmKeepAliveEnsureSweeper();
       // (v4.445) Lapsed re-arm: prompt the sweep ~1.5s out so the catch-up ping fires almost
       // immediately instead of waiting up to 30s for the next pass. The sweep's gates + pending_ping
-      // dedupe still apply, so this can never double-fire.
-      if (lapsed) { try { setTimeout(function () { try { tmKeepAliveSweep(); } catch (eS) {} }, 1500); } catch (eST) {} }
+      // dedupe still apply, so this can never double-fire. (v4.458) Only when this IS the selected
+      // model -- a background model's ping would be typed into whatever model the conversation is
+      // on (the sweep's own hold guard says the same thing on its next pass).
+      if (lapsed && isCur) { try { setTimeout(function () { try { tmKeepAliveSweep(); } catch (eS) {} }, 1500); } catch (eST) {} }
     } else {
       e.enabled = false; e.stopped_reason = 'toggled off';
     }
@@ -6377,6 +6426,57 @@
     } catch (eR) {}
     return best;
   }
+
+  // (v4.458) Newest ring-capture time for ONE EXACT identity (alias-tolerant sid + verbatim
+  // model/host/proxy tail via tmKeepAliveSameIdentity) -- the per-model seed for the own clock.
+  // Sibling models of the same conversation are deliberately excluded: Claude's cache goes cold on
+  // Claude's schedule no matter how chatty the Astra row of the same conversation is.
+  function tmKeepAliveRecentActivityTsForKey(idKey) {
+    var best = 0;
+    if (!idKey) return 0;
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var c = ring[i];
+        var ck = (c && c._identity && c._identity.key) || (c ? tmCapIdentityKey(c) : '');
+        if (!ck || !tmKeepAliveSameIdentity(ck, idKey)) continue;
+        var t = c.ts ? Date.parse(c.ts) : NaN;
+        if (isFinite(t) && t > best) best = t;
+        break; // newest matching capture is the only one that matters
+      }
+    } catch (eK) {}
+    return best;
+  }
+
+  // (v4.458) Is this entry's model the conversation's CURRENTLY SELECTED one? The actuator types
+  // into the conversation and TypingMind submits to whichever model is selected, so a ping fired
+  // for a background model would actually hit the selected one. The newest ring capture of the
+  // session names the selected identity; no evidence -> true (benefit of the doubt, old behavior).
+  function tmKeepAliveSessionIsCurrentModel(e, key, sidNorm) {
+    try {
+      var ring = tmReadCaptureRing();
+      for (var i = ring.length - 1; i >= 0; i--) {
+        var c = ring[i];
+        if (!c || !c._identity || !c._identity.key) continue;
+        if (tmKeepAliveNormSid(String(c._identity.key).split('::')[0]) !== sidNorm) continue;
+        return tmKeepAliveSameIdentity(c._identity.key, key); // newest capture of the session decides
+      }
+    } catch (eC) {}
+    return true;
+  }
+
+  // (v4.458) THE PER-IDENTITY ('own') CLOCK: this exact model's last real turn (own_last_turn_ts,
+  // stamped by tmKeepAliveNoteRealTurn and seeded at arm time), its last ping, and -- only while
+  // own_last_turn_ts is missing (legacy entries) -- the session-wide last_turn_ts as fallback.
+  // Dan's rule: the ping countdown for a model reflects THAT model's own cache idle, never a
+  // sibling's activity.
+  function tmKeepAliveOwnClockTs(e) {
+    if (!e) return 0;
+    var own = Number(e.own_last_turn_ts) || 0;
+    var legacy = own ? 0 : (Number(e.last_turn_ts) || 0);
+    return Math.max(own, Number(e.last_ping_ts) || 0, Number(e.enabled_at) || 0, legacy);
+  }
+
   // (v4.411) Interval inheritance: the most recently touched keep-alive entry for the SAME
   // model::host donates its interval to a freshly armed identity, so Dan sets the interval once
   // per model/endpoint and every later session starts with it (previously every new session fell
