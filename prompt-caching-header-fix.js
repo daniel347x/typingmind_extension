@@ -1,5 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.444
+// Version: 4.445
+// v4.445: Keep-alive catch-up fire + a manual copy-ping backstop. (1) Re-arming after the idle time
+// already passed the interval NO LONGER resets the clock and waits a fresh interval -- it keeps
+// last_turn_ts at the lapsed activity time so the sweep fires a catch-up ping on its next pass
+// (prompted ~1.5s after arming). Dan would rather gamble on Anthropic's TTL grace (he has hit at
+// 1h10m) than wait ~45 min and guarantee a cold miss; if the cache truly lapsed the ping pays a
+// write and trips KA BROKEN (auto-disable), the honest outcome. (2) A clipboard button on KEEP-ALIVE
+// WORKING pills (copy-ka-text action) copies TM_KEEPALIVE_SENTINEL so Dan can paste-and-send a ping
+// himself -- the manual backstop. It resolves before sim-pin-jump so the button wins over the jump.
 // v4.444: The header-to-cards divider is now a strong steel blue (#4682b4) instead of the
 // desaturated dark slate (#3a4658) that read as pure gray -- a nice strong blue with a tinge of
 // gray, per Dan. One-line color change to the single divider var in tmBuildSessionCtxHeaderHtml.
@@ -2639,7 +2647,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.444';
+  const EXT_VERSION = '4.445';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6128,8 +6136,12 @@
       // persisted idle clock from the newest real evidence for this session (agent-management
       // display state, the newest ring capture of the session, any already-persisted
       // last_turn_ts) so arming 45 min into a 50-min interval correctly shows ~5 min remaining.
-      // If idle time ALREADY exceeds the interval the provider cache has lapsed; a ping then
-      // would pay a full write and trip KA BROKEN, so the clock resets with a visible note.
+      // (v4.445) If idle ALREADY exceeds the interval we NO LONGER reset the clock and wait a fresh
+      // interval -- Dan would rather fire a catch-up ping immediately and gamble on Anthropic's TTL
+      // grace (he has hit at 1h10m) than guarantee a cold miss by waiting. So last_turn_ts stays at
+      // the lapsed activity time (the sweep then sees remaining <= 0 and fires; a prompt sweep below
+      // makes it near-immediate). If the cache truly lapsed, that ping pays a write and trips KA
+      // BROKEN (auto-disable) -- the honest outcome, and the gamble Dan explicitly asked for.
       var sidSeed = tmKeepAliveNormSid((info && info.sid) || e.sid || String(key).split('::')[0] || '');
       var actTs = Math.max(Number(e.last_turn_ts) || 0, tmKeepAliveRecentActivityTs(sidSeed));
       if (!e.interval_min) {
@@ -6138,12 +6150,16 @@
       }
       var idleMs = actTs > 0 ? (Date.now() - actTs) : 0;
       var lapsed = actTs > 0 && idleMs > Number(e.interval_min) * 60000;
-      e.last_turn_ts = (actTs > 0 && !lapsed) ? actTs : Date.now();
+      e.last_turn_ts = (actTs > 0) ? actTs : Date.now();  // (v4.445) lapsed re-arm keeps actTs so the sweep fires a catch-up ping
       e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
-      if (lapsed) tmKeepAliveSetStatus(key, { text: 'armed \u2014 was idle past the ' + e.interval_min + 'm interval (cache likely lapsed); clock reset', tone: 'warn' });
+      if (lapsed) tmKeepAliveSetStatus(key, { text: 'armed \u2014 idle past the ' + e.interval_min + 'm interval; firing a catch-up ping now to try to catch a still-warm cache', tone: 'warn' });
       else tmKeepAliveSetStatus(key, { text: 'armed \u2014 next ping in ' + Math.max(1, Math.ceil((Number(e.interval_min) * 60000 - idleMs) / 60000)) + 'm', tone: 'muted' });
       console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive ENABLED for ' + (e.model || key) + ' @ ' + (e.host || '?') + ' \u2014 interval ' + e.interval_min + 'm (session ' + (e.sid || '?') + '; a signposted ping turn will be typed into the conversation after ' + e.interval_min + 'm of quiescence).');
       tmKeepAliveEnsureSweeper();
+      // (v4.445) Lapsed re-arm: prompt the sweep ~1.5s out so the catch-up ping fires almost
+      // immediately instead of waiting up to 30s for the next pass. The sweep's gates + pending_ping
+      // dedupe still apply, so this can never double-fire.
+      if (lapsed) { try { setTimeout(function () { try { tmKeepAliveSweep(); } catch (eS) {} }, 1500); } catch (eST) {} }
     } else {
       e.enabled = false; e.stopped_reason = 'toggled off';
     }
@@ -15593,8 +15609,14 @@ function tmThinkRenderBins(bucket,opts) {
         var pillSid = tmKeepAliveNormSid(v.sid);
         var pillNote = tmSimSessionNoteRead(pillSid);
         var noteBtn = '<span style="margin-right:4px;display:inline-flex;">' + tmSimSessionNoteButtonHtml(pillSid) + '</span>';
+        // (v4.445) Manual keep-alive backstop: a copy-the-ping-message button, ONLY on KEEP-ALIVE
+        // WORKING pills (group === 'keepalive'). Dan pastes it into the conversation and sends it to
+        // fire a keep-alive ping himself -- the backstop for the catch-up fire above.
+        var copyKaBtn = (group === 'keepalive')
+          ? '<button data-action="copy-ka-text" data-key="' + escapeHtml(k) + '" title="Copy the keep-alive ping message \u2014 paste it into the conversation and send it to fire a keep-alive ping yourself (manual backstop)" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#7ec8e3;border:1px solid #3a5a6a;background:#16222a;margin-left:6px;">\ud83d\udccb</button>'
+          : '';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
         // back to the ledger activity stamp (and 0) so pre-v4.441 records still order sensibly.
         var pinSortTs = (v.rec && Number(v.rec._last_user_ts)) || (v.rec && Number(v.rec._ts)) || 0;
@@ -15965,6 +15987,11 @@ function tmThinkRenderBins(bucket,opts) {
             // unpin button are the same action. Purely surface-level: no reorder, no scroll.
             var spEl = ev.target.closest('[data-action="sim-pin-toggle"]');
             if (spEl) { ev.stopPropagation(); ev.preventDefault(); try { var spKey = spEl.dataset.key || ''; tmSimRowSetPinned(spKey, !tmSimRowIsPinned(spKey)); } catch (eSP) {} return; }
+            // (v4.445) Copy the keep-alive ping message -- the manual backstop button on KEEP-ALIVE
+            // WORKING pills (Dan pastes it in and sends it to fire a ping himself). BEFORE sim-pin-jump
+            // so the button wins over the pill's jump.
+            var ckEl = ev.target.closest('[data-action="copy-ka-text"]');
+            if (ckEl) { ev.stopPropagation(); ev.preventDefault(); try { copyTextToClipboard(TM_KEEPALIVE_SENTINEL, 'keep-alive ping message'); } catch (eCK) {} return; }
             // (v4.429) Clicking ANYWHERE else on a top PINNED pill jumps to its card -- the KA-badge
             // jump resolver reused (same key shape, same four widening tiers, same flash). Sits
             // BEFORE ctx-dial-set on purpose: the pill's dial is jump-only per Dan's 'anywhere'.
