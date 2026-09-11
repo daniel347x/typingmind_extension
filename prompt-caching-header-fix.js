@@ -1,5 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.454
+// Version: 4.455
+// v4.455: The copy-keep-alive-message button now lives on the KA-ON BADGE pills (the block that is
+// ALWAYS visible while armed). The v4.445 button was scoped to the KEEP-ALIVE WORKING PINS block
+// only, which renders solely after a ping has FIRED -- so in Dan's real workflow (switch to Astra,
+// Fable's KA is superseded; switch back, re-arm, flip back to Astra) the entry is STANDING BY: it
+// sits in INACTIVE PINS and the KA-ON row, and the WORKING block is empty. The button was therefore
+// never visible when wanted. The existing copy-ka-text click handler already resolves before
+// ka-badge-jump, so no handler change was needed (x disarm resolves earlier still).
 // v4.454: Pill padding 2px 8px -> 5px 11px (+3px of air between the pill contents and the border)
 // on ALL pill surfaces: the three pin groups (active / inactive / keep-alive working) and the KA-ON
 // badge pills, kept uniform. The fullness ring around the session name was nearly touching the
@@ -2699,7 +2706,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.454';
+  const EXT_VERSION = '4.455';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6143,10 +6150,14 @@
         // surfaces are often exactly the ones whose card has aged out of the ring and the 24h ledger
         // window -- so there is nothing to jump TO, and the useful action is to turn it off here.
         var disarm = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Disarm keep-alive for this conversation (the usual fix for a stale armed entry whose card has aged out of the list)" style="cursor:pointer;font-size:11px;font-weight:700;color:#c08080;padding:0 3px;border-radius:3px;white-space:nowrap;">\u00d7</span>';
+        // (v4.455) COPY-PING button on the KA-ON badge pill -- the manual backstop in its correct home
+        // (this block is visible whenever armed, fired or not; the WORKING block only exists after a
+        // fire). Same copy-ka-text action as the WORKING pills; it resolves before ka-badge-jump.
+        var copyBtn = '<span data-action="copy-ka-text" data-key="' + escapeHtml(key) + '" title="Copy the keep-alive ping message \u2014 paste it into the conversation and send it to fire a ping yourself, before the timeout" style="cursor:pointer;font-size:10px;line-height:1;padding:0 3px;border-radius:3px;color:#7ec8e3;white-space:nowrap;">\ud83d\udccb</span>';
         units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view (x disarms it)" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
           // (v4.452) The badge unit's TOP row wears a real pill border (dusty rose, matching the
           // KEEP-ALIVE WORKING pills); the status/countdown line below stays OUTSIDE the pill.
-          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;border:1px solid #b08878;border-radius:999px;padding:5px 11px;background:rgba(255,255,255,0.07);">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;border:1px solid #b08878;border-radius:999px;padding:5px 11px;background:rgba(255,255,255,0.07);">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + copyBtn + '</span>' +
           statusHtml + '</span>');
       });
       // (v4.423) STICKY + TITLED. position:sticky at the top of the scrolling content region, so the
@@ -16078,9 +16089,9 @@ function tmThinkRenderBins(bucket,opts) {
             // unpin button are the same action. Purely surface-level: no reorder, no scroll.
             var spEl = ev.target.closest('[data-action="sim-pin-toggle"]');
             if (spEl) { ev.stopPropagation(); ev.preventDefault(); try { var spKey = spEl.dataset.key || ''; tmSimRowSetPinned(spKey, !tmSimRowIsPinned(spKey)); } catch (eSP) {} return; }
-            // (v4.445) Copy the keep-alive ping message -- the manual backstop button on KEEP-ALIVE
-            // WORKING pills (Dan pastes it in and sends it to fire a ping himself). BEFORE sim-pin-jump
-            // so the button wins over the pill's jump.
+            // (v4.445; v4.455 also on the KA-ON badge pills) Copy the keep-alive ping message -- the
+            // manual backstop button. BEFORE sim-pin-jump AND ka-badge-jump, so the button wins over
+            // either pill's jump.
             var ckEl = ev.target.closest('[data-action="copy-ka-text"]');
             if (ckEl) { ev.stopPropagation(); ev.preventDefault(); try { copyTextToClipboard(TM_KEEPALIVE_SENTINEL, 'keep-alive ping message'); } catch (eCK) {} return; }
             // (v4.429) Clicking ANYWHERE else on a top PINNED pill jumps to its card -- the KA-badge
