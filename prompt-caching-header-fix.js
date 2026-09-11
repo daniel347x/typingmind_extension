@@ -1,5 +1,12 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.447
+// Version: 4.448
+// v4.448: Per-group PILL borders (were one shared #3a4152, barely visible). ACTIVE pills: very
+// bright off-white #eaf2ec against the green-tinted block. INACTIVE pills: #14161a -- genuinely
+// DARKER than the #14171e block background, so they read as crisp black-ish outlines (Dan's
+// 'stand out like it's bright, but look black'). KEEP-ALIVE WORKING pills: #a6aeb8 (gray tending
+// toward white with a significant amount of gray), and that block's background lifts from #14171e
+// to a warm dark #221d23 so the light-gray borders have contrast (block border/ink unchanged).
+// Border thickness untouched; the pill unit picks its border color from its group.
 // v4.447: ACTIVE PINS is now the LOWEST block in the header -- below the KEEP-ALIVE ON badge row
 // too, not just below the other two pin groups (v4.446 put it last among the pin groups, but the
 // separate red keep-alive badge zone still rendered underneath it). The pin row builder takes an
@@ -2659,7 +2666,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.447';
+  const EXT_VERSION = '4.448';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15644,7 +15651,10 @@ function tmThinkRenderBins(bucket,opts) {
           ? '<button data-action="copy-ka-text" data-key="' + escapeHtml(k) + '" title="Copy the keep-alive ping message \u2014 paste it into the conversation and send it to fire a keep-alive ping yourself (manual backstop)" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#7ec8e3;border:1px solid #3a5a6a;background:#16222a;margin-left:6px;">\ud83d\udccb</button>'
           : '';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid #3a4152;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        // (v4.448) Per-group pill border: bright off-white on active, near-black (darker than the
+        // block bg) on inactive, gray-tending-white on keep-alive working. Thickness unchanged.
+        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#a6aeb8' : '#14161a';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid ' + pillBorder + ';border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.035);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
         // back to the ledger activity stamp (and 0) so pre-v4.441 records still order sensibly.
         var pinSortTs = (v.rec && Number(v.rec._last_user_ts)) || (v.rec && Number(v.rec._ts)) || 0;
@@ -15655,7 +15665,7 @@ function tmThinkRenderBins(bucket,opts) {
       // keep-alive block. Active gets a bright green border + green-tinted background for the same reason.
       var sections = [
         { key: 'inactive', title: 'INACTIVE PINS', border: '#333d4f', ink: '#8a94a2', bg: '#14171e', tip: 'No running timer; includes keep-alive armed but standing by' },
-        { key: 'keepalive', title: 'KEEP-ALIVE WORKING PINS', border: '#875459', ink: '#dba0a5', bg: '#14171e', tip: 'Armed and a ping has fired since the last real turn; no timer running' },
+        { key: 'keepalive', title: 'KEEP-ALIVE WORKING PINS', border: '#875459', ink: '#dba0a5', bg: '#221d23', tip: 'Armed and a ping has fired since the last real turn; no timer running' },
         { key: 'active', title: 'ACTIVE PINS', border: '#5fd685', ink: '#b6f0c8', bg: '#132b1c', tip: 'Assistant or tool timer running' }
       ];
       return sections.filter(function (section) {
