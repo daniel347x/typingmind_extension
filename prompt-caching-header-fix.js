@@ -1,5 +1,17 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.441
+// Version: 4.442
+// v4.442: Keep-alive AUTO-RE-ARM whitelist. Switching away from a model correctly disarms its
+// keep-alive (v4.422 supersede), but switching BACK never re-armed it -- so a return to Claude
+// left it cold and the next turn paid a full cache-lapse miss (~$7). New global constant
+// TM_KEEPALIVE_AUTO_ENABLE = [{ match: 'claude', enable: true }, ...] (case-insensitive substring
+// of the MODEL string; first match wins; edit freely). On a GENUINE Dan turn only (reuses the
+// v4.441 tmBodyIsRealUserTurn classifier -- never a tool swarm wakeup, keep-alive ping, or
+// auto-resume), tmKeepAliveAutoArmOnRealTurn re-arms keep-alive for that exact identity at the
+// DEFAULT interval (inherit per model::host, else claude/anthropic 50m, else 4m -- never overrides
+// an interval Dan set), right after tmKeepAliveNoteRealTurn so the one-armed-per-conversation
+// singleton holds. Already-armed entries are untouched. Works on OpenRouter and direct alike.
+// NOTE: a manual toggle-off of a whitelisted model is re-armed by Dan's next real message (the
+// whitelist means 'always keep this model warm while in use').
 // v4.441: Inactive pinned pills order by the most recent REAL Dan-typed message, not by
 // pin-insertion order or last-capture activity. A capture-time classifier (tmBodyIsRealUserTurn)
 // recognises a genuine user turn across all four wire shapes and excludes tool-result
@@ -2613,7 +2625,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.441';
+  const EXT_VERSION = '4.442';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6111,6 +6123,73 @@
       if (synced || bad.length) console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive DISABLED for conversation ' + sidNorm + ' across ' + (1 + synced) + ' row(s)' + (bad.length ? ' \u2014 \u26a0 ' + bad.length + ' still armed' : '') + '.');
     }
     tmKeepAliveRefreshUI();
+  }
+
+  // (v4.442) KEEP-ALIVE AUTO-ARM WHITELIST. Each rule: { match: <case-insensitive substring of the
+  // MODEL string>, enable: <true = auto-arm keep-alive on a genuine Dan turn> }. First match wins.
+  // WHY: the v4.422 supersede correctly disarms the old model when Dan switches away, but nothing
+  // re-armed it when he switched BACK -- so a return to Claude left it cold and the next turn paid
+  // a full cache-lapse miss (~$7). Edit freely. The search is a plain case-insensitive substring of
+  // the model, so OpenRouter 'anthropic/claude-...' and direct 'claude-...' both match 'claude'.
+  // Not every provider maps perfectly (a direct Moonshot 'kimi-k3' carries no 'moonshot') -- by
+  // design; add whatever keyword appears in the model string you want kept warm, e.g.
+  // { match: 'kimi', enable: true } or { match: 'moonshot', enable: true }.
+  var TM_KEEPALIVE_AUTO_ENABLE = [
+    { match: 'claude', enable: true }
+  ];
+
+  // (v4.442) Whitelist decision for a model string: true = auto-arm, false = explicitly don't,
+  // null = no rule matched (leave the keep-alive state untouched). First matching rule wins.
+  function tmKeepAliveAutoEnableDecision(model) {
+    try {
+      var m = String(model || '').toLowerCase();
+      if (!m) return null;
+      for (var i = 0; i < TM_KEEPALIVE_AUTO_ENABLE.length; i++) {
+        var rule = TM_KEEPALIVE_AUTO_ENABLE[i];
+        if (!rule || !rule.match) continue;
+        if (m.indexOf(String(rule.match).toLowerCase()) >= 0) return !!rule.enable;
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  // (v4.442) Re-arm keep-alive for ONE identity after a genuine Dan turn when its model is
+  // whitelisted. Called from tmCaptureFetchCall right AFTER tmKeepAliveNoteRealTurn, so the supersede
+  // has already stood down the other models of this conversation and the one-armed-per-conversation
+  // singleton holds. Mirrors tmKeepAliveHandleToggle's enable branch but: (a) keys off the
+  // capture-time identity (kaKey), not the dashboard identity map (which may not hold this row yet);
+  // (b) sets the idle clock to NOW (this IS the real turn) so there is no spurious 'lapsed' warning;
+  // (c) never touches an already-armed entry and preserves any interval Dan already set. Otherwise
+  // the DEFAULT interval is used (inherit per model::host, else claude/anthropic 50m, else 4m) --
+  // Dan sets the window himself. A manual toggle-off of a whitelisted model IS re-armed by the next
+  // real message: the whitelist means 'always keep this model warm while I am using it'.
+  function tmKeepAliveAutoArmOnRealTurn(idKey) {
+    try {
+      if (!idKey) return false;
+      var parts = String(idKey).split('::');
+      var sid = parts[0] || '', model = parts[1] || '', host = parts[2] || '', isProxy = parts[3] === 'proxy';
+      if (!sid || !model) return false;
+      if (tmKeepAliveAutoEnableDecision(model) !== true) return false;  // not whitelisted -> untouched
+      var e = tmGetKeepAliveEntry(idKey) || {};
+      if (e.enabled) return false;  // already armed -- NoteRealTurn already advanced its clock
+      var now = Date.now();
+      var info = { sid: sid, model: model, host: host, isProxy: isProxy };
+      e.enabled = true; e.broken = null; e.stopped_reason = null; e.enabled_at = now;
+      e.retry_at = 0; e.pending_ping = null; e.paused_until_turn = false;
+      e.sid = sid; e.model = model; e.host = host; e.proxy = isProxy;
+      if (!e.interval_min) {
+        var inhIv = tmKeepAliveInheritInterval(idKey, info);
+        e.interval_min = inhIv || (/claude|anthropic/i.test(String(model) + String(host)) ? 50 : 4);
+      }
+      e.last_turn_ts = now;  // this IS the real turn -- the idle clock starts now
+      e.ping_count = e.ping_count || 0; e.spend_total = e.spend_total || 0;
+      tmSetKeepAliveEntry(idKey, e);
+      tmKeepAliveSetStatus(idKey, { text: 'auto-armed \u2014 model matched the keep-alive whitelist; next ping in ' + e.interval_min + 'm', tone: 'muted' });
+      tmKeepAliveEnsureSweeper();
+      console.log('\u23f0 [v' + EXT_VERSION + '] keep-alive AUTO-ARMED for ' + (model || idKey) + ' @ ' + (host || '?') + ' \u2014 a real user turn matched the whitelist; interval ' + e.interval_min + 'm (session ' + (sid || '?') + ').');
+      try { tmKeepAliveRefreshUI(); } catch (eUI) {}
+      return true;
+    } catch (eAA) { return false; }
   }
 
   // (v4.411) Newest real-activity timestamp for a session: the agent-management display state
@@ -13081,6 +13160,12 @@ function tmThinkRenderBins(bucket,opts) {
           // ledger's durable _last_user_ts, which orders the INACTIVE pinned pills by real activity.
           if (!kaIsPing && tmBodyIsRealUserTurn(parsed)) record._real_user = true;
           tmKeepAliveNoteRealTurn(kaKey, record.session_id, kaIsPing);
+          // (v4.442) AUTO-RE-ARM keep-alive for whitelisted models on a genuine Dan turn. Fixes the
+          // switch-away-and-back burn: the supersede above correctly disarms the model Dan left, but
+          // nothing re-armed it on return. Runs AFTER NoteRealTurn so the singleton (one armed model
+          // per conversation) holds. Only a real user message triggers it -- never a tool swarm
+          // wakeup, keep-alive ping, or auto-resume.
+          if (record._real_user) { try { tmKeepAliveAutoArmOnRealTurn(kaKey); } catch (eAA2) {} }
         } catch (eKa) {}
 
         // (v4.317) USER-CANCEL LATCH clear: any outbound payload for a session means Dan is
