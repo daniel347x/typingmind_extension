@@ -1,5 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.449
+// Version: 4.450
+// v4.450: KEEP-ALIVE WORKING pill border, third attempt -- warm champagne #ecdcc8 replaces the cool
+// #c9ced5. The cool light gray turned muddy on the deep-red block field (simultaneous contrast: a
+// neutral gray surrounded by red picks up an induced red tint and stops reading as an edge). A warm
+// bright tone from the field's own family stays crisp and reads raised/glowing -- the warm analog of
+// what the near-black border did for the inactive pills (Dan-confirmed working). The KA pill interior
+// also brightens (white overlay 0.07 -> 0.11, that group only) so the border reads on both edges.
 // v4.449: STRONGER inactive + KA-working pill borders (v4.448's were near-invisible: the inactive
 // #14161a sat 3 RGB points from the #14171e block bg). INACTIVE pills: near-black #050607 border AND
 // a brighter pill interior (white overlay 0.035 -> 0.07) so the dark ring reads on both edges --
@@ -2674,7 +2680,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.449';
+  const EXT_VERSION = '4.450';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15659,11 +15665,13 @@ function tmThinkRenderBins(bucket,opts) {
           ? '<button data-action="copy-ka-text" data-key="' + escapeHtml(k) + '" title="Copy the keep-alive ping message \u2014 paste it into the conversation and send it to fire a keep-alive ping yourself (manual backstop)" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#7ec8e3;border:1px solid #3a5a6a;background:#16222a;margin-left:6px;">\ud83d\udccb</button>'
           : '';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        // (v4.448; STRENGTHENED v4.449) Per-group pill border: bright off-white on active (unchanged,
-        // Dan-approved), near-black on inactive (reads on both edges against the brighter pill
-        // interior below), gray-tending-white on keep-alive working against the dark block field.
-        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#c9ced5' : '#050607';
-        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid ' + pillBorder + ';border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.07);">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
+        // (v4.448; STRENGTHENED v4.449; KA warm v4.450) Per-group pill border: bright off-white on
+        // active (unchanged, Dan-approved), near-black on inactive (reads on both edges against the
+        // brighter pill interior below), and WARM CHAMPAGNE on keep-alive working -- a cool gray goes
+        // muddy against the deep-red field (induced red tint); a warm bright tone stays crisp.
+        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#ecdcc8' : '#050607';
+        var pillBg = (group === 'keepalive') ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.07)';
+        var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid ' + pillBorder + ';border-radius:999px;padding:2px 8px;background:' + pillBg + ';">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
         // back to the ledger activity stamp (and 0) so pre-v4.441 records still order sensibly.
         var pinSortTs = (v.rec && Number(v.rec._last_user_ts)) || (v.rec && Number(v.rec._ts)) || 0;
