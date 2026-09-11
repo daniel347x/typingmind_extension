@@ -1,5 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.445
+// Version: 4.446
+// v4.446: ACTIVE PINS block moves to the BOTTOM of the three pin groups (order now INACTIVE ->
+// KEEP-ALIVE WORKING -> ACTIVE), so the most important block sits visually closest to the session
+// cards and is not lost above the (usually much longer) inactive list and the red keep-alive block.
+// The active block also gets a brighter green border (#5fd685) and a green-tinted background
+// (#132b1c); the other two keep the neutral #14171e (now a per-section bg field).
 // v4.445: Keep-alive catch-up fire + a manual copy-ping backstop. (1) Re-arming after the idle time
 // already passed the interval NO LONGER resets the clock and waits a fresh interval -- it keeps
 // last_turn_ts at the lapsed activity time so the sweep fires a catch-up ping on its next pass
@@ -2647,7 +2652,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.445';
+  const EXT_VERSION = '4.446';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15622,10 +15627,13 @@ function tmThinkRenderBins(bucket,opts) {
         var pinSortTs = (v.rec && Number(v.rec._last_user_ts)) || (v.rec && Number(v.rec._ts)) || 0;
         groups[group].push({ html: unit, ts: pinSortTs });
       });
+      // (v4.446) ORDER: inactive -> keep-alive working -> ACTIVE LAST, so the most important block sits
+      // closest to the cards below instead of getting lost above the long inactive list and the red
+      // keep-alive block. Active gets a bright green border + green-tinted background for the same reason.
       var sections = [
-        { key: 'active', title: 'ACTIVE PINS', border: '#477b57', ink: '#9bceb0', tip: 'Assistant or tool timer running' },
-        { key: 'inactive', title: 'INACTIVE PINS', border: '#333d4f', ink: '#8a94a2', tip: 'No running timer; includes keep-alive armed but standing by' },
-        { key: 'keepalive', title: 'KEEP-ALIVE WORKING PINS', border: '#875459', ink: '#dba0a5', tip: 'Armed and a ping has fired since the last real turn; no timer running' }
+        { key: 'inactive', title: 'INACTIVE PINS', border: '#333d4f', ink: '#8a94a2', bg: '#14171e', tip: 'No running timer; includes keep-alive armed but standing by' },
+        { key: 'keepalive', title: 'KEEP-ALIVE WORKING PINS', border: '#875459', ink: '#dba0a5', bg: '#14171e', tip: 'Armed and a ping has fired since the last real turn; no timer running' },
+        { key: 'active', title: 'ACTIVE PINS', border: '#5fd685', ink: '#b6f0c8', bg: '#132b1c', tip: 'Assistant or tool timer running' }
       ];
       return sections.map(function (section) {
         var units = groups[section.key];
@@ -15636,7 +15644,7 @@ function tmThinkRenderBins(bucket,opts) {
         // groups keep insertion order. Ties are stable (V8 sort), so equal clocks keep pin order.
         if (section.key === 'inactive') units = units.slice().sort(function (a, b) { return (b.ts || 0) - (a.ts || 0); });
         var unitsHtml = units.map(function (u) { return u.html; }).join('');
-        return '<div data-sim-pin-group="' + section.key + '" style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid ' + section.border + ';border-bottom:2px solid ' + section.border + ';border-radius:6px;background:#14171e;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
+        return '<div data-sim-pin-group="' + section.key + '" style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid ' + section.border + ';border-bottom:2px solid ' + section.border + ';border-radius:6px;background:' + section.bg + ';box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
           '<div title="' + escapeHtml(section.tip) + '" style="color:' + section.ink + ';font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:4px;">' + section.title + ' · ' + units.length + '</div>' +
           '<div style="display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center;">' + unitsHtml + '</div></div>';
       }).join('');
