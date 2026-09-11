@@ -1,5 +1,14 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.451
+// Version: 4.452
+// v4.452: KEEP-ALIVE ON badge row clarity + header zone order. (1) Each badge unit's TOP row
+// (clock pill - name x) now wears a real pill border -- dusty rose #d4a89a with the warm interior
+// tint, matching the KEEP-ALIVE WORKING pills; the status/countdown line stays OUTSIDE the pill.
+// (2) The block title drops 'click a badge to jump to its card' (Dan knows) and gains 'armed to
+// fire -- a ping may not have fired yet', making the armed-vs-fired distinction explicit against
+// the WORKING block. (3) HEADER ZONE ORDER: the pin zone splits in three -- fired keep-alive
+// working pins at the VERY TOP, inactive pins in the middle zone, the KA-ON badge row below them,
+// ACTIVE pins at the VERY BOTTOM (unchanged). Attention events top, live conversations nearest the
+// cards. All tick/refresh patch sites route through tmSessionCtxPatchPinZones (now three zones).
 // v4.451: KEEP-ALIVE WORKING pill border -> DUSTY ROSE #d4a89a (the warm champagne #ecdcc8 was still
 // indistinguishable to Dan on the maroon field). Fourth candidate from the offered ladder; alternates
 // if needed: bone #f2e9dd, bronze #e3c9a8, near-black #050607.
@@ -2683,7 +2692,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.451';
+  const EXT_VERSION = '4.452';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6128,7 +6137,9 @@
         // window -- so there is nothing to jump TO, and the useful action is to turn it off here.
         var disarm = '<span data-action="ka-toggle" data-key="' + escapeHtml(key) + '" title="Disarm keep-alive for this conversation (the usual fix for a stale armed entry whose card has aged out of the list)" style="cursor:pointer;font-size:11px;font-weight:700;color:#c08080;padding:0 3px;border-radius:3px;white-space:nowrap;">\u00d7</span>';
         units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view (x disarms it)" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
-          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
+          // (v4.452) The badge unit's TOP row wears a real pill border (dusty rose, matching the
+          // KEEP-ALIVE WORKING pills); the status/countdown line below stays OUTSIDE the pill.
+          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;border:1px solid #d4a89a;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.07);">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
           statusHtml + '</span>');
       });
       // (v4.423) STICKY + TITLED. position:sticky at the top of the scrolling content region, so the
@@ -6137,7 +6148,7 @@
       // bottom border to read as a header. The label moved ABOVE the badges as a title line: inline,
       // it stole horizontal space and pushed a badge onto a second row.
       return '<div style="margin-bottom:8px;padding:5px 8px 6px;border:1px solid #3a2a2a;border-bottom:2px solid #4a3030;border-radius:6px;background:#1b1315;box-shadow:0 3px 10px rgba(0,0,0,0.6);">' +
-        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:7px;white-space:nowrap;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 click a badge to jump to its card</div>' +
+        '<div style="color:#8a94a2;font-size:10px;font-weight:700;letter-spacing:0.4px;margin-bottom:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">\u23f0 KEEP-ALIVE ON \u00b7 ' + units.length + ' conversation' + (units.length === 1 ? '' : 's') + ' \u00b7 armed to fire \u2014 a ping may not have fired yet</div>' +
         '<div style="display:flex;flex-wrap:wrap;gap:8px 18px;align-items:flex-start;">' + units.join('') + '</div>' +
         '</div>';
     } catch (eKB) { return ''; }
@@ -14969,28 +14980,33 @@ function tmThinkRenderBins(bucket,opts) {
     var title = '<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>';
     // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
     // replaced whenever a countdown changes, which would erase a note placed inside it.
-    // (v4.438; v4.443) ONE thick steel-blue divider now: between the header (pins + keep-alive
-    // badges) and the scrolling cards, rendered only when the header has content. The former
+    // (v4.438; v4.443; v4.452) ONE thick steel-blue divider: between the header's LOWEST block
+    // (the active-pins zone since v4.452) and the scrolling cards, rendered only when the header has content. The former
     // pins-to-badges divider was REMOVED in v4.443 -- it lived INSIDE the [data-sim-pins] zone, so
     // every 1s zone patch (tmBuildSessionCtxPinRow carries no divider) stripped it and the 30s full
     // rebuild restored it: a ~17px height jump and a divider flickering in/out that grabbed Dan's eye.
     // A decorative separator must live OUTSIDE a patched zone (the zone contract); this one now does.
-    var pinsHtml = tmBuildSessionCtxPinRow(frame, 'non-active'), pinsActiveHtml = tmBuildSessionCtxPinRow(frame, 'active'), kaHtml = tmBuildSessionCtxKaBadgeRow(frame);
+    var pinsTopHtml = tmBuildSessionCtxPinRow(frame, 'keepalive'), pinsHtml = tmBuildSessionCtxPinRow(frame, 'non-active'), pinsActiveHtml = tmBuildSessionCtxPinRow(frame, 'active'), kaHtml = tmBuildSessionCtxKaBadgeRow(frame);
     var divider = '<div style="height:3px;background:#4682b4;border-radius:2px;margin:4px 0 10px;"></div>';
     return title +
+      // (v4.452) ZONE ORDER, top to bottom: FIRED keep-alive working pins (attention events) at the
+      // VERY TOP; inactive pins; the KEEP-ALIVE ON badge row (armed, may not have fired); then ACTIVE
+      // pins at the VERY BOTTOM, closest to the cards -- the mirror of the working block at the top.
+      '<div data-sim-pins-ka="1">' + pinsTopHtml + '</div>' +
       '<div data-sim-pins="1">' + pinsHtml + '</div>' +
       '<div data-ka-badges="1">' + kaHtml + '</div>' +
       '<div data-ka-badge-note="" style="font-size:10px;color:#ffb84d;"></div>' +
-      // (v4.447) ACTIVE PINS is the LOWEST block: after the keep-alive badge row, right above the divider.
       '<div data-sim-pins-active="1">' + pinsActiveHtml + '</div>' +
-      ((pinsHtml || pinsActiveHtml || kaHtml) ? divider : '');
+      ((pinsTopHtml || pinsHtml || pinsActiveHtml || kaHtml) ? divider : '');
   }
 
-  // (v4.447) Patch BOTH pin zones together (the non-active groups above the KA badges, the active
-  // group below them). Every tick/refresh site routes through here so the two can never drift.
+  // (v4.447; three zones v4.452) Patch ALL pin zones together: the fired keep-alive working group at
+  // the very top, the inactive group in the middle, and the active group at the very bottom (below
+  // the KA badge row). Every tick/refresh site routes through here so the zones can never drift.
   function tmSessionCtxPatchPinZones(frame) {
     try {
       if (!tmSessionCtxHoverEl) return;
+      tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins-ka]'), tmBuildSessionCtxPinRow(frame, 'keepalive'));
       tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins]'), tmBuildSessionCtxPinRow(frame, 'non-active'));
       tmSessionCtxPatchHtml(tmSessionCtxHoverEl.querySelector('[data-sim-pins-active]'), tmBuildSessionCtxPinRow(frame, 'active'));
     } catch (e) {}
@@ -15409,7 +15425,7 @@ function tmThinkRenderBins(bucket,opts) {
       if(tmSessionCtxTimerState(apKey,apView,frame)){tmSimRowSetPinned(apKey,true,{view:apView,frame:frame});simPinsDirty=true;console.log('📌 [v'+EXT_VERSION+'] auto-pinned active identity '+apKey);}
     }
   }
-  if(simPinsDirty){try{tmSessionCtxHoverEl.querySelector('[data-sim-pins]').__tmSessionCtxHtml=null;tmSessionCtxHoverEl.querySelector('[data-sim-pins-active]').__tmSessionCtxHtml=null;}catch(eD){}}
+  if(simPinsDirty){try{var spz=tmSessionCtxHoverEl.querySelectorAll('[data-sim-pins-ka],[data-sim-pins],[data-sim-pins-active]');for(var q=0;q<spz.length;q++)spz[q].__tmSessionCtxHtml=null;}catch(eD){}}
   for(var i=0;i<rows.length;i++){
     var row=rows[i],key=row.getAttribute('data-session-row'),v=tmLedgerRowView(key,frame),last=v.last,rec=v.rec;
     var tuple={capture:last&&last.capture_id||'',total:rec._total||0,cache:[rec._cache_hits||0,rec._cache_misses||0,rec._cache_streak||0].join(','),max:JSON.stringify(v.maxCtx),width:tmGetSessionCtxHoverWidth()};
@@ -15595,8 +15611,10 @@ function tmThinkRenderBins(bucket,opts) {
       '<span>' + (tool ? '⚙ tools' : '▶') + '</span><span style="font-family:ui-monospace,Consolas,monospace;font-variant-numeric:tabular-nums;">' + text + '</span></span>';
   }
 
-  // The existing [data-sim-pins] zone owns ALL three blocks, replaced together on the guarded
-  // 1s tick. Empty groups vanish. (v4.441) The INACTIVE group is sorted by the most recent REAL
+  // The pin ZONES own the three blocks (v4.452: split across [data-sim-pins-ka] / [data-sim-pins] /
+  // [data-sim-pins-active]), each replaced together on the guarded 1s tick via
+  // tmSessionCtxPatchPinZones. Empty groups vanish. (v4.441) The INACTIVE group is sorted by the most
+  // recent REAL
   // Dan-typed turn (ledger _last_user_ts, fallback _ts), newest first -- so a background tool swarm
   // or an overnight keep-alive never bumps a conversation; only Dan sending a message does. Active
   // and keep-alive-working groups keep insertion order. Neither the persisted pin list nor the
@@ -15605,13 +15623,14 @@ function tmThinkRenderBins(bucket,opts) {
   //   id=payload-sim-pinned-groups,
   //   slice_labels=tm-payload-overview,tm-sessions-in-memory,
   //   kind=ast,
-  //   comment=v4.434: live pinned pills in active / inactive / keep-alive working blocks. Shared timer and KA display state; full identity match with sid aliases. v4.441: INACTIVE group sorted by last real Dan-typed turn (_last_user_ts, fallback _ts); active/keep-alive keep insertion order.,
+  //   comment=v4.434: live pinned pills in active / inactive / keep-alive working blocks. Shared timer and KA display state; full identity match with sid aliases. v4.441: INACTIVE group sorted by last real Dan-typed turn (_last_user_ts, fallback _ts); active/keep-alive keep insertion order. v4.452: three zones -- keep-alive working renders at the VERY TOP of the header, inactive in the middle, active at the very bottom.,
   // ]
   function tmBuildSessionCtxPinRow(frame, only) {
     try {
-      // (v4.447) `only`: 'non-active' renders the inactive + keep-alive-working groups (the zone above
-      // the KA badge row); 'active' renders just the active group (its own zone BELOW the badges, the
-      // lowest block in the header). Omitted -> all three (legacy single-zone shape).
+      // (v4.447; v4.452) `only`: 'keepalive' renders just the fired keep-alive working group (the
+      // [data-sim-pins-ka] zone at the VERY TOP of the header); 'non-active' renders just the inactive
+      // group (the middle zone); 'active' renders just the active group (its zone at the VERY BOTTOM,
+      // below the KA badge row). Omitted -> all three (legacy single-zone shape).
       only = only || 'all';
       var keys = tmSimPinnedRowsRead();
       if (!keys.length) return '';
@@ -15689,7 +15708,8 @@ function tmThinkRenderBins(bucket,opts) {
       ];
       return sections.filter(function (section) {
         if (only === 'active') return section.key === 'active';
-        if (only === 'non-active') return section.key !== 'active';
+        if (only === 'keepalive') return section.key === 'keepalive';
+        if (only === 'non-active') return section.key === 'inactive';
         return true;
       }).map(function (section) {
         var units = groups[section.key];
