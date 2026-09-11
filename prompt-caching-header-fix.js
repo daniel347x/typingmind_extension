@@ -1,5 +1,13 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.458
+// Version: 4.459
+// v4.459: A MANUALLY pasted keep-alive sentinel now resets the countdown (Dan's option 2 -- watch
+// the outbound payload, not the copy button). The capture path already detects the sentinel
+// (kaIsPing); the ping branch of tmKeepAliveNoteRealTurn now stamps last_ping_ts + the session-wide
+// and per-identity clocks on the matching entries exactly like the automatic fire path does
+// (tmKeepAliveFirePing), whether or not keep-alive is currently armed, and whether the sentinel was
+// auto-fired or pasted by hand via the clipboard button. Fires on the ACTUAL SEND, so copying
+// without sending changes nothing. The response still flows through tmKeepAliveRecordPingResult
+// (spend/count/health unchanged).
 // v4.458: PER-MODEL keep-alive clock. Arming Claude after 45 min on another model of the SAME
 // conversation showed a fresh ~50m countdown: last_turn_ts was stamped sid-wide by every sibling's
 // real turns, and both the arm seed and the sweep read session-wide activity. New per-identity
@@ -2729,7 +2737,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.458';
+  const EXT_VERSION = '4.459';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -5466,7 +5474,7 @@
   //   role=__lambdao_1.tmKeepAliveNoteRealTurn,
   //   slice_labels=tm-payload-overview,tm-keepalive,
   //   kind=ast,
-  //   comment=Fix 25 (v4.374): idle-clock writer -- stamps last_turn_ts on every keep-alive entry sharing the session id (persisted, so reload-safe), clears retry state, and flags the sentinel ping turn (pending_ping) so tmKeepAliveRecordPingResult can pair the response.,
+  //   comment=Fix 25 (v4.374): idle-clock writer -- stamps last_turn_ts on every keep-alive entry sharing the session id (persisted, so reload-safe), clears retry state, and flags the sentinel ping turn (pending_ping) so tmKeepAliveRecordPingResult can pair the response. (v4.459) A sentinel ping -- auto-fired OR manually pasted via the copy button -- also stamps last_ping_ts + own_last_turn_ts (exact identity) on the matching entries, so a manual ping resets the countdown exactly like an automatic one, armed or not.,
   // ]
   function tmKeepAliveNoteRealTurn(key, sid, isPing) {
     try {
@@ -5493,7 +5501,18 @@
           e.stopped_reason = 'auto-off: superseded \u2014 ' + (String(k).split('::')[1] || 'another model') + ' is no longer the active model on this conversation';
           superseded.push(k);
         }
-        if (isPing) { e.pending_ping = { ts: now, key: key }; }
+        if (isPing) {
+          e.pending_ping = { ts: now, key: key };
+          // (v4.459) A sentinel outbound -- auto-fired OR manually pasted via the clipboard button --
+          // IS a cache-refreshing turn for this conversation: stamp the same clocks the automatic
+          // fire path does (tmKeepAliveFirePing), so Dan's hand-sent ping resets the countdown
+          // instead of leaving 'next ping in 4m' on the board. Runs whether or not the entry is
+          // currently enabled; detection is on the ACTUAL SEND (copying alone changes nothing).
+          e.last_ping_ts = now;
+          e.last_turn_ts = now;
+          if (key && tmKeepAliveSameIdentity(k, key)) e.own_last_turn_ts = now;
+          if (e.retry_at) e.retry_at = 0;
+        }
         else {
           // (v4.458) TWO CLOCKS. last_turn_ts stays SESSION-WIDE: the sweep's fire-protection math
           // deliberately counts any sibling activity (never ping mid-conversation). own_last_turn_ts
