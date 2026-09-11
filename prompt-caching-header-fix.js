@@ -1,5 +1,8 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.450
+// Version: 4.451
+// v4.451: KEEP-ALIVE WORKING pill border -> DUSTY ROSE #d4a89a (the warm champagne #ecdcc8 was still
+// indistinguishable to Dan on the maroon field). Fourth candidate from the offered ladder; alternates
+// if needed: bone #f2e9dd, bronze #e3c9a8, near-black #050607.
 // v4.450: KEEP-ALIVE WORKING pill border, third attempt -- warm champagne #ecdcc8 replaces the cool
 // #c9ced5. The cool light gray turned muddy on the deep-red block field (simultaneous contrast: a
 // neutral gray surrounded by red picks up an induced red tint and stops reading as an edge). A warm
@@ -2680,7 +2683,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.450';
+  const EXT_VERSION = '4.451';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -15665,11 +15668,10 @@ function tmThinkRenderBins(bucket,opts) {
           ? '<button data-action="copy-ka-text" data-key="' + escapeHtml(k) + '" title="Copy the keep-alive ping message \u2014 paste it into the conversation and send it to fire a keep-alive ping yourself (manual backstop)" style="cursor:pointer;font-size:10px;line-height:1;padding:0 4px;border-radius:3px;color:#7ec8e3;border:1px solid #3a5a6a;background:#16222a;margin-left:6px;">\ud83d\udccb</button>'
           : '';
         var pillTitle = 'Click to scroll this session\u2019s card into view (📌 unpins)' + (pillNote ? ('\n\n🗒 ' + pillNote) : '');
-        // (v4.448; STRENGTHENED v4.449; KA warm v4.450) Per-group pill border: bright off-white on
-        // active (unchanged, Dan-approved), near-black on inactive (reads on both edges against the
-        // brighter pill interior below), and WARM CHAMPAGNE on keep-alive working -- a cool gray goes
-        // muddy against the deep-red field (induced red tint); a warm bright tone stays crisp.
-        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#ecdcc8' : '#050607';
+        // (v4.448; STRENGTHENED v4.449; KA warm v4.450; DUSTY ROSE v4.451) Per-group pill border:
+        // bright off-white on active (unchanged, Dan-approved), near-black on inactive (reads on both
+        // edges against the brighter pill interior below), and dusty rose on keep-alive working.
+        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#d4a89a' : '#050607';
         var pillBg = (group === 'keepalive') ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.07)';
         var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid ' + pillBorder + ';border-radius:999px;padding:2px 8px;background:' + pillBg + ';">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
