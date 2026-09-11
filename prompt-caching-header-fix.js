@@ -1,5 +1,8 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.452
+// Version: 4.453
+// v4.453: Dusty rose dimmed #d4a89a -> #b08878 on BOTH keep-alive pill surfaces (the KA-ON badge
+// pills + the KA-WORKING pills). The v4.452 rose was too close in brightness to the active pills'
+// white; the dimmer tone separates the keep-alive family from the active white by ~27% brightness.
 // v4.452: KEEP-ALIVE ON badge row clarity + header zone order. (1) Each badge unit's TOP row
 // (clock pill - name x) now wears a real pill border -- dusty rose #d4a89a with the warm interior
 // tint, matching the KEEP-ALIVE WORKING pills; the status/countdown line stays OUTSIDE the pill.
@@ -2692,7 +2695,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.452';
+  const EXT_VERSION = '4.453';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6139,7 +6142,7 @@
         units.push('<span data-action="ka-badge-jump" data-key="' + escapeHtml(key) + '" title="Click to scroll this conversation\u2019s card into view (x disarms it)" style="display:inline-flex;flex-direction:column;align-items:center;gap:1px;cursor:pointer;max-width:340px;min-width:0;">' +
           // (v4.452) The badge unit's TOP row wears a real pill border (dusty rose, matching the
           // KEEP-ALIVE WORKING pills); the status/countdown line below stays OUTSIDE the pill.
-          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;border:1px solid #d4a89a;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.07);">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
+          '<span style="display:inline-flex;align-items:center;gap:5px;min-width:0;border:1px solid #b08878;border-radius:999px;padding:2px 8px;background:rgba(255,255,255,0.07);">' + pill + '<span style="color:#6f7a8a;font-size:11px;">\u2013</span>' + nameHtml + disarm + '</span>' +
           statusHtml + '</span>');
       });
       // (v4.423) STICKY + TITLED. position:sticky at the top of the scrolling content region, so the
@@ -15690,7 +15693,7 @@ function tmThinkRenderBins(bucket,opts) {
         // (v4.448; STRENGTHENED v4.449; KA warm v4.450; DUSTY ROSE v4.451) Per-group pill border:
         // bright off-white on active (unchanged, Dan-approved), near-black on inactive (reads on both
         // edges against the brighter pill interior below), and dusty rose on keep-alive working.
-        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#d4a89a' : '#050607';
+        var pillBorder = (group === 'active') ? '#eaf2ec' : (group === 'keepalive') ? '#b08878' : '#050607';
         var pillBg = (group === 'keepalive') ? 'rgba(255,255,255,0.11)' : 'rgba(255,255,255,0.07)';
         var unit = '<span data-action="sim-pin-jump" data-key="' + escapeHtml(k) + '" title="' + escapeHtml(pillTitle) + '" style="display:inline-flex;align-items:center;gap:2px;min-width:0;cursor:pointer;border:1px solid ' + pillBorder + ';border-radius:999px;padding:2px 8px;background:' + pillBg + ';">' + noteBtn + timerHtml + nameHtml + dialHtml + costHtml + (liveHtml ? '<span style="margin-left:8px;display:inline-flex;align-items:center;">' + liveHtml + '</span>' : '') + modelHtml + copyKaBtn + '<span style="margin-left:6px;display:inline-flex;">' + unpin + '</span>' + '</span>';
         // (v4.441) Sort key for the INACTIVE group: the durable last-REAL-Dan-turn clock, falling
