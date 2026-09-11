@@ -1,5 +1,10 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.456
+// Version: 4.457
+// v4.457: The keep-alive badge countdown can no longer break mid-phrase. The centered badge status
+// line wraps at its bullet separators (white-space was open), so 'next ping in 49m 13s' could split
+// at the space before the seconds -- orphaned '13s' alone on the next row read like 13 seconds to
+// the ping. nw now carries white-space:nowrap in BOTH variants, making each status segment one
+// atomic wrap unit: segments still wrap between bullets, but never internally.
 // v4.456: KA BROKEN false-positive fix -- the health check now requires a LOW HIT RATIO, not just a
 // big write. Dan's live case: a hand-pasted ping after a few GPT turns read ~300K cached tokens and
 // wrote a 13K delta (the new tail) -- a 95% HIT that cost 89 cents instead of ~6 dollars -- yet the
@@ -2715,7 +2720,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.456';
+  const EXT_VERSION = '4.457';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6005,7 +6010,10 @@
       // (v4.423) In the top badge row the line WRAPS at its bullet separators; on the card's bottom
       // line it stays one nowrap line with an ellipsis, because that line's negative-margin overlap
       // of the card padding depends on it being exactly one line tall.
-      var nw = opts.center ? '' : 'white-space:nowrap;';
+      // (v4.457) nowrap in BOTH variants: each segment (summary, countdown, skip reason) is one atomic
+      // wrap unit, so the badge line still wraps BETWEEN bullets but a segment never breaks internally
+      // -- 'next ping in 49m 13s' can no longer orphan its seconds on the next row.
+      var nw = 'white-space:nowrap;';
       if (e && e.broken) {
         parts.push('<span title="Last ping PAID A CACHE WRITE (' + tmThinkFmtK(e.broken.write_tokens) + ' tokens) with only a ' + Math.round(Number(e.broken.hit_ratio || 0) * 100) + '% hit ratio -- below the ' + Math.round(TM_KA_BROKEN_MIN_HIT_RATIO * 100) + '% floor: the conversation prefix no longer matched the cache (v4.456 ratio guard -- a large write beside a dominant read is the healthy new tail, NOT broken). Keep-alive auto-disabled. Click \u23f0 KA to re-enable." style="color:#ff6b6b;font-weight:700;background:rgba(70,0,0,0.7);border:1px solid #ff3333;border-radius:3px;padding:0 5px;' + nw + '">\ud83d\udea8 KA BROKEN \u2014 wrote ' + tmThinkFmtK(e.broken.write_tokens) + '</span>');
       } else if (e && e.ping_count) {
