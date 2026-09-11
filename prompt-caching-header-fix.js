@@ -1,5 +1,8 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.443
+// Version: 4.444
+// v4.444: The header-to-cards divider is now a strong steel blue (#4682b4) instead of the
+// desaturated dark slate (#3a4658) that read as pure gray -- a nice strong blue with a tinge of
+// gray, per Dan. One-line color change to the single divider var in tmBuildSessionCtxHeaderHtml.
 // v4.443: Keep-alive badge polish + the flickering-divider fix. (1) The 'next ping in' countdown is
 // now a LIVE M:SS timer (recomputed from the entry every 1s tick via tmKeepAliveNextPingRemainingMs,
 // mirroring the sweep's idle math) rendered bright red (#ff5a5a) and 1pt larger (12px vs the 11px
@@ -2636,7 +2639,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.443';
+  const EXT_VERSION = '4.444';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -14914,14 +14917,14 @@ function tmThinkRenderBins(bucket,opts) {
     var title = '<div data-hovercard-drag="1" style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;margin-bottom:8px;"><span>Sessions in memory — context used</span><span><button data-hovercard-action="swap-groups" title="Swap the cache cluster and keep-alive groups between rows 2 and 3" style="margin-right:12px;">⇅</button> <button data-hovercard-action="width-minus" title="Narrower">−</button> <button data-hovercard-action="width-plus" title="Wider">+</button> <button data-hovercard-action="pin" title="Pin/unpin">📌</button> <button data-hovercard-action="close" title="Close (unpins)">×</button></span></div>';
     // (v4.424) The note lives OUTSIDE the patched badges zone on purpose: that zone's innerHTML is
     // replaced whenever a countdown changes, which would erase a note placed inside it.
-    // (v4.438; v4.443) ONE thick blue-gray divider now: between the header (pins + keep-alive
+    // (v4.438; v4.443) ONE thick steel-blue divider now: between the header (pins + keep-alive
     // badges) and the scrolling cards, rendered only when the header has content. The former
     // pins-to-badges divider was REMOVED in v4.443 -- it lived INSIDE the [data-sim-pins] zone, so
     // every 1s zone patch (tmBuildSessionCtxPinRow carries no divider) stripped it and the 30s full
     // rebuild restored it: a ~17px height jump and a divider flickering in/out that grabbed Dan's eye.
     // A decorative separator must live OUTSIDE a patched zone (the zone contract); this one now does.
     var pinsHtml = tmBuildSessionCtxPinRow(frame), kaHtml = tmBuildSessionCtxKaBadgeRow(frame);
-    var divider = '<div style="height:3px;background:#3a4658;border-radius:2px;margin:4px 0 10px;"></div>';
+    var divider = '<div style="height:3px;background:#4682b4;border-radius:2px;margin:4px 0 10px;"></div>';
     return title +
       '<div data-sim-pins="1">' + pinsHtml + '</div>' +
       '<div data-ka-badges="1">' + kaHtml + '</div>' +
