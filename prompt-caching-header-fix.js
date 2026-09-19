@@ -1,5 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.459
+// Version: 4.460
+// v4.460: Prune incomplete historical tool calls (missing/blank id OR name) BEFORE other repairs.
+// Anthropic Messages, OpenAI Chat Completions and Responses (call_id, not item id); wire-only.
+// Preserve valid parallel calls, results, prose and reasoning. Only clean unowned results in the
+// damaged group or results carrying a removed call's known id. Empty affected messages get a
+// deterministic execution-unknown note, never a fabricated success. Gemini's optional ids stay
+// untouched. Capture Summary: incomplete_tool_history (counts only).
 // v4.459: A MANUALLY pasted keep-alive sentinel now resets the countdown (Dan's option 2 -- watch
 // the outbound payload, not the copy button). The capture path already detects the sentinel
 // (kaIsPing); the ping branch of tmKeepAliveNoteRealTurn now stamps last_ping_ts + the session-wide
@@ -2737,7 +2743,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.459';
+  const EXT_VERSION = '4.460';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -13321,6 +13327,7 @@ function tmThinkRenderBins(bucket,opts) {
       vendorHint: vendorForThisCall || null,
       convIdHint: convIdForThisCall || null,
       repair_tally: repairTallyForThisCall || null,
+      _incomplete_tool_history: (options && options._tm_incomplete_tools) || null,
       headers: headersNorm,
       body_parse_error: null,
       protocol: 'unknown',
@@ -21789,6 +21796,7 @@ function tmThinkRenderBins(bucket,opts) {
       vendorHint: cap.vendorHint,
       convIdHint: cap.convIdHint,
       repair_tally: cap.repair_tally || null,
+      incomplete_tool_history: cap._incomplete_tool_history || null,
       tool_id_repair_count: Number(cap._tool_id_repair_count || 0),
       tool_id_repair_last: cap._tool_id_repair_last || null,
       sse_done_guard: cap._sse_done_guard || null, // Encoding-only shield/bypass counts, no response text.
@@ -23889,6 +23897,161 @@ function tmThinkRenderBins(bucket,opts) {
     return changed;
   }
 
+  // @beacon[
+  //   id=repair-incomplete-tool-history,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.460 wire-only incomplete-call cleanup before other repairs: Anthropic + Chat + Responses; preserve valid parallel pairs; scope orphan removal to damaged groups; never invent IDs or success.,
+  // ]
+  function tmRepairIncompleteToolHistory(body) {
+    var report = { changed: 0, droppedCalls: 0, droppedResults: 0, filledMessages: 0 };
+    if (!body || typeof body !== 'object') return report;
+    var callNote = '[TypingMind payload extension: incomplete historical tool call omitted; execution status unknown.]';
+    var resultNote = '[TypingMind payload extension: unmatched historical tool result omitted; execution status unknown.]';
+    function present(v) { return typeof v === 'string' && v.trim().length > 0; }
+
+    // Work only on protocol containers, NEVER recurse into arguments, schemas or result data.
+    // Record both halves before mutating. A valid owner ANYWHERE protects its result, including
+    // displaced results and punctuation aliases that the existing Anthropic/Kimi repairs normalize.
+    function prune(calls, results, canonical, partialHistory) {
+      var keptIds = new Set(), removedIds = new Set(), damaged = new Set();
+      var removals = new Map(), touched = new Map();
+      function key(id) {
+        if (!present(id)) return '';
+        return canonical ? id.replace(/[^a-zA-Z0-9_-]/g, '_') : id;
+      }
+      function remove(ref, note) {
+        if (!removals.has(ref.array)) removals.set(ref.array, new Set());
+        removals.get(ref.array).add(ref.node);
+        if (ref.shell) touched.set(ref.shell, note);
+      }
+      calls.forEach(function(ref) {
+        if (ref.protect) {
+          if (key(ref.id)) keptIds.add(key(ref.id));
+          return; // Unknown call kinds are not ours to validate, but still own their results.
+        }
+        if (present(ref.id) && present(ref.name)) {
+          keptIds.add(key(ref.id));
+        } else {
+          if (key(ref.id)) removedIds.add(key(ref.id));
+          damaged.add(ref.group);
+          remove(ref, callNote);
+          report.droppedCalls++;
+        }
+      });
+      if (!damaged.size) return;
+      results.forEach(function(ref) {
+        var id = key(ref.id);
+        if (id && keptIds.has(id)) return;
+        // With server-managed Responses history, a nonblank unknown output may belong to a
+        // call in previous_response_id/conversation/item_reference: absence here proves nothing.
+        // Known removed IDs are safe; other unowned results are touched ONLY in a damaged group.
+        if ((id && removedIds.has(id)) || (damaged.has(ref.group) && (!partialHistory || !id))) {
+          remove(ref, resultNote);
+          report.droppedResults++;
+        }
+      });
+      removals.forEach(function(nodes, array) {
+        for (var i = array.length - 1; i >= 0; i--) {
+          if (nodes.has(array[i])) array.splice(i, 1);
+        }
+      });
+      touched.forEach(function(note, shell) {
+        var msg = shell.msg;
+        if (shell.kind === 'chat') {
+          if (Array.isArray(msg.tool_calls) && !msg.tool_calls.length) delete msg.tool_calls;
+          // A legitimate parallel tool-only turn must remain content:null (v4.348 contract).
+          if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) return;
+          if (present(msg.refusal) || msg.function_call) return;
+          var empty = msg.content == null || (typeof msg.content === 'string' && !msg.content.trim()) ||
+            (Array.isArray(msg.content) && !msg.content.length);
+          if (empty) { msg.content = note; report.filledMessages++; }
+        } else if (Array.isArray(msg.content)) {
+          // Do not leave an empty or thinking-only Anthropic message. Keep original reasoning
+          // and signatures byte-for-byte; append one neutral text block if there is no other part.
+          var hasOrdinary = msg.content.some(function(b) {
+            return b && b.type !== 'thinking' && b.type !== 'redacted_thinking';
+          });
+          if (!hasOrdinary) {
+            msg.content.push({ type: shell.kind === 'responses' ? (msg.role === 'assistant' ? 'output_text' : 'input_text') : 'text', text: note });
+            report.filledMessages++;
+          }
+        }
+      });
+    }
+
+    function blockRefs(sequence, callType, resultType, callKey, resultKey, kind, calls, results) {
+      if (!Array.isArray(sequence)) return;
+      sequence.forEach(function(msg, i) {
+        if (!msg || !Array.isArray(msg.content)) return;
+        var shell = { msg: msg, kind: kind };
+        msg.content.forEach(function(block) {
+          if (!block || typeof block !== 'object') return;
+          if (msg.role === 'assistant' && block.type === callType) {
+            calls.push({ node: block, array: msg.content, shell: shell, group: msg, id: block[callKey], name: block.name });
+          } else if (msg.role === 'user' && block.type === resultType) {
+            var prev = sequence[i - 1];
+            results.push({ node: block, array: msg.content, shell: shell, group: prev && prev.role === 'assistant' ? prev : null, id: block[resultKey] });
+          }
+        });
+      });
+    }
+
+    var calls = [], results = [];
+    blockRefs(body.messages, 'tool_use', 'tool_result', 'id', 'tool_use_id', 'anthropic', calls, results);
+    prune(calls, results, true, false);
+
+    calls = []; results = [];
+    if (Array.isArray(body.messages)) {
+      var chatGroup = null;
+      body.messages.forEach(function(msg) {
+        if (!msg) { chatGroup = null; return; }
+        if (msg.role === 'assistant') {
+          chatGroup = msg;
+          var shell = { msg: msg, kind: 'chat' };
+          if (Array.isArray(msg.tool_calls)) msg.tool_calls.forEach(function(tc) {
+            // Future/built-in/custom tool kinds have their own required fields, not function.name.
+            if (tc && tc.type && tc.type !== 'function') {
+              calls.push({ protect: true, id: tc.id });
+              return;
+            }
+            calls.push({ node: tc, array: msg.tool_calls, shell: shell, group: msg, id: tc && tc.id, name: tc && tc.function && tc.function.name });
+          });
+        } else if (msg.role === 'tool') {
+          results.push({ node: msg, array: body.messages, group: chatGroup, id: msg.tool_call_id });
+        } else { chatGroup = null; }
+      });
+      prune(calls, results, true, false);
+    }
+
+    if (Array.isArray(body.input)) {
+      calls = []; results = [];
+      // Cover TypingMind's historical nested representation as well as the actual Responses
+      // flat input items. For Responses, call_id correlates the pair; optional item.id does NOT.
+      blockRefs(body.input, 'function_call', 'function_call_output', 'call_id', 'call_id', 'responses', calls, results);
+      var group = null, outputsStarted = false;
+      var partialHistory = !!(body.previous_response_id || body.conversation);
+      body.input.forEach(function(item) {
+        if (!item) { group = null; return; }
+        if (item.type === 'function_call') {
+          if (!group || outputsStarted) { group = {}; outputsStarted = false; }
+          calls.push({ node: item, array: body.input, group: group, id: item.call_id, name: item.name });
+        } else if (item.type === 'function_call_output') {
+          results.push({ node: item, array: body.input, group: group, id: item.call_id });
+          outputsStarted = true;
+        } else if (item.type !== 'reasoning') {
+          if (item.type === 'item_reference') partialHistory = true;
+          group = null; outputsStarted = false;
+        }
+      });
+      prune(calls, results, false, partialHistory);
+    }
+    // Gemini functionCall IDs are optional; legacy name-based pairing is valid. Leave it alone.
+    report.changed = report.droppedCalls + report.droppedResults + report.filledMessages;
+    if (report.changed) console.warn('[v' + EXT_VERSION + '] Incomplete tool history repaired on outbound wire: calls=' + report.droppedCalls + ', results=' + report.droppedResults + ', neutralNotes=' + report.filledMessages + '. Stored conversation unchanged; execution status unknown.');
+    return report;
+  }
+
   // (v4.208) Cross-model transcript compatibility for Anthropic-native payloads.
   // Some non-Anthropic models serialize tool_use IDs such as "search_web:0". Direct Anthropic
   // rejects those because tool_use.id must match ^[a-zA-Z0-9_-]+$ (colon is illegal). The payload
@@ -25580,6 +25743,12 @@ function tmThinkRenderBins(bucket,opts) {
             try { tmLedgerStaleCheck(_scIdKey, Date.now()); } catch (eSc1) {}
           }
         } catch (eScAll) {}
+        // (v4.460) Remove incomplete historical calls BEFORE ID canonicalization, missing-result
+        // synthesis, thinking insertion and endpoint branches. Shape-based: direct/proxy alike.
+        // Never invent a name/ID or claim the interrupted tool ran. Metadata stays off the wire.
+        var tmIncompleteTools = tmRepairIncompleteToolHistory(tmUniversalBody);
+        options._tm_incomplete_tools = tmIncompleteTools.changed ? tmIncompleteTools : null;
+        if (tmIncompleteTools.changed) tmUniversalChanged = true;
         // (Fix 15, v4.199) Repair typeless tool-schema properties BEFORE canonicalization, so the
         // key-sort then runs over the completed schema and the cache-stable ordering still holds.
         // Universal (every endpoint) since a naked schema is a portability bug, not OpenRouter-only.
