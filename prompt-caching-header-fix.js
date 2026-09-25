@@ -1,5 +1,9 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.461
+// Version: 4.462
+// v4.462: Stub timing corrected -- the automatic handshake follow-up arrives 'within a second or two'
+// (observed live on v4.461), not 'about 30 seconds'. Agents may time work around it, so it must be exact.
+// v4.461 LIVE-VERIFIED: 170 KB run_command result stubbed -> bare restore line -> instant
+// [HANDSHAKE ACCEPTED] follow-up -> full result restored in place.
 // v4.461: OVERSIZED-GUARD HANDSHAKE REPAIRS. (1) Dan's own Workflowy MCP verb families (anchor, node,
 // tag, beacon, system, slice_group -- joining glimpse/lightning_rod) are exempt from the oversized
 // tool-result guard, EXCEPT node.export and node.scry (whole-vault/subtree dumps stay guarded; a node
@@ -2757,7 +2761,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.461';
+  const EXT_VERSION = '4.462';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -17899,7 +17903,7 @@ function tmThinkRenderBins(bucket,opts) {
       'The full result was withheld to prevent accidental context exhaustion. A deterministic sample follows.\n' +
       '--- SAMPLE: START / MIDDLE / END ---\n' + tmBuildThreePointToolSample(content) + '\n' +
       '--- END SAMPLE ---\n\n' +
-      'Accepting this is safe and expected for deliberate large reads. Reply with the line below ALONE -- no other text and no tool call in that same reply. Anything you already wrote or called earlier in this turn does not matter; only that next reply must be the bare line. The extension then automatically sends a follow-up (usually within about 30 seconds) with the full result restored in its original place, and you continue your task from there. Nobody has to intervene, so there is no need to fall back to reading the data in smaller pieces.\n\n' +
+      'Accepting this is safe and expected for deliberate large reads. Reply with the line below ALONE -- no other text and no tool call in that same reply. Anything you already wrote or called earlier in this turn does not matter; only that next reply must be the bare line. The extension then automatically sends a follow-up (within a second or two) with the full result restored in its original place, and you continue your task from there. Nobody has to intervene, so there is no need to fall back to reading the data in smaller pieces.\n\n' +
       'If the complete original result is truly required, your next assistant message must be exactly this single line:\n' +
       'Please restore tool result ' + String(meta.id || 'unknown');
   }
