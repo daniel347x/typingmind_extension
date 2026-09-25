@@ -1,5 +1,19 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.460
+// Version: 4.461
+// v4.461: OVERSIZED-GUARD HANDSHAKE REPAIRS. (1) Dan's own Workflowy MCP verb families (anchor, node,
+// tag, beacon, system, slice_group -- joining glimpse/lightning_rod) are exempt from the oversized
+// tool-result guard, EXCEPT node.export and node.scry (whole-vault/subtree dumps stay guarded; a node
+// call whose verb cannot be read stays guarded -- fail safe). Trigger: a 121 KB Anchor Dock skill note
+// read via node.read was stubbed every Manager Session, and agents chose windowed reads over the
+// handshake. (2) The handshake follow-up (reason oversized_result_recovery) is exempt from the agent-
+// management (heartbeat) toggle in BOTH gates (tmQueueAutoContinue + tmExecuteAutoContinue): it answers
+// the agent's own explicit request, not stall monitoring. Before this, toggle OFF dropped it SILENTLY.
+// The user-cancel latch still applies. (3) Every refused automatic follow-up is logged with its reason
+// (tmLogAutoContinueRefusal), plus console lines for handshake near-misses (restore line alongside a
+// tool call, not the bare line, id not stubbed, no Session ID). (4) Stub text gains a reassurance
+// paragraph (accepting is safe; earlier text/tool calls in the turn do not matter; the follow-up is
+// automatic) -- the exact restore line itself is unchanged. (5) The follow-up types a signposted
+// '[HANDSHAKE ACCEPTED ...]' message instead of the generic 'previous turn was interrupted' text.
 // v4.460: Prune incomplete historical tool calls (missing/blank id OR name) BEFORE other repairs.
 // Anthropic Messages, OpenAI Chat Completions and Responses (call_id, not item id); wire-only.
 // Preserve valid parallel calls, results, prose and reasoning. Only clean unowned results in the
@@ -2743,7 +2757,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.460';
+  const EXT_VERSION = '4.461';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -17801,6 +17815,35 @@ function tmThinkRenderBins(bucket,opts) {
       /__glimpse$/.test(n) || /__lightning_rod$/.test(n);
   }
 
+  // (v4.461) Dan's own Workflowy MCP verb families are exempt from the oversized guard -- their
+  // large results are deliberate reads (e.g. a 121 KB Anchor Dock skill note via node.read).
+  // EXCEPTION: node.export and node.scry stay guarded (whole-vault / whole-subtree dumps are
+  // exactly what the guard exists for). A node call whose verb cannot be read stays guarded too
+  // (fail safe). Server-prefixed names (x.node, x__node, x:node, x/node) resolve to the base name.
+  var TM_GUARD_EXEMPT_MCP_FAMILIES = { anchor: 1, node: 1, tag: 1, beacon: 1, system: 1, slice_group: 1 };
+  var TM_GUARD_NODE_VERBS_STILL_GUARDED = { 'export': 1, 'scry': 1 };
+  function tmToolBaseName(name) {
+    var n = String(name || '').trim().toLowerCase();
+    var i = Math.max(n.lastIndexOf('.'), n.lastIndexOf(':'), n.lastIndexOf('/'));
+    if (i >= 0) n = n.slice(i + 1);
+    var j = n.lastIndexOf('__');
+    if (j >= 0) n = n.slice(j + 2);
+    return n;
+  }
+  function tmToolCallIsLargeResultWhitelisted(meta) {
+    meta = meta || {};
+    if (tmToolNameIsLargeResultWhitelisted(meta.name)) return true;
+    var base = tmToolBaseName(meta.name);
+    if (!TM_GUARD_EXEMPT_MCP_FAMILIES[base]) return false;
+    if (base !== 'node') return true;
+    var args = meta.args;
+    if (typeof args === 'string') { try { args = JSON.parse(args); } catch (e) { args = null; } }
+    var verb = (args && typeof args.verb === 'string') ? args.verb.trim().toLowerCase() : '';
+    if (verb.lastIndexOf('.') >= 0) verb = verb.slice(verb.lastIndexOf('.') + 1);
+    if (!verb) return false;
+    return !TM_GUARD_NODE_VERBS_STILL_GUARDED[verb];
+  }
+
   function tmToolResultText(content) {
     if (typeof content === 'string') return content;
     if (Array.isArray(content)) {
@@ -17856,6 +17899,7 @@ function tmThinkRenderBins(bucket,opts) {
       'The full result was withheld to prevent accidental context exhaustion. A deterministic sample follows.\n' +
       '--- SAMPLE: START / MIDDLE / END ---\n' + tmBuildThreePointToolSample(content) + '\n' +
       '--- END SAMPLE ---\n\n' +
+      'Accepting this is safe and expected for deliberate large reads. Reply with the line below ALONE -- no other text and no tool call in that same reply. Anything you already wrote or called earlier in this turn does not matter; only that next reply must be the bare line. The extension then automatically sends a follow-up (usually within about 30 seconds) with the full result restored in its original place, and you continue your task from there. Nobody has to intervene, so there is no need to fall back to reading the data in smaller pieces.\n\n' +
       'If the complete original result is truly required, your next assistant message must be exactly this single line:\n' +
       'Please restore tool result ' + String(meta.id || 'unknown');
   }
@@ -18029,7 +18073,7 @@ function tmThinkRenderBins(bucket,opts) {
       opts = opts || {};
       id = String(id || 'unknown');
       var meta = callMap[id] || { id: id, name: 'unknown_tool', args: {} };
-      if (tmToolNameIsLargeResultWhitelisted(meta.name)) {
+      if (tmToolCallIsLargeResultWhitelisted(meta)) {
         report.whitelisted.push({ id: id, name: meta.name });
         return;
       }
@@ -20269,8 +20313,10 @@ function tmThinkRenderBins(bucket,opts) {
   function tmExecuteAutoContinue(item) {
     if (!item || !item.sessionId) { tmFinishAutoContinue(false, 'missing Session ID'); return; }
     var itemExempt = (item.reason === 'manual_debug' || item.reason === 'keepalive');
+    // (v4.461) The handshake follow-up is toggle-exempt here too (see tmQueueAutoContinue).
+    var itemToggleExempt = itemExempt || item.reason === 'oversized_result_recovery';
     // (v4.300) Final gate before navigation: the toggle may have flipped OFF during the countdown.
-    if (!tmAgentManagementEnabled() && !itemExempt) { tmFinishAutoContinue(false, 'management disabled'); return; }
+    if (!tmAgentManagementEnabled() && !itemToggleExempt) { tmFinishAutoContinue(false, 'management disabled'); return; }
     // (v4.317) Final gate: this session may have been user-cancelled during the countdown.
     if (!itemExempt && tmIsAutoResumeCancelled(item.sessionId)) { tmFinishAutoContinue(false, 'auto-resume suppressed by user cancel'); return; }
     // (v4.331) RETURN-TRIP BOOKMARK: sensor-triggered resumes may navigate here (no prior
@@ -20625,6 +20671,14 @@ function tmThinkRenderBins(bucket,opts) {
     try { delete tmAutoResumeBackoff[String(sessionId)]; } catch (e) {}
   }
 
+  function tmLogAutoContinueRefusal(sessionId, reason, detail, why) {
+    // (v4.461) Never silent: every automatic follow-up that is NOT sent says why in the console.
+    try {
+      console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] Automatic follow-up NOT sent (' + String(reason || 'unknown') +
+        (detail ? (': ' + String(detail)) : '') + ') for session ' + String(sessionId || '(none)') + ' -- ' + why + '.');
+    } catch (e) {}
+  }
+
   function tmQueueAutoContinue(sessionId, reason, detail, text, onDone) {
     // (v4.300) THE OFF SWITCH IS REAL. Every automatic resume path (15m silence watchdog,
     // stream abort/error/empty sensors, turn-limit observer, agent-management sweep, oversized
@@ -20634,12 +20688,22 @@ function tmThinkRenderBins(bucket,opts) {
     // reasons are 'manual_debug' (an explicit human action, never autonomous monitoring) and
     // (v4.374) 'keepalive' (Fix 25 has its OWN per-session toggle; it borrows this actuator only).
     var exempt = (reason === 'manual_debug' || reason === 'keepalive');
-    if (!tmAgentManagementEnabled() && !exempt) return false;
+    // (v4.461) The oversized-result handshake follow-up answers the AGENT'S OWN explicit request
+    // ('Please restore tool result <id>'), not autonomous stall monitoring, so the management
+    // toggle does not gate it. It still honours the user-cancel latch below.
+    var toggleExempt = exempt || reason === 'oversized_result_recovery';
+    if (!tmAgentManagementEnabled() && !toggleExempt) {
+      tmLogAutoContinueRefusal(sessionId, reason, detail, 'agent management (heartbeat) toggle is OFF');
+      return false;
+    }
     // (v4.317) USER-CANCEL LATCH: a user-cancelled session stays cancelled until Dan's next
     // outbound payload in it. (keep-alive is not an auto-RESUME; the latch does not apply.)
-    if (!exempt && tmIsAutoResumeCancelled(sessionId)) return false;
+    if (!exempt && tmIsAutoResumeCancelled(sessionId)) {
+      tmLogAutoContinueRefusal(sessionId, reason, detail, 'a countdown was cancelled in this session (clears on your next message there)');
+      return false;
+    }
     if (!sessionId) {
-      console.warn('⚠️ [v' + EXT_VERSION + '] Auto-resume skipped: no explicit Session ID in request.');
+      tmLogAutoContinueRefusal(sessionId, reason, detail, 'no explicit Session ID in the request');
       return false;
     }
     var key = String(sessionId) + '::' + String(reason || 'unknown') + '::' + String(detail || '');
@@ -20755,6 +20819,9 @@ function tmThinkRenderBins(bucket,opts) {
     function disarmWatchdog() { try { if (hooks.disarm) hooks.disarm(); } catch (e) {} }
     var ids = {};
     (stubbedIds || []).forEach(function(id) { ids[String(id)] = true; });
+    if (!sessionId && Object.keys(ids).length) {
+      console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] This request stubbed ' + Object.keys(ids).length + ' oversized tool result(s) but carries no Session ID -- an automatic handshake follow-up is impossible for it.');
+    }
     if (!sessionId || !response || typeof response.clone !== 'function') { disarmWatchdog(); return response; }
     var clone;
     try { clone = response.clone(); } catch (e) { disarmWatchdog(); return response; }
@@ -20808,12 +20875,28 @@ function tmThinkRenderBins(bucket,opts) {
       // A later outbound payload clears it; until then the DOM liveness probe decides whether the
       // client is still executing the tool or TypingMind stopped at its 50-tool safety boundary.
       tmAgentManagementNoteResponse(sessionId, state.sawToolCall, hooks.captureId || null);
-      if (state.sawToolCall || !Object.keys(ids).length) return;
+      // (v4.461) Handshake recognition, with a console line for every near-miss.
+      var hasRestorePhrase = state.textTail.indexOf('Please restore tool result') !== -1;
+      if (state.sawToolCall) {
+        if (hasRestorePhrase) console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] Restore line seen in a reply that ALSO made a tool call -- automatic follow-up NOT sent (the line must be the entire reply).');
+        return;
+      }
+      if (!Object.keys(ids).length) {
+        if (hasRestorePhrase) console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] Restore line seen, but this request stubbed no oversized result -- automatic follow-up NOT sent.');
+        return;
+      }
       var text = state.textTail.trim();
       var m = text.match(/^Please restore tool result\s+([^\s]+)$/);
       if (m && ids[String(m[1])]) {
         stampTrigger('oversized_result_recovery');
-        tmQueueAutoContinue(sessionId, 'oversized_result_recovery', String(m[1]));
+        var restoredId = String(m[1]);
+        tmQueueAutoContinue(sessionId, 'oversized_result_recovery', restoredId,
+          '[HANDSHAKE ACCEPTED \u2014 TypingMind payload extension, not a user instruction. The full result of tool call ' +
+          restoredId + ' is now restored in its original place in the history above. Continue your previous task exactly where you left off.]');
+      } else if (hasRestorePhrase) {
+        console.warn('\uD83D\uDEAB [v' + EXT_VERSION + '] Restore line seen but not accepted (' +
+          (m ? ('id ' + m[1] + ' was not stubbed in this request') : 'the reply was not exactly the bare line') +
+          ') -- automatic follow-up NOT sent. Reply tail: ' + JSON.stringify(text.slice(-200)));
       }
     }
     try {
