@@ -11,6 +11,22 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.372 Changes:
+ * - 🎛️ REFINE THINKING LEVEL — new 'Level' select (low / medium / high) in the ✨ Refine control row,
+ *   persisted in localStorage ('refine_think_level', default 'medium'). The chosen level rides on EVERY
+ *   Refine call, mapped to each provider's wire shape:
+ *   · OpenRouter  → unified `reasoning.effort` (gateway vocabulary)
+ *   · DeepInfra   → its own top-level `reasoning_effort`
+ *   · Anthropic   → `thinking:{type:'adaptive'}` + `output_config.effort` on the adaptive generation
+ *     (4.6+ / 5.x incl. Fable/Mythos 5.x, Opus/Sonnet 5, Opus 4.6–4.8); manual-budget models
+ *     (Claude 3.x, 4.0–4.5) get `thinking:{type:'enabled', budget_tokens}` (low 4096 / medium 10240 /
+ *     high 20480) with max_tokens raised above the budget so the request stays valid.
+ *   Vocabularies + clamps mirror the sibling Payload extension's TM_THINK_DOCS_REGISTRY (docs-verified
+ *   2026-09-06): low/high are universal; 'medium' is absent from Kimi K3 / GLM-5.3+ / DeepSeek V4
+ *   (low|high|max → clamps to low, nearest tie→lower) and Qwen 3.8 'high' maps to xhigh (vendor rule).
+ * - Anthropic response text extraction now takes the first TEXT content block instead of content[0],
+ *   because thinking-enabled responses can return thinking blocks ahead of the text.
+ *
  * v3.371 Changes:
  * - 🧱 STATUS TOOLBAR STRUCTURAL REFACTOR — removes the negative-margin overlay responsible for
  *   four rounds of clipping/overlap. v3.369–v3.370 pulled a separate keyboard-indicator row
@@ -1896,7 +1912,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.371',
+  VERSION: '3.372',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -1960,6 +1976,7 @@
     REFINE_TIME_LOST_STORAGE: 'refine_time_lost_ms',             // running accumulated Refine wait time in ms (persisted; reset along with total cost)
     REFINE_TOGGLE_SLOTS_STORAGE: 'refine_toggle_slots',           // JSON array of 10 slot indices (or nulls) for the toggle-squares row
     REFINE_ACTIVE_CONVO_SLOT_STORAGE: 'refine_active_convo_slot', // session index of the auto-matched conversation (special first slot)
+    REFINE_THINK_LEVEL_STORAGE: 'refine_think_level',            // 🎛️ Refine thinking level: 'low' | 'medium' | 'high' (default 'medium')
     ANTHROPIC_MESSAGES_ENDPOINT: 'https://api.anthropic.com/v1/messages',
     ANTHROPIC_VERSION: '2023-06-01',
     OPENROUTER_CHAT_ENDPOINT: 'https://openrouter.ai/api/v1/chat/completions',
@@ -3575,6 +3592,32 @@
       label: 'Anthropic (Claude)',
       keyHint: 'console.anthropic.com → API Keys',
     };
+  }
+
+  // 🎛️ Refine thinking level (v3.372). The dropdown offers the universal trio low/medium/high.
+  // Universality per the sibling Payload extension's TM_THINK_DOCS_REGISTRY (docs-verified 2026-09-06):
+  // 'low' and 'high' appear in EVERY vendor effort vocabulary; 'medium' is absent from Kimi K3,
+  // GLM-5.3+ and DeepSeek V4 (low|high|max) and Qwen 3.8 has no 'high' (low|medium|xhigh; Alibaba
+  // documents high→xhigh for OpenAI-standard words). Anthropic effort vocabularies carry all three;
+  // manual-budget models (≤4.5) take budget_tokens instead (mapped in refineCallOnce). Out-of-range
+  // picks clamp to the model's NEAREST supported level, tie → lower (the payload extension's rule).
+  function refineGetThinkLevel() {
+    const sel = document.getElementById('deepgram-refine-think-select');
+    const v = (sel && sel.value) || localStorage.getItem(CONFIG.REFINE_THINK_LEVEL_STORAGE) || 'medium';
+    return ['low', 'medium', 'high'].indexOf(v) >= 0 ? v : 'medium';
+  }
+  function refineOnThinkLevelChange() {
+    const sel = document.getElementById('deepgram-refine-think-select');
+    if (sel) localStorage.setItem(CONFIG.REFINE_THINK_LEVEL_STORAGE, sel.value);
+  }
+  // Clamp the universal trio onto a chat-completions model family's own vocabulary.
+  function refineThinkClampFor(provider, model, level) {
+    const m = String(model || '').toLowerCase();
+    if (/qwen/.test(m)) return level === 'high' ? 'xhigh' : level;   // Qwen 3.8: low | medium | xhigh
+    if (/kimi-k3|kimi[-_.]?k[-_.]?3|glm-5[-._][3-9]|glm-[6-9]|deepseek/.test(m)) {
+      return level === 'medium' ? 'low' : level;                     // K3 / GLM-5.3+ / DeepSeek V4: low | high | max
+    }
+    return level;                                                    // Claude / GPT / Grok / Gemini-3 / GLM-5.2: verbatim
   }
   function refineGetModels(provider) {
     const meta = refineProviderMeta(provider);
@@ -6673,17 +6716,26 @@
             'HTTP-Referer': 'https://daniel347x.github.io/typingmind_extension',
             'X-Title': 'TypingMind Transcription Refine',
           },
-          body: JSON.stringify({
-            model: model,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userContent },
-            ],
-            // Ask OpenRouter to include cost/usage accounting in the (non-streaming) response body
-            // so usage.cost is populated; without this flag OpenRouter omits the cost.
-            // DeepInfra is OpenAI-compatible and returns usage.estimated_cost; it ignores this flag.
-            usage: { include: true },
-          }),
+          body: JSON.stringify((() => {
+            const b = {
+              model: model,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userContent },
+              ],
+              // Ask OpenRouter to include cost/usage accounting in the (non-streaming) response body
+              // so usage.cost is populated; without this flag OpenRouter omits the cost.
+              // DeepInfra is OpenAI-compatible and returns usage.estimated_cost; it ignores this flag.
+              usage: { include: true },
+            };
+            // 🎛️ Thinking level (v3.372). OpenRouter chat-completions: unified `reasoning.effort`
+            // (gateway). DeepInfra: its own top-level `reasoning_effort`. The level is clamped to
+            // the model family's own vocabulary (see refineThinkClampFor / TM_THINK_DOCS_REGISTRY).
+            const lvl = refineThinkClampFor(provider, model, refineGetThinkLevel());
+            if (provider === 'openrouter') b.reasoning = { effort: lvl };
+            else b.reasoning_effort = lvl;
+            return b;
+          })()),
         });
         if (!resp.ok) {
           let detail = 'HTTP ' + resp.status;
@@ -6709,12 +6761,32 @@
           'anthropic-dangerous-direct-browser-access': 'true',
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          model: model,
-          max_tokens: CONFIG.REFINE_MAX_TOKENS,
-          system: systemPrompt,
-          messages: [{ role: 'user', content: userContent }],
-        }),
+        body: JSON.stringify((() => {
+          const b = {
+            model: model,
+            max_tokens: CONFIG.REFINE_MAX_TOKENS,
+            system: systemPrompt,
+            messages: [{ role: 'user', content: userContent }],
+          };
+          // 🎛️ Thinking level (v3.372), Anthropic Messages shape:
+          // - Adaptive generation (4.6+ / 5.x, incl. Fable/Mythos 5.x, Opus/Sonnet 5, Opus 4.6–4.8):
+          //     thinking.type 'adaptive' + output_config.effort low|medium|high (docs-verified 2026-09-06).
+          // - Extended/manual thinking (Claude 3.x, 4.0–4.5): no effort words — the level becomes a
+          //     thinking.budget_tokens budget, with max_tokens raised above the budget so the request
+          //     stays valid. Display is left at the API default (omitted on the adaptive generation).
+          const lvl = refineGetThinkLevel();
+          const m = String(model || '').toLowerCase();
+          if (/claude-3|claude-(opus|sonnet|haiku)-4-[0-5](?![0-9])/.test(m)) {
+            const budgets = { low: 4096, medium: 10240, high: 20480 };
+            const budget = budgets[lvl] || budgets.medium;
+            b.thinking = { type: 'enabled', budget_tokens: budget };
+            if (!(b.max_tokens > budget)) b.max_tokens = budget + 4096;
+          } else {
+            b.thinking = { type: 'adaptive' };
+            b.output_config = { effort: lvl };
+          }
+          return b;
+        })()),
       });
       if (!resp.ok) {
         let detail = 'HTTP ' + resp.status;
@@ -6722,7 +6794,8 @@
         const err = new Error(detail); err.status = resp.status; throw err;
       }
       const j = await resp.json();
-      const txt = j && j.content && j.content[0] && j.content[0].text;
+      // Thinking-enabled responses can return thinking blocks ahead of the text — take the first TEXT block.
+      const txt = j && j.content && ((j.content.find(bk => bk && bk.type === 'text' && bk.text)) || {}).text;
       if (!txt) throw new Error('Empty response from Anthropic.');
       // Anthropic returns token usage but NO dollar cost — estimate it from the pricing table.
       const aCost = refineEstimateAnthropicCost(model, j && j.usage);
@@ -9617,6 +9690,12 @@
           <select id="deepgram-refine-model-select" class="monospace" title="Model (editable list)" style="font-size:11px; width:auto; max-width:160px; color:#111; background:#fff; padding:0 3px;"></select>
           <button id="deepgram-refine-addmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Add a model string" style="min-width:0; padding:3px 6px;">➕</button>
           <button id="deepgram-refine-delmodel-btn" class="deepgram-btn deepgram-btn-secondary" title="Remove selected model from list" style="min-width:0; padding:3px 6px;">🗑️</button>
+          <span style="font-size:11px; opacity:0.8;">Level</span>
+          <select id="deepgram-refine-think-select" class="monospace" title="Thinking level sent with the Refine call. low/medium/high work on every provider+model family; where a family lacks a word (Kimi K3 / GLM-5.3 / DeepSeek have no 'medium'; Qwen has no 'high') it is clamped to the model's nearest supported level" style="font-size:11px; width:auto; max-width:78px; color:#111; background:#fff; padding:0 3px;">
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
           <button id="deepgram-refine-prompt-btn" class="deepgram-btn deepgram-btn-secondary" title="Edit the permanent system prompt" style="font-size:11px; padding:3px 7px;">📜 Prompt</button>
           <button id="deepgram-refine-dict-btn" class="deepgram-btn deepgram-btn-secondary" title="Custom dictionary: protect your Wispr Flow canonical terms from being reverted by Refine (menu: copy agent instructions / paste JSON)" style="font-size:11px; padding:3px 7px;">📖 Dictionary</button>
           <button id="deepgram-refine-clearkey-btn" class="deepgram-btn deepgram-btn-secondary" title="Clear stored API key for the selected provider" style="font-size:11px; padding:3px 7px;">🔑 Key</button>
@@ -9927,6 +10006,12 @@
     document.getElementById('deepgram-refine-btn').addEventListener('click', refineTranscription);
     document.getElementById('deepgram-refine-provider-select').addEventListener('change', refineOnProviderChange);
     document.getElementById('deepgram-refine-model-select').addEventListener('change', refineOnModelChange);
+    const refineThinkSel = document.getElementById('deepgram-refine-think-select');
+    if (refineThinkSel) {
+      refineThinkSel.addEventListener('change', refineOnThinkLevelChange);
+      const savedThinkLvl = localStorage.getItem(CONFIG.REFINE_THINK_LEVEL_STORAGE);
+      if (savedThinkLvl === 'low' || savedThinkLvl === 'medium' || savedThinkLvl === 'high') refineThinkSel.value = savedThinkLvl;
+    }
     document.getElementById('deepgram-refine-addmodel-btn').addEventListener('click', refineAddModel);
     document.getElementById('deepgram-refine-delmodel-btn').addEventListener('click', refineRemoveModel);
     document.getElementById('deepgram-refine-context-btn').addEventListener('click', refineEditContext);
