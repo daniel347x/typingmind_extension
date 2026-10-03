@@ -1,5 +1,24 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.462
+// Version: 4.463
+// v4.463: DAMAGED-TURN THINKING REPAIR + RING FINGERPRINTS. (1) Manager-Session-114-a could not be
+// continued: every send failed with Anthropic 400 'messages.3.content.40: thinking or redacted_thinking
+// blocks in the latest assistant message cannot be modified'. Cause: TypingMind's SAVED conversation had
+// lost one tool result mid-loop (the call ran and its result reached the model in the next request, but
+// the result was never persisted), so TypingMind left the result-less call out and sent that call's
+// thought as a thought-only assistant message directly followed by the next assistant message.
+// Anthropic folds a tool loop into one assistant turn, so two thoughts from different responses sat side
+// by side and the later one counted as modified. New universal-pass repair tmRepairDamagedTurnThinking
+// (runs before the Fix 24 writer): two assistant messages in a row mark a gap; from the earlier one to
+// the end of that turn the thinking blocks are left out, an emptied gap message is dropped, text / tool
+// calls / results stay, and the final assistant message of a loop still in progress keeps its thinking.
+// Wire-only; Summary field damaged_turn_thinking; ring badge 'gap repaired'. (2) Ring fingerprints
+// (Dan's request, after half an hour of matching thinking-character counts to find two ring entries):
+// every capture records the request's message count + the last message's first words (or which tools'
+// results it carries) and every block of the response in order with its first words (thought / text /
+// tool name) plus how the stream ended (stop reason, or an orange 'no stop' warning). Shown under each
+// row's timestamp; a request repeating the previous request's history for the same conversation and
+// model is marked RESEND. Summary field fingerprint. All four wire shapes, fed from the Thinking
+// Observatory accumulator; a few hundred bytes per entry.
 // v4.462: Stub timing corrected -- the automatic handshake follow-up arrives 'within a second or two'
 // (observed live on v4.461), not 'about 30 seconds'. Agents may time work around it, so it must be exact.
 // v4.461 LIVE-VERIFIED: 170 KB run_command result stubbed -> bare restore line -> instant
@@ -2761,7 +2780,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.462';
+  const EXT_VERSION = '4.463';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -6826,6 +6845,8 @@
     if (!acc || !ev || typeof ev !== 'object') return;
     try {
       acc.events++;
+      // (v4.463) Ring fingerprint (response side): block order, opening words, how the stream ended.
+      try { tmFpFeedEvent(acc, ev); } catch (eFp) {}
       // ---- Anthropic streaming
       if (ev.type === 'content_block_start' && ev.content_block) {
         var cbt = ev.content_block.type;
@@ -13281,6 +13302,286 @@ function tmThinkRenderBins(bucket,opts) {
     document.body.appendChild(overlay);
   }
 
+  // ==================== RING FINGERPRINTS (v4.463) ====================
+  // Dan, Manager-Session-114-b: finding WHICH ring entry was which took half an hour of matching
+  // thinking-character counts. Every capture now carries a few words of the request's last message
+  // and of every block the response produced, plus how the stream ended. Metadata only.
+
+  // First few words of a string, whitespace-normalized; cuts at a word boundary, never inside an emoji.
+  function tmFpWords(s, maxWords, maxChars) {
+    var t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    if (!t) return '';
+    var mw = maxWords || 6, mc = maxChars || 48;
+    var words = t.split(' '), out = '', used = 0;
+    for (var i = 0; i < words.length && i < mw; i++) {
+      var next = out ? (out + ' ' + words[i]) : words[i];
+      if (Array.from(next).length > mc) { if (!out) out = Array.from(words[i]).slice(0, mc).join(''); break; }
+      out = next; used = i + 1;
+    }
+    if (used < words.length) out += '…';
+    return out;
+  }
+
+  // @beacon[
+  //   id=ring-fingerprint-request,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
+  //   kind=ast,
+  //   comment=v4.463 ring fingerprint (request side): message count; the final message's first words or the names of the tools whose results it carries; an FNV-1a hash of that final message for the RESEND mark. Anthropic Messages / Chat Completions / Responses / Gemini. Metadata only.,
+  // ]
+  function tmFingerprintRequest(body) {
+    if (!body || typeof body !== 'object') return null;
+    function q(s) { return s ? ('“' + s + '”') : ''; }
+    function names(list) {
+      var counts = {}, order = [];
+      list.forEach(function(n) { n = String(n || '?'); if (!counts[n]) { counts[n] = 0; order.push(n); } counts[n]++; });
+      return order.map(function(n) { return counts[n] > 1 ? (n + ' ×' + counts[n]) : n; }).join(', ');
+    }
+    function firstText(content) {
+      if (typeof content === 'string') return content;
+      if (!Array.isArray(content)) return '';
+      for (var i = 0; i < content.length; i++) {
+        var p = content[i];
+        if (p && typeof p.text === 'string' && (!p.type || p.type === 'text' || p.type === 'input_text')) return p.text;
+      }
+      return '';
+    }
+    var list = null;
+    if (Array.isArray(body.messages)) list = body.messages;
+    else if (Array.isArray(body.input)) list = body.input;
+    else if (typeof body.input === 'string') return { n: 1, last: 'user: ' + q(tmFpWords(body.input, 8, 64)), h: tmFnv1a32(body.input) };
+    else if (Array.isArray(body.contents)) list = body.contents;
+    if (!list || !list.length) return null;
+    var last = list[list.length - 1] || {};
+    var role = String(last.role || last.type || '?'), results = [], text = '';
+    try {
+      if (Array.isArray(body.messages) && last.role === 'tool') {
+        // Chat Completions: the trailing run of role:'tool' messages answers the nearest assistant's tool_calls.
+        var ids = [], s = list.length - 1;
+        while (s >= 0 && list[s] && list[s].role === 'tool') { ids.unshift(list[s].tool_call_id); s--; }
+        var byId = {}, asst = s >= 0 ? list[s] : null;
+        if (asst && Array.isArray(asst.tool_calls)) asst.tool_calls.forEach(function(tc) { if (tc && tc.id != null) byId[tc.id] = tc.function && tc.function.name; });
+        ids.forEach(function(id) { results.push(byId[id] || '?'); });
+      } else if (Array.isArray(body.messages)) {
+        // Anthropic: tool_result blocks answer the nearest earlier assistant message's tool_use blocks.
+        if (Array.isArray(last.content)) {
+          var rIds = [];
+          last.content.forEach(function(b) { if (b && b.type === 'tool_result') rIds.push(b.tool_use_id); });
+          if (rIds.length) {
+            var map = {};
+            for (var a = list.length - 2; a >= 0; a--) {
+              var am = list[a];
+              if (am && am.role === 'assistant' && Array.isArray(am.content)) {
+                am.content.forEach(function(b) { if (b && b.id != null && (b.type === 'tool_use' || b.type === 'server_tool_use')) map[b.id] = b.name; });
+                break;
+              }
+            }
+            rIds.forEach(function(id) { results.push(map[id] || '?'); });
+          }
+        }
+        text = firstText(last.content);
+      } else if (Array.isArray(body.input)) {
+        // Responses: trailing function_call_output items, named through their call_id.
+        var cIds = [], t = list.length - 1;
+        while (t >= 0 && list[t] && list[t].type === 'function_call_output') { cIds.unshift(list[t].call_id); t--; }
+        if (cIds.length) {
+          var fmap = {};
+          list.forEach(function(it) { if (it && it.type === 'function_call' && it.call_id != null) fmap[it.call_id] = it.name; });
+          cIds.forEach(function(id) { results.push(fmap[id] || '?'); });
+        } else text = firstText(last.content);
+      } else {
+        // Gemini: functionResponse parts carry their own names.
+        (Array.isArray(last.parts) ? last.parts : []).forEach(function(p) { var fr = p && (p.functionResponse || p.function_response); if (fr) results.push(fr.name); });
+        if (!results.length) text = firstText(last.parts);
+      }
+    } catch (e) {}
+    var label = results.length ? ('🔧 results: ' + names(results)) : '';
+    var words = tmFpWords(text, 8, 64);
+    if (words) label += (label ? ' + ' : '') + role + ': ' + q(words);
+    if (!label) label = role;
+    var h = null;
+    try { h = tmFnv1a32(JSON.stringify(last)); } catch (eH) {}
+    return { n: list.length, last: label, h: h };
+  }
+
+  // (v4.463) RESEND: the newest earlier capture of the same conversation and model ended its history
+  // with the same final message at the same count -- the same history sent again (a regenerate, a retry).
+  function tmFpIsResend(ring, record) {
+    if (!record || !record._fp_out || !record._fp_out.h || !Array.isArray(ring)) return false;
+    var sid = record.pasted_session_id || record.session_id, model = record._model;
+    if (!sid) return false;
+    for (var i = ring.length - 1, seen = 0; i >= 0 && seen < 80; i--, seen++) {
+      var e = ring[i];
+      if (!e || (e.pasted_session_id || e.session_id) !== sid || e._model !== model) continue;
+      return !!(e._fp_out && e._fp_out.n === record._fp_out.n && e._fp_out.h === record._fp_out.h);
+    }
+    return false;
+  }
+
+  // @beacon[
+  //   id=ring-fingerprint-response,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
+  //   kind=ast,
+  //   comment=v4.463 ring fingerprint (response side): fed one event at a time from tmThinkAccumulateEvent; keeps every block in order (think / enc / text / tool + name) with its first ~160 chars, plus the stop reason and whether the stream finished. Anthropic / Chat Completions / Responses / Gemini; never throws.,
+  // ]
+  function tmFpFeedEvent(acc, ev) {
+    if (!acc || !ev || typeof ev !== 'object') return;
+    var MAXB = 12, BUF = 160;
+    var fp = acc.fp || (acc.fp = { b: [], keys: {}, stop: null, done: false, more: 0 });
+    function block(key, kind, name) {
+      if (key != null && fp.keys[key]) return fp.keys[key];
+      var e = { k: kind, t: '', n: name || null };
+      if (fp.b.length < MAXB) fp.b.push(e); else { fp.more++; e.x = true; }
+      if (key != null) fp.keys[key] = e;
+      return e;
+    }
+    function add(e, s) {
+      if (!e || e.x || typeof s !== 'string' || !s || e.t.length >= BUF) return;
+      e.t += s.slice(0, BUF - e.t.length);
+    }
+    function kindOf(type) {
+      if (type === 'thinking' || type === 'reasoning') return 'think';
+      if (type === 'redacted_thinking') return 'enc';
+      if (type === 'text' || type === 'message' || type === 'output_text') return 'text';
+      if (type === 'tool_use' || type === 'server_tool_use' || type === 'mcp_tool_use' || type === 'function_call' || type === 'custom_tool_call' || type === 'function_tool_call') return 'tool';
+      return String(type || '?');
+    }
+    // ---- Anthropic: streaming events, then the non-streaming message body
+    if (ev.type === 'content_block_start' && ev.content_block) {
+      var cb = ev.content_block, ce = block('a' + ev.index, kindOf(cb.type), cb.name);
+      add(ce, cb.type === 'thinking' ? cb.thinking : cb.text);
+    } else if (ev.type === 'content_block_delta' && ev.delta) {
+      var dt = ev.delta.type, de = fp.keys['a' + ev.index];
+      if (!de && (dt === 'thinking_delta' || dt === 'text_delta')) de = block('a' + ev.index, dt === 'thinking_delta' ? 'think' : 'text');
+      if (dt === 'thinking_delta') add(de, ev.delta.thinking);
+      else if (dt === 'text_delta') add(de, ev.delta.text);
+    } else if (ev.type === 'message_delta' && ev.delta && ev.delta.stop_reason) {
+      fp.stop = String(ev.delta.stop_reason);
+    } else if (ev.type === 'message_stop') {
+      fp.done = true;
+    } else if (ev.type === 'message' && Array.isArray(ev.content)) {
+      ev.content.forEach(function(bl, bi) {
+        if (!bl) return;
+        add(block('a' + bi, kindOf(bl.type), bl.name), bl.type === 'thinking' ? bl.thinking : bl.text);
+      });
+      if (ev.stop_reason) { fp.stop = String(ev.stop_reason); fp.done = true; }
+    }
+    // ---- Chat Completions / OpenRouter: streaming deltas or a non-streaming message
+    if (Array.isArray(ev.choices)) {
+      for (var ci = 0; ci < ev.choices.length; ci++) {
+        var ch = ev.choices[ci]; if (!ch) continue;
+        var d = ch.delta || ch.message;
+        if (d && typeof d === 'object') {
+          var rText = (typeof d.reasoning_content === 'string' && d.reasoning_content) || (typeof d.reasoning === 'string' && d.reasoning) || '';
+          var encSeen = false;
+          if (Array.isArray(d.reasoning_details)) {
+            d.reasoning_details.forEach(function(rd) {
+              if (!rd) return;
+              var rt = String(rd.type || '');
+              if (!rText && rt === 'reasoning.text' && typeof rd.text === 'string') rText = rd.text;
+              else if (!rText && rt === 'reasoning.summary' && typeof rd.summary === 'string') rText = rd.summary;
+              else if (rt === 'reasoning.encrypted') encSeen = true;
+            });
+          }
+          if (rText) add(block('c' + ci + 'r', 'think'), rText);
+          if (encSeen) block('c' + ci + 'e', 'enc');
+          if (typeof d.content === 'string' && d.content) add(block('c' + ci + 't', 'text'), d.content);
+          else if (Array.isArray(d.content)) d.content.forEach(function(p) { if (p && typeof p.text === 'string' && p.text) add(block('c' + ci + 't', 'text'), p.text); });
+          if (Array.isArray(d.tool_calls)) d.tool_calls.forEach(function(tc, ti) {
+            if (!tc) return;
+            var fn = tc.function || {};
+            var te = block('c' + ci + 'f' + (tc.index != null ? tc.index : ti), 'tool', fn.name);
+            if (!te.n && fn.name) te.n = fn.name;
+          });
+        }
+        if (ch.finish_reason != null && ch.finish_reason !== '') { fp.stop = String(ch.finish_reason); fp.done = true; }
+      }
+    }
+    // ---- OpenAI Responses: streaming events, then the non-streaming body
+    if (typeof ev.type === 'string' && ev.type.indexOf('response.') === 0) {
+      if (ev.type === 'response.output_item.added' && ev.item) {
+        block('r' + (ev.item.id || ev.output_index), kindOf(ev.item.type), ev.item.name);
+      } else if (/^response\.reasoning(_summary)?(_text)?\.delta$/.test(ev.type)) {
+        add(block('r' + (ev.item_id || ev.output_index), 'think'), typeof ev.delta === 'string' ? ev.delta : (ev.delta && ev.delta.text));
+      } else if (ev.type === 'response.output_text.delta') {
+        add(block('r' + (ev.item_id || ev.output_index), 'text'), ev.delta);
+      } else if (ev.type === 'response.completed' || ev.type === 'response.incomplete' || ev.type === 'response.failed') {
+        var rs = ev.response || {};
+        fp.stop = String((rs.incomplete_details && rs.incomplete_details.reason) || rs.status || ev.type.slice(9));
+        fp.done = true;
+      }
+    }
+    if (ev.object === 'response' && Array.isArray(ev.output)) {
+      ev.output.forEach(function(it, oi) {
+        if (!it) return;
+        var oe = block('r' + (it.id || oi), kindOf(it.type), it.name);
+        if (Array.isArray(it.content)) it.content.forEach(function(c) { if (c && typeof c.text === 'string') add(oe, c.text); });
+        if (Array.isArray(it.summary)) it.summary.forEach(function(sm) { add(oe, sm && (typeof sm === 'string' ? sm : sm.text)); });
+      });
+      fp.stop = String(ev.status || 'completed');
+      fp.done = true;
+    }
+    // ---- Gemini native: streaming chunks and non-streaming bodies share candidates[]
+    if (Array.isArray(ev.candidates) && ev.candidates[0]) {
+      var cand = ev.candidates[0], parts = cand.content && cand.content.parts;
+      if (Array.isArray(parts)) parts.forEach(function(pt) {
+        if (!pt) return;
+        var call = pt.functionCall || pt.function_call;
+        if (call) { block(null, 'tool', call.name); return; }
+        if (typeof pt.text !== 'string') return;
+        var gk = pt.thought === true ? 'think' : 'text', lastB = fp.b[fp.b.length - 1];
+        add((lastB && lastB.k === gk && !lastB.n) ? lastB : block(null, gk), pt.text);
+      });
+      if (cand.finishReason != null && cand.finishReason !== '') { fp.stop = String(cand.finishReason); fp.done = true; }
+    }
+  }
+
+  // (v4.463) Freeze the response fingerprint: {b: [[kind, words or tool name], ...], more?, stop?, done}.
+  function tmFpSummarize(acc) {
+    var fp = acc && acc.fp;
+    if (!fp || (!fp.b.length && !fp.stop && !fp.done)) return null;
+    var out = { b: fp.b.map(function(e) { return [e.k, e.k === 'tool' ? String(e.n || '?') : tmFpWords(e.t, 6, 48)]; }) };
+    if (fp.more) out.more = fp.more;
+    if (fp.stop) out.stop = fp.stop;
+    out.done = !!(fp.done || fp.stop);
+    return out;
+  }
+
+  // @beacon[
+  //   id=ring-fingerprint-row,
+  //   slice_labels=tm-payload-overview,tm-ring-modal,
+  //   kind=ast,
+  //   comment=v4.463 ring row lines under the timestamp: the request line (RESEND and gap-repaired badges first, then message count and last message) and the response line (each block's glyph and first words, then the stop reason; a stream that ended without one shows an orange no-stop warning first). Full text on hover.,
+  // ]
+  function tmRenderFingerprintRowHtml(cap) {
+    if (!cap) return '';
+    var o = cap._fp_out, r = cap._fp_in, html = '';
+    function line(arrow, color, badges, text) {
+      return '<div title="' + escapeHtml(text) + '" style="font-size:11px;line-height:1.35;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:' + color + ';">' +
+        '<span style="opacity:0.7;">' + arrow + '</span> ' + badges + escapeHtml(text) + '</div>';
+    }
+    var dtr = cap._damaged_turn;
+    if (o || cap._fp_resend || (dtr && dtr.changed)) {
+      var badges = '';
+      if (cap._fp_resend) badges += '<span title="Same history as the previous request of this conversation and model: it was sent again (a regenerate, a retry or a resend)." style="color:#ffb84d;font-weight:700;">↻ RESEND</span> ';
+      if (dtr && dtr.changed) badges += '<span title="Damaged-turn repair (v4.463): two assistant messages in a row in the saved history. ' + Number(dtr.strippedThinking || 0) + ' thought(s) left out of that turn, ' + Number(dtr.droppedMessages || 0) + ' empty gap message(s) dropped. Wire only: the saved conversation is unchanged." style="color:#ffb84d;font-weight:700;">🩹 gap repaired</span> ';
+      var outText = o ? ((o.n != null ? (o.n + ' msgs · ') : '') + String(o.last || '')) : '';
+      html += line('⇢', '#a9c7e8', badges, outText);
+    }
+    if (r) {
+      var glyph = { think: '🧠', enc: '🔒', text: '💬', tool: '🔧' };
+      var parts = (r.b || []).map(function(pr) {
+        var k = pr && pr[0], w = pr && pr[1];
+        return (glyph[k] || '·') + ' ' + (k === 'tool' ? String(w || '?') : ('“' + String(w || '') + '”'));
+      });
+      if (r.more) parts.push('+' + r.more + ' more');
+      var inText = parts.join(' · '), inBadges = '';
+      if (r.stop) inText += (inText ? ' · ' : '') + '⏹ ' + r.stop;
+      else if (!r.done) inBadges = '<span title="The response stream ended without a stop reason: it may have been cut off." style="color:#ffb84d;font-weight:700;">⚠ no stop</span> ';
+      html += line('⇠', '#c8c8d8', inBadges, inText);
+    }
+    return html;
+  }
+
   // @beacon[
   //   id=auto-beacon@__lambdao_1.tmCaptureFetchCall-54u9,
   //   role=__lambdao_1.tmCaptureFetchCall,
@@ -13346,6 +13647,7 @@ function tmThinkRenderBins(bucket,opts) {
       convIdHint: convIdForThisCall || null,
       repair_tally: repairTallyForThisCall || null,
       _incomplete_tool_history: (options && options._tm_incomplete_tools) || null,
+      _damaged_turn: (options && options._tm_damaged_turn) || null,
       headers: headersNorm,
       body_parse_error: null,
       protocol: 'unknown',
@@ -13426,6 +13728,10 @@ function tmThinkRenderBins(bucket,opts) {
           record.pasted_session_id = null;
         }
 
+        // (v4.463) RING FINGERPRINT (request side): message count + the last message's first words, or the
+        // names of the tools whose results it carries; plus a hash of that last message for the RESEND mark.
+        try { record._fp_out = tmFingerprintRequest(parsed); } catch (eFpOut) {}
+
         // (Fix 24, v4.351) THINKING OBSERVATORY -- REQUESTED thinking level. Stamped NOW while the
         // FULL post-mutation body + headers are present (skeletonization would hide config fields);
         // underscore field survives rich->compact stripping.
@@ -13504,6 +13810,9 @@ function tmThinkRenderBins(bucket,opts) {
     }
 
     const ring = tmReadCaptureRing();
+    // (v4.463) RESEND mark: this request repeats the history of the newest earlier capture of the same
+    // conversation and model (same count, same final message) -- a regenerate, a retry or a resend.
+    try { if (tmFpIsResend(ring, record)) record._fp_resend = true; } catch (eFpRs) {}
     record._request_pin = tmCaptureRequestPin(tmParsedForPending, record._model, tmComputeRoutingIdentityKey(tmParsedForPending, url, options));
     ring.push(record);
     while (ring.length > TM_PAYLOAD_CAPTURE_MAX_ENTRIES) {
@@ -14521,6 +14830,9 @@ function tmThinkRenderBins(bucket,opts) {
             } catch (usageErr) {}
           }
 
+      // (v4.463) Ring fingerprint (response side), stamped before finalization so the normal and the
+      // identity-unrecoverable paths both carry it.
+      try { var tmFpIn = tmFpSummarize(thinkAcc); if (tmFpIn) patch._fp_in = tmFpIn; } catch (eFpIn) {}
       tmFinalizeCapturedResponse(captureId,response,patch,thinkAcc,capHadError);
     },function(err){tmFinalizeCapturedFailure(captureId,err,response,false);});
   }catch(err){tmFinalizeCapturedFailure(captureId,err,response,false);}
@@ -21884,6 +22196,9 @@ function tmThinkRenderBins(bucket,opts) {
       convIdHint: cap.convIdHint,
       repair_tally: cap.repair_tally || null,
       incomplete_tool_history: cap._incomplete_tool_history || null,
+      // (v4.463) Damaged-turn thinking repair counts (null = not needed) and the ring fingerprint.
+      damaged_turn_thinking: cap._damaged_turn || null,
+      fingerprint: (cap._fp_out || cap._fp_in || cap._fp_resend) ? { out: cap._fp_out || null, in: cap._fp_in || null, resend: !!cap._fp_resend } : null,
       tool_id_repair_count: Number(cap._tool_id_repair_count || 0),
       tool_id_repair_last: cap._tool_id_repair_last || null,
       sse_done_guard: cap._sse_done_guard || null, // Encoding-only shield/bypass counts, no response text.
@@ -23125,6 +23440,8 @@ function tmThinkRenderBins(bucket,opts) {
       // (Old standalone div removed; capRouteIdKey/seenRouteIdentities computed before the button row.)
 
       html += '<div style="font-size:10px;opacity:0.85;margin-top:3px;color:#8cf;">' + ts + '</div>';
+      // (v4.463) RING FINGERPRINT lines: what this request ended with, and what the response held.
+      try { html += tmRenderFingerprintRowHtml(cap); } catch (eFpRow) {}
       html += '<div style="font-size:11px;opacity:0.75;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + url + '</div>';
 
       // (v4.66) Per-row repair ribbon + (v4.69) cache report — scan down the modal to see repairs AND cache read/write per payload.
@@ -24136,6 +24453,67 @@ function tmThinkRenderBins(bucket,opts) {
     // Gemini functionCall IDs are optional; legacy name-based pairing is valid. Leave it alone.
     report.changed = report.droppedCalls + report.droppedResults + report.filledMessages;
     if (report.changed) console.warn('[v' + EXT_VERSION + '] Incomplete tool history repaired on outbound wire: calls=' + report.droppedCalls + ', results=' + report.droppedResults + ', neutralNotes=' + report.filledMessages + '. Stored conversation unchanged; execution status unknown.');
+    return report;
+  }
+
+  // @beacon[
+  //   id=repair-damaged-turn-thinking,
+  //   slice_labels=tm-payload-overview,
+  //   kind=ast,
+  //   comment=v4.463 wire-only repair (Anthropic Messages): two assistant messages in a row mean TypingMind's saved history lost something between them (Manager-Session-114-a: a tool call ran and its result reached the model, but the result was never saved). Anthropic folds a tool loop into one assistant turn and rejects the later thought as modified (400 'thinking or redacted_thinking blocks in the latest assistant message cannot be modified'). From the earlier message to the end of that turn the thinking blocks are left out and an emptied gap message is dropped; text, tool calls and results stay; the final assistant message of a loop still in progress keeps its thinking. Saved conversation untouched.,
+  // ]
+  function tmRepairDamagedTurnThinking(body) {
+    var report = { changed: 0, gaps: 0, strippedThinking: 0, droppedMessages: 0 };
+    if (!body || typeof body !== 'object' || !Array.isArray(body.messages)) return report;
+    var msgs = body.messages;
+    function isThinking(b) { return !!b && (b.type === 'thinking' || b.type === 'redacted_thinking'); }
+    function isResultsOnly(m) {
+      return !!m && m.role === 'user' && Array.isArray(m.content) && m.content.length > 0 &&
+        m.content.every(function(b) { return !!b && b.type === 'tool_result'; });
+    }
+    function isHuman(m) { return !!m && m.role === 'user' && !isResultsOnly(m); }
+    function nextReal(i) { var j = i + 1; while (j < msgs.length && msgs[j] && msgs[j].role === 'system') j++; return j; }
+    // Shape gate: only Anthropic Messages carrying thinking blocks can meet this rejection.
+    var anyThinking = msgs.some(function(m) { return !!m && m.role === 'assistant' && Array.isArray(m.content) && m.content.some(isThinking); });
+    if (!anyThinking) return report;
+    // A loop still in progress ends in a results-only user message: Anthropic needs the thinking of
+    // the assistant message that made those calls, so that one message keeps its blocks.
+    var lastIdx = msgs.length - 1;
+    while (lastIdx >= 0 && msgs[lastIdx] && msgs[lastIdx].role === 'system') lastIdx--;
+    var exempt = -1;
+    if (lastIdx >= 0 && isResultsOnly(msgs[lastIdx])) {
+      for (var x = lastIdx - 1; x >= 0; x--) { if (msgs[x] && msgs[x].role === 'assistant') { exempt = x; break; } }
+    }
+    var emptied = [], i = 0;
+    while (i < msgs.length) {
+      var m = msgs[i], j = nextReal(i);
+      var isAsst = !!m && m.role === 'assistant';
+      var hasCall = isAsst && Array.isArray(m.content) && m.content.some(function(b) { return !!b && (b.type === 'tool_use' || b.type === 'server_tool_use'); });
+      if (!isAsst || hasCall || j >= msgs.length || !msgs[j] || msgs[j].role !== 'assistant') { i++; continue; }
+      // A gap: m and msgs[j] are back to back. Leave out the thinking from m to the end of this turn.
+      report.gaps++;
+      var k = i;
+      for (; k < msgs.length; k++) {
+        var mk = msgs[k];
+        if (k > i && isHuman(mk)) break;
+        if (!mk || mk.role !== 'assistant' || !Array.isArray(mk.content) || k === exempt) continue;
+        var kept = mk.content.filter(function(b) { return !isThinking(b); });
+        if (kept.length !== mk.content.length) {
+          report.strippedThinking += mk.content.length - kept.length;
+          mk.content = kept;
+          if (!kept.length) emptied.push(k);
+        }
+      }
+      i = k;
+    }
+    // Drop an emptied message only where another assistant message follows it (the gap itself);
+    // anywhere else the existing empty-content repair supplies its neutral stub.
+    for (var e = emptied.length - 1; e >= 0; e--) {
+      var idx = emptied[e], nj = nextReal(idx);
+      if (nj < msgs.length && msgs[nj] && msgs[nj].role === 'assistant') { msgs.splice(idx, 1); report.droppedMessages++; }
+    }
+    report.changed = report.strippedThinking + report.droppedMessages;
+    if (report.changed) console.warn('[v' + EXT_VERSION + '] Damaged turn repaired on outbound wire: gaps=' + report.gaps + ', thoughts left out=' + report.strippedThinking + ', empty gap messages dropped=' + report.droppedMessages + '. Stored conversation unchanged.');
     return report;
   }
 
@@ -25836,6 +26214,17 @@ function tmThinkRenderBins(bucket,opts) {
         var tmIncompleteTools = tmRepairIncompleteToolHistory(tmUniversalBody);
         options._tm_incomplete_tools = tmIncompleteTools.changed ? tmIncompleteTools : null;
         if (tmIncompleteTools.changed) tmUniversalChanged = true;
+        // (v4.463) DAMAGED-TURN THINKING REPAIR: two assistant messages in a row mean TypingMind's saved
+        // history lost something between them (Manager-Session-114-a: a tool result never persisted).
+        // Anthropic then rejects the later thought as 'modified', so from the gap to the end of that turn
+        // the thoughts are left out. Runs BEFORE the Fix 24 writer inserts its effort-only messages.
+        try {
+          var tmDamagedTurn = tmRepairDamagedTurnThinking(tmUniversalBody);
+          options._tm_damaged_turn = tmDamagedTurn.changed ? tmDamagedTurn : null;
+          if (tmDamagedTurn.changed) tmUniversalChanged = true;
+        } catch (eDamagedTurn) {
+          console.warn('[v' + EXT_VERSION + '] Damaged-turn repair skipped after an error:', eDamagedTurn);
+        }
         // (Fix 15, v4.199) Repair typeless tool-schema properties BEFORE canonicalization, so the
         // key-sort then runs over the completed schema and the cache-stable ordering still holds.
         // Universal (every endpoint) since a naked schema is a portability bug, not OpenRouter-only.
