@@ -11,6 +11,16 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.373 Changes:
+ * - 📏 TOOL-CALL POP-UP SIZES + FULL HEIGHT — TypingMind's own tool-call pop-up (the headlessui dialog
+ *   with <section aria-label="Input"> / "Output") lost its character count in a TypingMind update. A
+ *   small badge now sits beside each heading: '2,103 chars · 2.1 KB' (code-point characters + UTF-8
+ *   size of the text as shown); the Input badge adds '· compact N' when the arguments are JSON, since
+ *   TypingMind pretty-prints what the model sent compactly. The panel now fills the window height
+ *   (calc(100vh - 40px)); Input is capped at 42vh, Output takes the rest, each scrolling in its own
+ *   box. Driven by the tool-call inspector's body observer (rAF-debounced, idempotent):
+ *   enhanceNativeToolCallModals / updateNativeToolSectionSize / ensureNativeToolModalStyles.
+ *
  * v3.372 Changes:
  * - 🎛️ REFINE THINKING LEVEL — new 'Level' select (low / medium / high) in the ✨ Refine control row,
  *   persisted in localStorage ('refine_think_level', default 'medium'). The chosen level rides on EVERY
@@ -1912,7 +1922,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.372',
+  VERSION: '3.373',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10277,8 +10287,11 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
           }
         }
       }
+      // (v3.373) TypingMind's native tool-call pop-up: size badges + full height
+      scheduleNativeToolModalScan();
     });
     observer.observe(root, { childList: true, subtree: true });
+    scheduleNativeToolModalScan();
 
     // ESC to close modal
     document.addEventListener('keydown', evt => {
@@ -10345,6 +10358,165 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
 
       row.appendChild(btn);
       row.dataset.tmToolModalBound = '1';
+    });
+  }
+
+  // ==================== TYPINGMIND NATIVE TOOL-CALL POP-UP: SIZES + FULL HEIGHT (v3.373) ====================
+  // TypingMind's own tool-call pop-up (a headlessui dialog panel holding <section aria-label="Input">
+  // and <section aria-label="Output">) lost its character count in a TypingMind update. These helpers
+  // add a small size badge beside each section's heading and stretch the panel to the window height.
+  // Driven by the tool-call inspector's body MutationObserver, rAF-debounced; idempotent (a badge is
+  // rewritten only when its text changes, so our own writes never feed back into a loop).
+  let nativeToolModalScanPending = false;
+  const NATIVE_TOOL_MODAL_STYLE_ID = 'tm-native-tool-modal-styles';
+
+  function scheduleNativeToolModalScan() {
+    if (nativeToolModalScanPending) return;
+    nativeToolModalScanPending = true;
+    requestAnimationFrame(() => {
+      nativeToolModalScanPending = false;
+      try {
+        enhanceNativeToolCallModals();
+      } catch (e) {
+        console.warn('[tool-call pop-up sizes]', e);
+      }
+    });
+  }
+
+  function ensureNativeToolModalStyles() {
+    if (document.getElementById(NATIVE_TOOL_MODAL_STYLE_ID)) return;
+    const style = document.createElement('style');
+    style.id = NATIVE_TOOL_MODAL_STYLE_ID;
+    style.textContent = `
+      .tm-tc-panel {
+        height: calc(100vh - 40px) !important;
+        max-height: calc(100vh - 40px) !important;
+        display: flex !important;
+        flex-direction: column !important;
+        overflow: hidden !important;
+      }
+      .tm-tc-chain, .tm-tc-content {
+        display: flex !important;
+        flex-direction: column !important;
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+      }
+      .tm-tc-content > header { flex: 0 0 auto !important; }
+      .tm-tc-input, .tm-tc-output {
+        display: flex !important;
+        flex-direction: column !important;
+        min-height: 0 !important;
+      }
+      .tm-tc-input { flex: 0 1 auto !important; max-height: 42vh !important; }
+      .tm-tc-output { flex: 1 1 auto !important; }
+      .tm-tc-body {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        max-height: none !important;
+        overflow: auto !important;
+      }
+      .tm-tc-size {
+        margin-left: 10px;
+        margin-right: auto;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        opacity: 0.75;
+        white-space: nowrap;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /** Human-readable size of a string: code-point characters + UTF-8 size. */
+  function tmTextSizeLabel(text) {
+    const surrogatePairs = (text.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g) || []).length;
+    const chars = text.length - surrogatePairs;
+    const bytes = new TextEncoder().encode(text).length;
+    const size = bytes >= 1024 * 1024
+      ? (bytes / (1024 * 1024)).toFixed(2) + ' MB'
+      : bytes >= 1024
+        ? (bytes / 1024).toFixed(1) + ' KB'
+        : bytes + ' B';
+    return { chars, bytes, label: `${chars.toLocaleString()} chars · ${size}` };
+  }
+
+  /** Write (or refresh) the size badge in one Input/Output section's heading row. */
+  function updateNativeToolSectionSize(section, kind) {
+    const headerRow = section.firstElementChild;
+    const body = section.lastElementChild;
+    if (!headerRow || !body || headerRow === body) return;
+    body.classList.add('tm-tc-body');
+
+    const text = body.textContent || '';
+    let badge = headerRow.querySelector(':scope > .tm-tc-size');
+    if (badge && badge.dataset.tmLen === String(text.length)) return; // unchanged since last pass
+
+    const { label } = tmTextSizeLabel(text);
+    let full = label;
+    let tip = kind === 'input'
+      ? 'Size of the tool call arguments as shown (TypingMind pretty-prints them)'
+      : 'Size of the tool call output as shown';
+    if (kind === 'input') {
+      // The model sends compact JSON; TypingMind adds indentation. Show the compact size too.
+      try {
+        const compact = JSON.stringify(JSON.parse(text));
+        if (compact.length !== text.length) {
+          full += ` · compact ${tmTextSizeLabel(compact).chars.toLocaleString()}`;
+          tip += '; "compact" = the same JSON with the indentation removed';
+        }
+      } catch (_) { /* not JSON: as-shown size only */ }
+    }
+
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tm-tc-size';
+      const heading = headerRow.querySelector(':scope > h4');
+      if (heading) heading.insertAdjacentElement('afterend', badge);
+      else headerRow.insertBefore(badge, headerRow.firstChild);
+    }
+    if (badge.textContent !== full) badge.textContent = full;
+    badge.title = tip;
+    badge.dataset.tmLen = String(text.length);
+  }
+
+  /**
+   * Enhance every open TypingMind tool-call pop-up: a size badge beside the Input and Output headings,
+   * and the dialog panel stretched to the window height (Input capped at 42vh, Output takes the rest;
+   * each scrolls inside its own box). Only mounted (open) headlessui panels are touched, and the
+   * Input/Output pair must be siblings, so other TypingMind dialogs are left alone.
+   */
+  // @beacon[
+  //   id=tm@native-tool-modal,
+  //   slice_labels=tm--general,
+  //   role=TypingMind native tool-call pop-up: size badges + full height,
+  //   kind=AST,
+  // ]
+  function enhanceNativeToolCallModals() {
+    const inputs = document.querySelectorAll(
+      '[id^="headlessui-dialog-panel-"] section[aria-label="Input"]'
+    );
+    if (!inputs.length) return;
+    ensureNativeToolModalStyles();
+
+    inputs.forEach(inputSec => {
+      const content = inputSec.parentElement;
+      const panel = inputSec.closest('[id^="headlessui-dialog-panel-"]');
+      if (!content || !panel) return;
+      const outputSec = content.querySelector(':scope > section[aria-label="Output"]');
+      if (!outputSec) return;
+
+      // Full height: the panel is the sized flex column; every wrapper between it and the content
+      // column passes the height down.
+      panel.classList.add('tm-tc-panel');
+      for (let el = content.parentElement; el && el !== panel; el = el.parentElement) {
+        el.classList.add('tm-tc-chain');
+      }
+      content.classList.add('tm-tc-content');
+      inputSec.classList.add('tm-tc-input');
+      outputSec.classList.add('tm-tc-output');
+
+      updateNativeToolSectionSize(inputSec, 'input');
+      updateNativeToolSectionSize(outputSec, 'output');
     });
   }
 
