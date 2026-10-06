@@ -1,5 +1,11 @@
 // TypingMind Prompt Caching & Tool Result Fix & Payload Analysis Extension
-// Version: 4.463
+// Version: 4.464
+// v4.464: TIME SINCE THE LAST Σ$ RESET. Hovering the widget's running total now shows how long it has
+// been accumulating: 'since last reset: Dd Hh Mm Ss ago' plus the local reset date/time. The reset (↺)
+// stamps the moment into localStorage tm_total_cost_reset_ts (no stamp yet = 'no reset recorded yet'
+// until the next reset starts the clock). The tooltip text is rebuilt on every mouseover by one
+// document-level delegated listener, so the seconds are live even though the widget only re-renders
+// on a response.
 // v4.463: DAMAGED-TURN THINKING REPAIR + RING FINGERPRINTS. (1) Manager-Session-114-a could not be
 // continued: every send failed with Anthropic 400 'messages.3.content.40: thinking or redacted_thinking
 // blocks in the latest assistant message cannot be modified'. Cause: TypingMind's SAVED conversation had
@@ -2780,7 +2786,7 @@
 
   // @carto-group id=client-group-1 label="Client group 1"
 
-  const EXT_VERSION = '4.463';
+  const EXT_VERSION = '4.464';
 
   const GPT51_PRICING = {
     INPUT_NONCACHED_PER_TOKEN: 1.25 / 1e6,   // $1.25 per 1M non-cached input tokens
@@ -2813,6 +2819,44 @@
 
   // (v4.72) Running total cost — persisted in localStorage, survives page refreshes.
   const TM_TOTAL_COST_KEY = 'tm_total_cost';
+  // (v4.464) Wall-clock ms of the last Σ$ reset; absent until the first reset after v4.464.
+  const TM_TOTAL_COST_RESET_TS_KEY = 'tm_total_cost_reset_ts';
+
+  function tmGetTotalCostResetTs() {
+    try {
+      var v = parseInt(localStorage.getItem(TM_TOTAL_COST_RESET_TS_KEY), 10);
+      return (!isNaN(v) && v > 0) ? v : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+
+  // (v4.464) Hover text for the Σ$ total: elapsed time since the last reset, computed at call time.
+  function tmTotalCostSinceTitle() {
+    var ts = tmGetTotalCostResetTs();
+    if (!ts) return 'Running total cost (all sessions). Since last reset: unknown (no reset recorded yet; the next \u21ba reset starts the clock)';
+    var s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    var d = Math.floor(s / 86400); s -= d * 86400;
+    var h = Math.floor(s / 3600); s -= h * 3600;
+    var m = Math.floor(s / 60); s -= m * 60;
+    var when = '';
+    try { when = new Date(ts).toLocaleString(); } catch (eW) {}
+    return 'Running total cost (all sessions). Since last reset: ' + d + 'd ' + h + 'h ' + m + 'm ' + s + 's ago' + (when ? ' (reset ' + when + ')' : '');
+  }
+
+  // (v4.464) One document-level delegated listener refreshes the tooltip on every hover, so it is
+  // live to the second although the widget itself only re-renders on a response.
+  try {
+    if (typeof document !== 'undefined' && typeof window !== 'undefined' && !window.__tmTotalCostSinceHoverWired) {
+      window.__tmTotalCostSinceHoverWired = true;
+      document.addEventListener('mouseover', function (ev) {
+        try {
+          var t = ev.target && ev.target.closest ? ev.target.closest('[data-tm-total-cost-since]') : null;
+          if (t) t.setAttribute('title', tmTotalCostSinceTitle());
+        } catch (eH) {}
+      }, true);
+    }
+  } catch (eWire) {}
 
   function tmGetTotalCost() {
     try {
@@ -2883,6 +2927,8 @@
   // ]
   function tmResetTotalCost() {
     tmSetTotalCost(0);
+    // (v4.464) Stamp the reset moment for the Σ$ hover's 'since last reset' readout.
+    try { localStorage.setItem(TM_TOTAL_COST_RESET_TS_KEY, String(Date.now())); } catch (eTs) {}
     // Purge week-old session-derived maps. These maps carry per-entry _ts metadata;
     // global settings are intentionally not session-scoped and are left alone.
     try {
@@ -17761,7 +17807,10 @@ function tmThinkRenderBins(bucket,opts) {
     parts.push('<span style="opacity:0.7;font-size:13px;margin-right:20px;">v' + EXT_VERSION + '</span>');
     var totalCost = 0;
     try { totalCost = tmGetTotalCost(); } catch (eTC) {}
-    parts.push('<span title="running total cost (all sessions, until reset)" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
+    // (v4.464) data-tm-total-cost-since: the delegated mouseover listener rewrites this title live.
+    var sinceTitle = '';
+    try { sinceTitle = tmTotalCostSinceTitle().replace(/"/g, '&quot;'); } catch (eST) {}
+    parts.push('<span data-tm-total-cost-since="1" title="' + sinceTitle + '" style="color:#5d3f8e;font-size:9px;">\u03a3$<span style="color:#b8a0d5;font-size:12px;font-weight:bold;">' + totalCost.toFixed(3) + '</span></span>' +
       ' <span data-action="reset-total-cost" title="Reset total" style="cursor:pointer;color:#5d3f8e;font-size:9px;opacity:0.6;">\u21ba</span>');
     return parts.join(' <span style="opacity:0.4;margin:0 4px;">\u00b7</span> '); // (v4.407b) extra air around the version/total separator
   }
