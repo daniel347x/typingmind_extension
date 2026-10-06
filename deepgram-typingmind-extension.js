@@ -11,6 +11,15 @@
  * - Resizable widget with draggable divider
  * - Rich text clipboard support (paste markdown, copy as HTML)
  * 
+ * v3.374 Changes:
+ * - 🩹 TOOL-CALL POP-UP VANISHING FIX — v3.373's full-height layout made TypingMind's pop-up vanish
+ *   2–3 s after opening (still mounted: an outside click flashed it back as the close transition
+ *   rewrote the panel's className, wiping our class). Root move: never touch the dialog panel or its
+ *   wrapper divs. No classes, no flex/overflow/height rules on them; the only DOM added is the badge.
+ *   Height now comes from INLINE max-height on the two scroll boxes alone: Input's box up to 40vh;
+ *   Output's box gets window height − 40px − everything else the panel shows (measured, rewritten
+ *   only on a >2px change; re-run on window resize). The size badges are unchanged.
+ *
  * v3.373 Changes:
  * - 📏 TOOL-CALL POP-UP SIZES + FULL HEIGHT — TypingMind's own tool-call pop-up (the headlessui dialog
  *   with <section aria-label="Input"> / "Output") lost its character count in a TypingMind update. A
@@ -1922,7 +1931,7 @@
   //   kind=ast,
   // ]
   const CONFIG = {
-  VERSION: '3.373',
+  VERSION: '3.374',
     DEFAULT_CONTENT_WIDTH: 700,
     
     // Transcription mode
@@ -10292,6 +10301,7 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     });
     observer.observe(root, { childList: true, subtree: true });
     scheduleNativeToolModalScan();
+    window.addEventListener('resize', scheduleNativeToolModalScan);
 
     // ESC to close modal
     document.addEventListener('keydown', evt => {
@@ -10388,33 +10398,6 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     const style = document.createElement('style');
     style.id = NATIVE_TOOL_MODAL_STYLE_ID;
     style.textContent = `
-      .tm-tc-panel {
-        height: calc(100vh - 40px) !important;
-        max-height: calc(100vh - 40px) !important;
-        display: flex !important;
-        flex-direction: column !important;
-        overflow: hidden !important;
-      }
-      .tm-tc-chain, .tm-tc-content {
-        display: flex !important;
-        flex-direction: column !important;
-        flex: 1 1 auto !important;
-        min-height: 0 !important;
-      }
-      .tm-tc-content > header { flex: 0 0 auto !important; }
-      .tm-tc-input, .tm-tc-output {
-        display: flex !important;
-        flex-direction: column !important;
-        min-height: 0 !important;
-      }
-      .tm-tc-input { flex: 0 1 auto !important; max-height: 42vh !important; }
-      .tm-tc-output { flex: 1 1 auto !important; }
-      .tm-tc-body {
-        flex: 1 1 auto !important;
-        min-height: 0 !important;
-        max-height: none !important;
-        overflow: auto !important;
-      }
       .tm-tc-size {
         margin-left: 10px;
         margin-right: auto;
@@ -10445,7 +10428,6 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
     const headerRow = section.firstElementChild;
     const body = section.lastElementChild;
     if (!headerRow || !body || headerRow === body) return;
-    body.classList.add('tm-tc-body');
 
     const text = body.textContent || '';
     let badge = headerRow.querySelector(':scope > .tm-tc-size');
@@ -10481,9 +10463,14 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
 
   /**
    * Enhance every open TypingMind tool-call pop-up: a size badge beside the Input and Output headings,
-   * and the dialog panel stretched to the window height (Input capped at 42vh, Output takes the rest;
-   * each scrolls inside its own box). Only mounted (open) headlessui panels are touched, and the
-   * Input/Output pair must be siblings, so other TypingMind dialogs are left alone.
+   * and a taller pop-up (Input's box up to 40vh; Output's box sized so the whole panel reaches the
+   * window height less 40px; each scrolls inside its own box). Only mounted (open) headlessui panels
+   * are touched, and the Input/Output pair must be siblings, so other TypingMind dialogs are left alone.
+   * (v3.374) HANDS OFF THE PANEL AND ITS WRAPPERS: v3.373 put classes + flex/overflow/height rules on
+   * the panel and its wrapper divs, and the pop-up vanished 2-3 s after opening (still mounted: an
+   * outside click flashed it back as TypingMind's close transition rewrote the panel's className and
+   * wiped our class). Now only the two scroll boxes get an INLINE max-height (React never sets a style
+   * prop on them, so it never fights it), and the only DOM we add is the badge span.
    */
   // @beacon[
   //   id=tm@native-tool-modal,
@@ -10505,19 +10492,29 @@ document.getElementById('deepgram-status-history-btn').addEventListener('click',
       const outputSec = content.querySelector(':scope > section[aria-label="Output"]');
       if (!outputSec) return;
 
-      // Full height: the panel is the sized flex column; every wrapper between it and the content
-      // column passes the height down.
-      panel.classList.add('tm-tc-panel');
-      for (let el = content.parentElement; el && el !== panel; el = el.parentElement) {
-        el.classList.add('tm-tc-chain');
-      }
-      content.classList.add('tm-tc-content');
-      inputSec.classList.add('tm-tc-input');
-      outputSec.classList.add('tm-tc-output');
-
       updateNativeToolSectionSize(inputSec, 'input');
       updateNativeToolSectionSize(outputSec, 'output');
+      sizeNativeToolModalBoxes(panel, inputSec, outputSec);
     });
+  }
+
+  /** Taller pop-up by sizing only the two scroll boxes (inline max-height; write only on change). */
+  function sizeNativeToolModalBoxes(panel, inputSec, outputSec) {
+    const inBody = inputSec.lastElementChild;
+    const outBody = outputSec.lastElementChild;
+    if (!inBody || !outBody || inBody === inputSec.firstElementChild || outBody === outputSec.firstElementChild) return;
+
+    if (inBody.style.maxHeight !== '40vh') inBody.style.maxHeight = '40vh';
+
+    // Whatever the panel spends outside the Output box stays fixed; give the Output box the rest.
+    // offsetHeight, not getBoundingClientRect: the opening transition scales the panel (transform),
+    // and layout heights ignore transforms.
+    const panelH = panel.offsetHeight;
+    const outH = outBody.offsetHeight;
+    if (!panelH) return; // not laid out yet (opening transition); the next scan sizes it
+    const avail = Math.max(160, Math.floor(window.innerHeight - 40 - (panelH - outH)));
+    const current = parseInt(outBody.style.maxHeight, 10);
+    if (isNaN(current) || Math.abs(current - avail) > 2) outBody.style.maxHeight = avail + 'px';
   }
 
   // @carto-group id=client-group-8a label="Client group 8"
